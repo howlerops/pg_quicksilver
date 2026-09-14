@@ -1,0 +1,327 @@
+{
+  "meta": {
+    "cold_connection_ms": 152.19,
+    "warm_connection_ms": 134.21
+  },
+  "results": [
+    {
+      "suite": "analytical",
+      "query": "A1_daily_revenue_30d",
+      "B_pgduck_heap": {
+        "min_ms": 2972.07,
+        "p50_ms": 3231.984,
+        "p95_ms": 3374.197
+      },
+      "B_used_duckdb": true,
+      "C_pgduck_parquet": {
+        "min_ms": 481.984,
+        "p50_ms": 485.965,
+        "p95_ms": 529.559
+      },
+      "C_used_duckdb": true,
+      "C_error": null,
+      "A_pg_native": {
+        "min_ms": 2402.797,
+        "p50_ms": 2457.823,
+        "p95_ms": 2842.69,
+        "runs": 7
+      },
+      "D_duck_native": {
+        "min_ms": 398.054,
+        "p50_ms": 422.56,
+        "p95_ms": 436.77,
+        "runs": 7
+      }
+    },
+    {
+      "suite": "analytical",
+      "query": "A2_top_campaigns",
+      "B_pgduck_heap": {
+        "min_ms": 7017.572,
+        "p50_ms": 8152.182,
+        "p95_ms": 8288.915
+      },
+      "B_used_duckdb": true,
+      "C_pgduck_parquet": {
+        "min_ms": 140.639,
+        "p50_ms": 141.52,
+        "p95_ms": 159.414
+      },
+      "C_used_duckdb": true,
+      "C_error": null,
+      "A_pg_native": {
+        "min_ms": 4954.742,
+        "p50_ms": 5001.962,
+        "p95_ms": 5147.31,
+        "runs": 7
+      },
+      "D_duck_native": {
+        "min_ms": 113.116,
+        "p50_ms": 118.273,
+        "p95_ms": 133.68,
+        "runs": 7
+      }
+    },
+    {
+      "suite": "analytical",
+      "query": "A3_country_device_matrix",
+      "B_pgduck_heap": {
+        "min_ms": 4050.755,
+        "p50_ms": 4281.576,
+        "p95_ms": 4480.94
+      },
+      "B_used_duckdb": true,
+      "C_pgduck_parquet": {
+        "min_ms": 186.309,
+        "p50_ms": 198.325,
+        "p95_ms": 225.888
+      },
+      "C_used_duckdb": true,
+      "C_error": null,
+      "A_pg_native": {
+        "min_ms": 3498.137,
+        "p50_ms": 3509.755,
+        "p95_ms": 3719.664,
+        "runs": 7
+      },
+      "D_duck_native": {
+        "min_ms": 156.726,
+        "p50_ms": 163.816,
+        "p95_ms": 167.539,
+        "runs": 7
+      }
+    },
+    {
+      "suite": "analytical",
+      "query": "A4_full_table_aggregate",
+      "B_pgduck_heap": {
+        "min_ms": 5929.439,
+        "p50_ms": 7020.632,
+        "p95_ms": 7438.241
+      },
+      "B_used_duckdb": true,
+      "C_pgduck_parquet": {
+        "min_ms": 106.378,
+        "p50_ms": 123.459,
+        "p95_ms": 137.92
+      },
+      "C_used_duckdb": true,
+      "C_error": null,
+      "A_pg_native": {
+        "min_ms": 3261.525,
+        "p50_ms": 3295.457,
+        "p95_ms": 3313.282,
+        "runs": 7
+      },
+      "D_duck_native": {
+        "min_ms": 84.926,
+        "p50_ms": 85.917,
+        "p95_ms": 93.096,
+        "runs": 7
+      }
+    },
+    {
+      "suite": "analytical",
+      "query": "A5_distinct_users_by_type",
+      "B_pgduck_heap": {
+        "min_ms": 5523.87,
+        "p50_ms": 5907.36,
+        "p95_ms": 6260.437
+      },
+      "B_used_duckdb": true,
+      "C_pgduck_parquet": {
+        "min_ms": 758.837,
+        "p50_ms": 777.266,
+        "p95_ms": 879.232
+      },
+      "C_used_duckdb": true,
+      "C_error": null,
+      "A_pg_native": {
+        "min_ms": 47209.487,
+        "p50_ms": 47887.661,
+        "p95_ms": 49808.206,
+        "runs": 7
+      },
+      "D_duck_native": {
+        "min_ms": 647.718,
+        "p50_ms": 700.79,
+        "p95_ms": 710.1,
+        "runs": 7
+      }
+    },
+    {
+      "suite": "analytical",
+      "query": "A6_cohort_funnel",
+      "B_pgduck_heap": {
+        "min_ms": 3921.355,
+        "p50_ms": 4132.345,
+        "p95_ms": 4225.835
+      },
+      "B_used_duckdb": true,
+      "C_pgduck_parquet": {
+        "min_ms": 511.961,
+        "p50_ms": 535.768,
+        "p95_ms": 571.168
+      },
+      "C_used_duckdb": true,
+      "C_error": null,
+      "A_pg_native": {
+        "min_ms": 3319.277,
+        "p50_ms": 3398.089,
+        "p95_ms": 3485.642,
+        "runs": 7
+      },
+      "D_duck_native": {
+        "min_ms": 359.388,
+        "p50_ms": 370.748,
+        "p95_ms": 411.16,
+        "runs": 7
+      }
+    },
+    {
+      "suite": "oltp",
+      "query": "O1_point_lookup_pk",
+      "B_pgduck_heap": {
+        "min_ms": 34.825,
+        "p50_ms": 36.895,
+        "p95_ms": 48.407
+      },
+      "B_used_duckdb": true,
+      "C_pgduck_parquet": {
+        "min_ms": 63.078,
+        "p50_ms": 67.572,
+        "p95_ms": 97.18
+      },
+      "C_used_duckdb": true,
+      "C_error": null,
+      "A_pg_native": {
+        "min_ms": 0.08,
+        "p50_ms": 0.088,
+        "p95_ms": 0.223,
+        "runs": 50
+      },
+      "D_duck_native": {
+        "min_ms": 51.502,
+        "p50_ms": 52.99,
+        "p95_ms": 63.706,
+        "runs": 50
+      }
+    },
+    {
+      "suite": "oltp",
+      "query": "O2_user_recent_events",
+      "B_pgduck_heap": {
+        "min_ms": 32.715,
+        "p50_ms": 34.626,
+        "p95_ms": 44.449
+      },
+      "B_used_duckdb": true,
+      "C_pgduck_parquet": {
+        "min_ms": 373.979,
+        "p50_ms": 383.994,
+        "p95_ms": 397.922
+      },
+      "C_used_duckdb": true,
+      "C_error": null,
+      "A_pg_native": {
+        "min_ms": 0.109,
+        "p50_ms": 0.115,
+        "p95_ms": 0.275,
+        "runs": 50
+      },
+      "D_duck_native": {
+        "min_ms": 381.917,
+        "p50_ms": 396.153,
+        "p95_ms": 418.104,
+        "runs": 50
+      }
+    },
+    {
+      "suite": "oltp",
+      "query": "O3_session_lookup",
+      "B_pgduck_heap": {
+        "min_ms": 31.011,
+        "p50_ms": 33.737,
+        "p95_ms": 35.011
+      },
+      "B_used_duckdb": true,
+      "C_pgduck_parquet": {
+        "min_ms": 281.544,
+        "p50_ms": 290.817,
+        "p95_ms": 314.499
+      },
+      "C_used_duckdb": true,
+      "C_error": null,
+      "A_pg_native": {
+        "min_ms": 0.091,
+        "p50_ms": 0.105,
+        "p95_ms": 0.22,
+        "runs": 50
+      },
+      "D_duck_native": {
+        "min_ms": 267.765,
+        "p50_ms": 277.402,
+        "p95_ms": 308.407,
+        "runs": 50
+      }
+    },
+    {
+      "suite": "oltp",
+      "query": "O4_tenant_recent_window",
+      "B_pgduck_heap": {
+        "min_ms": 36.84,
+        "p50_ms": 38.59,
+        "p95_ms": 42.494
+      },
+      "B_used_duckdb": true,
+      "C_pgduck_parquet": {
+        "min_ms": 72.317,
+        "p50_ms": 80.325,
+        "p95_ms": 106.168
+      },
+      "C_used_duckdb": true,
+      "C_error": null,
+      "A_pg_native": {
+        "min_ms": 0.286,
+        "p50_ms": 0.345,
+        "p95_ms": 0.558,
+        "runs": 50
+      },
+      "D_duck_native": {
+        "min_ms": 58.82,
+        "p50_ms": 62.65,
+        "p95_ms": 78.044,
+        "runs": 50
+      }
+    },
+    {
+      "suite": "oltp",
+      "query": "O5_user_aggregate_small",
+      "B_pgduck_heap": {
+        "min_ms": 31.346,
+        "p50_ms": 34.024,
+        "p95_ms": 45.881
+      },
+      "B_used_duckdb": true,
+      "C_pgduck_parquet": {
+        "min_ms": 142.173,
+        "p50_ms": 150.142,
+        "p95_ms": 171.125
+      },
+      "C_used_duckdb": true,
+      "C_error": null,
+      "A_pg_native": {
+        "min_ms": 0.091,
+        "p50_ms": 0.133,
+        "p95_ms": 0.292,
+        "runs": 50
+      },
+      "D_duck_native": {
+        "min_ms": 121.134,
+        "p50_ms": 124.317,
+        "p95_ms": 132.015,
+        "runs": 50
+      }
+    }
+  ]
+}

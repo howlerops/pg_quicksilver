@@ -4,7 +4,8 @@ Everything here was measured, not estimated. Harness and raw output in
 [`bench/`](../bench/); reproduce with the commands in
 [`bench/README.md`](../bench/README.md).
 
-**Test rig.** 4 vCPU, 15 GB RAM, single NVMe. PostgreSQL 16.13, `shared_buffers=4GB`,
+**Test rig.** 4 vCPU, 15 GB RAM, single NVMe. PostgreSQL 16.13 (16.15 binaries after the
+dev-header install), `pg_duckdb` 1.1.1 built from source against PG 16, `shared_buffers=4GB`,
 `max_parallel_workers_per_gather=2`. DuckDB 1.5.5 over zstd Parquet. 30 M rows, 30 columns,
 ~299 B/row → **8.7 GB heap + 2.8 GB indexes**. Identical SQL to both engines.
 
@@ -195,6 +196,74 @@ resolution mechanism.
 
 ---
 
+## Result 6 — S2b: the speedup survives a Postgres front-end (22.2×), but only because of columnar storage
+
+S2 measured standalone DuckDB, which bypasses the Postgres executor. This re-runs the same
+SQL through `pg_duckdb` 1.1.1 built against PG 16 — the real product path. Four
+configurations on identical data:
+
+| Query | A: plain PG | B: pg_duckdb / heap | C: pg_duckdb / Parquet | D: raw DuckDB | C vs A | tax (C/D) |
+|---|---|---|---|---|---|---|
+| A1 daily revenue | 2,458 ms | 3,232 ms | 486 ms | 423 ms | 5.1× | 1.15× |
+| A2 top campaigns | 5,002 ms | 8,152 ms | 142 ms | 118 ms | 35.3× | 1.20× |
+| A3 country × device | 3,510 ms | 4,282 ms | 198 ms | 164 ms | 17.7× | 1.21× |
+| A4 full aggregate | 3,295 ms | 7,021 ms | 124 ms | 86 ms | 26.7× | 1.44× |
+| A5 distinct users | 47,888 ms | 5,907 ms | 777 ms | 701 ms | 61.6× | 1.11× |
+| A6 cohort funnel | 3,398 ms | 4,132 ms | 536 ms | 371 ms | 6.3× | 1.45× |
+
+**S2b PASSES: median 22.2× through the full Postgres stack**, against a ≥10× threshold.
+
+**The extension-boundary tax is only 1.20× median** (range 0.97–1.45×). The drop from S2's
+29.9× standalone to 22.2× in-product is real but modest, and 22.2× is the number to quote
+from here on. **No query fell back** to the Postgres executor.
+
+### The finding that matters more than the headline
+
+**Column B is a regression.** Running `pg_duckdb` over the *Postgres heap* — vectorised
+execution, row storage — is a **median 1.27× _slower_** than plain Postgres. Five of six
+queries got worse; A4 nearly halved in speed. Only A5 (`count(DISTINCT)`) improved, at 8.1×.
+
+> The win is **columnar storage**, not the vectorised engine. An engine swap alone makes
+> things worse.
+
+Three consequences:
+
+1. **"Just install pg_duckdb on your existing replica" is not a product.** It would regress
+   most analytical queries. The mirror is the entire value.
+2. **Architecture C's planner routing must route to the columnar mirror specifically** — not
+   merely "execute this in DuckDB". A router that picks the engine without picking the
+   storage would make things worse.
+3. It independently validates the premise of this whole study: the reason to build a mirror
+   is the storage layout, which is exactly the thing a read replica cannot give you.
+
+### Two integration constraints discovered
+
+Both affect the design, neither is fatal:
+
+- **Persistent DuckDB-backed tables require MotherDuck.** `CREATE TABLE ... USING duckdb`
+  errors with *"Only TEMP tables are supported in DuckDB if MotherDuck support is not
+  enabled"*. So stock `pg_duckdb` cannot give us a persistent, named, columnar table in
+  Postgres without a cloud dependency — which is unacceptable for Quicksilver.
+- **`read_parquet()` needs `r['colname']` syntax**, not ordinary column references. That
+  breaks goal G1 (identical SQL) on its face.
+
+**Both are solved by the same mechanism, and it works:** generate a view that maps
+`r['col']::type AS col` for every column. Application SQL then runs unchanged against the
+mirror. All Result 6 numbers above were measured through such a view, and
+`sum(amount)` matched the Postgres heap **to the cent** — a good early signal on `numeric`
+fidelity (OQ-14). **Generating and maintaining that view is now a named plugin
+responsibility.**
+
+### Per-connection cost
+
+A fresh backend's first `pg_duckdb` query costs **~18 ms more** than subsequent queries on
+the same connection (152 ms vs 134 ms for the same statement). That is the DuckDB
+instantiation tax. Amortised to nothing behind a connection pool; a real per-query tax for
+an application that connects per request. Worth documenting for users, not worth designing
+around.
+
+---
+
 ## What this changes
 
 | Doc | Change |
@@ -202,7 +271,8 @@ resolution mechanism.
 | **04** | Storage design now specifies deletion vectors, not `_lsn` global dedup. Compaction is now correctness-critical, not just a tuning knob. |
 | **06** | OLTP regression corrected from "3–100×" to a measured 182–3,445×. |
 | **10** | I/O asymmetry corrected from ~500× to a measured 62–141×. `C` updated from an assumed 0.5 to a measured 0.77. Consolidation conclusion unchanged. |
-| **08** | S2 marked **PASSED** (median 30× ≥ 10× threshold). OQ-11 answered. OQ-13 improved but not closed. |
+| **08** | S2 **PASSED** (median 29.9×). S2b **PASSED** (median 22.2× in-product). OQ-11 answered, OQ-14 partly answered, OQ-13 improved but not closed. |
+| **04** | Mirror must be exposed via a **generated view** (`r['col']::type AS col`) — persistent DuckDB-backed tables need MotherDuck, and `read_parquet` does not accept plain column references. Now a named plugin responsibility. |
 | **README** | Headline numbers are now measured. |
 
 ## Still unmeasured
@@ -212,8 +282,8 @@ Docker is unavailable on this box, so nothing involving Kubernetes ran.
 - **S0 (workload characterisation)** — needs real `-ro` traffic. Still the project's gating
   spike, and Result 3 makes it more load-bearing, not less.
 - **S1 (CNPG-I capability probe)** — needs a cluster.
-- **S3 (RLS enforcement through pg_duckdb)** — needs a real pg_duckdb build; this harness used
-  DuckDB directly, which bypasses the Postgres executor entirely and so cannot test it.
+- **S3 (RLS enforcement through pg_duckdb)** — now **unblocked**: pg_duckdb 1.1.1 is built and
+  working here. This is the next thing to run.
 - **S4 (physical WAL decode on a standby)** — needs a C background worker against a live
   standby.
 - Anything involving **joins across mirrored tables**, which is where a real workload would
