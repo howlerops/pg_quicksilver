@@ -22,8 +22,9 @@ replicas needed  ≈  (QPS × cost_per_query) / capacity_per_node
 ```
 
 So if a dashboard query costs 20 s of CPU and you serve 50 of them a minute, you are buying
-replicas to absorb `cost_per_query`. Drop that cost 50× and the capacity requirement drops
-50× — bounded below by HA minimums and by concurrency limits (§4).
+replicas to absorb `cost_per_query`. Drop that cost 30× (measured) and the capacity
+requirement drops ~23× after the concurrency term — bounded below by HA minimums and by the
+limits in §4.
 
 This is why the framing "reduce the need for so many readers" is the right one. The win is
 not that each query is faster (though it is); it's that **the thing driving replica count
@@ -36,8 +37,8 @@ and a half of them.
 
 | Growth in… | Row-store replica | Columnar mirror | Helps? |
 |---|---|---|---|
-| **Data volume** (bigger tables, same traffic) | Scan cost grows linearly. Add replicas to hold p95 flat. | Cost grows linearly too — but from a 50–500× lower base, and zone-map/partition pruning can flatten it entirely for windowed queries | ✅ **Yes, strongly** |
-| **Read QPS** | Linear in replicas | Linear in nodes, but ~50× better constant | ✅ **Yes** |
+| **Data volume** (bigger tables, same traffic) | Scan cost grows linearly. Add replicas to hold p95 flat. | Cost grows linearly too — but from a **measured 62–141× lower** I/O base, and zone-map pruning can flatten it entirely for windowed queries | ✅ **Yes, strongly** |
+| **Read QPS** | Linear in replicas | Linear in nodes, but a **measured ~30× better** constant (~20× under concurrency) | ✅ **Yes** |
 | **Write rate** | Replay cost per node grows; single-threaded startup process is the ceiling | Same replay cost, **plus** mirror maintenance | ❌ **No — slightly worse** |
 
 The second row is the ordinary throughput win. The first row is the one worth being precise
@@ -45,20 +46,17 @@ about, because it's where the "treadmill" intuition lives.
 
 ### The I/O asymmetry
 
-Concrete: `events`, 60 columns, ~2 KB/row.
+**Measured** on the rig in [11](11-measured-results.md), 30 M rows, 30 columns:
 
-```sql
-SELECT date_trunc('day', ts), count(*), sum(amount)
-FROM events WHERE ts > now() - interval '30 days' GROUP BY 1;
-```
+| Query | Row store touches | Column store touches | Ratio |
+|---|---|---|---|
+| Full-table aggregate (3 cols) | 9,098 MB | 64 MB | **141×** |
+| Daily revenue, 30-day window | 9,099 MB | 146 MB | **62×** |
+| `count(DISTINCT user_id)` | 9,098 MB | 114 MB | **80×** |
 
-At 10M rows in the window:
-
-- **Row store:** reads whole 8 KB pages to reach 3 columns → ~20 GB touched.
-- **Columnar:** 3 columns, ~24 B/row raw, 4–8× compression → **~40 MB touched.**
-
-That's ~500× less I/O before the vectorised executor does anything. Even conceding a large
-chunk back to overheads, you are in 100×+ territory.
+**62–141× less I/O.** An earlier draft of this document estimated ~500× by assuming uniform
+column sizes; in reality `ts` and `amount` are the high-entropy columns and dominate any
+query touching them. The corrected figure is still decisive, just not as lopsided.
 
 ### But be precise about the asymptotics
 
@@ -72,7 +70,7 @@ If the table grows 10× because of *retention* (more history, same rate), then:
 |---|---|
 | Row store, unpartitioned | 10× worse — scans everything |
 | Row store, well-partitioned + BRIN | ~flat |
-| Columnar with zone maps | ~flat, from a 500× lower base |
+| Columnar with zone maps | ~flat, from a 62–141× lower base |
 
 So the honest claim is:
 
@@ -87,8 +85,8 @@ query patterns. Quicksilver gets pruning behaviour without a migration.
 ## 3. The consolidation math
 
 Let `R` = current replicas, `f` = fraction of read **time** that is analytical, `S` = speedup,
-`C` = concurrency efficiency of a Quicksilver node vs a PG replica (see §4; assume a
-pessimistic 0.5).
+`C` = concurrency efficiency of a Quicksilver node vs a PG replica (see §4; **measured
+0.77**).
 
 **Architecture A** (separate mirror tier — the two tiers each carry their own HA floor):
 
@@ -102,13 +100,16 @@ R_new = max(2, ⌈f·R / (S·C)⌉) + max(2, ⌈(1-f)·R⌉)
 R_new = max(2, ⌈ f·R/(S·C) + (1-f)·R ⌉)
 ```
 
-With `R = 8`, `f = 0.7`, `S = 50`, `C = 0.5`:
+With `R = 8`, `f = 0.7`, and the **measured** `S = 30`, `C = 0.77` (see
+[11](11-measured-results.md#result-4--concurrency-holds-up-c--077) — the original draft
+assumed `S = 50, C = 0.5`, giving a near-identical `S·C` of 25 vs 23, so the conclusion is
+unchanged):
 
 | | Analytical need | OLTP need | Total |
 |---|---|---|---|
 | Today | — | — | **8** |
-| Architecture A | 0.22 → floor 2 | 2.4 → 3 | **5** |
-| Architecture C | 0.22 + 2.4 = 2.6 | (same nodes) | **3** |
+| Architecture A | 0.24 → floor 2 | 2.4 → 3 | **5** |
+| Architecture C | 0.24 + 2.4 = 2.64 | (same nodes) | **3** |
 
 **8 → 3, and those 3 are also valid HA failover targets.** That is the number worth putting
 in front of a customer — and it's an Architecture C number, which is the clearest economic
@@ -134,20 +135,21 @@ Consolidation isn't the only saving:
 
 Three limits. All are real; none are fatal; the first is the one to measure.
 
-### 4a. Concurrency, not data volume, is the likely ceiling
+### 4a. Concurrency — measured, and better than feared
 
-DuckDB is an embedded, single-process engine tuned for a modest number of heavy queries. A node
-fielding 500 concurrent small-to-medium dashboard queries will hit memory and thread contention
-long before it hits any I/O limit — and Postgres's process-per-connection model is genuinely
-*better* at high concurrency of small queries.
+This was the least-known term in the model. Measured, the speedup ratio **holds at ~20×
+across 1→16 concurrent clients** rather than collapsing: `C = 0.77`, not the pessimistic 0.5
+assumed. Both engines saturate at ~4 clients and then queue cleanly (throughput flat, p95
+rising linearly). DuckDB does not degrade *relative* to Postgres under load.
 
-So one Quicksilver node does **not** cleanly absorb ten replicas' worth of *concurrency*. It
-absorbs ten replicas' worth of *work*, provided that work arrives as a manageable number of
-large queries. If your 8 replicas exist because of 5,000 concurrent connections rather than
-because queries are expensive, this design saves you very little.
+**But the test rig had 4 vCPUs**, so both engines saturated almost immediately and the
+scaling question is not really answered. On a 16–32 core node the process model and the
+thread pool may diverge substantially. [OQ-13](09-risks-and-open-questions.md#engine) is
+improved, not closed.
 
-That's the `C` term in §3, it's [OQ-13](09-risks-and-open-questions.md#engine), and it's the
-one number in the whole model I'd least want to guess at. **Spike S2 must measure it.**
+The structural caveat still stands regardless of `C`: a Quicksilver node absorbs N replicas'
+worth of *work*, not of *concurrency*. If your 8 replicas exist because of 5,000 concurrent
+connections rather than because queries are expensive, this design saves you very little.
 
 ### 4b. Replay is a shared floor that Quicksilver doesn't raise
 

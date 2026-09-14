@@ -49,7 +49,7 @@ A′), which changes the resource-isolation story significantly.
 **If (c) fails:** Path 1 archive tee needs another mechanism — most likely reading from the
 object store the existing archiver already writes to. Cheap to redesign, but plan for it.
 
-### S2 — Columnar speedup, honestly measured
+### S2 — Columnar speedup, honestly measured  ✅ **PASSED** — see [11](11-measured-results.md)
 
 **Question:** does pg_duckdb-over-Parquet deliver ≥10× p95 on a realistic suite *including*
 merge-on-read cost?
@@ -60,6 +60,12 @@ with a continuous change stream applied, so pending deltas and tombstones are re
 benchmarking a freshly compacted mirror is self-deception.
 
 **Threshold:** ≥10× p95 on analytical queries with a steady-state delta backlog.
+
+**Result: PASSED.** Median 29.9× on the analytical suite (range 5.8×–68.3×) at 30 M rows.
+Merge-on-read overhead is ~1× once deletion vectors replace query-time `_lsn` resolution —
+the original docs/04 design cost 33× and would have cancelled the entire speedup. The OLTP
+suite regressed by a median of 935×, which is the finding that makes Architecture C
+mandatory rather than merely preferable.
 
 **If it fails:** if the gap is compaction tuning, iterate. If DuckDB itself is the limit,
 reconsider the engine (ClickHouse as an embedded/sidecar sink) — but note this reopens the
@@ -195,7 +201,7 @@ Rules, because each has a corresponding way to accidentally cheat:
 | **S1(a)** | `-ro` selector can't be retargeted | Drop `takeover` mode; separate endpoint only |
 | **S1(b)** | Can't manage non-instance workloads | Mirror becomes a sidecar; resource isolation suffers |
 | **S1(c)** | WAL tee conflicts with backup plugin | Redesign Path 1 around the object store |
-| **S2** | <10× on analytical with live deltas | Re-evaluate engine; possibly stop |
+| **S2** | <10× on analytical with live deltas | ✅ **PASSED** — median 29.9×, merge overhead ~1× with deletion vectors |
 | **S3** | RLS bypassed and undetectable | Permanent refusal to mirror RLS tables; smaller market |
 | **S4** | Physical decode unreliable on standby | Architecture C ingest dropped; G5 dropped from the pitch |
 

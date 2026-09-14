@@ -48,6 +48,13 @@ def time_it(fn, warmup: int, runs: int):
     }
 
 
+def fmt_ratio(s):
+    """Speedups span ~1e-3 to ~70, so render both directions readably."""
+    if s == float("inf"):
+        return "inf"
+    return f"{s:.1f}x faster" if s >= 1 else f"{1/s:,.0f}x SLOWER"
+
+
 def pg_buffers(cur, sql):
     """Shared blocks actually touched — the I/O the row store really does."""
     try:
@@ -92,7 +99,8 @@ def main():
             row = {
                 "suite": suite, "query": name,
                 "pg": pg_stats, "duckdb": dd_stats,
-                "speedup_p50": round(speedup, 2),
+                # full precision: OLTP speedups are ~1e-3 and round to 0.0
+                "speedup_p50": speedup,
                 "pg_bytes_read": pg_buffers(pgcur, sql),
             }
             results.append(row)
@@ -108,15 +116,13 @@ def main():
     print(f"{'suite':<11}{'query':<28}{'PG p50':>11}{'Duck p50':>11}{'speedup':>12}")
     print("=" * 78)
     for r in results:
-        s = r["speedup_p50"]
-        tag = f"{s:>10.1f}x" if s >= 1 else f"{1/s:>9.1f}x SLOWER"
-        print(f"{r['suite']:<11}{r['query']:<28}{r['pg']['p50_ms']:>10.1f}ms"
-              f"{r['duckdb']['p50_ms']:>10.1f}ms{tag:>12}")
+        print(f"{r['suite']:<11}{r['query']:<28}{r['pg']['p50_ms']:>10.2f}ms"
+              f"{r['duckdb']['p50_ms']:>10.2f}ms{fmt_ratio(r['speedup_p50']):>16}")
     for suite in ("analytical", "oltp"):
         sp = [r["speedup_p50"] for r in results if r["suite"] == suite]
         if sp:
-            print(f"\n{suite}: median speedup {statistics.median(sp):.1f}x  "
-                  f"(range {min(sp):.2f}x .. {max(sp):.1f}x)")
+            print(f"\n{suite}: median {fmt_ratio(statistics.median(sp))}  "
+                  f"(range {fmt_ratio(min(sp))} .. {fmt_ratio(max(sp))})")
     print(f"\nwritten: {args.out}")
 
 

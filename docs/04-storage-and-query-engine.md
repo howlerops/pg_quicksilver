@@ -184,10 +184,26 @@ Starting point, to be refined by spike S2:
 
 - **Micro-batch** the change stream into `delta/` on a size-or-time trigger (target: a few
   seconds, tuneable against the freshness SLO).
-- **Compact** `delta/` + `tombstones/` into `base/` in the background. Compaction lag is a
-  first-class metric — it is what merge-on-read query cost is a function of.
+- **Compact** `delta/` + `deletion-vectors/` into `base/` in the background. Compaction is
+  **correctness-adjacent, not just a tuning knob** — see the measured result below.
 - **`_lsn` on every row**, per walshadow's design, so out-of-order arrival still converges
   and so any row's provenance is checkable against the source.
+- **Resolve deletes and superseded rows with deletion vectors, *not* with a query-time
+  `_lsn` window function.** This is a correction forced by measurement — see
+  [11](11-measured-results.md#result-5--the-docs04-merge-on-read-design-is-broken-and-the-fix-is-measured).
+
+> **Measured, and it invalidated the original design.** This document first specified
+> newest-`_lsn`-wins resolution evaluated at query time. Benchmarked, that costs **33× at zero
+> deltas** — the tax is the `row_number() OVER (PARTITION BY key ORDER BY _lsn DESC)` across
+> every row, not the delta backlog. Against a 30× analytical speedup it nets to roughly zero.
+>
+> The replacement: compaction precomputes which base-file row positions are deleted or
+> superseded, and the scan applies that as a position filter — Iceberg-v2 positional deletes /
+> Delta-style deletion vectors. No window function, no join. **Measured 0.8–1.1×** relative to
+> a fully compacted baseline, and nearly flat in backlog size.
+>
+> `_lsn` is retained for ordering, convergence and provenance — which is what walshadow uses
+> it for. It is no longer the query-time resolution mechanism.
 - **Verification**: periodic per-table checksums over an LSN-consistent snapshot, compared
   against the source. Exported as a metric, alarmed on mismatch (goal G7). Silent divergence
   is the failure mode that kills CDC products, and the only defence is continuous proof.

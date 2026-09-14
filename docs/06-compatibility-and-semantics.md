@@ -14,18 +14,28 @@ distinction is the whole ballgame.
 
 | Query shape | Hot standby today | Columnar mirror | Verdict |
 |---|---|---|---|
-| `SELECT ... WHERE id = $1` | ~0.2 ms, index lookup | 5–50 ms — no B-tree; scan a row group or probe a zone map | **3–100× slower** |
-| `SELECT ... WHERE user_id = $1 ORDER BY ts DESC LIMIT 20` | ~1 ms, index scan | 10–100 ms unless clustered on `user_id` | **Much slower** |
-| 1000 concurrent short reads | Fine; process-per-connection | DuckDB memory + thread contention | **Worse, possibly much worse** |
-| `SELECT count(*), sum(x) ... GROUP BY d WHERE ts > now()-30d` | 20 s, seq scan or bitmap | 0.2 s, vectorised, 3 columns read | **10–100× faster** |
-| Wide scan, 3 of 60 columns | Reads all 60 (8 KB pages) | Reads 3, compressed 4–10× | **10–50× faster** |
-| Multi-table analytical join | Hash join, tuple-at-a-time | Vectorised | **5–30× faster** |
+| `SELECT ... WHERE id = $1` | **0.09 ms measured**, index lookup | **53 ms measured** — no B-tree, no useful pruning | **602× slower** |
+| `SELECT ... WHERE user_id = $1 ORDER BY ts DESC LIMIT 20` | **0.12 ms measured** | **396 ms measured** — clustered on `ts`, so nothing prunes | **3,445× slower** |
+| 1000 concurrent short reads | Fine; process-per-connection | DuckDB memory + thread contention | **Worse** (ratio itself holds — see [11](11-measured-results.md#result-4--concurrency-holds-up-c--077)) |
+| `SELECT count(*), sum(x) ... GROUP BY d WHERE ts > now()-30d` | **2.5 s measured** | **0.42 s measured** | **5.8× faster** |
+| Wide scan, 3 of 30 columns | **9,098 MB touched** | **64 MB touched** | **38× faster, 141× less I/O** |
+| `count(DISTINCT user_id)` by type | **47.9 s measured** | **0.70 s measured** | **68× faster** |
 | `COPY ... TO` of a large result | Decent | Excellent | **Faster** |
+
+All figures above are measured on the rig in [11](11-measured-results.md). Across the full
+OLTP suite the median regression is **935×**, ranging 182×–3,445×. An earlier draft of this
+table estimated "3–100× slower"; that was low by more than an order of magnitude.
 
 **The implication is architectural, not a tuning detail.** A `-ro` endpoint that is
 columnar-only will regress every application that uses it for anything other than reporting
 — and most do, because `-ro` is where teams send "reads that don't need to be on the
 primary", which includes plenty of point lookups.
+
+At a measured 935× median, this stops being a trade-off to manage and becomes a hard
+constraint: **`serviceMode: takeover` is indefensible under Architecture A.** Not risky —
+indefensible. A columnar-only node behind `-ro` would take production down the first time an
+ORM issued a point lookup at volume. Under Architecture A, `off` (a separate `app-olap`
+endpoint) should arguably be the *only* supported mode.
 
 Two responses, and we should do both:
 

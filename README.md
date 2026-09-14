@@ -1,6 +1,7 @@
 # pg_quicksilver
 
-**Status: feasibility study / pre-implementation. No code yet.**
+**Status: feasibility study / pre-implementation. No product code yet — but the core claims
+are now measured, not estimated. See [docs/11](docs/11-measured-results.md).**
 
 Quicksilver is a proposed [CloudNativePG](https://cloudnative-pg.io/) (CNPG) plugin + Helm
 chart that replaces a Postgres cluster's **read replicas** with nodes that maintain a
@@ -10,7 +11,7 @@ back dramatically faster for scan-and-aggregate workloads.
 
 The pitch in one line: *your read replicas are already burning a full copy of your data to
 answer `SELECT`s with a row-store and a B-tree. Spend that same copy on a column-store and
-get 10–100× on the queries that actually hurt.*
+get a measured 30× median (up to 68×) on the queries that actually hurt.*
 
 The pitch that matters to whoever signs the invoice: **replace 8 read replicas with 3**, and
 have those 3 still count toward HA. See [docs/10](docs/10-scaling-economics.md) for the
@@ -23,18 +24,19 @@ consolidation math and the three cases where it doesn't hold.
 The naive framing — "swap the read replicas for an OLAP engine, it's faster by default" —
 **does not survive contact with the evidence.** Two findings drive the entire design:
 
-1. **A columnar mirror is not uniformly faster than a hot standby. It is dramatically
-   faster on scans and aggregates and meaningfully *slower* on the OLTP-shaped reads that
-   also land on `-ro` today** (indexed point lookups, short high-concurrency queries,
-   `LIMIT 1` ordered fetches). A straight `-ro` takeover therefore regresses a real
-   fraction of production traffic. See [docs/06-compatibility-and-semantics.md](docs/06-compatibility-and-semantics.md).
+1. **A columnar mirror is not uniformly faster than a hot standby.** Measured on 30 M rows:
+   **median 30× faster** on analytical queries (up to 68×), and **median 935× *slower*** on
+   OLTP-shaped ones (up to 3,445×) — indexed point lookups, short high-concurrency queries,
+   `LIMIT 20` ordered fetches. A straight `-ro` takeover doesn't just regress some traffic;
+   at 935× it takes production down. See [docs/11](docs/11-measured-results.md#result-3--oltp-regression-is-far-worse-than-predicted).
 
 2. **Physical WAL does not contain enough information to reconstruct row-level changes on
-   its own.** `xl_heap_delete` carries only a TID — no column values. `xl_heap_update`
-   prefix/suffix-compresses the new tuple *against the old one*. Full-page images suppress
-   the per-tuple payload entirely. Any physical-WAL decoder must therefore maintain its own
-   TID-addressed copy of the heap. See [docs/03-wal-ingestion.md](docs/03-wal-ingestion.md)
-   for the record-by-record evidence.
+   its own.** Confirmed by experiment: against a row **67× wider**, a `DELETE` record stays
+   **54 bytes** and an `UPDATE` record stays **69 bytes** — identical. The row contents are
+   simply not there (`xl_heap_delete` carries only a TID; `xl_heap_update` prefix/suffix-
+   compresses against the old tuple). Any physical-WAL decoder must therefore maintain its
+   own TID-addressed copy of the heap. See
+   [docs/11](docs/11-measured-results.md#result-1--the-wal-claims-in-docs03-are-confirmed-exactly).
 
 Finding (2) looks like bad news and is actually the key that unlocks the design. **On a
 Postgres hot standby, the TID-addressed copy of the heap already exists — it's the standby's
@@ -50,6 +52,13 @@ and no logical decoding slot. Nothing is copied twice over the network.
 
 That is the recommended target. It is *not* the recommended first milestone — see the
 [roadmap](docs/08-roadmap-and-spikes.md) for the staged path and the kill criteria.
+
+**A third finding came out of the benchmarks and changed the storage design.** The
+merge-on-read scheme originally specified in docs/04 — `_lsn` on every row, newest wins,
+resolved at query time — costs **33× even with zero pending deltas**. The tax is the global
+window function, not the backlog, and it cancels the entire analytical speedup. Replacing it
+with Iceberg-v2-style **deletion vectors** brings it to **~1×**. Measured, and now corrected
+in [docs/04](docs/04-storage-and-query-engine.md).
 
 ---
 
@@ -67,6 +76,7 @@ That is the recommended target. It is *not* the recommended first milestone — 
 | 08 | [Roadmap, spikes, kill criteria](docs/08-roadmap-and-spikes.md) | Phased plan with explicit go/no-go gates and a benchmark harness |
 | 09 | [Risks & open questions](docs/09-risks-and-open-questions.md) | Risk register and the things we genuinely do not know yet |
 | 10 | [Scaling economics](docs/10-scaling-economics.md) | **The business case.** Does this actually reduce replica count? Consolidation math, and the three places it breaks |
+| 11 | [Measured results](docs/11-measured-results.md) | **Numbers, not estimates.** 30 M rows, PG 16 vs DuckDB/Parquet. What held, what didn't, and one design that had to be replaced |
 | — | [ADRs](docs/adr/) | Architecture decision records (template + the decisions still open) |
 
 ## The four architectures under consideration
@@ -79,10 +89,10 @@ Summarised here, argued in full in [04](docs/04-storage-and-query-engine.md) and
 | Shape | CNPG standby + sidecar builds Parquet from logical replication | Separate ClickHouse cluster fed from WAL; proxy translates | Standby maintains local column store from its own WAL replay; planner routes | New table access method inside Postgres |
 | Wire protocol | Postgres ✅ | Needs translation ❌ | Postgres ✅ | Postgres ✅ |
 | Load on primary | Logical slot ⚠️ | Logical slot or physical ⚠️ | Ordinary physical stream ✅ | Ordinary physical stream ✅ |
-| Point-lookup perf | Regresses ❌ | Regresses badly ❌ | Unchanged ✅ | Unchanged ✅ |
+| Point-lookup perf | **935× worse (measured)** ❌ | Worse still ❌ | Unchanged ✅ | Unchanged ✅ |
 | Storage cost | 2× | 2× + separate cluster | 2× (row + column, co-located) | ~2× |
 | Build effort | **Low** | Medium | Medium-High | **Very High** |
-| Recommended as | **Phase 1 (ships, proves value)** | Rejected for v1 | **Phase 3 target** | Out of scope |
+| Recommended as | **Phase 1 — separate `app-olap` endpoint only, never `-ro` takeover** | Rejected for v1 | **Phase 3 target** | Out of scope |
 
 ## Non-goals (for now)
 

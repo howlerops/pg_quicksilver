@@ -82,7 +82,7 @@ def main():
     # Tombstones: 1% of base, deleted and pending compaction.
     con.execute(f"""CREATE OR REPLACE VIEW tombstones_v AS
                     SELECT event_id FROM read_parquet('{BASE}')
-                    WHERE event_id %% 100 = 7""")
+                    WHERE event_id % 100 = 7""")
 
     compacted_ms = timed(con, COMPACTED)
     print(f"compacted baseline (no deltas, no tombstones): {compacted_ms:8.1f} ms\n")
