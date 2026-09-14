@@ -8,7 +8,23 @@ consequences that say "stop".
 
 ## Phase 0 — De-risking spikes (≈4–6 weeks, no product code)
 
-Run S0 and S1 first and in parallel; they are cheap and they gate everything else.
+### Status
+
+| Spike | State | Notes |
+|---|---|---|
+| **S0** workload characterisation | ⬜ **not started — gates everything** | Needs `pg_stat_statements` from real clusters. Nothing else should be funded past prototype until this returns. |
+| **S1** CNPG-I capability probe | ⬜ not started | Needs a Kubernetes cluster. |
+| **S2** columnar speedup | ✅ **PASSED** | Median 29.9×. [11](11-measured-results.md) |
+| **S2b** speedup through `pg_duckdb` | 🟥 **NEW — gap in S2's evidence** | S2 measured **standalone DuckDB**, which bypasses the Postgres executor entirely. The product requires a Postgres front-end. Until this is run, the headline 30× is not a product number. |
+| **S3** RLS enforcement | ⬜ blocked on S2b | Requires a real `pg_duckdb` build. |
+| **S4** physical decode on standby | ⬜ not started | The Architecture C linchpin. Deliberately last. |
+
+**S2b is the correction that came out of running S2.** The benchmark answered "is a column
+store faster than Postgres on this data" — decisively yes. It did *not* answer "is
+Postgres-fronted DuckDB faster than Postgres", which is the actual product claim. The gap
+between those two is planner integration, type marshalling across the extension boundary,
+per-backend DuckDB instantiation cost, and fallback behaviour. Any of them could erode the
+ratio. Treat the 30× as an **upper bound** until S2b lands.
 
 ### S0 — Workload characterisation ⭐ **gates the entire project**
 
@@ -70,6 +86,31 @@ mandatory rather than merely preferable.
 **If it fails:** if the gap is compaction tuning, iterate. If DuckDB itself is the limit,
 reconsider the engine (ClickHouse as an embedded/sidecar sink) — but note this reopens the
 wire-protocol problem from [04](04-storage-and-query-engine.md).
+
+### S2b — Does the speedup survive a Postgres front-end? 🟥 **new, blocking**
+
+**Question:** S2 measured standalone DuckDB. Does the ratio hold when the query arrives over
+the Postgres wire protocol, is planned by Postgres, and is executed through `pg_duckdb`?
+
+**Method:** build `pg_duckdb` against PG 16 (this also validates the derived-image strategy
+in [07](07-image-strategy.md)). Re-run the full S2 analytical and OLTP suites unchanged,
+through `psql`, against both Postgres-heap tables and Parquet. Compare to the standalone
+numbers in [11](11-measured-results.md).
+
+**Also capture, because these are the ways it erodes:**
+- per-backend DuckDB instantiation cost (does every new connection pay a startup tax?)
+- type marshalling across the extension boundary, especially `numeric` and `timestamptz`
+- which of the six analytical queries silently fall back to the Postgres executor
+- memory per backend at concurrency — the thing that decides pods-per-cluster sizing
+
+**Threshold:** ≥10× median on the analytical suite — i.e. S2's own threshold, re-tested
+honestly. Erosion from 30× to, say, 20× is expected and fine.
+
+**If it fails:** if fallback is the cause, the per-table opt-in gate from
+[06](06-compatibility-and-semantics.md#3-sql-surface) has to get much stricter. If the
+extension boundary itself is the tax, reconsider the serving topology — possibly DuckDB as a
+sidecar process rather than in-backend. Either way this is cheaper to learn now than in
+phase 1.
 
 ### S3 — Security enforcement
 
