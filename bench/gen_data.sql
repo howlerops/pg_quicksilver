@@ -1,0 +1,35 @@
+-- Generate :rows rows spread over 365 days. Cheap generation: index into
+-- small constant arrays rather than synthesising random text per row.
+INSERT INTO events
+SELECT
+  g                                                   AS event_id,
+  1 + (g % 50)                                        AS tenant_id,
+  1 + (g % 2000000)                                   AS user_id,
+  ('00000000-0000-4000-8000-' || lpad(to_hex(g % 4000000), 12, '0'))::uuid AS session_id,
+  (ARRAY['page_view','click','add_to_cart','purchase','signup','logout','search','share'])[1 + (g % 8)],
+  TIMESTAMPTZ '2025-09-14 00:00:00+00' + ((g % 31536000) * interval '1 second'),
+  round((random() * 500)::numeric, 2)                 AS amount,
+  1 + (g % 5)                                         AS quantity,
+  (ARRAY['USD','EUR','GBP','JPY','CAD'])[1 + (g % 5)],
+  (ARRAY['US','GB','DE','FR','JP','CA','AU','BR','IN','NL'])[1 + (g % 10)],
+  (ARRAY['east','west','north','south','central'])[1 + (g % 5)],
+  (ARRAY['London','Berlin','Paris','Tokyo','Toronto','Sydney','NYC','SF','Austin','Denver'])[1 + (g % 10)],
+  (ARRAY['desktop','mobile','tablet'])[1 + (g % 3)],
+  (ARRAY['macos','windows','linux','ios','android'])[1 + (g % 5)],
+  (ARRAY['chrome','firefox','safari','edge'])[1 + (g % 4)],
+  (ARRAY['google.com','facebook.com','twitter.com','direct','bing.com','reddit.com'])[1 + (g % 6)],
+  'campaign_' || (g % 200)                            AS campaign,
+  (ARRAY['organic','paid','email','social','affiliate'])[1 + (g % 5)],
+  (ARRAY['google','meta','tiktok','linkedin','newsletter'])[1 + (g % 5)],
+  (ARRAY['cpc','cpm','email','social','none'])[1 + (g % 5)],
+  1 + (g % 10000)                                     AS product_id,
+  (ARRAY['electronics','apparel','home','sports','books','toys'])[1 + (g % 6)],
+  'sub_' || (g % 60)                                  AS subcategory,
+  'SKU-' || lpad((g % 10000)::text, 6, '0')           AS sku,
+  round((10 + (g % 990))::numeric, 2)                 AS price,
+  round(((g % 30))::numeric, 2)                       AS discount,
+  round(((g % 17))::numeric, 2)                       AS tax,
+  (g % 97 = 0)                                        AS is_test,
+  (ARRAY['ok','pending','failed','refunded'])[1 + (g % 4)],
+  'note for event ' || g || ' padding padding padding padding' AS notes
+FROM generate_series(:start, :stop) g;

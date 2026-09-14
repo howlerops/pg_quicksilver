@@ -1,0 +1,35 @@
+-- Realistic SaaS "events" table: 30 columns, mixed types, ~300 B/row.
+-- Deliberately wide, because column-projection benefit is the thing under test.
+DROP TABLE IF EXISTS events;
+CREATE TABLE events (
+  event_id     bigint       NOT NULL,
+  tenant_id    int          NOT NULL,
+  user_id      bigint       NOT NULL,
+  session_id   uuid         NOT NULL,
+  event_type   text         NOT NULL,
+  ts           timestamptz  NOT NULL,
+  amount       numeric(12,2),
+  quantity     int,
+  currency     text,
+  country      text,
+  region       text,
+  city         text,
+  device       text,
+  os           text,
+  browser      text,
+  referrer     text,
+  campaign     text,
+  channel      text,
+  utm_source   text,
+  utm_medium   text,
+  product_id   int,
+  category     text,
+  subcategory  text,
+  sku          text,
+  price        numeric(10,2),
+  discount     numeric(10,2),
+  tax          numeric(10,2),
+  is_test      boolean,
+  status       text,
+  notes        text
+);
