@@ -12,6 +12,10 @@ The pitch in one line: *your read replicas are already burning a full copy of yo
 answer `SELECT`s with a row-store and a B-tree. Spend that same copy on a column-store and
 get 10–100× on the queries that actually hurt.*
 
+The pitch that matters to whoever signs the invoice: **replace 8 read replicas with 3**, and
+have those 3 still count toward HA. See [docs/10](docs/10-scaling-economics.md) for the
+consolidation math and the three cases where it doesn't hold.
+
 ---
 
 ## Read this first: the headline finding
@@ -62,6 +66,7 @@ That is the recommended target. It is *not* the recommended first milestone — 
 | 07 | [Image strategy](docs/07-image-strategy.md) | Building our own Postgres image on the CNPG public base |
 | 08 | [Roadmap, spikes, kill criteria](docs/08-roadmap-and-spikes.md) | Phased plan with explicit go/no-go gates and a benchmark harness |
 | 09 | [Risks & open questions](docs/09-risks-and-open-questions.md) | Risk register and the things we genuinely do not know yet |
+| 10 | [Scaling economics](docs/10-scaling-economics.md) | **The business case.** Does this actually reduce replica count? Consolidation math, and the three places it breaks |
 | — | [ADRs](docs/adr/) | Architecture decision records (template + the decisions still open) |
 
 ## The four architectures under consideration
