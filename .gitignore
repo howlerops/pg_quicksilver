@@ -1,0 +1,17 @@
+# build output
+/bin/
+/dist/
+*.o
+*.so
+
+# local dev
+.env
+.envrc
+/tmp/
+/bench/results/
+
+# editors
+.vscode/
+.idea/
+*.swp
+.DS_Store
