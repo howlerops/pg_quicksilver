@@ -1,0 +1,38 @@
+[
+  {
+    "query": "A1_daily_revenue_30d",
+    "pg_bytes": 9099329536,
+    "duckdb_bytes": 146431808,
+    "ratio": 62.14038917009069
+  },
+  {
+    "query": "A2_top_campaigns",
+    "pg_bytes": 9098551296,
+    "duckdb_bytes": 64374714,
+    "ratio": 141.33734708320412
+  },
+  {
+    "query": "A3_country_device_matrix",
+    "pg_bytes": 9098526720,
+    "duckdb_bytes": 146608627,
+    "ratio": 62.05996813543585
+  },
+  {
+    "query": "A4_full_table_aggregate",
+    "pg_bytes": 9098395648,
+    "duckdb_bytes": 64328317,
+    "ratio": 141.43686749958033
+  },
+  {
+    "query": "A5_distinct_users_by_type",
+    "pg_bytes": 9098420224,
+    "duckdb_bytes": 113803576,
+    "ratio": 79.94845631212854
+  },
+  {
+    "query": "A6_cohort_funnel",
+    "pg_bytes": 9098526720,
+    "duckdb_bytes": 146688379,
+    "ratio": 62.02622717645547
+  }
+]

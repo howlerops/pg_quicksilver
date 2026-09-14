@@ -1,0 +1,34 @@
+================================================================
+WAL record evidence — PostgreSQL 16.13
+Narrow row ~30 B payload | Wide row ~2000 B payload (67x wider)
+Identical ops on both. Record order per case: INSERT(narrow),
+INSERT(wide), UPDATE(narrow), UPDATE(wide), DELETE(narrow), DELETE(wide)
+================================================================
+
+### CASE 1 — wal_level=replica, REPLICA IDENTITY DEFAULT   [the physical-WAL case]
+    total WAL for the 6 statements: 3008 bytes
+    record=INSERT+INIT  size=92B
+    record=INSERT  size=2065B
+    record=HOT_UPDATE  size=69B
+    record=HOT_UPDATE  size=69B
+    record=DELETE  size=54B
+    record=DELETE  size=54B
+
+### CASE 2 — wal_level=logical, REPLICA IDENTITY DEFAULT   [standard logical replication]
+    total WAL for the 6 statements: 5112 bytes
+    record=INSERT+INIT  size=92B
+    record=INSERT  size=2065B
+    record=HOT_UPDATE  size=103B
+    record=HOT_UPDATE  size=2076B
+    record=DELETE  size=64B
+    record=DELETE  size=64B
+
+### CASE 3 — wal_level=logical, REPLICA IDENTITY FULL      [required for tables with no PK]
+    total WAL for the 6 statements: 9256 bytes
+    record=INSERT+INIT  size=92B
+    record=INSERT  size=2065B
+    record=HOT_UPDATE  size=146B
+    record=HOT_UPDATE  size=4095B
+    record=DELETE  size=97B
+    record=DELETE  size=2073B
+

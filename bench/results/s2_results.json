@@ -1,0 +1,200 @@
+[
+  {
+    "suite": "analytical",
+    "query": "A1_daily_revenue_30d",
+    "pg": {
+      "min_ms": 2402.797,
+      "p50_ms": 2457.823,
+      "p95_ms": 2842.69,
+      "runs": 7
+    },
+    "duckdb": {
+      "min_ms": 398.054,
+      "p50_ms": 422.56,
+      "p95_ms": 436.77,
+      "runs": 7
+    },
+    "speedup_p50": 5.816506531616811,
+    "pg_bytes_read": 45495713792
+  },
+  {
+    "suite": "analytical",
+    "query": "A2_top_campaigns",
+    "pg": {
+      "min_ms": 4954.742,
+      "p50_ms": 5001.962,
+      "p95_ms": 5147.31,
+      "runs": 7
+    },
+    "duckdb": {
+      "min_ms": 113.116,
+      "p50_ms": 118.273,
+      "p95_ms": 133.68,
+      "runs": 7
+    },
+    "speedup_p50": 42.2916642006206,
+    "pg_bytes_read": 63689424896
+  },
+  {
+    "suite": "analytical",
+    "query": "A3_country_device_matrix",
+    "pg": {
+      "min_ms": 3498.137,
+      "p50_ms": 3509.755,
+      "p95_ms": 3719.664,
+      "runs": 7
+    },
+    "duckdb": {
+      "min_ms": 156.726,
+      "p50_ms": 163.816,
+      "p95_ms": 167.539,
+      "runs": 7
+    },
+    "speedup_p50": 21.42498290765249,
+    "pg_bytes_read": 63689441280
+  },
+  {
+    "suite": "analytical",
+    "query": "A4_full_table_aggregate",
+    "pg": {
+      "min_ms": 3261.525,
+      "p50_ms": 3295.457,
+      "p95_ms": 3313.282,
+      "runs": 7
+    },
+    "duckdb": {
+      "min_ms": 84.926,
+      "p50_ms": 85.917,
+      "p95_ms": 93.096,
+      "runs": 7
+    },
+    "speedup_p50": 38.35628571761118,
+    "pg_bytes_read": 36393582592
+  },
+  {
+    "suite": "analytical",
+    "query": "A5_distinct_users_by_type",
+    "pg": {
+      "min_ms": 47209.487,
+      "p50_ms": 47887.661,
+      "p95_ms": 49808.206,
+      "runs": 7
+    },
+    "duckdb": {
+      "min_ms": 647.718,
+      "p50_ms": 700.79,
+      "p95_ms": 710.1,
+      "runs": 7
+    },
+    "speedup_p50": 68.33382468357141,
+    "pg_bytes_read": 36393582592
+  },
+  {
+    "suite": "analytical",
+    "query": "A6_cohort_funnel",
+    "pg": {
+      "min_ms": 3319.277,
+      "p50_ms": 3398.089,
+      "p95_ms": 3485.642,
+      "runs": 7
+    },
+    "duckdb": {
+      "min_ms": 359.388,
+      "p50_ms": 370.748,
+      "p95_ms": 411.16,
+      "runs": 7
+    },
+    "speedup_p50": 9.165495161133709,
+    "pg_bytes_read": 63689441280
+  },
+  {
+    "suite": "oltp",
+    "query": "O1_point_lookup_pk",
+    "pg": {
+      "min_ms": 0.08,
+      "p50_ms": 0.088,
+      "p95_ms": 0.223,
+      "runs": 50
+    },
+    "duckdb": {
+      "min_ms": 51.502,
+      "p50_ms": 52.99,
+      "p95_ms": 63.706,
+      "runs": 50
+    },
+    "speedup_p50": 0.0016606906963578033,
+    "pg_bytes_read": 40960
+  },
+  {
+    "suite": "oltp",
+    "query": "O2_user_recent_events",
+    "pg": {
+      "min_ms": 0.109,
+      "p50_ms": 0.115,
+      "p95_ms": 0.275,
+      "runs": 50
+    },
+    "duckdb": {
+      "min_ms": 381.917,
+      "p50_ms": 396.153,
+      "p95_ms": 418.104,
+      "runs": 50
+    },
+    "speedup_p50": 0.00029029188217683573,
+    "pg_bytes_read": 311296
+  },
+  {
+    "suite": "oltp",
+    "query": "O3_session_lookup",
+    "pg": {
+      "min_ms": 0.091,
+      "p50_ms": 0.105,
+      "p95_ms": 0.22,
+      "runs": 50
+    },
+    "duckdb": {
+      "min_ms": 267.765,
+      "p50_ms": 277.402,
+      "p95_ms": 308.407,
+      "runs": 50
+    },
+    "speedup_p50": 0.00037851205110273176,
+    "pg_bytes_read": 90112
+  },
+  {
+    "suite": "oltp",
+    "query": "O4_tenant_recent_window",
+    "pg": {
+      "min_ms": 0.286,
+      "p50_ms": 0.345,
+      "p95_ms": 0.558,
+      "runs": 50
+    },
+    "duckdb": {
+      "min_ms": 58.82,
+      "p50_ms": 62.65,
+      "p95_ms": 78.044,
+      "runs": 50
+    },
+    "speedup_p50": 0.0055067837190742215,
+    "pg_bytes_read": 1720320
+  },
+  {
+    "suite": "oltp",
+    "query": "O5_user_aggregate_small",
+    "pg": {
+      "min_ms": 0.091,
+      "p50_ms": 0.133,
+      "p95_ms": 0.292,
+      "runs": 50
+    },
+    "duckdb": {
+      "min_ms": 121.134,
+      "p50_ms": 124.317,
+      "p95_ms": 132.015,
+      "runs": 50
+    },
+    "speedup_p50": 0.0010698456365581539,
+    "pg_bytes_read": 311296
+  }
+]

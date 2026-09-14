@@ -1,0 +1,10 @@
+# scripts/concurrency.py --levels 1,2,4,8,16 --duration 10
+# 4 vCPU box. Both engines saturate at ~4 clients; beyond that both queue.
+ clients     PG qps   Duck qps     ratio   PG p95ms  Duck p95ms
+---------------------------------------------------------------
+       1        0.3        7.4     26.1x      3779ms        142ms
+       2        0.4        8.0     21.1x      5128ms        290ms
+       4        0.4        8.2     23.4x     15492ms        703ms
+       8        0.4        8.3     19.6x     18780ms       1416ms
+      16        0.4        8.3     20.1x     38793ms       2450ms
+# C = 20.1/26.1 = 0.77  (docs/10 assumed a pessimistic 0.5)

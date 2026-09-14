@@ -1,0 +1,14 @@
+# scripts/merge_strategies.py --deltas 0,4,16,64 --rows-per-delta 50000
+# Tombstones = 1% of base. Query = country x device aggregate over ts >= 2026-05-01.
+compacted baseline (no merge machinery at all): 136.9 ms
+
+ deltas    S1 global_dedup    S2 anti_join   S3 deletion_vec
+------------------------------------------------------------
+      0      4544ms  33.2x     494ms   3.6x      123ms   0.9x
+      4      4594ms  33.6x     567ms   4.1x      116ms   0.8x
+     16      4925ms  36.0x     761ms   5.6x      127ms   0.9x
+     64      5415ms  39.5x    1175ms   8.6x      150ms   1.1x
+
+# S1 is docs/04 as originally written. The 33x tax is present at ZERO deltas:
+# it is the global row_number() OVER (PARTITION BY event_id), not the backlog.
+# S3 (Iceberg-v2-style deletion vectors) moves the cost to compaction time.

@@ -3,12 +3,13 @@
 /dist/
 *.o
 *.so
+__pycache__/
+*.pyc
 
 # local dev
 .env
 .envrc
 /tmp/
-/bench/results/
 
 # editors
 .vscode/
