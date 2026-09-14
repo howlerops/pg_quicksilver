@@ -264,6 +264,82 @@ around.
 
 ---
 
+## Result 7 — S3: RLS holds, but ordinary roles cannot reach the mirror at all
+
+Two independent questions, and they came out opposite ways.
+
+### The good half: access control IS enforced under DuckDB execution
+
+With `duckdb.postgres_role` granted, a restricted role querying an RLS-protected table
+through `pg_duckdb`'s executor saw **1,000 rows, tenants 1..1** — exactly its policy's
+subset — where a superuser sees 3,000 rows across tenants 1..3. Column-level grants were
+enforced too: `SELECT secret` was denied.
+
+> **RLS and column privileges survive DuckDB execution.** The hard gate in docs/06 §4 —
+> "refuse to mirror any table with RLS enabled" — **can be lifted** for the
+> Postgres-heap path.
+
+A methodological note worth keeping: the *first* run of this spike reported 6 of 6 passing,
+and every pass was worthless. `pg_duckdb` is deny-by-default for non-superusers
+(`duckdb.postgres_role` is empty out of the box), so every test failed closed for the wrong
+reason. Green meant untested. The spike script now runs that as an explicit Phase 1 so the
+trap is visible rather than repeatable.
+
+### The blocking half: the mirror is unreachable without a dangerous grant
+
+| Attempt | Result |
+|---|---|
+| Ordinary role queries the mirror **view** (owned by superuser) | **BLOCKED** |
+| Ordinary role calls `read_parquet()` directly | **BLOCKED** |
+| ...after granting `pg_read_server_files` + `pg_write_server_files` | ALLOWED |
+
+*"Permission Error: File system LocalFileSystem has been disabled by configuration"*
+
+**View ownership does not help.** Unlike table privileges, the filesystem check runs against
+the *current* user at plan time, so the usual "wrap it in a view owned by a privileged role"
+trick fails. Root cause, from `pg_duckdb`'s `src/pg/permissions.cpp`:
+
+```c
+bool AllowRawFileAccess() {
+    return is_member_of_role(GetUserId(), ROLE_PG_WRITE_SERVER_FILES) &&
+           is_member_of_role(GetUserId(), ROLE_PG_READ_SERVER_FILES);
+}
+```
+
+So the only supported way to let an application role read the Parquet mirror is to grant it
+both server-file roles. **Measured cost of that grant**: the same role could then
+`COPY leak FROM '/etc/passwd'` (25 lines read) and read `pg_hba.conf` (126 lines). That is
+arbitrary server-file read *and write* handed to an application role — categorically
+unacceptable, and strictly worse than the data the mirror holds.
+
+### The workarounds, both unsatisfying
+
+| | Works? | Cost |
+|---|---|---|
+| **W1** grant both server-file roles | ✅ | Arbitrary server file read/write. **Rejected.** |
+| **W2** `SECURITY DEFINER` wrapper function | ✅ | Requires `duckdb.unsafe_allow_execution_inside_functions` (upstream's own name for it), and serves only **fixed** queries — arbitrary application SQL, i.e. goal G1, is impossible this way |
+| **W3** patch `pg_duckdb` to allow reads confined to a configured directory | untested | An upstream contribution. **The right long-term fix**, and a plausible one — a `duckdb.allowed_directories` GUC is a small, defensible change. |
+
+### What this does to the architecture
+
+This is the second measured finding pointing the same direction, and together they close off
+Architecture A's serving path:
+
+- **Result 6** showed `pg_duckdb` over the *Postgres heap* is 1.27× **slower** than plain
+  Postgres — so the safe path is not fast.
+- **Result 7** shows the *Parquet* path is fast but not reachable by ordinary roles without
+  an unacceptable privilege grant — so the fast path is not safe.
+
+**Quicksilver therefore cannot simply rent `pg_duckdb`'s `read_parquet` as its serving
+layer.** It needs to own the columnar access path — as a table access method, a foreign data
+wrapper, or an upstream `pg_duckdb` patch (W3). That is a real scope increase over what
+docs/04 assumed, and it should be costed before phase 1 rather than discovered inside it.
+
+W3 is the cheapest credible route and should be scoped first: if upstream accepts a
+directory-confined file-access GUC, Architecture A's serving path reopens with no fork.
+
+---
+
 ## What this changes
 
 | Doc | Change |
@@ -272,7 +348,9 @@ around.
 | **06** | OLTP regression corrected from "3–100×" to a measured 182–3,445×. |
 | **10** | I/O asymmetry corrected from ~500× to a measured 62–141×. `C` updated from an assumed 0.5 to a measured 0.77. Consolidation conclusion unchanged. |
 | **08** | S2 **PASSED** (median 29.9×). S2b **PASSED** (median 22.2× in-product). OQ-11 answered, OQ-14 partly answered, OQ-13 improved but not closed. |
-| **04** | Mirror must be exposed via a **generated view** (`r['col']::type AS col`) — persistent DuckDB-backed tables need MotherDuck, and `read_parquet` does not accept plain column references. Now a named plugin responsibility. |
+| **04** | Mirror must be exposed via a **generated view** (`r['col']::type AS col`) — persistent DuckDB-backed tables need MotherDuck, and `read_parquet` does not accept plain column references. Now a named plugin responsibility. **And the view is not sufficient**: Result 7 shows ordinary roles still cannot read it. The serving layer is an open design problem. |
+| **06** | The RLS hard gate in §4 **can be lifted** — enforcement is verified. Replaced by a different constraint: the mirror is unreachable by ordinary roles at all. |
+| **09** | R4 (RLS bypass) **closed — did not occur**. New blocking risk: no safe serving path for the Parquet mirror with stock `pg_duckdb`. |
 | **README** | Headline numbers are now measured. |
 
 ## Still unmeasured
@@ -282,8 +360,8 @@ Docker is unavailable on this box, so nothing involving Kubernetes ran.
 - **S0 (workload characterisation)** — needs real `-ro` traffic. Still the project's gating
   spike, and Result 3 makes it more load-bearing, not less.
 - **S1 (CNPG-I capability probe)** — needs a cluster.
-- **S3 (RLS enforcement through pg_duckdb)** — now **unblocked**: pg_duckdb 1.1.1 is built and
-  working here. This is the next thing to run.
+- **W3** — whether `pg_duckdb` upstream would accept a directory-confined file-access GUC.
+  This is now the cheapest route to a viable Architecture A serving path.
 - **S4 (physical WAL decode on a standby)** — needs a C background worker against a live
   standby.
 - Anything involving **joins across mirrored tables**, which is where a real workload would

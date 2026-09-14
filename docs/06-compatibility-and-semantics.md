@@ -110,17 +110,22 @@ production data** in a new place with a new query engine.
 | Control | Requirement |
 |---|---|
 | Roles and grants | Must mirror the source. A user who cannot `SELECT` a column on the primary must not be able to on the mirror. |
-| Row-level security | **The hard one.** RLS policies are enforced by the Postgres executor. If DuckDB executes the scan, **RLS may be bypassed entirely.** Until proven otherwise, assume it is. |
-| Column-level grants | Same exposure as RLS. |
+| Row-level security | ✅ **Verified enforced** under DuckDB execution — a restricted role saw only its policy's rows ([11](11-measured-results.md#result-7--s3-rls-holds-but-ordinary-roles-cannot-reach-the-mirror-at-all)). |
+| Column-level grants | ✅ **Verified enforced** — a denied column was refused under DuckDB execution. |
 | `pg_hba` / TLS | Mirror pods need equivalent connection policy to instance pods. |
 | Encryption at rest | Mirror PVCs and any object-store bucket need the same posture as the cluster's. |
 | Audit | Queries against the mirror must be auditable alongside the primary's. |
 
-**Hard gate:** until RLS and column-privilege enforcement over `pg_duckdb`-executed scans is
-*verified by test*, the plugin must **refuse to mirror any table with RLS enabled or
-non-trivial column grants**, and say so clearly. This belongs in
-`ValidateClusterCreate`. Spike **S3** exists to determine whether the refusal can later be
-lifted; assume it cannot until measured.
+**The hard gate is lifted.** S3 verified that RLS and column privileges *are* enforced when
+`pg_duckdb` executes the scan, so the plugin need not refuse RLS tables.
+
+**A different blocker replaced it.** Ordinary roles cannot read the Parquet mirror at all —
+not even through a view owned by a privileged role — because `pg_duckdb` gates local file
+access on membership of `pg_read_server_files` *and* `pg_write_server_files`, and granting
+those hands the application role arbitrary server-file read/write (measured: it could
+`COPY FROM '/etc/passwd'`). See
+[11 Result 7](11-measured-results.md#result-7--s3-rls-holds-but-ordinary-roles-cannot-reach-the-mirror-at-all).
+Quicksilver needs its own columnar access path, or an upstream `pg_duckdb` change.
 
 ---
 
