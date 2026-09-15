@@ -15,17 +15,19 @@ consequences that say "stop".
 | **S0** workload characterisation | ⬜ **not started — gates everything** | Needs `pg_stat_statements` from real clusters. Nothing else should be funded past prototype until this returns. |
 | **S1** CNPG-I capability probe | ⬜ not started | Needs a Kubernetes cluster. |
 | **S2** columnar speedup | ✅ **PASSED** | Median 29.9×. [11](11-measured-results.md) |
-| **S2b** speedup through `pg_duckdb` | 🟥 **NEW — gap in S2's evidence** | S2 measured **standalone DuckDB**, which bypasses the Postgres executor entirely. The product requires a Postgres front-end. Until this is run, the headline 30× is not a product number. |
+| **S2b** speedup through `pg_duckdb` | ✅ **PASSED** | Median **22.2×** through the full Postgres stack; extension-boundary tax only 1.20×. 22.2× is the number to quote, not 29.9×. [11 Result 6](11-measured-results.md#result-6--s2b-the-speedup-survives-a-postgres-front-end-222-but-only-because-of-columnar-storage) |
 | **S3** RLS enforcement | ✅ **PASSED** (with a catch) | RLS and column grants **are** enforced. But ordinary roles cannot reach the Parquet mirror without a dangerous grant — see [11 Result 7](11-measured-results.md#result-7--s3-rls-holds-but-ordinary-roles-cannot-reach-the-mirror-at-all). |
 | **S4** physical decode on standby | ⬜ not started | The Architecture C linchpin. Deliberately last. |
 | **S5** serving path for the mirror | ✅ **RESOLVED** | A 58-line `duckdb.allowed_directories` patch confines unprivileged backends to the mirror directory. Verified: mirror readable, everything else denied, not widenable, no perf cost. [docs/12](12-s5-serving-path.md) |
 
-**S2b is the correction that came out of running S2.** The benchmark answered "is a column
-store faster than Postgres on this data" — decisively yes. It did *not* answer "is
-Postgres-fronted DuckDB faster than Postgres", which is the actual product claim. The gap
-between those two is planner integration, type marshalling across the extension boundary,
-per-backend DuckDB instantiation cost, and fallback behaviour. Any of them could erode the
-ratio. Treat the 30× as an **upper bound** until S2b lands.
+**S2b was the correction that came out of running S2**, and it passed: 22.2× through the
+full Postgres stack, with only a 1.20× extension-boundary tax and no query falling back to
+the Postgres executor. Its control arm mattered more than its headline — `pg_duckdb` over
+the *Postgres heap* is 1.27× **slower** than plain Postgres, so the win is columnar
+**storage**, not the vectorised **engine**.
+
+**Remaining gates are S0 and S1**, both blocked on things no benchmark can supply: real
+`-ro` traffic, and a Kubernetes cluster.
 
 ### S0 — Workload characterisation ⭐ **gates the entire project**
 
@@ -88,7 +90,7 @@ mandatory rather than merely preferable.
 reconsider the engine (ClickHouse as an embedded/sidecar sink) — but note this reopens the
 wire-protocol problem from [04](04-storage-and-query-engine.md).
 
-### S2b — Does the speedup survive a Postgres front-end? 🟥 **new, blocking**
+### S2b — Does the speedup survive a Postgres front-end? ✅ **PASSED**
 
 **Question:** S2 measured standalone DuckDB. Does the ratio hold when the query arrives over
 the Postgres wire protocol, is planned by Postgres, and is executed through `pg_duckdb`?
@@ -107,13 +109,16 @@ numbers in [11](11-measured-results.md).
 **Threshold:** ≥10× median on the analytical suite — i.e. S2's own threshold, re-tested
 honestly. Erosion from 30× to, say, 20× is expected and fine.
 
+**Result: PASSED.** Median 22.2×, extension tax 1.20×, no fallbacks. The erosion landed
+almost exactly where predicted.
+
 **If it fails:** if fallback is the cause, the per-table opt-in gate from
 [06](06-compatibility-and-semantics.md#3-sql-surface) has to get much stricter. If the
 extension boundary itself is the tax, reconsider the serving topology — possibly DuckDB as a
 sidecar process rather than in-backend. Either way this is cheaper to learn now than in
 phase 1.
 
-### S3 — Security enforcement
+### S3 — Security enforcement ✅ **PASSED** (RLS enforced; exposed the S5 blocker)
 
 **Question:** are RLS policies and column-level grants enforced when the scan executes in
 DuckDB rather than the Postgres executor?
