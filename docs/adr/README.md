@@ -21,6 +21,12 @@ Do not write one for reversible implementation details.
 4. To reverse a decision, write a **new** ADR that supersedes the old one. Never edit an
    accepted ADR's decision in place; mark it `Superseded by NNNN`.
 
+## Accepted
+
+| ADR | Decision |
+|---|---|
+| [0008](0008-implementation-language.md) | Go for the CNPG-I plugin, Rust for the data plane — **and replace wal2json with `pgoutput` binary first, which is worth more (2.3x) than the language change** |
+
 ## Index
 
 Decisions taken during the feasibility study are currently recorded in
@@ -36,3 +42,4 @@ They should be promoted to individual ADRs as each is first challenged:
 | 0005 | Derived Postgres image, never a fork | [07](../07-image-strategy.md) |
 | 0006 | `serviceMode` defaults to `off` | [05](../05-cnpg-integration.md) |
 | 0007 | Mirroring is opt-in per table | [06](../06-compatibility-and-semantics.md) |
+| ~~0008~~ | *Written — see Accepted above* | — |

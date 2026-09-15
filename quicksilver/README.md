@@ -1,8 +1,18 @@
 # quicksilver — Phase 1 walking skeleton
 
 A working vertical slice of the ingest → mirror → verify pipeline, run against a
-live PostgreSQL. **Prototype**: the production implementation belongs in Go (CNPG-I
-is Go) or Rust. This exists to pin the interface and prove the pipeline converges.
+live PostgreSQL.
+
+**Status: reference implementation, not a shipped artifact.** Profiled at ~42,800
+rows/s single-threaded, 74% of it Python-side work. The production data plane goes to
+Rust and the CNPG-I plugin to Go — see [ADR-0008](../docs/adr/0008-implementation-language.md).
+This code stays as the semantic oracle the port must match: it already encodes the
+commit-boundary, deletion-vector and DDL-barrier semantics, and `run_slice`/`run_phase1`
+become differential tests.
+
+**Before any rewrite**, replace wal2json with `pgoutput`'s binary protocol: JSON parsing
+is 56% of the pipeline, and removing it takes *this* Python code to ~96,900 rows/s — a
+2.3× gain, larger and cheaper than changing language.
 
 ```
 python3 -m quicksilver.run_slice --seconds 20
