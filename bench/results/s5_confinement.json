@@ -1,0 +1,93 @@
+[
+  {
+    "expect": "allow",
+    "case": "the mirror view",
+    "got": "ALLOWED",
+    "detail": "[(30000000,)]",
+    "pass": true
+  },
+  {
+    "expect": "allow",
+    "case": "aggregate over the mirror",
+    "got": "ALLOWED",
+    "detail": "[('7498726313.13',)]",
+    "pass": true
+  },
+  {
+    "expect": "allow",
+    "case": "repeat query (lock is once-only)",
+    "got": "ALLOWED",
+    "detail": "[(30000000,)]",
+    "pass": true
+  },
+  {
+    "expect": "allow",
+    "case": "direct read_parquet in allowed dir",
+    "got": "ALLOWED",
+    "detail": "[(30000000,)]",
+    "pass": true
+  },
+  {
+    "expect": "deny",
+    "case": "/etc/passwd",
+    "got": "DENIED",
+    "detail": "(PGDuckDB/CreatePlan) Prepared query returned an error: Perm",
+    "pass": true
+  },
+  {
+    "expect": "deny",
+    "case": "pg_hba.conf",
+    "got": "DENIED",
+    "detail": "(PGDuckDB/CreatePlan) Prepared query returned an error: Perm",
+    "pass": true
+  },
+  {
+    "expect": "deny",
+    "case": "PG_VERSION",
+    "got": "DENIED",
+    "detail": "(PGDuckDB/CreatePlan) Prepared query returned an error: Perm",
+    "pass": true
+  },
+  {
+    "expect": "deny",
+    "case": "path traversal ../pgdata",
+    "got": "DENIED",
+    "detail": "(PGDuckDB/CreatePlan) Prepared query returned an error: Perm",
+    "pass": true
+  },
+  {
+    "expect": "deny",
+    "case": "absolute path outside dir",
+    "got": "DENIED",
+    "detail": "(PGDuckDB/CreatePlan) Prepared query returned an error: Perm",
+    "pass": true
+  },
+  {
+    "expect": "deny",
+    "case": "http exfiltration",
+    "got": "DENIED",
+    "detail": "(PGDuckDB/CreatePlan) Prepared query returned an error: Perm",
+    "pass": true
+  },
+  {
+    "expect": "deny",
+    "case": "widen: duckdb.disabled_filesystems",
+    "got": "DENIED",
+    "detail": "permission denied to set parameter \"duckdb.disabled_filesyst",
+    "pass": true
+  },
+  {
+    "expect": "deny",
+    "case": "widen: duckdb.allowed_directories",
+    "got": "DENIED",
+    "detail": "parameter \"duckdb.allowed_directories\" cannot be changed wit",
+    "pass": true
+  },
+  {
+    "expect": "deny",
+    "case": "widen: duckdb.enable_external_access",
+    "got": "DENIED",
+    "detail": "permission denied to set parameter \"duckdb.enable_external_a",
+    "pass": true
+  }
+]

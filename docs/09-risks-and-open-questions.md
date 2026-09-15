@@ -77,6 +77,7 @@ Things we genuinely do not know and must resolve. Each names who resolves it and
   catalog-in-Postgres is appealing but young. → phase 1 prototype.
 - **OQ-13 — Concurrency model.** How many concurrent DuckDB queries can one node sustain
   before memory or thread contention dominates? Sets pods-per-cluster sizing. → Spike S2.
+- **OQ-16 — DuckDB spill files.** DuckDB auto-appends its temp directory to the confinement allowlist, so a confined role can read spill files. Are they per-backend, 0600, and removed on completion? If not, that is a cross-tenant disclosure path and the mirror and temp directories need separate treatment. → before shipping the S5 patch.
 - **OQ-14 — `numeric` mapping.** DECIMAL128 (loses range) or DOUBLE (loses exactness) or a
   fallback path? There may be no good answer, in which case wide-`numeric` tables are refused.
   → Spike S2, and it is a correctness question, not a performance one.

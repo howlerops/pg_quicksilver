@@ -18,7 +18,7 @@ consequences that say "stop".
 | **S2b** speedup through `pg_duckdb` | 🟥 **NEW — gap in S2's evidence** | S2 measured **standalone DuckDB**, which bypasses the Postgres executor entirely. The product requires a Postgres front-end. Until this is run, the headline 30× is not a product number. |
 | **S3** RLS enforcement | ✅ **PASSED** (with a catch) | RLS and column grants **are** enforced. But ordinary roles cannot reach the Parquet mirror without a dangerous grant — see [11 Result 7](11-measured-results.md#result-7--s3-rls-holds-but-ordinary-roles-cannot-reach-the-mirror-at-all). |
 | **S4** physical decode on standby | ⬜ not started | The Architecture C linchpin. Deliberately last. |
-| **S5** serving path for the mirror | 🟥 **NEW — blocking** | Result 7 closed off `read_parquet` for ordinary roles. Options: upstream a directory-confined file-access GUC (cheapest), a TAM, or an FDW. Must be scoped before phase 1. |
+| **S5** serving path for the mirror | ✅ **RESOLVED** | A 58-line `duckdb.allowed_directories` patch confines unprivileged backends to the mirror directory. Verified: mirror readable, everything else denied, not widenable, no perf cost. [docs/12](12-s5-serving-path.md) |
 
 **S2b is the correction that came out of running S2.** The benchmark answered "is a column
 store faster than Postgres on this data" — decisively yes. It did *not* answer "is
@@ -245,7 +245,7 @@ Rules, because each has a corresponding way to accidentally cheat:
 | **S1(c)** | WAL tee conflicts with backup plugin | Redesign Path 1 around the object store |
 | **S2** | <10× on analytical with live deltas | ✅ **PASSED** — median 29.9×, merge overhead ~1× with deletion vectors |
 | **S3** | RLS bypassed and undetectable | ✅ **PASSED** — RLS and column grants enforced; the docs/06 refusal is lifted |
-| **S5** | No safe serving path exists | Architecture A cannot ship; Quicksilver must own the columnar access path |
+| **S5** | No safe serving path exists | ✅ **RESOLVED** by a 58-line patch — TAM/FDW no longer on the v1 critical path |
 | **S4** | Physical decode unreliable on standby | Architecture C ingest dropped; G5 dropped from the pitch |
 
 The project is worth doing if S0 and S2 pass. It is *differentiated* if S4 also passes.

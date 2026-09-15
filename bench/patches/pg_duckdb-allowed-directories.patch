@@ -1,0 +1,134 @@
+diff --git a/include/pgduckdb/pgduckdb_duckdb.hpp b/include/pgduckdb/pgduckdb_duckdb.hpp
+index 74318fa..13c6912 100644
+--- a/include/pgduckdb/pgduckdb_duckdb.hpp
++++ b/include/pgduckdb/pgduckdb_duckdb.hpp
+@@ -56,7 +56,7 @@ public:
+ private:
+ 	DuckDBManager()
+ 	    : extensions_table_current_seq(0), database(nullptr), connection(nullptr), default_dbname("<!UNSET!>"),
+-	      secrets_valid(false) {
++	      secrets_valid(false), filesystem_confined(false) {
+ 	}
+ 
+ 	DuckDBManager(const DuckDBManager &) = delete;
+@@ -101,6 +101,8 @@ private:
+ 	duckdb::unique_ptr<duckdb::Connection> connection;
+ 	std::string default_dbname;
+ 	bool secrets_valid;
++	/* filesystem confinement is applied once: it locks the DuckDB config */
++	bool filesystem_confined;
+ };
+ 
+ } // namespace pgduckdb
+diff --git a/include/pgduckdb/pgduckdb_guc.hpp b/include/pgduckdb/pgduckdb_guc.hpp
+index eecbba9..a03a3c4 100644
+--- a/include/pgduckdb/pgduckdb_guc.hpp
++++ b/include/pgduckdb/pgduckdb_guc.hpp
+@@ -12,6 +12,7 @@ extern bool duckdb_log_pg_explain;
+ extern int duckdb_maximum_threads;
+ extern int duckdb_maximum_memory;
+ extern char *duckdb_disabled_filesystems;
++extern char *duckdb_allowed_directories;
+ extern bool duckdb_enable_external_access;
+ extern bool duckdb_allow_community_extensions;
+ extern bool duckdb_allow_unsigned_extensions;
+diff --git a/src/pgduckdb_duckdb.cpp b/src/pgduckdb_duckdb.cpp
+index 68f07fd..fd908e7 100644
+--- a/src/pgduckdb_duckdb.cpp
++++ b/src/pgduckdb_duckdb.cpp
+@@ -278,9 +278,19 @@ DuckDBManager::InstallExtensions(duckdb::ClientContext &context) {
+ 	}
+ }
+ 
++/*
++ * When duckdb.allowed_directories is configured, an unprivileged user keeps
++ * LocalFileSystem but is confined to those directories (see ConfineToAllowedDirectories).
++ * Without it we fall back to disabling LocalFileSystem outright.
++ */
++static bool
++UseAllowedDirectories() {
++	return !pgduckdb::pg::AllowRawFileAccess() && !IsEmptyString(duckdb_allowed_directories);
++}
++
+ static std::string
+ DisabledFileSystems() {
+-	if (pgduckdb::pg::AllowRawFileAccess()) {
++	if (pgduckdb::pg::AllowRawFileAccess() || UseAllowedDirectories()) {
+ 		return duckdb_disabled_filesystems;
+ 	}
+ 
+@@ -300,6 +310,33 @@ DisabledFileSystems() {
+ 	return "LocalFileSystem," + std::string(duckdb_disabled_filesystems);
+ }
+ 
++/*
++ * Confine an unprivileged backend's filesystem access to the configured
++ * directories, then lock the configuration so the user cannot widen it again
++ * from SQL. Must run last in RefreshConnectionState: once locked, no further
++ * SET succeeds.
++ */
++static void
++ConfineToAllowedDirectories(duckdb::ClientContext &context) {
++	std::vector<std::string> dirs = duckdb::StringUtil::Split(duckdb_allowed_directories, ',');
++	for (auto &dir : dirs) {
++		std::string trimmed = dir;
++		duckdb::StringUtil::Trim(trimmed);
++		if (trimmed.empty()) {
++			continue;
++		}
++		pgduckdb::DuckDBQueryOrThrow(context, "SET allowed_directories=['" + trimmed + "']");
++	}
++	/*
++	 * DuckDB only consults allowed_directories when external access is off:
++	 * CanAccessFile() returns true immediately while enable_external_access is
++	 * set. Turning it off therefore switches the allowlist ON rather than
++	 * denying everything, because allowed_directories is non-empty.
++	 */
++	pgduckdb::DuckDBQueryOrThrow(context, "SET enable_external_access=false");
++	pgduckdb::DuckDBQueryOrThrow(context, "SET lock_configuration=true");
++}
++
+ void
+ DuckDBManager::RefreshConnectionState(duckdb::ClientContext &context) {
+ 	std::string disabled_filesystems = DisabledFileSystems();
+@@ -334,6 +371,15 @@ DuckDBManager::RefreshConnectionState(duckdb::ClientContext &context) {
+ 		LoadSecrets(context);
+ 		secrets_valid = true;
+ 	}
++
++	/*
++	 * Last: locking the configuration makes every later SET fail, so extension
++	 * loading and secret setup above must already be done.
++	 */
++	if (UseAllowedDirectories() && !filesystem_confined) {
++		ConfineToAllowedDirectories(context);
++		filesystem_confined = true;
++	}
+ }
+ 
+ /*
+diff --git a/src/pgduckdb_guc.cpp b/src/pgduckdb_guc.cpp
+index d2d2464..17a7bb3 100644
+--- a/src/pgduckdb_guc.cpp
++++ b/src/pgduckdb_guc.cpp
+@@ -131,6 +131,7 @@ bool duckdb_force_motherduck_views = false;
+ int duckdb_maximum_threads = -1;
+ int duckdb_maximum_memory = 4096; /* 4GB in MB */
+ char *duckdb_disabled_filesystems = strdup("");
++char *duckdb_allowed_directories = strdup("");
+ bool duckdb_enable_external_access = true;
+ bool duckdb_allow_community_extensions = false;
+ bool duckdb_allow_unsigned_extensions = false;
+@@ -240,6 +241,12 @@ InitGUC() {
+ 	                           "Disable specific file systems preventing access (e.g., LocalFileSystem)",
+ 	                           &duckdb_disabled_filesystems, PGC_SUSET);
+ 
++	DefineCustomDuckDBVariable("duckdb.allowed_directories",
++	                           "Comma-separated directories that non-superusers may read via DuckDB. When set, "
++	                           "LocalFileSystem stays enabled for them but is confined to these directories and "
++	                           "the configuration is locked so it cannot be widened at runtime.",
++	                           &duckdb_allowed_directories, PGC_POSTMASTER);
++
+ 	DefineCustomDuckDBVariable("duckdb.azure_transport_option_type",
+ 	                           "Set the azure_transport_option_type for DuckDB Azure extension. Can be used to "
+ 	                           "workaround issue #882: https://github.com/duckdb/pg_duckdb/issues/882",

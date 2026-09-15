@@ -77,6 +77,7 @@ in [docs/04](docs/04-storage-and-query-engine.md).
 | 09 | [Risks & open questions](docs/09-risks-and-open-questions.md) | Risk register and the things we genuinely do not know yet |
 | 10 | [Scaling economics](docs/10-scaling-economics.md) | **The business case.** Does this actually reduce replica count? Consolidation math, and the three places it breaks |
 | 11 | [Measured results](docs/11-measured-results.md) | **Numbers, not estimates.** 30 M rows, PG 16 vs DuckDB/Parquet. What held, what didn't, and one design that had to be replaced |
+| 12 | [S5: the serving path](docs/12-s5-serving-path.md) | The blocker that closed off Architecture A, and the 58-line `pg_duckdb` patch that reopens it |
 | — | [ADRs](docs/adr/) | Architecture decision records (template + the decisions still open) |
 
 ## The four architectures under consideration
