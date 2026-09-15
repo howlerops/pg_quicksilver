@@ -1,7 +1,17 @@
 # pg_quicksilver
 
-**Status: feasibility study / pre-implementation. No product code yet — but the core claims
-are now measured, not estimated. See [docs/11](docs/11-measured-results.md).**
+**Status: the study is done and the plugin exists.** The core claims are measured, not
+estimated ([docs/11](docs/11-measured-results.md)), and there is now a CNPG-I plugin, a
+mirror sidecar, a Helm chart and an end-to-end test that runs the real sidecar against a
+live PostgreSQL 17 primary and standby ([docs/16](docs/16-deploying.md)).
+
+What has **not** been verified is the CNPG-I handshake itself — no container runtime was
+available, so the plugin has never been dialled by a real CloudNativePG operator. Everything
+else in [docs/16](docs/16-deploying.md#what-has-not-been-verified) that is untested is listed
+there rather than implied to work.
+
+**Requires PostgreSQL ≥ 17** for `ingest: logical`. Before 17 a logical replication slot does
+not survive a failover ([docs/15](docs/15-pg17-slot-failover.md)).
 
 Quicksilver is a proposed [CloudNativePG](https://cloudnative-pg.io/) (CNPG) plugin + Helm
 chart that replaces a Postgres cluster's **read replicas** with nodes that maintain a
@@ -86,6 +96,7 @@ in [docs/04](docs/04-storage-and-query-engine.md).
 | 13 | [S0 without customer data](docs/13-s0-without-customer-data.md) | Break-even is `f ≈ 1/R`, not 40%. Why the gating spike stopped gating, and a self-serve script to answer it per cluster |
 | 14 | [Streaming, snapshot, failover](docs/14-phase2-streaming-and-failover.md) | pgoutput over streaming replication (36 ms), snapshot bootstrap, and what a **real promotion** does to a logical slot |
 | 15 | [PG 17 slot failover](docs/15-pg17-slot-failover.md) | Slot synchronisation works and removes the re-snapshot — and the GUC that silently deadlocks the new primary if promotion doesn't clear it |
+| 16 | [Deploying](docs/16-deploying.md) | **The installable part.** Two images, the Helm chart, the Cluster spec, what the plugin refuses, and what has not been verified |
 | — | [ADRs](docs/adr/) | Architecture decision records (template + the decisions still open) |
 
 ## The four architectures under consideration

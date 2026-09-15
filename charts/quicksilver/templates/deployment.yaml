@@ -1,0 +1,67 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "quicksilver.name" . }}
+  namespace: {{ .Values.operatorNamespace }}
+  labels:
+    {{- include "quicksilver.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "quicksilver.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "quicksilver.selectorLabels" . | nindent 8 }}
+    spec:
+      serviceAccountName: {{ include "quicksilver.name" . }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: quicksilver-plugin
+          image: {{ .Values.image.plugin }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args:
+            - --server-cert=/server/tls.crt
+            - --server-key=/server/tls.key
+            - --client-cert=/client/ca.crt
+            - --server-address=:{{ .Values.service.port }}
+          ports:
+            - name: grpc
+              containerPort: {{ .Values.service.port }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - name: server-tls
+              mountPath: /server
+              readOnly: true
+            - name: client-tls
+              mountPath: /client
+              readOnly: true
+      volumes:
+        - name: server-tls
+          secret:
+            secretName: {{ include "quicksilver.serverSecret" . }}
+        - name: client-tls
+          secret:
+            secretName: {{ include "quicksilver.clientSecret" . }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity: {{- toYaml . | nindent 8 }}
+      {{- end }}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "quicksilver.name" . }}
+  namespace: {{ .Values.operatorNamespace }}
+  labels:
+    {{- include "quicksilver.labels" . | nindent 4 }}

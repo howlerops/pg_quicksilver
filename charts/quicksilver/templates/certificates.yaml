@@ -1,0 +1,85 @@
+{{- if .Values.certManager.enabled }}
+{{- if not .Values.certManager.issuerRef }}
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: quicksilver-selfsign
+  namespace: {{ .Values.operatorNamespace }}
+  labels:
+    {{- include "quicksilver.labels" . | nindent 4 }}
+spec:
+  selfSigned: {}
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: quicksilver-ca
+  namespace: {{ .Values.operatorNamespace }}
+spec:
+  isCA: true
+  commonName: quicksilver-ca
+  secretName: quicksilver-ca-tls
+  duration: {{ .Values.certManager.duration }}
+  renewBefore: {{ .Values.certManager.renewBefore }}
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+  issuerRef:
+    name: quicksilver-selfsign
+    kind: Issuer
+---
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: quicksilver-ca
+  namespace: {{ .Values.operatorNamespace }}
+spec:
+  ca:
+    secretName: quicksilver-ca-tls
+---
+{{- end }}
+# The server certificate's SANs must cover exactly the names the operator dials
+# the Service by. A missing short name is the failure that looks like a plugin
+# outage and reads, in the operator log, as a TLS handshake error.
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: quicksilver-server
+  namespace: {{ .Values.operatorNamespace }}
+spec:
+  secretName: quicksilver-server-tls
+  duration: {{ .Values.certManager.duration }}
+  renewBefore: {{ .Values.certManager.renewBefore }}
+  usages: [server auth]
+  dnsNames:
+    - {{ include "quicksilver.name" . }}
+    - {{ include "quicksilver.name" . }}.{{ .Values.operatorNamespace }}
+    - {{ include "quicksilver.name" . }}.{{ .Values.operatorNamespace }}.svc
+    - {{ include "quicksilver.name" . }}.{{ .Values.operatorNamespace }}.svc.cluster.local
+  issuerRef:
+    {{- if .Values.certManager.issuerRef }}
+    {{- toYaml .Values.certManager.issuerRef | nindent 4 }}
+    {{- else }}
+    name: quicksilver-ca
+    kind: Issuer
+    {{- end }}
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: quicksilver-client
+  namespace: {{ .Values.operatorNamespace }}
+spec:
+  secretName: quicksilver-client-tls
+  duration: {{ .Values.certManager.duration }}
+  renewBefore: {{ .Values.certManager.renewBefore }}
+  commonName: quicksilver-client
+  usages: [client auth]
+  issuerRef:
+    {{- if .Values.certManager.issuerRef }}
+    {{- toYaml .Values.certManager.issuerRef | nindent 4 }}
+    {{- else }}
+    name: quicksilver-ca
+    kind: Issuer
+    {{- end }}
+{{- end }}

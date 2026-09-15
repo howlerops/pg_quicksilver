@@ -44,6 +44,19 @@ type State struct {
 	BaseFiles  []string `json:"base_files"`
 	DeltaFiles []string `json:"delta_files"`
 	Seq        int      `json:"seq"`
+
+	// MissingVals mirrors pg_attribute.attmissingval: the value a row written
+	// before a column existed reads back as. ADD COLUMN ... DEFAULT emits no
+	// row-level WAL, so without this the mirror serves NULL where the source
+	// serves the default, with identical row counts and no error anywhere.
+	MissingVals map[string]string `json:"missing_vals,omitempty"`
+
+	// Halted, when set, is why this mirror stopped and must not be served.
+	// It is durable on purpose: a halt that lives only in a running process is
+	// undone by the next restart, which re-reads the catalog, sees the new
+	// schema as if it had always been there, and serves the corruption it
+	// stopped for.
+	Halted string `json:"halted,omitempty"`
 }
 
 type Table struct {
@@ -96,11 +109,33 @@ func (t *Table) saveState() error {
 	return os.Rename(tmp, t.statePath())
 }
 
-// Evolve adopts a new column list. Existing files are untouched — the read
-// path NULL-fills what they lack — so there is no rewrite and no downtime.
-func (t *Table) Evolve(cols map[string]string, order []string) {
+// Evolve adopts a new column list. Existing files are untouched — the read path
+// fills in what they lack — so there is no rewrite and no downtime.
+//
+// missing carries the values that rows predating an added column must read back
+// as (PostgreSQL's attmissingval). A column absent from the map fills with NULL,
+// which is correct only when ADD COLUMN had no default.
+func (t *Table) Evolve(cols map[string]string, order []string, missing map[string]string) error {
 	t.Columns, t.Order = cols, order
+	for k, v := range missing {
+		if t.State.MissingVals == nil {
+			t.State.MissingVals = map[string]string{}
+		}
+		t.State.MissingVals[k] = v
+	}
+	return t.saveState()
 }
+
+// Halt records, durably, that this mirror cannot be trusted and why. Recovery
+// is deliberately manual: the reasons a mirror halts are ones where guessing
+// produced the problem in the first place.
+func (t *Table) Halt(reason string) error {
+	t.State.Halted = reason
+	return t.saveState()
+}
+
+// Halted reports the reason this mirror is out of service, or "".
+func (t *Table) Halted() string { return t.State.Halted }
 
 // ---- arrow schema ---------------------------------------------------------
 

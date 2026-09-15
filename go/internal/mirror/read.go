@@ -61,7 +61,14 @@ func (t *Table) readParquet(path string, dead map[int]bool) ([]map[string]any, e
 		for _, name := range t.Order {
 			ci, ok := present[name]
 			if !ok {
-				m[name] = nil // predates an ADD COLUMN
+				// This file predates an ADD COLUMN. NULL is right only when the
+				// column was added without a default; otherwise PostgreSQL
+				// reads these rows back as attmissingval and so must we.
+				if mv, has := t.State.MissingVals[name]; has {
+					m[name] = mv
+				} else {
+					m[name] = nil
+				}
 				continue
 			}
 			m[name] = chunkedValue(tbl.Column(ci).Data(), row)

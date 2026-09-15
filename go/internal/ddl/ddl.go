@@ -161,3 +161,79 @@ func Compare(old, new map[string]string) Diff {
 	}
 	return d
 }
+
+// ---- backfilled columns ---------------------------------------------------
+
+// Backfill describes what an ADD COLUMN did to rows that already existed.
+//
+// This is the case that made the mirror diverge silently in the first
+// end-to-end run of the production sidecar, and it is invisible from the change
+// stream by construction:
+//
+//	ALTER TABLE events ADD COLUMN channel text DEFAULT 'web'
+//
+// produces NO row-level WAL. PostgreSQL stores one value in pg_attribute's
+// attmissingval and every pre-existing row reads back as that value without
+// being touched. A logical consumer therefore sees the DDL and nothing else,
+// leaves its own rows NULL, and diverges from the source on a column nobody
+// will think to check. Row counts stay identical, which is what makes it bad.
+//
+// Two shapes, and only one of them is recoverable:
+//
+//   - MissingVal set: PostgreSQL used the fast-default path, so the value that
+//     every pre-existing row takes is right there in the catalog. The mirror
+//     records it and its read path substitutes it for files written before the
+//     column existed — exactly what PostgreSQL itself does.
+//   - Rewritten: a volatile default or a stored generated column made
+//     PostgreSQL rewrite the heap. Every pre-existing row got its own value,
+//     none of it reached the WAL as row changes, and there is nothing to
+//     reconstruct from. The mirror must stop rather than serve NULLs.
+type Backfill struct {
+	MissingVals map[string]string // column -> value pre-existing rows read as
+	Rewritten   []string          // columns whose values are unrecoverable
+}
+
+// InspectBackfill reports, for the named columns, how ADD COLUMN affected rows
+// that predate them. Columns that were added with no default are absent from
+// both maps: NULL really is their value, and the mirror is already correct.
+func InspectBackfill(
+	ctx context.Context, conn *pgx.Conn, schema, table string, columns []string,
+) (Backfill, error) {
+	b := Backfill{MissingVals: map[string]string{}}
+	if len(columns) == 0 {
+		return b, nil
+	}
+	rows, err := conn.Query(ctx, `
+		SELECT a.attname,
+		       a.atthasmissing,
+		       (SELECT v FROM unnest(a.attmissingval::text::text[]) v LIMIT 1),
+		       a.attgenerated <> '',
+		       d.adbin IS NOT NULL
+		  FROM pg_attribute a
+		  LEFT JOIN pg_attrdef d ON d.adrelid = a.attrelid AND d.adnum = a.attnum
+		 WHERE a.attrelid = format('%I.%I', $1::text, $2::text)::regclass
+		   AND a.attnum > 0 AND NOT a.attisdropped
+		   AND a.attname = ANY($3)`, schema, table, columns)
+	if err != nil {
+		return b, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var name string
+		var hasMissing, generated, hasDefault bool
+		var missing *string
+		if err := rows.Scan(&name, &hasMissing, &missing, &generated, &hasDefault); err != nil {
+			return b, err
+		}
+		switch {
+		case hasMissing && missing != nil:
+			b.MissingVals[name] = *missing
+		case generated || hasDefault:
+			// A default that did NOT leave a missing value means the heap was
+			// rewritten, so each row has its own value and none of it is in the
+			// change stream.
+			b.Rewritten = append(b.Rewritten, name)
+		}
+	}
+	return b, rows.Err()
+}

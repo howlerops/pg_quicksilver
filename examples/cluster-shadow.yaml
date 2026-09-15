@@ -1,0 +1,62 @@
+# A CloudNativePG Cluster with Quicksilver in shadow mode — the only mode
+# Phase 1 recommends, and the one that changes nothing about how the cluster
+# behaves today.
+#
+#   kubectl apply -f examples/cluster-shadow.yaml
+#
+# What this does and does not do:
+#
+#   DOES    build a columnar Parquet mirror of public.events and public.orders
+#           on every replica, from a logical replication slot on the primary.
+#   DOES    gate each replica's mirror on freshness: a mirror more than 30s
+#           behind takes itself out of service rather than answering stale.
+#   DOES NOT touch the -rw or -ro services. Existing traffic is unaffected.
+#
+# Turning it into `mode: takeover` points -ro at the mirror, which measured a
+# median 935x SLOWDOWN on OLTP-shaped queries. The plugin refuses that edit
+# unless acknowledgeOLTPRegression is also set; see docs/11.
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: app
+spec:
+  instances: 3
+
+  # PostgreSQL 17 or newer is required for ingest: logical. Before 17 a logical
+  # slot does not survive a failover, and recovery is a full re-snapshot of
+  # every mirrored table (docs/15).
+  imageName: ghcr.io/cloudnative-pg/postgresql:17.2-standard-bookworm
+
+  # The mirror needs a role with REPLICATION, SELECT on the mirrored tables, and
+  # CREATE on the database. The superuser secret is the simplest way to get one;
+  # a purpose-made role referenced by credentialsSecret is the better one.
+  enableSuperuserAccess: true
+
+  storage:
+    size: 20Gi
+    # The Parquet mirror lives beside PGDATA on this same volume. Measured
+    # ratio: an 8.7 GB heap produced a 251 MB mirror, so budget a few percent,
+    # not a doubling (docs/11).
+
+  postgresql:
+    parameters:
+      # Do NOT pin wal_level here. Quicksilver sets it to logical through
+      # EnrichConfiguration, and a conflicting value is rejected at admission
+      # rather than silently overridden.
+      shared_buffers: 512MB
+
+  plugins:
+    - name: quicksilver.howlerops.io
+      enabled: true
+      parameters:
+        mode: shadow
+        ingest: logical
+        tables: public.events,public.orders
+        freshnessSLO: 30s
+        database: app
+        credentialsSecret: app-superuser
+
+  bootstrap:
+    initdb:
+      database: app
+      owner: app

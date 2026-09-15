@@ -1,0 +1,53 @@
+# The namespace the CloudNativePG operator runs in. The plugin Service MUST live
+# here: CNPG discovers plugins by listing Services in its OWN namespace that
+# carry the cnpg.io/pluginName label. A plugin installed anywhere else is simply
+# never found, with no error on either side.
+operatorNamespace: cnpg-system
+
+image:
+  plugin: ghcr.io/howlerops/pg_quicksilver-plugin:0.1.0
+  mirror: ghcr.io/howlerops/pg_quicksilver-mirror:0.1.0
+  pullPolicy: IfNotPresent
+
+replicaCount: 1
+
+service:
+  port: 9090
+
+# mTLS between the operator and the plugin. cert-manager issues both halves from
+# one self-signed CA; the operator presents the client certificate and the
+# plugin verifies it, so the gRPC endpoint is not open to the namespace.
+certManager:
+  enabled: true
+  # Reuse an existing issuer instead of creating a self-signed one.
+  issuerRef: {}
+  duration: 8760h
+  renewBefore: 720h
+
+# Used only when certManager.enabled is false: names of Secrets you manage
+# yourself, each holding tls.crt / tls.key (and ca.crt for the client secret).
+existingSecrets:
+  server: ""
+  client: ""
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 128Mi
+  limits:
+    memory: 256Mi
+
+podSecurityContext:
+  runAsNonRoot: true
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: ["ALL"]
+
+nodeSelector: {}
+tolerations: []
+affinity: {}

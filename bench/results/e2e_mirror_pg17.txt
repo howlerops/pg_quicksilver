@@ -1,0 +1,52 @@
+
+== 0. primary on 5443, listening on localhost ==
+  seeded 20000 rows BEFORE the mirror exists
+
+== 1. standby with sync_replication_slots ==
+  standby up and in recovery
+
+== 2. the sidecar, configured only by the plugin's environment ==
+  sidecar live; /healthz answering
+
+== 3. it bootstraps by snapshot and becomes ready ==
+  "snapshot complete" table=public.events rows=20000
+
+== 4. live changes reach the mirror ==
+applied_lsn=0/110E0DB0
+mirror 21500 rows (checksum 18077fcaafb06e1b)
+source 21500 rows (checksum 18077fcaafb06e1b)
+MATCH
+
+== 5. DDL crosses as a barrier, not as corruption ==
+  barrier observed: "added channel text" backfilled=map[channel:web]
+applied_lsn=0/110E3F08
+mirror 21501 rows (checksum 4219fba1748bb530)
+source 21501 rows (checksum 4219fba1748bb530)
+MATCH
+
+== 5b. a backfill the stream cannot carry HALTS the mirror, durably ==
+  halted: "halting public.events: column(s) nonce were backfilled by a table rewrite; their values never appear in the c
+  halt is persisted in state.json, so a restart cannot quietly resume
+  /readyz is failing, so this node leaves the read endpoint
+
+== 5c. recovery: clearing the halt rebuilds from a fresh snapshot ==
+applied_lsn=0/1139F388
+mirror 21502 rows (checksum 5e986d98136ffcb6)
+source 21502 rows (checksum 5e986d98136ffcb6)
+MATCH
+
+== 6. readiness reflects freshness, and idle is not stale ==
+  still ready after 20s idle with a 15s SLO — idle is correctly not stale
+  quicksilver_lag_seconds 0.187
+  quicksilver_lag_bytes 0
+  quicksilver_ready 1
+  quicksilver_compaction_backlog 0
+  quicksilver_diverged 0
+
+== 7. promote the standby: the sidecar must stand down ==
+  "this node is the primary — standing down; the mirror is built on replicas"
+  cleared the inherited synchronized_standby_slots entry (docs/15)
+  synchronized_standby_slots is now empty on the new primary
+
+========================================
+PASS

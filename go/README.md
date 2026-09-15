@@ -4,9 +4,20 @@ The production data plane, per [ADR-0009](../docs/adr/0009-implementation-langua
 Go **1.27.1**.
 
 ```bash
-go run ./cmd/qs-slice  -seconds 20     # convergence under concurrent writes
-go run ./cmd/qs-phase1 -slo 3          # DDL barriers + readiness gating
+go run ./cmd/qs-slice    -seconds 20   # convergence under concurrent writes
+go run ./cmd/qs-phase1   -slo 3        # DDL barriers + readiness gating
+go run ./cmd/qs-phase2                 # streaming, snapshot bootstrap, failover
+go run ./cmd/qs-slotsync               # PG17 slot sync across a real promotion
+go test ./...                          # plugin validation, patches, injection
+bash ../bench/scripts/e2e_mirror.sh    # the real sidecar, end to end
 ```
+
+| Command | What it is |
+|---|---|
+| `quicksilver-plugin` | **the CNPG-I plugin.** Identity, Operator, Lifecycle, Postgres services |
+| `qs-mirror` | **the sidecar** the plugin injects into instance Pods |
+| `qs-verify` | asks a mirror on disk whether it still matches its source |
+| `qs-slice`, `qs-phase1`, `qs-phase2`, `qs-slotsync` | harnesses that proved each behaviour |
 
 | Package | Role |
 |---|---|
@@ -14,6 +25,7 @@ go run ./cmd/qs-phase1 -slo 3          # DDL barriers + readiness gating
 | `internal/mirror` | Columnar writer, deletion vectors, compaction, order-independent checksum. |
 | `internal/ddl` | DDL as a barrier in the change stream, via a source event trigger. |
 | `internal/health` | Freshness, readiness gating on `freshnessSLO`, Prometheus metrics. |
+| `internal/plugin` | The CNPG-I services: validation, mutation, status, sidecar injection, `EnrichConfiguration`. Where two measured findings are enforced rather than documented — the takeover gate and the PG 17 floor. |
 
 ## Parity with the Python reference
 

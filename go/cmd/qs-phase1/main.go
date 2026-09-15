@@ -122,7 +122,11 @@ func main() {
 		d := ddl.Compare(m.Columns, live)
 		if !d.Empty() {
 			if d.Safe() {
-				m.Evolve(live, liveOrder)
+				// nil: this harness adds columns without a default, so rows
+				// that predate them really are NULL. cmd/qs-mirror reads the
+				// catalog's missing values, which is what ADD COLUMN DEFAULT
+				// needs (ddl.InspectBackfill).
+				must(m.Evolve(live, liveOrder, nil))
 			} else {
 				halted = append(halted, d.String()) // refuse, do not corrupt
 			}

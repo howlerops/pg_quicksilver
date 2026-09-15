@@ -1,0 +1,31 @@
+# This Service is the whole of the plugin's registration with CloudNativePG.
+# There is no CRD and no operator config to edit: CNPG lists Services in its own
+# namespace, and any that carries the cnpg.io/pluginName label becomes a plugin
+# a Cluster may name in .spec.plugins.
+#
+# Consequences worth knowing before debugging a plugin that "isn't loading":
+#   - the Service must be in the OPERATOR's namespace, not the Cluster's;
+#   - the label value must match the name used in .spec.plugins[].name exactly;
+#   - the two secret annotations are how the operator finds the mTLS material,
+#     and a mismatch shows up as a connection error, not as a missing plugin.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "quicksilver.name" . }}
+  namespace: {{ .Values.operatorNamespace }}
+  labels:
+    {{- include "quicksilver.labels" . | nindent 4 }}
+    cnpg.io/pluginName: {{ include "quicksilver.pluginName" . }}
+  annotations:
+    cnpg.io/pluginPort: {{ .Values.service.port | quote }}
+    cnpg.io/pluginClientSecret: {{ include "quicksilver.clientSecret" . }}
+    cnpg.io/pluginServerSecret: {{ include "quicksilver.serverSecret" . }}
+spec:
+  type: ClusterIP
+  ports:
+    - name: grpc
+      port: {{ .Values.service.port }}
+      targetPort: grpc
+      protocol: TCP
+  selector:
+    {{- include "quicksilver.selectorLabels" . | nindent 4 }}
