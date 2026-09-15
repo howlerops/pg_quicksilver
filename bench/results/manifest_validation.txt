@@ -1,0 +1,27 @@
+
+== 1. Helm renders, and renders valid Kubernetes objects ==
+  Summary: 8 resources found parsing stdin - Valid: 3, Invalid: 0, Errors: 0, Skipped: 5
+  ok: defaults
+  Summary: 3 resources found parsing stdin - Valid: 3, Invalid: 0, Errors: 0, Skipped: 0
+  ok: --set certManager.enabled=false --set existingSecrets.server=s --set existingSecrets.client=c
+  Summary: 5 resources found parsing stdin - Valid: 3, Invalid: 0, Errors: 0, Skipped: 2
+  ok: --set certManager.issuerRef.name=my-ca --set certManager.issuerRef.kind=ClusterIssuer
+  Summary: 8 resources found parsing stdin - Valid: 3, Invalid: 0, Errors: 0, Skipped: 5
+  ok: --set operatorNamespace=postgresql-operator-system --set replicaCount=2
+
+== 2. The example Cluster against CloudNativePG's real CRD ==
+  ok: no field would be silently pruned
+  ok: Cluster/app valid against the v1 CRD
+  plugin: quicksilver.howlerops.io
+    credentialsSecret: app-superuser
+    database: app
+    freshnessSLO: 30s
+    ingest: logical
+    mode: shadow
+    tables: public.events,public.orders
+
+== 3. Every parameter in the example is one the plugin knows ==
+  ok: all 6 example parameters are accepted by the validator
+
+========================================
+PASS

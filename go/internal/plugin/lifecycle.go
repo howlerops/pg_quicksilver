@@ -46,6 +46,21 @@ func (LifecycleImpl) GetCapabilities(
 					{Type: lifecycle.OperatorOperationType_TYPE_CREATE},
 					{Type: lifecycle.OperatorOperationType_TYPE_PATCH},
 					{Type: lifecycle.OperatorOperationType_TYPE_UPDATE},
+					// EVALUATE is not optional, and leaving it out fails
+					// silently. CloudNativePG skips any hook whose declared
+					// operation types lack the one it is asking for
+					// (internal/cnpi/plugin/client/lifecycle.go), and
+					// specs.NewInstance asks with EVALUATE to compute what a
+					// running Pod *should* look like. That evaluated spec is
+					// what lands in the pod-spec annotation and what
+					// checkPodSpecIsOutdated compares against to decide whether
+					// to roll an instance.
+					//
+					// Omit EVALUATE and the sidecar is absent from both sides of
+					// that comparison, so it is invisible to it: changing
+					// sidecarImage would never roll the Pods, and the annotation
+					// would describe a Pod that does not exist.
+					{Type: lifecycle.OperatorOperationType_TYPE_EVALUATE},
 				},
 			},
 		},

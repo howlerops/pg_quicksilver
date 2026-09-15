@@ -5,10 +5,11 @@ estimated ([docs/11](docs/11-measured-results.md)), and there is now a CNPG-I pl
 mirror sidecar, a Helm chart and an end-to-end test that runs the real sidecar against a
 live PostgreSQL 17 primary and standby ([docs/16](docs/16-deploying.md)).
 
-What has **not** been verified is the CNPG-I handshake itself — no container runtime was
-available, so the plugin has never been dialled by a real CloudNativePG operator. Everything
-else in [docs/16](docs/16-deploying.md#what-has-not-been-verified) that is untested is listed
-there rather than implied to work.
+The CNPG-I handshake **is** verified — real mutual TLS, CloudNativePG's own dial code and
+load sequence, and the lifecycle hook run against instance Pods built by the operator's own
+`specs.NewInstance` ([docs/17](docs/17-testing-without-a-cluster.md)). What is left is
+Service discovery by label and the operator's reconcile loops; both are listed in
+[docs/16](docs/16-deploying.md#what-has-not-been-verified) rather than implied to work.
 
 **Requires PostgreSQL ≥ 17** for `ingest: logical`. Before 17 a logical replication slot does
 not survive a failover ([docs/15](docs/15-pg17-slot-failover.md)).
@@ -97,6 +98,7 @@ in [docs/04](docs/04-storage-and-query-engine.md).
 | 14 | [Streaming, snapshot, failover](docs/14-phase2-streaming-and-failover.md) | pgoutput over streaming replication (36 ms), snapshot bootstrap, and what a **real promotion** does to a logical slot |
 | 15 | [PG 17 slot failover](docs/15-pg17-slot-failover.md) | Slot synchronisation works and removes the re-snapshot — and the GUC that silently deadlocks the new primary if promotion doesn't clear it |
 | 16 | [Deploying](docs/16-deploying.md) | **The installable part.** Two images, the Helm chart, the Cluster spec, what the plugin refuses, and what has not been verified |
+| 17 | [Testing without a cluster](docs/17-testing-without-a-cluster.md) | The CNPG-I handshake is not a Kubernetes thing. Real mTLS, real Pods from CNPG's own builder, real CRD schemas — and the capability bug that found |
 | — | [ADRs](docs/adr/) | Architecture decision records (template + the decisions still open) |
 
 ## The four architectures under consideration

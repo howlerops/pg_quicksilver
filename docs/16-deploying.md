@@ -5,13 +5,13 @@ install. It covers the two images, the CNPG-I registration, the Cluster spec,
 and — because it is the question that decides whether any of this was worth it —
 how to check that the mirror is telling the truth.
 
-**Status.** The plugin and the sidecar are built, unit-tested (29 tests, all
-verified to fail when the behaviour they assert is removed) and exercised
+**Status.** The plugin and the sidecar are built, unit-tested, exercised
 end-to-end against live PostgreSQL 17 by
-[`bench/scripts/e2e_mirror.sh`](../bench/scripts/e2e_mirror.sh). What has **not**
-been run is the CNPG-I handshake itself: this environment has no container
-runtime, so the plugin has never been dialled by a real CloudNativePG operator.
-That is the one remaining unknown, and it is called out again at the bottom.
+[`bench/scripts/e2e_mirror.sh`](../bench/scripts/e2e_mirror.sh), and — since
+[docs/17](17-testing-without-a-cluster.md) — run against the real CNPG-I
+handshake over real mutual TLS, and against instance Pods built by
+CloudNativePG's own `specs.NewInstance`. What remains unverified is listed at
+the bottom, and it is now a short list.
 
 ---
 
@@ -190,11 +190,16 @@ manual: delete the mirror directory and let it re-snapshot.
 Stated plainly, because a deployment guide that implies more than was tested is
 worse than no guide.
 
-- **The CNPG-I handshake.** No container runtime here, so the plugin has never
-  been dialled by a real operator. The gRPC services are exercised at the request
-  and JSON-patch level (`internal/plugin/grpc_test.go`) — including that every
-  emitted patch decodes and applies — but the discovery, mTLS and capability
-  negotiation path with CloudNativePG itself is untested.
+- **Service discovery.** The plugin has never been found by a real operator
+  through the `cnpg.io/pluginName` label. Everything *after* discovery — the mTLS
+  dial, the metadata and capability handshake, the lifecycle hook against a Pod
+  from CloudNativePG's own builder — is now run for real
+  ([docs/17](17-testing-without-a-cluster.md)), so what is left untested is a
+  label lookup and the operator process itself.
+- **Live reconcile behaviour.** Rollouts, switchovers and the interaction with
+  CNPG's own Pod comparison are reasoned about from the operator's source, not
+  observed. The `EVALUATE` bug in docs/17 is exactly the class of thing that
+  reading catches and only a cluster confirms.
 - **The images.** Written, never built.
 - **`mode: takeover`.** The validation gate is tested; the service retarget it
   gates is not implemented.

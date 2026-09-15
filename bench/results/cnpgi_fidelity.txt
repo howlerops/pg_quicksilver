@@ -1,0 +1,25 @@
+    handshake_test.go:137: plugin quicksilver.howlerops.io version dev, licence Apache-2.0
+    handshake_test.go:146: declared services: [TYPE_OPERATOR_SERVICE TYPE_LIFECYCLE_SERVICE TYPE_POSTGRES]
+    handshake_test.go:161: operator RPCs: [TYPE_VALIDATE_CLUSTER_CREATE TYPE_VALIDATE_CLUSTER_CHANGE TYPE_MUTATE_CLUSTER TYPE_SET_STATUS_IN_CLUSTER]
+    handshake_test.go:183: lifecycle hook: group="" kind="Pod" ops=[type:TYPE_CREATE type:TYPE_PATCH type:TYPE_UPDATE type:TYPE_EVALUATE]
+    handshake_test.go:213: postgres RPCs: 1
+    handshake_test.go:241: undeclared WAL correctly unavailable: rpc error: code = Unimplemented desc = unknown service cnpgi.wal.v1.WAL
+    handshake_test.go:241: undeclared ReconcilerHooks correctly unavailable: rpc error: code = Unimplemented desc = unknown service cnpgi.reconciler.v1.Recon…
+--- PASS: TestHandshake (0.06s)
+    handshake_test.go:287: refused: rpc error: code = Unavailable desc = connection error: desc = "error reading ser…
+    handshake_test.go:301: refused: rpc error: code = Unavailable desc = connection error: desc = "error reading ser…
+    handshake_test.go:313: refused: rpc error: code = Unavailable desc = connection error: desc = "transport: authen…
+--- PASS: TestMTLSIsEnforced (0.07s)
+    --- PASS: TestMTLSIsEnforced/no_client_certificate_is_refused (0.00s)
+    --- PASS: TestMTLSIsEnforced/a_client_certificate_from_another_CA_is_refused (0.01s)
+    --- PASS: TestMTLSIsEnforced/a_server_name_outside_the_certificate's_SANs_is_refused (0.00s)
+    --- PASS: TestMTLSIsEnforced/the_operator's_own_certificate_and_names_work (0.00s)
+    pod_test.go:124: CNPG built Pod "app-1": containers=[postgres] initContainers=[bootstrap-controller] volumes=3
+    pod_test.go:145: sidecar mounts: [pgdata:/var/lib/postgresql/data scratch-data:/run scratch-data:/controller shm:/dev/shm plugins:/plugins]
+    pod_test.go:160: mirrorPath /var/lib/postgresql/data/quicksilver is inside volume pgdata at /var/lib/postgresql/data
+--- PASS: TestSidecarInjectionIntoARealCNPGPod (0.01s)
+    pod_test.go:197: declared Pod operation types: [TYPE_CREATE TYPE_PATCH TYPE_UPDATE TYPE_EVALUATE]
+--- PASS: TestEveryDeclaredVerbActuallyInjects (0.00s)
+--- PASS: TestModeOffLeavesARealPodUntouched (0.00s)
+PASS
+ok  	github.com/howlerops/pg_quicksilver/go/fidelity	0.174s
