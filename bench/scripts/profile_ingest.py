@@ -53,9 +53,10 @@ def stage_timings(rows: int = 40000):
     nbytes = sum(len(r) for r in raw)
 
     # --- stage 2a: JSON parse, C scanner (float) -----------------------
+    # Both variants must RETAIN their output, or the comparison measures list
+    # construction as well as parsing and overstates the Decimal penalty.
     t0 = time.perf_counter()
-    for r in raw:
-        json.loads(r)
+    _ = [json.loads(r) for r in raw]
     t_json_c = time.perf_counter() - t0
 
     # --- stage 2b: JSON parse with parse_float=Decimal -----------------

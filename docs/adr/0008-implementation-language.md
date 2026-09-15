@@ -1,8 +1,28 @@
 # 0008 — Implementation language: Go for the plugin, Rust for the data plane
 
 - **Status:** Accepted
-- **Date:** 2026-09-15
+- **Date:** 2026-09-15 (context corrected 2026-09-15 — see *Correction*)
 - **Deciders:** —
+
+## Correction
+
+The first version of this ADR contained a **measurement error and a reasoning error**,
+both caught by review. Corrected below; the decision stands, but for different reasons.
+
+1. **The `parse_float=Decimal` penalty was reported as 2.6×. It is 1.3×.** The profile
+   compared parse-and-*discard* (C scanner) against parse-and-*retain-in-a-list*
+   (Decimal), so the Decimal figure also carried 40k dict allocations. Measured
+   consistently: 0.424s vs 0.553s. The JSON stage is expensive because materialising
+   16 MB of JSON as Python objects is expensive — not because of a correctness tax.
+
+2. **"Protocol change is worth more than language change" was wrong as stated.** It was
+   measured entirely within Python, which assumes the JSON stage stays slow. It does not
+   in a native implementation. `orjson` (Rust) parses the same payload **2.2× faster than
+   CPython's C scanner**, and a genuine Rust pipeline skips Python-object materialisation
+   altogether — which is the part that actually dominates.
+
+The corrected reading strengthens the case for Rust and removes the performance
+justification for sequencing `pgoutput` first.
 
 ## Context
 
@@ -14,35 +34,43 @@ question raised: should the data plane be Go or Rust for better concurrency?
 
 | Stage | Seconds | % of pipeline | Runs in |
 |---|---|---|---|
-| fetch from slot (libpq + PG decode) | 0.222 | 23.7% | PG + C |
-| **`json.loads` with `parse_float=Decimal`** | **0.521** | **55.8%** | **Python** |
-| decode to dicts | 0.056 | 6.0% | Python |
+| fetch from slot (libpq + PG decode) | 0.215 | 22.8% | PG + C |
+| **`json.loads` with `parse_float=Decimal`** | **0.553** | **58.6%** | **Python** |
+| decode to dicts | 0.053 | 5.6% | Python |
 | group by key | 0.009 | 0.9% | Python |
-| Python objects → Arrow | 0.106 | 11.4% | boundary |
-| Parquet write (zstd) | 0.020 | 2.2% | C++ |
-| **Total** | **0.934** | | **≈ 42,800 rows/s** |
+| Python objects → Arrow | 0.094 | 9.9% | boundary |
+| Parquet write (zstd) | 0.021 | 2.2% | C++ |
+| **Total** | **0.944** | | **≈ 42,400 rows/s** |
 
-**74% of the pipeline is Python-side work**, so there is real headroom in a rewrite. But
-the shape of the cost is the interesting part:
+**JSON parser comparison**, same payload, consistent methodology
+([`json_parser_shootout.py`](../../bench/scripts/json_parser_shootout.py)):
 
-- The dominant stage is **JSON parsing**, and it is expensive *specifically because
-  correctness requires `parse_float=Decimal`*, which disables CPython's C scanner
-  (2.6× slower than the C path: 0.204s → 0.521s). Money must not round-trip through
-  `float64`.
-- The parts people assume are hot — Parquet encoding, compression — are **2.2%**. Those
-  are already C++ and a rewrite would not touch them.
+| Parser | MB/s | vs CPython C scanner |
+|---|---|---|
+| CPython `json`, C scanner | 85 | 1.0× |
+| CPython `json`, `parse_float=Decimal` | 64 | 0.75× |
+| **`orjson` (Rust)** | **191** | **2.2× faster** |
+
+**75% of the pipeline is Python-side work**, and the dominant cost is materialising JSON
+as Python objects. The parts people assume are hot — Parquet encoding, compression — are
+**2.2%**, already C++, and untouched by any rewrite.
 
 Reference points: PeerDB ≈ 120k rows/s (Go), walshadow ≈ 289k rows/s (Rust, physical WAL).
-So this pipeline is ~3× off Go and ~7× off Rust.
 
-### The finding that reorders the work
+### The ceiling that actually matters
 
-**Removing JSON entirely is worth more than changing language.** `pgoutput`'s binary
-protocol has no JSON stage at all. Dropping that 0.521s takes the *existing Python*
-pipeline from 42.8k to ~96.9k rows/s — a **2.3× gain, into PeerDB territory, with no
-rewrite.**
+The `fetch` stage — Postgres' own logical decoding plus libpq — is **0.215s, and is
+language-independent**. It caps Path 2 at roughly **186,000 rows/s on this box no matter
+what the consumer is written in.**
 
-Protocol and language are separable, and the protocol change is both cheaper and larger.
+*Estimate* (labelled as such — not measured): a full Rust pipeline that builds Arrow
+arrays directly, with no intermediate objects, should reach **~130–150k rows/s**, putting
+it within ~25% of that server-side floor. That is consistent with PeerDB's ~120k in Go.
+
+So Rust buys roughly **3× over Python** and then runs into Postgres' single-threaded
+logical decoder. Going past it requires physical WAL (Path 3c) — which needs Rust or C
+anyway. This is precisely walshadow's argument, and it is the strongest reason to put the
+data plane in a language that can also host the Phase 3 decoder.
 
 ### Constraints that are not about performance
 
@@ -81,11 +109,14 @@ decoder-pool design), and a second runtime in the image.
 
 ## Decision
 
-**Option 2**, sequenced so the cheap win comes first:
+**Option 2**:
 
-1. **Replace wal2json with the `pgoutput` binary protocol.** Language-independent, ~2.3×,
-   and it also removes the `output_plugin_libraries` allowlisting and the wal2json
-   dependency. Do this before any rewrite.
+1. **Replace wal2json with the `pgoutput` binary protocol** — but for **dependency and
+   de-risking reasons, not performance.** It removes a third-party extension from the
+   image and the `output_plugin_libraries` allowlisting, it is maintained by the Postgres
+   project, and it is what the Rust port will consume anyway, so doing it first settles
+   the decoder semantics in the language where they are cheapest to iterate. The earlier
+   "2.3×, larger than the language change" justification was wrong (see *Correction*).
 2. **CNPG-I plugin in Go.** Forced by the ecosystem.
 3. **Data plane (change stream, columnar writer, compaction, verification) in Rust**, as a
    library with a thin binary around it, so Phase 3's `pgrx` bgworker links the same core

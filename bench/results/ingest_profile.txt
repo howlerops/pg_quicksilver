@@ -2,39 +2,39 @@ payload: 40,000 change rows, 15.8 MB of wal2json JSON
 
 stage                                   seconds  % of pipe      rows/s   runs in
 --------------------------------------------------------------------------------------------
-fetch from slot (libpq + PG decode)       0.253      25.5%     157,848   PG + C
-json.loads, parse_float=Decimal           0.544      54.8%      73,493   PYTHON
-decode to dicts                           0.059       5.9%     682,536   PYTHON
-group by key                              0.010       1.0%   4,157,513   PYTHON
-python objects -> Arrow                   0.103      10.4%     387,285   PYTHON/C++ boundary
-parquet write (zstd)                      0.023       2.4%   1,707,128   C++
+fetch from slot (libpq + PG decode)       0.218      22.1%     183,243   PG + C
+json.loads, parse_float=Decimal           0.592      60.0%      67,573   PYTHON
+decode to dicts                           0.052       5.3%     767,166   PYTHON
+group by key                              0.009       0.9%   4,358,269   PYTHON
+python objects -> Arrow                   0.095       9.6%     421,735   PYTHON/C++ boundary
+parquet write (zstd)                      0.020       2.0%   2,037,925   C++
 --------------------------------------------------------------------------------------------
-TOTAL pipeline                            0.993     100.0%      40,297
+TOTAL pipeline                            0.986     100.0%      40,567
 
-Python-side work: 0.716s = 72% of the pipeline
-C/C++ work:       0.277s = 28%
+Python-side work: 0.748s = 76% of the pipeline
+C/C++ work:       0.238s = 24%
 
-parse_float=Decimal costs 2.8x vs the C JSON scanner (0.192s -> 0.544s)
+parse_float=Decimal costs 1.2x vs the C JSON scanner (0.487s -> 0.592s)
   (required for correctness — money must not round-trip through float64)
 
-Ceiling: this pipeline sustains ~40,297 rows/s single-threaded.
+Ceiling: this pipeline sustains ~40,567 rows/s single-threaded.
 Compare: PeerDB ~120k rows/s, walshadow ~289k rows/s (Rust, physical WAL),
 and Postgres' own logical decoder is single-threaded on the SOURCE.
 
 --- top functions by cumulative time (full pipeline) ---
-             541868 function calls in 0.794 seconds
+             541895 function calls in 0.990 seconds
        Ordered by: internal time
-       List reduced from 163 to 12 due to restriction <12>
+       List reduced from 164 to 12 due to restriction <12>
        ncalls  tottime  percall  cumtime  percall filename:lineno(function)
-        40004    0.233    0.000    0.233    0.000 /usr/lib/python3.11/json/decoder.py:343(raw_decode)
-            8    0.166    0.021    0.177    0.022 /usr/local/lib/python3.11/dist-packages/psycopg/connection.py:476(wait)
-        40004    0.072    0.000    0.346    0.000 /usr/lib/python3.11/json/decoder.py:332(decode)
-            1    0.061    0.061    0.794    0.794 /home/user/pg_quicksilver/bench/scripts/profile_ingest.py:31(stage_timings
-        40004    0.052    0.000    0.445    0.000 /usr/lib/python3.11/json/__init__.py:299(loads)
+        40004    0.353    0.000    0.353    0.000 /usr/lib/python3.11/json/decoder.py:343(raw_decode)
+            8    0.167    0.021    0.177    0.022 /usr/local/lib/python3.11/dist-packages/psycopg/connection.py:476(wait)
+        20000    0.123    0.000    0.123    0.000 /home/user/pg_quicksilver/bench/scripts/profile_ingest.py:76(<dictcomp>)
+        40004    0.068    0.000    0.463    0.000 /usr/lib/python3.11/json/decoder.py:332(decode)
+        40004    0.052    0.000    0.562    0.000 /usr/lib/python3.11/json/__init__.py:299(loads)
+            1    0.045    0.045    0.990    0.990 /home/user/pg_quicksilver/bench/scripts/profile_ingest.py:31(stage_timings
         20002    0.035    0.000    0.035    0.000 /usr/lib/python3.11/json/decoder.py:284(__init__)
-            1    0.031    0.031    0.031    0.031 /home/user/pg_quicksilver/bench/scripts/profile_ingest.py:93(<listcomp>)
-        20000    0.030    0.000    0.030    0.000 /home/user/pg_quicksilver/bench/scripts/profile_ingest.py:75(<dictcomp>)
-        80008    0.029    0.000    0.029    0.000 {method 'match' of 're.Pattern' objects}
-            1    0.012    0.012    0.012    0.012 /usr/local/lib/python3.11/dist-packages/pyarrow/parquet/core.py:1191(write
-            1    0.010    0.010    0.302    0.302 /home/user/pg_quicksilver/bench/scripts/profile_ingest.py:66(<listcomp>)
-          518    0.009    0.000    0.010    0.000 /usr/local/lib/python3.11/dist-packages/psycopg/_cursor_base.py:275(_maybe
+            1    0.031    0.031    0.031    0.031 /home/user/pg_quicksilver/bench/scripts/profile_ingest.py:94(<listcomp>)
+        80008    0.031    0.000    0.031    0.000 {method 'match' of 're.Pattern' objects}
+            1    0.010    0.010    0.327    0.327 /home/user/pg_quicksilver/bench/scripts/profile_ingest.py:67(<listcomp>)
+            1    0.009    0.009    0.009    0.009 /usr/local/lib/python3.11/dist-packages/pyarrow/parquet/core.py:1191(write
+            1    0.009    0.009    0.253    0.253 /home/user/pg_quicksilver/bench/scripts/profile_ingest.py:59(<listcomp>)

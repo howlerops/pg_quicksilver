@@ -1,0 +1,23 @@
+payload: 40,002 wal2json messages, 16.0 MB
+
+parser                                  seconds      MB/s       msg/s   impl
+----------------------------------------------------------------------------------
+CPython json, C scanner (float)           0.196        81     204,050   C
+CPython json, parse_float=Decimal         0.261        61     153,052   PYTHON
+orjson (Rust)                             0.090       177     443,593   RUST
+----------------------------------------------------------------------------------
+
+orjson (Rust) vs CPython+Decimal :    2.9x faster
+orjson (Rust) vs CPython C scanner:    2.2x faster
+
+--- pipeline, holding every non-JSON stage constant ---
+configuration                                 seconds      rows/s
+------------------------------------------------------------------
+Python + wal2json + Decimal  (measured)         0.674      59,315
+Python + pgoutput binary     (no JSON stage)    0.413      96,852
+Python + orjson              (Rust parser)      0.503      79,495
+------------------------------------------------------------------
+
+The two 'fixes' land in the same place because the remaining
+0.413s of Python-side work dominates once JSON is cheap.
+That is the ceiling a protocol change alone can reach IN PYTHON.
