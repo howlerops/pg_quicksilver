@@ -85,6 +85,7 @@ in [docs/04](docs/04-storage-and-query-engine.md).
 | 12 | [S5: the serving path](docs/12-s5-serving-path.md) | The blocker that closed off Architecture A, and the 58-line `pg_duckdb` patch that reopens it |
 | 13 | [S0 without customer data](docs/13-s0-without-customer-data.md) | Break-even is `f ≈ 1/R`, not 40%. Why the gating spike stopped gating, and a self-serve script to answer it per cluster |
 | 14 | [Streaming, snapshot, failover](docs/14-phase2-streaming-and-failover.md) | pgoutput over streaming replication (36 ms), snapshot bootstrap, and what a **real promotion** does to a logical slot |
+| 15 | [PG 17 slot failover](docs/15-pg17-slot-failover.md) | Slot synchronisation works and removes the re-snapshot — and the GUC that silently deadlocks the new primary if promotion doesn't clear it |
 | — | [ADRs](docs/adr/) | Architecture decision records (template + the decisions still open) |
 
 ## The four architectures under consideration

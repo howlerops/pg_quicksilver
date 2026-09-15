@@ -1,0 +1,45 @@
+========================================================================
+0. Preconditions on the primary
+========================================================================
+  server_version_num = 170011
+  physical slot "qs_standby_slot" created; synchronized_standby_slots set
+
+========================================================================
+1. Logical slot created WITH FAILOVER, snapshot, stream
+========================================================================
+  slot "qs_sync_slot" created at 0/50D0160, failover=true
+  snapshot: 3000 rows at the consistent point
+
+========================================================================
+2. Standby with sync_replication_slots = on
+========================================================================
+  standby up, in recovery
+  applied 400 transactions; slot confirmed through 0/701B6D1
+  synced copy present on standby, confirmed_flush_lsn=0/701B6D1
+
+========================================================================
+3. Rows committed AFTER the last confirm, then a real promotion
+========================================================================
+  source now 3900 rows; mirror holds 3400 (500 rows in flight)
+  consumer disconnected (simulating the node that dies with the primary)
+  promoted: pg_is_in_recovery()=false
+
+========================================================================
+4. Does the slot exist on the new primary, and where does it point?
+========================================================================
+  logical slot present on new primary: 1
+  confirmed_flush_lsn=0/701B6D1  synced=true
+  our last confirm was  0/701B6D1
+  synchronized_standby_slots="qs_standby_slot", and that slot exists here: false
+  -> decoding would block indefinitely; clearing it as promotion must
+
+========================================================================
+5. Resume — no re-snapshot — and account for every in-flight row
+========================================================================
+  resumed without re-snapshot: 500 transactions, mirror 3400 -> 3900 rows
+  mirror 3900 rows / source 3900 rows -> MATCH
+  all 500 in-flight rows recovered from the synced slot
+  mirror 4100 rows / source 4100 rows -> MATCH
+
+========================================================================
+PASS

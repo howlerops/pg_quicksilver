@@ -43,6 +43,13 @@ import (
 // transactions are buffered; Transactions() drains the buffer, so callers keep
 // the same micro-batching shape they had with polling.
 type Streaming struct {
+	// Failover asks the server to create the slot with FAILOVER true, so a
+	// standby running sync_replication_slots keeps a synchronised copy and the
+	// slot survives promotion. PostgreSQL 17+ only; on 16 the slot is simply
+	// gone after a failover and the mirror must be re-snapshotted
+	// (docs/14 section C).
+	Failover bool
+
 	conn        *pgconn.PgConn
 	slot        string
 	publication string
@@ -86,8 +93,18 @@ func NewStreaming(ctx context.Context, dsn, slot, publication string, tables []s
 // point — the LSN an initial snapshot must be taken as of, so that snapshot and
 // stream join up with neither gap nor overlap.
 func (s *Streaming) CreateSlot(ctx context.Context) (pglogrepl.LSN, bool, error) {
-	res, err := pglogrepl.CreateReplicationSlot(ctx, s.conn, s.slot, "pgoutput",
-		pglogrepl.CreateReplicationSlotOptions{Temporary: false})
+	// pglogrepl still emits the pre-v15 positional grammar, which has no room
+	// for FAILOVER. Build the parenthesised form ourselves (v15+) and let
+	// pglogrepl parse the result set, which is unchanged.
+	opts := []string{}
+	if s.Failover {
+		opts = append(opts, "FAILOVER true")
+	}
+	sql := fmt.Sprintf("CREATE_REPLICATION_SLOT %s LOGICAL pgoutput", quoteIdent(s.slot))
+	if len(opts) > 0 {
+		sql += " (" + strings.Join(opts, ", ") + ")"
+	}
+	res, err := pglogrepl.ParseCreateReplicationSlot(s.conn.Exec(ctx, sql))
 	if err != nil {
 		// already exists: fine, we resume from the server's confirmed position
 		if strings.Contains(err.Error(), "already exists") {
@@ -100,6 +117,32 @@ func (s *Streaming) CreateSlot(ctx context.Context) (pglogrepl.LSN, bool, error)
 		return 0, true, nil
 	}
 	return lsn, true, nil
+}
+
+func quoteIdent(s string) string {
+	return `"` + strings.ReplaceAll(s, `"`, `""`) + `"`
+}
+
+// SlotExists reports whether the slot is present on the server this Streaming
+// is connected to. After a promotion this is the difference between "resume"
+// and "rebuild", and it must be checked explicitly: a consumer that reconnects
+// and merely sees no data cannot tell an idle source from a vanished slot.
+func (s *Streaming) SlotExists(ctx context.Context) (bool, error) {
+	res := s.conn.Exec(ctx, fmt.Sprintf(
+		"SELECT count(*) FROM pg_replication_slots WHERE slot_name = '%s'",
+		strings.ReplaceAll(s.slot, "'", "''")))
+	all, err := res.ReadAll()
+	if err != nil {
+		return false, err
+	}
+	for _, r := range all {
+		for _, row := range r.Rows {
+			if len(row) > 0 && string(row[0]) != "0" {
+				return true, nil
+			}
+		}
+	}
+	return false, nil
 }
 
 func (s *Streaming) DropSlot(ctx context.Context) error {
