@@ -1,0 +1,38 @@
+========================================================================
+A. DDL barriers
+========================================================================
+  baseline columns: ['id', 'sku', 'price']
+      mirror 131 rows / source 131 rows -> MATCH
+
+  ALTER TABLE qs_items ADD COLUMN category text ...
+      DDL barrier seen in change stream: True
+      evolved columns (by the barrier, not by hand): ['id', 'sku', 'price', 'category']
+      mirror 287 rows / source 287 rows -> MATCH
+      rows with NULL category (old files NULL-filled): 246
+
+  ALTER TABLE qs_items DROP COLUMN sku ...
+      evolved columns: ['id', 'price', 'category']
+      mirror 288 rows / source 288 rows -> MATCH
+
+  ALTER TABLE qs_items ALTER COLUMN price TYPE text ...
+      halted: ['RETYPED price numeric(12,2)->text']
+      REFUSED: mirroring halts for this table rather than writing a lossy conversion (docs/06 policy)
+
+========================================================================
+B. readiness gating (freshnessSLO = 3.0s)
+========================================================================
+  while ingesting     HTTP 200  lag 0.1s within SLO 3.0s
+  stalling ingest for 5s (writes continue) ...
+  NOT READY at lag     3.1s (stall began with 0.1s already on the clock)
+  resuming ingest ...
+  after resume        HTTP 200  lag 0.0s within SLO 3.0s  (recovered in 0.0s)
+
+  /metrics:
+    quicksilver_lag_seconds 0.001
+    quicksilver_lag_bytes 2752
+    quicksilver_ready 1
+    quicksilver_compaction_backlog 23
+    quicksilver_diverged 0
+
+========================================================================
+PASS — DDL barriers and readiness gating both hold

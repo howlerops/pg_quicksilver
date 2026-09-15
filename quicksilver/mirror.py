@@ -69,6 +69,20 @@ def arrow_schema(columns: dict[str, str]) -> pa.Schema:
     return pa.schema(fields)
 
 
+def _duckdb_type(t: pa.DataType) -> str:
+    if pa.types.is_decimal(t):
+        return f"DECIMAL({t.precision},{t.scale})"
+    if pa.types.is_integer(t):
+        return "BIGINT"
+    if pa.types.is_boolean(t):
+        return "BOOLEAN"
+    if pa.types.is_floating(t):
+        return "DOUBLE"
+    if pa.types.is_timestamp(t):
+        return "TIMESTAMPTZ" if t.tz else "TIMESTAMP"
+    return "VARCHAR"
+
+
 def _coerce(value, field: pa.Field):
     if value is None:
         return None
@@ -215,6 +229,12 @@ class TableMirror:
         self.state.base_files.clear()
         self.state.delta_files.clear()
 
+    def evolve(self, new_columns: dict[str, str]) -> None:
+        """Adopt a new column list. Existing files are left alone — _projection
+        NULL-fills what they lack, so there is no rewrite and no downtime. A
+        compaction later folds everything into the new shape."""
+        self.columns = dict(new_columns)
+
     # ---- compaction ----------------------------------------------------
     def compact(self, con: duckdb.DuckDBPyConnection) -> dict:
         """Fold base + deltas into one base file, applying deletion vectors,
@@ -239,6 +259,20 @@ class TableMirror:
         return {"rows": rows.num_rows, "base_file": name}
 
     # ---- read path -----------------------------------------------------
+    def _projection(self, path: Path) -> str:
+        """Project the CURRENT column list out of a file that may predate a
+        schema change. A file written before an ADD COLUMN does not have that
+        column, so select NULL of the right type instead of failing."""
+        present = set(pq.read_schema(path).names)
+        schema = arrow_schema(self.columns)
+        bits = []
+        for f in schema:
+            if f.name in present:
+                bits.append(f'"{f.name}"')
+            else:
+                bits.append(f'CAST(NULL AS {_duckdb_type(f.type)}) AS "{f.name}"')
+        return ", ".join(bits)
+
     def _live_sql(self) -> str:
         """SQL for the current logical contents: base files minus their
         deletion vectors, union the deltas. No window function, no global
@@ -247,7 +281,7 @@ class TableMirror:
         for base in self.state.base_files:
             p = self.dir / "base" / base
             dv_path = self.dir / "dv" / f"{Path(base).stem}.dv.json"
-            cols = ", ".join(f'"{c}"' for c in self.columns)
+            cols = self._projection(p)
             if dv_path.exists():
                 dead = json.loads(dv_path.read_text())
                 if dead:
@@ -259,8 +293,7 @@ class TableMirror:
             parts.append(f"(SELECT {cols} FROM read_parquet('{p}'))")
         for d in self.state.delta_files:
             p = self.dir / "delta" / d
-            cols = ", ".join(f'"{c}"' for c in self.columns)
-            parts.append(f"(SELECT {cols} FROM read_parquet('{p}'))")
+            parts.append(f"(SELECT {self._projection(p)} FROM read_parquet('{p}'))")
         if not parts:
             typed = ", ".join(f'NULL::VARCHAR AS "{c}"' for c in self.columns)
             return f"(SELECT {typed} WHERE false)"

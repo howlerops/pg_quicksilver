@@ -125,7 +125,7 @@ def main():
                 continue
             stats = {q: m.apply(txns) for q, m in mirrors.items()}
             last = txns[-1].commit_lsn
-            stream.confirm(last)                    # only after the write is durable
+            stream.confirm(txns[-1].next_lsn)       # only after the write is durable
             tot_txn += len(txns)
             rounds += 1
 
@@ -163,7 +163,7 @@ def main():
             break
         for m in mirrors.values():
             m.apply(txns)
-        stream.confirm(txns[-1].commit_lsn)
+        stream.confirm(txns[-1].next_lsn)
         tot_txn += len(txns)
 
     print(f"\napplied {tot_txn} transactions; {moved['n']} cross-table moves\n")

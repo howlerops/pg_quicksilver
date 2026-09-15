@@ -53,6 +53,11 @@ class Change:
 @dataclass
 class Transaction:
     commit_lsn: str
+    #: LSN to confirm *through* to consume this transaction. Postgres'
+    #: upto_lsn stops BEFORE the record at that LSN, so confirming at
+    #: commit_lsn re-reads this transaction forever — a permanent stall.
+    #: wal2json's commit message carries `nextlsn` for exactly this.
+    next_lsn: str = ""
     changes: list[Change] = field(default_factory=list)
 
     @property
@@ -136,7 +141,8 @@ class LogicalChangeStream(ChangeStream):
             elif action == "C":
                 if txn is not None:
                     txn.commit_lsn = msg.get("lsn", txn.commit_lsn)
-                    self._pending_confirm = txn.commit_lsn
+                    txn.next_lsn = msg.get("nextlsn") or txn.commit_lsn
+                    self._pending_confirm = txn.next_lsn
                     yield txn                      # only now — the COMMIT is seen
                     txn = None
             elif action in ("I", "U", "D", "T") and txn is not None:
