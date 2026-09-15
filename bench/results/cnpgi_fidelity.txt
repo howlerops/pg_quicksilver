@@ -1,3 +1,12 @@
+    discovery_test.go:134: kube-apiserver up at 
+    discovery_test.go:142: applied 3 objects; skipped 5 needing CRDs we do not install (cert-manager)
+    discovery_test.go:159: discovered Service cnpg-system/quicksilver
+    discovery_test.go:195: port=9090 clientSecret=quicksilver-client-tls serverSecret=quicksilver-server-tls
+    discovery_test.go:211: Service selects Deployment quicksilver (1 replica(s))
+--- PASS: TestPluginIsDiscoverable (4.30s)
+    discovery_test.go:224: kube-apiserver up at 
+    discovery_test.go:240: as expected: an operator in cnpg-system finds no plugin, although the chart installed cleanly in databases — this is the silent failure the chart's operatorNamespace value exists to prevent
+--- PASS: TestDiscoveryMissesAnotherNamespace (4.70s)
     handshake_test.go:137: plugin quicksilver.howlerops.io version dev, licence Apache-2.0
     handshake_test.go:146: declared services: [TYPE_OPERATOR_SERVICE TYPE_LIFECYCLE_SERVICE TYPE_POSTGRES]
     handshake_test.go:161: operator RPCs: [TYPE_VALIDATE_CLUSTER_CREATE TYPE_VALIDATE_CLUSTER_CHANGE TYPE_MUTATE_CLUSTER TYPE_SET_STATUS_IN_CLUSTER]
@@ -9,17 +18,17 @@
     handshake_test.go:287: refused: rpc error: code = Unavailable desc = connection error: desc = "error reading ser…
     handshake_test.go:301: refused: rpc error: code = Unavailable desc = connection error: desc = "error reading ser…
     handshake_test.go:313: refused: rpc error: code = Unavailable desc = connection error: desc = "transport: authen…
---- PASS: TestMTLSIsEnforced (0.07s)
+--- PASS: TestMTLSIsEnforced (0.06s)
     --- PASS: TestMTLSIsEnforced/no_client_certificate_is_refused (0.00s)
-    --- PASS: TestMTLSIsEnforced/a_client_certificate_from_another_CA_is_refused (0.01s)
+    --- PASS: TestMTLSIsEnforced/a_client_certificate_from_another_CA_is_refused (0.00s)
     --- PASS: TestMTLSIsEnforced/a_server_name_outside_the_certificate's_SANs_is_refused (0.00s)
     --- PASS: TestMTLSIsEnforced/the_operator's_own_certificate_and_names_work (0.00s)
     pod_test.go:124: CNPG built Pod "app-1": containers=[postgres] initContainers=[bootstrap-controller] volumes=3
     pod_test.go:145: sidecar mounts: [pgdata:/var/lib/postgresql/data scratch-data:/run scratch-data:/controller shm:/dev/shm plugins:/plugins]
     pod_test.go:160: mirrorPath /var/lib/postgresql/data/quicksilver is inside volume pgdata at /var/lib/postgresql/data
---- PASS: TestSidecarInjectionIntoARealCNPGPod (0.01s)
+--- PASS: TestSidecarInjectionIntoARealCNPGPod (0.00s)
     pod_test.go:197: declared Pod operation types: [TYPE_CREATE TYPE_PATCH TYPE_UPDATE TYPE_EVALUATE]
 --- PASS: TestEveryDeclaredVerbActuallyInjects (0.00s)
 --- PASS: TestModeOffLeavesARealPodUntouched (0.00s)
 PASS
-ok  	github.com/howlerops/pg_quicksilver/go/fidelity	0.174s
+ok  	github.com/howlerops/pg_quicksilver/go/fidelity	9.156s

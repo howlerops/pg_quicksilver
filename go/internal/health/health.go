@@ -32,6 +32,7 @@ type Snapshot struct {
 	LagSeconds        float64 `json:"lag_seconds"`
 	CompactionBacklog int     `json:"compaction_backlog"`
 	Diverged          bool    `json:"diverged"`
+	Bootstrapped      bool    `json:"bootstrapped"`
 	VerifiedAgo       float64 `json:"verified_seconds_ago"`
 }
 
@@ -46,6 +47,14 @@ type Health struct {
 	backlog    int
 	diverged   bool
 	verifiedAt time.Time
+
+	// bootstrapped is false until the mirror has a complete copy of the source
+	// to serve from. Without it a freshly-started node is READY: lag is
+	// measured from process start, so it reads as zero, and the node joins the
+	// read endpoint with an empty or half-written mirror. That is the same
+	// mistake as the idle-vs-stale one, inverted — there, no data arriving was
+	// read as staleness; here, no data having ARRIVED YET is read as freshness.
+	bootstrapped bool
 }
 
 func New(slo time.Duration) *Health {
@@ -71,6 +80,16 @@ func (h *Health) RecordCaughtUp() {
 	h.caughtUpAt = time.Now()
 }
 
+// RecordBootstrapped marks the mirror as having a complete copy to serve.
+// Called once the initial snapshot finishes, or immediately on resume when the
+// mirror already carries a durable applied_lsn from a previous run.
+func (h *Health) RecordBootstrapped() {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.bootstrapped = true
+	h.caughtUpAt = time.Now()
+}
+
 func (h *Health) RecordVerification(diverged bool) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -84,6 +103,7 @@ func (h *Health) Snapshot() Snapshot {
 		AppliedLSN: h.appliedLSN, HeadLSN: h.headLSN, LagBytes: h.lagBytes,
 		LagSeconds:        time.Since(h.caughtUpAt).Seconds(),
 		CompactionBacklog: h.backlog, Diverged: h.diverged,
+		Bootstrapped:      h.bootstrapped,
 	}
 	if !h.verifiedAt.IsZero() {
 		s.VerifiedAgo = time.Since(h.verifiedAt).Seconds()
@@ -93,6 +113,9 @@ func (h *Health) Snapshot() Snapshot {
 
 func (h *Health) Ready() (bool, string) {
 	s := h.Snapshot()
+	if !s.Bootstrapped {
+		return false, "still bootstrapping — no complete copy of the source yet"
+	}
 	if s.Diverged {
 		return false, "mirror diverged from source — verification failed"
 	}
@@ -114,6 +137,10 @@ func (h *Health) Metrics() string {
 	if s.Diverged {
 		diverged = 1
 	}
+	boot := 0
+	if s.Bootstrapped {
+		boot = 1
+	}
 	return fmt.Sprintf(`# HELP quicksilver_lag_seconds Seconds since the mirror was last caught up.
 # TYPE quicksilver_lag_seconds gauge
 quicksilver_lag_seconds %.3f
@@ -129,7 +156,10 @@ quicksilver_compaction_backlog %d
 # HELP quicksilver_diverged 1 if verification found a mismatch.
 # TYPE quicksilver_diverged gauge
 quicksilver_diverged %d
-`, s.LagSeconds, s.LagBytes, ready, s.CompactionBacklog, diverged)
+# HELP quicksilver_bootstrapped 1 once the mirror holds a complete copy to serve.
+# TYPE quicksilver_bootstrapped gauge
+quicksilver_bootstrapped %d
+`, s.LagSeconds, s.LagBytes, ready, s.CompactionBacklog, diverged, boot)
 }
 
 // Serve exposes /readyz (the Kubernetes readiness probe), /healthz (liveness —

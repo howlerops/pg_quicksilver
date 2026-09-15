@@ -2,7 +2,6 @@ package mirror
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"hash/fnv"
 	"os"
@@ -113,31 +112,29 @@ func arrayValue(a arrow.Array, i int) any {
 // vectors, plus the deltas.
 func (t *Table) Live() ([]map[string]any, error) {
 	var out []map[string]any
-	for _, base := range t.State.BaseFiles {
-		stem := strings.TrimSuffix(base, ".parquet")
-		dead := map[int]bool{}
-		if b, err := os.ReadFile(filepath.Join(t.Dir, "dv", stem+".dv.json")); err == nil {
-			var pos []int
-			_ = json.Unmarshal(b, &pos)
-			for _, p := range pos {
-				dead[p] = true
-			}
-		}
-		rows, err := t.readParquet(filepath.Join(t.Dir, "base", base), dead)
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, rows...)
-	}
-	for _, d := range t.State.DeltaFiles {
-		rows, err := t.readParquet(filepath.Join(t.Dir, "delta", d), nil)
+	// Deltas are no longer rewritten when a row in them is superseded, so they
+	// carry deletion vectors exactly as base files do. Reading a delta without
+	// its vector would resurrect every superseded row.
+	read := func(rel string) error {
+		rows, err := t.readParquet(filepath.Join(t.Dir, rel), t.deadPositions(rel))
 		if err != nil {
 			if os.IsNotExist(err) {
-				continue
+				return nil
 			}
-			return nil, err
+			return err
 		}
 		out = append(out, rows...)
+		return nil
+	}
+	for _, base := range t.State.BaseFiles {
+		if err := read(filepath.Join("base", base)); err != nil {
+			return nil, err
+		}
+	}
+	for _, d := range t.State.DeltaFiles {
+		if err := read(filepath.Join("delta", d)); err != nil {
+			return nil, err
+		}
 	}
 	return out, nil
 }

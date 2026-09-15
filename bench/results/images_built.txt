@@ -1,0 +1,2 @@
+ghcr.io/howlerops/pg_quicksilver-mirror:0.1.0  78.2 MB  4829ea2bbffa
+ghcr.io/howlerops/pg_quicksilver-plugin:0.1.0  43.4 MB  49a31477e369

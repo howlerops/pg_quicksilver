@@ -3,13 +3,19 @@
 #   docker build --target plugin -t ghcr.io/howlerops/pg_quicksilver-plugin:dev .
 #   docker build --target mirror -t ghcr.io/howlerops/pg_quicksilver-mirror:dev .
 #
+# Base images are fully qualified on purpose. Docker silently resolves a bare
+# "golang:1.27" against Docker Hub; podman and buildah refuse it outright unless
+# the host has configured unqualified-search registries. Spelling the registry
+# out is the only form that works everywhere, and it also removes a way for a
+# build host's registry configuration to change which image you get.
+#
 # The mirror image is NOT a PostgreSQL image. It is a sidecar that shares the
 # instance Pod's data volume and talks to PostgreSQL over the network and the
 # local socket, so it needs no server binaries and no extensions. That is what
 # lets docs/07 hold: the CNPG PostgreSQL image stays the stock upstream one, and
 # nothing here forks it.
 
-FROM golang:1.27 AS build
+FROM docker.io/library/golang:1.27 AS build
 WORKDIR /src
 COPY go/go.mod go/go.sum ./
 RUN go mod download

@@ -24,6 +24,12 @@ The pitch in one line: *your read replicas are already burning a full copy of yo
 answer `SELECT`s with a row-store and a B-tree. Spend that same copy on a column-store and
 get a measured 30× median (up to 68×) on the queries that actually hurt.*
 
+Measured on the **production sidecar** ([docs/18](docs/18-measured-performance.md)): a
+12-column, 3.2M-row table gives a **5.8× analytical median** (up to 12.6×), **5.6× smaller**
+on disk, **188 ms** p50 commit-to-visible, and **24.6k rows/s** ingest. Speedup scales with
+column count — 4 columns gives 7×, 30 columns gives 30× — because a column store's win is
+the columns it does not read.
+
 The pitch that matters to whoever signs the invoice: **replace 8 read replicas with 3**, and
 have those 3 still count toward HA. See [docs/10](docs/10-scaling-economics.md) for the
 consolidation math and the three cases where it doesn't hold.
@@ -99,6 +105,7 @@ in [docs/04](docs/04-storage-and-query-engine.md).
 | 15 | [PG 17 slot failover](docs/15-pg17-slot-failover.md) | Slot synchronisation works and removes the re-snapshot — and the GUC that silently deadlocks the new primary if promotion doesn't clear it |
 | 16 | [Deploying](docs/16-deploying.md) | **The installable part.** Two images, the Helm chart, the Cluster spec, what the plugin refuses, and what has not been verified |
 | 17 | [Testing without a cluster](docs/17-testing-without-a-cluster.md) | The CNPG-I handshake is not a Kubernetes thing. Real mTLS, real Pods from CNPG's own builder, real CRD schemas — and the capability bug that found |
+| 18 | [Measured performance](docs/18-measured-performance.md) | **The production path, measured.** Bootstrap, drain rate, commit-to-visible, storage, and the three implementation defects the benchmark found before it produced a number worth quoting |
 | — | [ADRs](docs/adr/) | Architecture decision records (template + the decisions still open) |
 
 ## The four architectures under consideration

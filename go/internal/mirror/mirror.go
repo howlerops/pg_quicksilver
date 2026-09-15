@@ -51,12 +51,29 @@ type State struct {
 	// serves the default, with identical row counts and no error anywhere.
 	MissingVals map[string]string `json:"missing_vals,omitempty"`
 
+	// BaseRows and DeltaRows drive the compaction policy. Without them the only
+	// available trigger is "every N batches", which is a count of the wrong
+	// thing: compaction rewrites the WHOLE base file, so its cost scales with
+	// the table while its trigger scaled with traffic. On a 5M-row table that
+	// measured a 30x collapse in apply throughput and 6 GB of RSS, because a
+	// full rewrite ran every 32 transactions regardless of how little had
+	// actually changed.
+	BaseRows  int `json:"base_rows"`
+	DeltaRows int `json:"delta_rows"`
+
 	// Halted, when set, is why this mirror stopped and must not be served.
 	// It is durable on purpose: a halt that lives only in a running process is
 	// undone by the next restart, which re-reads the catalog, sees the new
 	// schema as if it had always been there, and serves the corruption it
 	// stopped for.
 	Halted string `json:"halted,omitempty"`
+}
+
+// loc is where a key's current row physically lives: a file, relative to the
+// table directory, and a row position inside it.
+type loc struct {
+	File string
+	Pos  int
 }
 
 type Table struct {
@@ -66,6 +83,16 @@ type Table struct {
 	Order     []string          // stable column order
 	Dir       string
 	State     State
+
+	// index maps key -> current row location, across base AND delta files. It
+	// is the difference between an apply that touches only the files it has to
+	// and one that rewrites everything.
+	//
+	// It used to live only on disk, as one JSON map per base file, re-read and
+	// re-parsed on EVERY batch. On a 5M-row table that is a 5M-entry JSON parse
+	// per batch, which is most of the 30x apply-throughput collapse measured in
+	// docs/18. Held in memory it is built once per process and updated in place.
+	index map[string]loc
 }
 
 func New(root, schema, table, key string, cols map[string]string, order []string) (*Table, error) {
@@ -85,6 +112,81 @@ func New(root, schema, table, key string, cols map[string]string, order []string
 		_ = json.Unmarshal(b, &t.State)
 	}
 	return t, nil
+}
+
+// ensureIndex builds the key -> location map if it is not loaded. The base
+// file's index is persisted (written by Snapshot and Compact), so only the
+// deltas have to be read back, and those are small by construction.
+func (t *Table) ensureIndex() error {
+	if t.index != nil {
+		return nil
+	}
+	t.index = make(map[string]loc)
+
+	for _, base := range t.State.BaseFiles {
+		rel := filepath.Join("base", base)
+		stem := trimParquet(base)
+		raw, err := os.ReadFile(filepath.Join(t.Dir, "index", stem+".idx.json"))
+		if err == nil {
+			var m map[string]int
+			if json.Unmarshal(raw, &m) == nil {
+				for k, pos := range m {
+					t.index[k] = loc{File: rel, Pos: pos}
+				}
+				continue
+			}
+		}
+		// No persisted index (an older mirror, or a truncated write): rebuild
+		// it from the file rather than silently indexing nothing, which would
+		// leave superseded rows visible forever.
+		rows, err := t.readParquet(filepath.Join(t.Dir, rel), nil)
+		if err != nil {
+			return err
+		}
+		for i, r := range rows {
+			t.index[keyString(r[t.Key])] = loc{File: rel, Pos: i}
+		}
+	}
+
+	for _, d := range t.State.DeltaFiles {
+		rel := filepath.Join("delta", d)
+		rows, err := t.readParquet(filepath.Join(t.Dir, rel), nil)
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return err
+		}
+		dead := t.deadPositions(rel)
+		for i, r := range rows {
+			if dead[i] {
+				continue
+			}
+			t.index[keyString(r[t.Key])] = loc{File: rel, Pos: i}
+		}
+	}
+	return nil
+}
+
+// deadPositions reads a file's deletion vector. Every file gets one now, base
+// and delta alike: marking a superseded row dead is O(1), whereas rewriting the
+// file that holds it is O(file) and was being done on every batch.
+func (t *Table) deadPositions(rel string) map[int]bool {
+	dead := map[int]bool{}
+	b, err := os.ReadFile(t.dvPath(rel))
+	if err != nil {
+		return dead
+	}
+	var pos []int
+	_ = json.Unmarshal(b, &pos)
+	for _, p := range pos {
+		dead[p] = true
+	}
+	return dead
+}
+
+func (t *Table) dvPath(rel string) string {
+	return filepath.Join(t.Dir, "dv", trimParquet(filepath.Base(rel))+".dv.json")
 }
 
 func (t *Table) statePath() string { return filepath.Join(t.Dir, "state.json") }
@@ -240,6 +342,11 @@ func (t *Table) Apply(txns []changestream.Transaction) (ApplyStats, error) {
 		if err := t.extendDeletionVectors(superseded); err != nil {
 			return ApplyStats{}, err
 		}
+		// A deleted key has no current location. Leaving it in the index would
+		// make a later re-insert of the same key tombstone the wrong row.
+		for k := range deletes {
+			delete(t.index, k)
+		}
 	}
 	if len(upserts) > 0 {
 		rows := make([]map[string]any, 0, len(upserts))
@@ -278,6 +385,17 @@ func (t *Table) writeDelta(rows []map[string]any) error {
 		return err
 	}
 	t.State.DeltaFiles = append(t.State.DeltaFiles, name)
+	t.State.DeltaRows += len(rows)
+
+	// The new rows are now the current location for their keys. Updating the
+	// index here rather than rebuilding it is what keeps apply O(change).
+	if err := t.ensureIndex(); err != nil {
+		return err
+	}
+	rel := filepath.Join("delta", name)
+	for i, r := range rows {
+		t.index[keyString(r[t.Key])] = loc{File: rel, Pos: i}
+	}
 	return nil
 }
 
@@ -355,37 +473,27 @@ func appendValue(b array.Builder, dt arrow.DataType, v any) {
 
 // extendDeletionVectors marks row positions dead in each base file. This is the
 // work query time does NOT do — the whole point of the docs/11 correction.
+// extendDeletionVectors marks the previous rows for the given keys dead,
+// wherever they physically live, using the in-memory index.
+//
+// This replaces two O(table) costs that ran on every single batch: a full JSON
+// parse of the base index, and a read-and-rewrite of every delta file. Both
+// scaled with the mirror rather than with the change, which is why apply
+// throughput collapsed as the table grew (docs/18). Marking a position dead is
+// O(1) per key, and the file it lives in is never rewritten.
 func (t *Table) extendDeletionVectors(keys map[string]bool) error {
-	for _, base := range t.State.BaseFiles {
-		stem := strings.TrimSuffix(base, ".parquet")
-		idxPath := filepath.Join(t.Dir, "index", stem+".idx.json")
-		raw, err := os.ReadFile(idxPath)
-		if err != nil {
-			continue
+	if err := t.ensureIndex(); err != nil {
+		return err
+	}
+	byFile := map[string][]int{}
+	for k := range keys {
+		if l, ok := t.index[k]; ok {
+			byFile[l.File] = append(byFile[l.File], l.Pos)
 		}
-		var index map[string]int
-		if err := json.Unmarshal(raw, &index); err != nil {
-			continue
-		}
-		hits := map[int]bool{}
-		for k := range keys {
-			if pos, ok := index[k]; ok {
-				hits[pos] = true
-			}
-		}
-		if len(hits) == 0 {
-			continue
-		}
-		dvPath := filepath.Join(t.Dir, "dv", stem+".dv.json")
-		existing := map[int]bool{}
-		if b, err := os.ReadFile(dvPath); err == nil {
-			var prev []int
-			_ = json.Unmarshal(b, &prev)
-			for _, p := range prev {
-				existing[p] = true
-			}
-		}
-		for p := range hits {
+	}
+	for rel, positions := range byFile {
+		existing := t.deadPositions(rel)
+		for _, p := range positions {
 			existing[p] = true
 		}
 		merged := make([]int, 0, len(existing))
@@ -393,41 +501,14 @@ func (t *Table) extendDeletionVectors(keys map[string]bool) error {
 			merged = append(merged, p)
 		}
 		sort.Ints(merged)
-		b, _ := json.Marshal(merged)
-		if err := os.WriteFile(dvPath, b, 0o644); err != nil {
-			return err
-		}
-	}
-
-	// deltas are small; drop superseded rows by rewriting (cheap at batch size)
-	kept := t.State.DeltaFiles[:0]
-	for _, d := range t.State.DeltaFiles {
-		p := filepath.Join(t.Dir, "delta", d)
-		rows, err := t.readParquet(p, nil)
+		b, err := json.Marshal(merged)
 		if err != nil {
-			kept = append(kept, d)
-			continue
-		}
-		out := make([]map[string]any, 0, len(rows))
-		for _, r := range rows {
-			if !keys[keyString(r[t.Key])] {
-				out = append(out, r)
-			}
-		}
-		if len(out) == len(rows) {
-			kept = append(kept, d)
-			continue
-		}
-		if len(out) == 0 {
-			_ = os.Remove(p) // drop rather than write an empty file
-			continue
-		}
-		if err := t.writeParquet(p, out); err != nil {
 			return err
 		}
-		kept = append(kept, d)
+		if err := os.WriteFile(t.dvPath(rel), b, 0o644); err != nil {
+			return err
+		}
 	}
-	t.State.DeltaFiles = kept
 	return nil
 }
 
@@ -439,6 +520,8 @@ func (t *Table) truncate() error {
 		}
 	}
 	t.State.BaseFiles, t.State.DeltaFiles = nil, nil
+	t.State.BaseRows, t.State.DeltaRows = 0, 0
+	t.index = nil
 	return nil
 }
 
@@ -463,10 +546,16 @@ func (t *Table) Compact() (int, error) {
 	}
 	t.State.BaseFiles = []string{name}
 	t.State.DeltaFiles = nil
+	t.State.BaseRows = len(rows)
+	t.State.DeltaRows = 0
 
 	index := make(map[string]int, len(rows))
+	t.index = make(map[string]loc, len(rows))
+	rel := filepath.Join("base", name)
 	for i, r := range rows {
-		index[keyString(r[t.Key])] = i
+		k := keyString(r[t.Key])
+		index[k] = i
+		t.index[k] = loc{File: rel, Pos: i}
 	}
 	b, _ := json.Marshal(index)
 	stem := strings.TrimSuffix(name, ".parquet")
@@ -477,6 +566,111 @@ func (t *Table) Compact() (int, error) {
 }
 
 func (t *Table) CompactionBacklog() int { return len(t.State.DeltaFiles) }
+
+// ShouldMergeDeltas reports whether there are enough delta files that opening
+// them is costing more than merging them would.
+func (t *Table) ShouldMergeDeltas() bool {
+	return len(t.State.DeltaFiles) >= compactMaxFiles
+}
+
+// MergeDeltas rewrites all delta files into one, honouring their deletion
+// vectors. Cost is proportional to the rows in the deltas, not to the table, so
+// it can run often — which is what keeps the read path's file count bounded
+// without paying for a full base rewrite.
+func (t *Table) MergeDeltas() (int, error) {
+	if len(t.State.DeltaFiles) < 2 {
+		return 0, nil
+	}
+	if err := t.ensureIndex(); err != nil {
+		return 0, err
+	}
+	old := append([]string(nil), t.State.DeltaFiles...)
+
+	var rows []map[string]any
+	for _, d := range old {
+		rel := filepath.Join("delta", d)
+		got, err := t.readParquet(filepath.Join(t.Dir, rel), t.deadPositions(rel))
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return 0, err
+		}
+		rows = append(rows, got...)
+	}
+	if len(rows) == 0 {
+		// everything in them was superseded; just drop the files
+		for _, d := range old {
+			_ = os.Remove(filepath.Join(t.Dir, "delta", d))
+			_ = os.Remove(t.dvPath(filepath.Join("delta", d)))
+		}
+		t.State.DeltaFiles = nil
+		t.State.DeltaRows = 0
+		return 0, t.saveState()
+	}
+
+	t.State.Seq++
+	name := fmt.Sprintf("%06d.parquet", t.State.Seq)
+	rel := filepath.Join("delta", name)
+	if err := t.writeParquet(filepath.Join(t.Dir, rel), rows); err != nil {
+		return 0, err
+	}
+	// The new file is written before the old ones are removed and before the
+	// state names it, so a crash at any point leaves a readable mirror.
+	for i, r := range rows {
+		t.index[keyString(r[t.Key])] = loc{File: rel, Pos: i}
+	}
+	t.State.DeltaFiles = []string{name}
+	t.State.DeltaRows = len(rows)
+	if err := t.saveState(); err != nil {
+		return 0, err
+	}
+	for _, d := range old {
+		_ = os.Remove(filepath.Join(t.Dir, "delta", d))
+		_ = os.Remove(t.dvPath(filepath.Join("delta", d)))
+	}
+	return len(rows), nil
+}
+
+// Compaction policy constants. Both bounds exist because the two costs they
+// bound are different: rewriting the base is proportional to the TABLE, while
+// reading through many small deltas is proportional to the FILE COUNT.
+const (
+	// Rewrite once the accumulated deltas are worth a fifth of the base. Any
+	// smaller fraction spends more on rewriting than it saves on reading.
+	compactChurnRatio = 5
+	// ...but never rewrite for trivial churn on a small table either.
+	compactMinRows = 25_000
+	// A ceiling on read amplification, independent of churn. This is not a
+	// safety valve, it is a primary constraint: measured at 3.2M rows, letting
+	// 203 small delta files accumulate dropped the analytical speedup from
+	// single-digit multiples to 2.3x, with a plain count(*) coming out SLOWER
+	// than PostgreSQL. Opening files dominates once they are small enough.
+	//
+	// Hitting it triggers a delta MERGE, not a base rewrite: merging is
+	// O(delta rows) and bounds the file count, whereas rewriting the base is
+	// O(table) and is only worth it when enough of the table has actually
+	// changed. Trying to solve both with one knob is what produced first a 30x
+	// throughput collapse and then a 203-file read path.
+	compactMaxFiles = 16
+)
+
+// ShouldCompact reports whether a full rewrite is currently worth its cost.
+//
+// The trigger must scale with the TABLE, not with traffic. Compaction reads
+// every live row and writes a new base file, so triggering it on a batch count
+// makes a busy 5M-row mirror rewrite 5M rows every few seconds — which is both
+// the throughput collapse and the memory spike measured in docs/18.
+func (t *Table) ShouldCompact() bool {
+	if len(t.State.DeltaFiles) == 0 {
+		return false
+	}
+	threshold := t.State.BaseRows / compactChurnRatio
+	if threshold < compactMinRows {
+		threshold = compactMinRows
+	}
+	return t.State.DeltaRows >= threshold
+}
 
 func writeJSON(path string, v any) error {
 	b, err := json.Marshal(v)

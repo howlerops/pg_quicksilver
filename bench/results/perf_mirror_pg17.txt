@@ -1,0 +1,70 @@
+
+== 0. a clean PostgreSQL 17 primary with 3000000 rows ==
+  seeding 3000000 rows...
+  seeded in 14.3s; heap+indexes 608 MB
+
+== 1. standby ==
+  up and in recovery
+
+== 2. snapshot rate — how long until the mirror is useful ==
+  correctly NOT ready while bootstrapping: {"ready":false,"reason":"still bootstrapping — no complete copy of the source yet","applied_lsn":"","head_lsn":"","lag_bytes":0,"lag_seconds":2.012597911,"compaction_backlog":0,"diverged":false,"bootstrapped":false,"verified_seconds_ago":0}
+  "snapshot complete" table=public.events rows=3000000 seconds=35.380697159
+  bootstrap to ready: 35.4s for 3000000 rows -> 84643 rows/s
+
+== 3. ingest performance (drain rate, latency, storage, cost) ==
+========================================================================
+Quicksilver ingest performance — the qs-mirror sidecar, as deployed
+========================================================================
+host: 4 vCPU, 16482220 kB
+table: public.events   burst: 200000 rows   writers: 8
+  WARNING: mirror was not caught up at the start of the run
+
+-- 1. drain rate (apply ceiling) ---------------------------------------
+  source wrote  203500 rows in 1.72s (118102 rows/s into PostgreSQL)
+  mirror drained the remaining backlog in 6.55s
+  end-to-end     8.27s -> 24600 rows/s sustained through the mirror
+
+-- 2. commit-to-visible latency ---------------------------------------
+  200 samples at ~200 writes/s background load
+  n=200  p50=187.5ms  p90=190.0ms  p95=2382.2ms  p99=2555.1ms  max=2564.9ms
+
+-- 3. storage ---------------------------------------------------------
+  source 645.9 MB heap+indexes for 3,210,810 rows
+  mirror 116.3 MB parquet
+  ratio  5.6x smaller  (38.0 bytes/row in the mirror)
+
+-- 4. sidecar cost ----------------------------------------------------
+  CPU     59.5s over the whole run
+  per row 292.1 us of sidecar CPU
+  RSS     5.9 GB -> 1.2 GB
+
+  applied_lsn 1/28036FD0 -> 1/2CB0F938
+  base files 1, delta files 7
+
+========================================================================
+DONE
+
+== 4. query performance — PostgreSQL vs the mirror it built ==
+  mirror: 1 base + 8 delta files, 3,210,810 live rows
+  source: 3,210,810 rows
+
+  analytical
+  query                 postgres      mirror    speedup   agree
+  A1 count              140.95ms     52.18ms       2.7x   yes
+  A2 sum+avg            216.64ms     30.87ms       7.0x   yes
+  A3 group by sku      1599.36ms    379.33ms       4.2x   yes
+  A4 filtered agg       263.75ms     25.49ms      10.3x   yes
+  A5 distinct          3212.72ms    255.33ms      12.6x   yes
+  A6 bucketed           562.68ms    123.80ms       4.5x   yes
+  median                                           5.8x
+
+  OLTP-shaped
+  query                 postgres      mirror    speedup   agree
+  O1 pk lookup            0.32ms     61.02ms 190.5x slower   yes
+  O2 small range          0.41ms     56.58ms 139.6x slower   yes
+  O3 limit 20             0.26ms    155.45ms 593.0x slower   yes
+  median                                           0.0x
+
+========================================
+PASS
+exit=0

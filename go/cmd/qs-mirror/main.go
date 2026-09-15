@@ -48,8 +48,7 @@ type options struct {
 	password     string
 	podName      string
 	localSocket  string
-	healthAddr   string
-	compactEvery int
+	healthAddr string
 }
 
 func loadOptions() options {
@@ -69,7 +68,6 @@ func loadOptions() options {
 		podName:      env("QS_POD_NAME", ""),
 		localSocket:  env("QS_LOCAL_SOCKET_DIR", "/controller/run"),
 		healthAddr:   env("QS_HEALTH_ADDR", ":9187"),
-		compactEvery: 32,
 	}
 	for _, t := range strings.Split(env("QS_TABLES", ""), ",") {
 		if t = strings.TrimSpace(t); t != "" {
@@ -324,12 +322,18 @@ func runMirror(ctx context.Context, log *slog.Logger, o options, h *health.Healt
 	// looks populated. It is exactly the silent-data-loss shape.
 	if created {
 		log.Info("new replication slot; bootstrapping by snapshot", "at", consistent)
+		// Readiness stays false throughout. A node whose snapshot is still
+		// running has nothing to serve, and its lag reads as zero because lag
+		// is measured from process start — so without the bootstrap gate it
+		// would join the read endpoint immediately with an empty mirror.
 		for q, t := range tables {
+			t0 := time.Now()
 			n, err := t.Snapshot(ctx, conn, consistent.String())
 			if err != nil {
 				return fmt.Errorf("snapshot %s: %w", q, err)
 			}
-			log.Info("snapshot complete", "table", q, "rows", n)
+			log.Info("snapshot complete", "table", q, "rows", n,
+				"seconds", time.Since(t0).Seconds())
 		}
 		if err := st.Start(ctx, consistent); err != nil {
 			return err
@@ -340,6 +344,7 @@ func runMirror(ctx context.Context, log *slog.Logger, o options, h *health.Healt
 			return err
 		}
 	}
+	h.RecordBootstrapped()
 
 	return pump(ctx, log, o, h, conn, st, tables)
 }
@@ -348,7 +353,6 @@ func pump(
 	ctx context.Context, log *slog.Logger, o options, h *health.Health,
 	conn *pgx.Conn, st *changestream.Streaming, tables map[string]*mirror.Table,
 ) error {
-	applied := 0
 	// pending is the queue this loop owns. Transactions() DRAINS the stream's
 	// buffer, so whatever a DDL barrier cuts off has to be held here — there is
 	// nothing to re-read it from. Dropping it instead loses every change
@@ -417,7 +421,6 @@ func pump(
 		if err := st.Confirm(ctx, last.NextLSN); err != nil {
 			return fmt.Errorf("confirm: %w", err)
 		}
-		applied += len(head)
 
 		var headLSN string
 		_ = conn.QueryRow(ctx, "SELECT pg_current_wal_lsn()::text").Scan(&headLSN)
@@ -434,14 +437,35 @@ func pump(
 			}
 		}
 
-		if applied >= o.compactEvery {
-			applied = 0
-			for q, t := range tables {
-				if n, err := t.Compact(); err != nil {
+		// Compaction is triggered by how much has CHANGED, not by how many
+		// batches have gone by. It rewrites every live row, so a batch-count
+		// trigger makes the cost scale with the table while the trigger scales
+		// with traffic — measured at 5M rows as a 30x throughput collapse and a
+		// multi-gigabyte RSS spike (docs/18).
+		for q, t := range tables {
+			switch {
+			case t.ShouldCompact():
+				// enough of the TABLE has changed to justify rewriting the base
+				t0 := time.Now()
+				n, err := t.Compact()
+				if err != nil {
 					log.Warn("compaction failed", "table", q, "err", err)
-				} else if n > 0 {
-					log.Info("compacted", "table", q, "deltas", n)
+					continue
 				}
+				log.Info("compacted", "table", q, "rows", n,
+					"seconds", time.Since(t0).Seconds())
+			case t.ShouldMergeDeltas():
+				// too many files to read through, but not enough churn to pay
+				// for a base rewrite — merge the deltas instead, which costs
+				// only what the deltas hold
+				t0 := time.Now()
+				n, err := t.MergeDeltas()
+				if err != nil {
+					log.Warn("delta merge failed", "table", q, "err", err)
+					continue
+				}
+				log.Info("merged deltas", "table", q, "rows", n,
+					"seconds", time.Since(t0).Seconds())
 			}
 		}
 

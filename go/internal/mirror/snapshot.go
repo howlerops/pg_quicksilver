@@ -80,6 +80,8 @@ func (t *Table) Snapshot(ctx context.Context, conn *pgx.Conn, atLSN string) (int
 		}
 	}
 	t.State.DeltaFiles = nil
+	t.State.BaseRows = len(out)
+	t.State.DeltaRows = 0
 	t.State.AppliedLSN = atLSN
 	return len(out), t.saveState()
 }
