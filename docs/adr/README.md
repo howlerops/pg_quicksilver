@@ -25,7 +25,8 @@ Do not write one for reversible implementation details.
 
 | ADR | Decision |
 |---|---|
-| [0008](0008-implementation-language.md) | Go for the CNPG-I plugin, Rust for the data plane — **and replace wal2json with `pgoutput` binary first, which is worth more (2.3x) than the language change** |
+| [0009](0009-implementation-language-revised.md) | **Go for the CNPG-I plugin *and* the data plane.** C/Rust only for the Phase 3 Postgres bgworker, introduced when S4 proves it. Supersedes 0008. |
+| ~~[0008](0008-implementation-language.md)~~ | ~~Go plugin + Rust data plane~~ — **superseded**: Go was never benchmarked, and when measured it matches Rust. Kept for the record. |
 
 ## Index
 

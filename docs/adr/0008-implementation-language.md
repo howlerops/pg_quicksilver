@@ -1,7 +1,13 @@
 # 0008 — Implementation language: Go for the plugin, Rust for the data plane
 
-- **Status:** Accepted
-- **Date:** 2026-09-15 (context corrected 2026-09-15 — see *Correction*)
+- **Status:** **Superseded by [0009](0009-implementation-language-revised.md)**
+- **Date:** 2026-09-15 (context corrected same day; superseded same day)
+
+> **Superseded.** Both arguments in this ADR were subsequently tested and failed.
+> Go was never benchmarked here — its throughput was cited from PeerDB — and when
+> measured, `goccy/go-json` matches Rust (207 vs 191 MB/s). The "written once"
+> argument conflated the decoder with the writer. See
+> [0009](0009-implementation-language-revised.md). Kept for the record.
 - **Deciders:** —
 
 ## Correction
