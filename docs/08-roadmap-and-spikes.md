@@ -29,26 +29,38 @@ the *Postgres heap* is 1.27× **slower** than plain Postgres, so the win is colu
 **Remaining gates are S0 and S1**, both blocked on things no benchmark can supply: real
 `-ro` traffic, and a Kubernetes cluster.
 
-### S0 — Workload characterisation ⭐ **gates the entire project**
+### S0 — Workload characterisation 🟡 **demoted: sizing input, not a gate**
 
 **Question:** what fraction of real `-ro` traffic is analytical (columnar wins) vs
 OLTP-shaped (columnar loses)?
 
-**Method:** `pg_stat_statements` + sampled `log_min_duration_statement` from 3–5 real CNPG
-clusters. Classify each statement by rows scanned, columns projected, presence of aggregation,
-and call frequency. Weight by total time *and* by call count — they give different answers and
-both matter.
+**Method:** run [`bench/s0_workload_profile.sql`](../bench/s0_workload_profile.sql) against
+the cluster. One file, no dependencies, read-only, emits no query text. Classifies by
+execution shape (blocks touched per call) rather than SQL text, so ORM-generated queries are
+not misclassified.
+
+**Weight by time, not by call count.** They differ enormously: on the deliberately
+OLTP-heavy test workload, `f` was **0.4% by calls and 18.0% by time** — a 45× gap. The
+by-count reading says hopeless; the by-time reading clears break-even. See
+[13](13-s0-without-customer-data.md).
 
 **Threshold:** `f` (by **time**, not by call count) above the break-even for the cluster's
 replica count — `f* = 1/(R·(1−1/17.1))`, i.e. **13.3% at R=8, 6.6% at R=16**. The earlier
 "≥40%" was arbitrary and roughly 3× too conservative; see [13](13-s0-without-customer-data.md).
 
-**If it fails:** the "replace read replicas" framing is wrong. Either pivot to Architecture C
-immediately (the hybrid node is the only design that survives an OLTP-heavy mix), or pivot the
-product to an explicit `app-olap` endpoint and drop the drop-in claim. **Do not proceed to S2
-on hope.**
+**If `f` is below break-even for a given cluster:** that cluster is not a fit — it is not a
+verdict on the product. Phase 1 ships regardless, because `serviceMode: off` puts the mirror
+on a separate endpoint where nothing regresses. What `f` decides is *how many* mirror nodes
+a customer needs and whether they save money.
 
-*This is the one spike that can cheaply prevent a wasted quarter. Run it first.*
+**If `f` is below break-even across most prospects:** that is a market-sizing problem, and
+the answer is to qualify on it rather than to keep building. `takeover` in particular stays
+gated on a high, cleanly-separable `f` — [Result 3](11-measured-results.md#result-3--oltp-regression-is-far-worse-than-predicted)'s
+935× OLTP regression makes that non-negotiable.
+
+*Formerly marked "the one spike that can cheaply prevent a wasted quarter". The break-even
+analysis in [13](13-s0-without-customer-data.md) is what demoted it: the bar is `f ≈ 1/R`,
+far lower than the 40% originally assumed, and independent of the engine speed.*
 
 ### S1 — CNPG-I capability probe
 

@@ -17,6 +17,11 @@ The pitch that matters to whoever signs the invoice: **replace 8 read replicas w
 have those 3 still count toward HA. See [docs/10](docs/10-scaling-economics.md) for the
 consolidation math and the three cases where it doesn't hold.
 
+The bar is lower than it looks: the break-even analytical share is **`f ≈ 1/R`** — 13.3% at 8
+replicas, 6.6% at 16 — and is nearly independent of how fast the column store is. Measure
+your own with [`bench/s0_workload_profile.sql`](bench/s0_workload_profile.sql)
+([docs/13](docs/13-s0-without-customer-data.md)).
+
 ---
 
 ## Read this first: the headline finding
