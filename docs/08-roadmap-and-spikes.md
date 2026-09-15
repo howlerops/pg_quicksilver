@@ -12,7 +12,7 @@ consequences that say "stop".
 
 | Spike | State | Notes |
 |---|---|---|
-| **S0** workload characterisation | ⬜ **not started — gates everything** | Needs `pg_stat_statements` from real clusters. Nothing else should be funded past prototype until this returns. |
+| **S0** workload characterisation | 🟡 **demoted — no longer blocks phase 1** | Break-even is `f* ≈ 1/R` (13.3% at R=8) and nearly independent of the speedup. With `serviceMode: off` there is no downside, so `f` is a *sizing* input, not a gate. Still gates `takeover`. Self-serve script: [`bench/s0_workload_profile.sql`](../bench/s0_workload_profile.sql). [13](13-s0-without-customer-data.md) |
 | **S1** CNPG-I capability probe | ⬜ not started | Needs a Kubernetes cluster. |
 | **S2** columnar speedup | ✅ **PASSED** | Median 29.9×. [11](11-measured-results.md) |
 | **S2b** speedup through `pg_duckdb` | ✅ **PASSED** | Median **22.2×** through the full Postgres stack; extension-boundary tax only 1.20×. 22.2× is the number to quote, not 29.9×. [11 Result 6](11-measured-results.md#result-6--s2b-the-speedup-survives-a-postgres-front-end-222-but-only-because-of-columnar-storage) |
@@ -39,7 +39,9 @@ clusters. Classify each statement by rows scanned, columns projected, presence o
 and call frequency. Weight by total time *and* by call count — they give different answers and
 both matter.
 
-**Threshold:** ≥40% of `-ro` *time* in analytical shapes.
+**Threshold:** `f` (by **time**, not by call count) above the break-even for the cluster's
+replica count — `f* = 1/(R·(1−1/17.1))`, i.e. **13.3% at R=8, 6.6% at R=16**. The earlier
+"≥40%" was arbitrary and roughly 3× too conservative; see [13](13-s0-without-customer-data.md).
 
 **If it fails:** the "replace read replicas" framing is wrong. Either pivot to Architecture C
 immediately (the hybrid node is the only design that survives an OLTP-heavy mix), or pivot the
@@ -244,7 +246,7 @@ Rules, because each has a corresponding way to accidentally cheat:
 
 | Spike | Fails if | Consequence |
 |---|---|---|
-| **S0** | <40% of `-ro` time is analytical | **Reframe or stop.** The premise is wrong. |
+| **S0** | `f` below `1/R` break-even across most prospects | Market-sizing problem, not an engineering one. Phase 1 still ships; `takeover` does not. |
 | **S1(a)** | `-ro` selector can't be retargeted | Drop `takeover` mode; separate endpoint only |
 | **S1(b)** | Can't manage non-instance workloads | Mirror becomes a sidecar; resource isolation suffers |
 | **S1(c)** | WAL tee conflicts with backup plugin | Redesign Path 1 around the object store |

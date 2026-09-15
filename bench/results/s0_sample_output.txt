@@ -1,0 +1,53 @@
+# Sample output — generated against a synthetic mixed workload:
+#   800 OLTP-shaped reads (PK lookup, user_id+ts LIMIT 20) and 3 aggregate scans.
+# Deliberately OLTP-heavy. Note f_by_calls 0.4% vs f_by_time 18.0% — a 45x gap.
+#
+
+=== 0. preconditions ===================================================
+                version                | pg_stat_statements | stats_since 
+---------------------------------------+--------------------+-------------
+ 16.15 (Ubuntu 16.15-0ubuntu0.24.04.1) | t                  | 2026-09-15
+
+
+=== 1. read workload split (the f that matters is BY TIME) =============
+   class    | statements | calls | pct_calls | seconds | pct_time | avg_blocks_per_call 
+------------+------------+-------+-----------+---------+----------+---------------------
+ oltp       |         16 |   829 |      99.6 |   362.7 |     82.0 |                   4
+ analytical |          1 |     3 |       0.4 |    79.8 |     18.0 |             1110660
+
+
+--- f, and what it implies -------------------------------------------
+ f_by_time_% | f_by_calls_% | break_even_f_% | replicas_today | replicas_after_quicksilver |                verdict                
+-------------+--------------+----------------+----------------+----------------------------+---------------------------------------
+        18.0 |          0.4 |           13.3 |              8 |                          7 | above break-even — consolidation pays
+
+
+=== 2. concentration — is read time dominated by a few statements? =====
+    (high concentration favours Quicksilver: a handful of heavy queries
+     is exactly what a columnar mirror absorbs)
+         bucket         | pct_of_read_time 
+------------------------+------------------
+ top 0.1% of statements |             71.8
+ top 10%                |             18.0
+ the other 90%          |             10.2
+
+
+=== 3. WHY do you have replicas? (consolidation is worthless if the ==
+       answer is HA, geography, or connection count) ==================
+ current_connections | max_connections | pct_conn_used |             caveat             
+---------------------+-----------------+---------------+--------------------------------
+                   1 |             100 |           1.0 | not obviously connection-bound
+
+
+=== 4. sensitivity — does the verdict depend on the threshold? =========
+ blocks_per_call_threshold | f_by_time_% 
+---------------------------+-------------
+                      1000 |        18.0
+                      2500 |        18.0
+                      5000 |        18.0
+                     10000 |        18.0
+                     25000 |        18.0
+
+
+Send section 1 and 2 output to evaluate fit. No query text is emitted.
+
