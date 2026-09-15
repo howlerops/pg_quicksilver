@@ -41,12 +41,23 @@ CPython's C JSON scanner. Here numerics are simply never unmarshalled into a
 float — `decodeValue` keeps the exact decimal text and the writer parses it
 against the column's declared scale.
 
+## Phase 2 — streaming, snapshot, failover
+
+`go run ./cmd/qs-phase2` — see [docs/14](../docs/14-phase2-streaming-and-failover.md).
+
+- **`internal/changestream/pgoutput.go`** — `pgoutput` over `START_REPLICATION`.
+  No wal2json, no `output_plugin_libraries` allowlisting, no poll-interval floor.
+  Measured **36–40 ms** commit-to-visible.
+- **`internal/mirror/snapshot.go`** — bootstrap at a slot's consistent point, so
+  snapshot and stream join with neither gap nor overlap.
+- **Failover** — verified against a real `pg_basebackup` standby promotion. The
+  logical slot does **not** survive on PG 16; the mirror detects it, re-snapshots
+  against the new primary, and converges.
+
 ## Still to do
 
-- `pgoutput` binary protocol instead of wal2json (ADR-0009 item 1 — dependency
-  removal, not throughput)
-- streaming replication protocol instead of `pg_logical_slot_peek_changes`,
-  which currently caps latency at the poll interval
 - the key→position index is still a JSON map; it needs real engineering at
   production volumes
-- failover handling (slot sync on PG ≥ 17)
+- PG ≥ 17 slot failover (`failover=true` + `sync_replication_slots`) to avoid
+  the re-snapshot after promotion
+- parallel decode; currently one goroutine receives and one applies

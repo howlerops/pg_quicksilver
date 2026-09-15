@@ -442,3 +442,13 @@ func (t *Table) Compact() (int, error) {
 }
 
 func (t *Table) CompactionBacklog() int { return len(t.State.DeltaFiles) }
+
+func writeJSON(path string, v any) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, b, 0o644)
+}
+
+func trimParquet(name string) string { return strings.TrimSuffix(name, ".parquet") }

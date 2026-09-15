@@ -1,0 +1,27 @@
+========================================================================
+A + B. pgoutput streaming, bootstrapped from a snapshot
+========================================================================
+  slot created=true consistent point=3/50DDD20
+  snapshot: 5000 rows at 3/50DDD20
+  streaming started (no poll interval, no wal2json)
+  applied 1042 streamed transactions
+  mirror 5697 rows / source 5697 rows -> MATCH
+  commit -> visible in mirror: 42 ms (polling floor was the batch interval)
+
+========================================================================
+C. Failover — promote a real standby, see what survives
+========================================================================
+  standby built and streaming from primary
+  logical slot present on standby BEFORE promotion: 0
+  promoting standby ...
+  promoted: pg_is_in_recovery()=false
+  logical slot present on new primary AFTER promotion: 0
+
+  -> slot did NOT survive failover (expected on PG16; logical slot
+     failover needs PG17's `failover` slot option + sync_replication_slots)
+  -> recovery path: re-snapshot against the new primary
+  re-snapshotted 5698 rows at 3/700CDC8
+  mirror 6131 rows / source 6131 rows -> MATCH
+
+========================================================================
+PASS

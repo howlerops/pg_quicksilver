@@ -16,7 +16,7 @@ reassurance.
 | R5 | **Physical WAL decode on standby proves unreliable** (racing replay, vacuum, TOAST) | Med | High | Spike S4, scheduled late. Failure costs Architecture C, not the product. |
 | R6 | **pg_duckdb coverage gaps become hard errors** because data exists only as Parquet | High | Med | Per-table opt-in; admission-time type checks; Architecture C removes this entirely by keeping the row store. |
 | R7 | **Logical slot fills `pg_wal` and takes down the primary** | Med | High | `max_slot_wal_keep_size` + alerting + readiness gating; archive tee for recovery without the slot. Long term: Path 3c removes the slot. |
-| R8 | **Failover loses the slot** (PG ≤ 16) | High | Med | Slot sync on PG ≥ 17; on ≤ 16, automatic re-snapshot with clear signalling. Consider requiring PG ≥ 17 for `ingest: logical`. |
+| R8 | ~~Failover loses the slot (PG ≤ 16)~~ | — | — | ✅ **MEASURED AND MITIGATED.** Verified against a real standby promotion: the slot is gone on PG 16. Detection + re-snapshot implemented and converging ([14](14-phase2-streaming-and-failover.md)). Residual: re-snapshot is O(table size); recommend PG ≥ 17. |
 | R9 | **CNPG-I lacks a hook we need** (esp. WAL tee alongside a backup plugin) | Med | Med | Spike S1. Fallbacks identified per sub-case in [08](08-roadmap-and-spikes.md#s1--cnpg-i-capability-probe). |
 | R10 | **Adoption blocked by requiring our image cluster-wide** (Architecture C) | Med | Med | Strictly additive image; mirror-tier-only in phase 1; track CNPG extension-image-volume support (OQ-6). |
 | R11 | **Mixed workload interference** — one big scan destabilises many small queries | High | Med | Admission control / resource groups; separate node pools per traffic class as the crude fallback. |

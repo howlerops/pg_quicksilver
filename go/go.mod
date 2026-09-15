@@ -7,6 +7,7 @@ toolchain go1.27.1
 require (
 	github.com/apache/arrow-go/v18 v18.8.0
 	github.com/goccy/go-json v0.10.6
+	github.com/jackc/pglogrepl v0.0.0-20260824121319-4ae5c490f7ce
 	github.com/jackc/pgx/v5 v5.11.0
 )
 
@@ -16,6 +17,7 @@ require (
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/google/flatbuffers v25.12.19+incompatible // indirect
 	github.com/google/uuid v1.6.0 // indirect
+	github.com/jackc/pgio v1.0.0 // indirect
 	github.com/jackc/pgpassfile v1.0.0 // indirect
 	github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761 // indirect
 	github.com/klauspost/compress v1.19.2 // indirect
