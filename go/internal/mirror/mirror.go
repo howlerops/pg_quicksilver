@@ -486,7 +486,7 @@ func keyString(v any) string {
 func (t *Table) writeDelta(rows []map[string]any) error {
 	t.State.Seq++
 	name := fmt.Sprintf("%06d.parquet", t.State.Seq)
-	if err := t.writeParquet(filepath.Join(t.Dir, "delta", name), rows); err != nil {
+	if err := t.writeParquetCodec(filepath.Join(t.Dir, "delta", name), rows, false); err != nil {
 		return err
 	}
 	t.State.DeltaFiles = append(t.State.DeltaFiles, name)
@@ -504,7 +504,18 @@ func (t *Table) writeDelta(rows []map[string]any) error {
 	return nil
 }
 
-func (t *Table) writeParquet(path string, rows []map[string]any) error {
+// writeParquet writes a file. `durable` selects the compression trade:
+//
+//   - base files are written once and scanned many times, so they get zstd
+//   - delta files are written constantly and read until the next compaction
+//     folds them away, so they get Snappy
+//
+// This is not a micro-optimisation. A CPU profile of the jsonb shape put 45% of
+// the sidecar in writeParquet and 19% in zstd's encoder alone, because every
+// UPDATE rewrites the whole row — including a 3.3 KB document the update never
+// touched — into a new delta, and zstd re-compresses it every time. 2.4M
+// updates in 10 seconds is ~8 GB of unchanged document re-compressed.
+func (t *Table) writeParquetCodec(path string, rows []map[string]any, durable bool) error {
 	schema := t.ArrowSchema()
 	bld := array.NewRecordBuilder(memory.DefaultAllocator, schema)
 	defer bld.Release()
@@ -522,8 +533,12 @@ func (t *Table) writeParquet(path string, rows []map[string]any) error {
 		return err
 	}
 	defer f.Close()
+	codec := compress.Codecs.Snappy
+	if durable {
+		codec = compress.Codecs.Zstd
+	}
 	props := parquet.NewWriterProperties(
-		parquet.WithCompression(compress.Codecs.Zstd),
+		parquet.WithCompression(codec),
 		// Bounded row groups. The smallest unit Parquet can decode is a row
 		// group, so this is the upper bound on the cost of fetching one row for
 		// carry-forward; with the library default the base file is one group and
@@ -540,6 +555,11 @@ func (t *Table) writeParquet(path string, rows []map[string]any) error {
 	return w.Close()
 }
 
+// writeParquet writes a long-lived file (base, snapshot, compaction output).
+func (t *Table) writeParquet(path string, rows []map[string]any) error {
+	return t.writeParquetCodec(path, rows, true)
+}
+
 func appendValue(b array.Builder, dt arrow.DataType, v any) {
 	if v == nil {
 		b.AppendNull()
@@ -547,6 +567,14 @@ func appendValue(b array.Builder, dt arrow.DataType, v any) {
 	}
 	switch bb := b.(type) {
 	case *array.Int64Builder:
+		if str, ok := v.(string); ok {
+			if n, err := strconv.ParseInt(strings.TrimSpace(str), 10, 64); err == nil {
+				bb.Append(n)
+			} else {
+				bb.AppendNull()
+			}
+			return
+		}
 		n, err := strconv.ParseInt(strings.TrimSpace(fmt.Sprint(v)), 10, 64)
 		if err != nil {
 			bb.AppendNull()
@@ -570,13 +598,23 @@ func appendValue(b array.Builder, dt arrow.DataType, v any) {
 		}
 	case *array.Decimal128Builder:
 		d := dt.(*arrow.Decimal128Type)
-		dec, err := decimal128.FromString(fmt.Sprint(v), d.Precision, d.Scale)
+		sv, ok := v.(string)
+		if !ok {
+			sv = fmt.Sprint(v)
+		}
+		dec, err := decimal128.FromString(sv, d.Precision, d.Scale)
 		if err != nil {
 			bb.AppendNull()
 			return
 		}
 		bb.Append(dec)
 	case *array.StringBuilder:
+		// pgoutput delivers every value as text, so this is the hot path and
+		// fmt.Sprint on an interface holding a string is pure overhead.
+		if str, ok := v.(string); ok {
+			bb.Append(str)
+			return
+		}
 		bb.Append(fmt.Sprint(v))
 	default:
 		b.AppendNull()
@@ -679,10 +717,35 @@ func (t *Table) Compact() (int, error) {
 
 func (t *Table) CompactionBacklog() int { return len(t.State.DeltaFiles) }
 
+// mergeableDeltas is the deltas a merge may touch right now: everything except
+// the ones a background rewrite is currently reading.
+//
+// Those are always the OLDEST deltas — a rewrite snapshots the file set at its
+// start — so the mergeable ones are a contiguous newest run, and folding them
+// into one file at the end preserves the ordering that makes "last occurrence
+// wins" correct.
+func (t *Table) mergeableDeltas() []string {
+	if t.compacting == nil {
+		return t.State.DeltaFiles
+	}
+	var out []string
+	for _, d := range t.State.DeltaFiles {
+		if !t.compacting.files[filepath.Join("delta", d)] {
+			out = append(out, d)
+		}
+	}
+	return out
+}
+
 // ShouldMergeDeltas reports whether there are enough delta files that opening
 // them is costing more than merging them would.
+//
+// This must remain possible WHILE a rewrite is in flight. Blocking it meant
+// that under heavy churn — where a rewrite takes long enough that every key
+// moves before it lands — the file count grew unchecked behind a rewrite that
+// was already stale, which is most of why the jsonb shape never converged.
 func (t *Table) ShouldMergeDeltas() bool {
-	return len(t.State.DeltaFiles) >= compactMaxFiles
+	return len(t.mergeableDeltas()) >= compactMaxFiles
 }
 
 // MergeDeltas rewrites all delta files into one, honouring their deletion
@@ -690,13 +753,21 @@ func (t *Table) ShouldMergeDeltas() bool {
 // it can run often — which is what keeps the read path's file count bounded
 // without paying for a full base rewrite.
 func (t *Table) MergeDeltas() (int, error) {
-	if len(t.State.DeltaFiles) < 2 {
+	mergeable := t.mergeableDeltas()
+	if len(mergeable) < 2 {
 		return 0, nil
 	}
 	if err := t.ensureIndex(); err != nil {
 		return 0, err
 	}
-	old := append([]string(nil), t.State.DeltaFiles...)
+	old := append([]string(nil), mergeable...)
+	// deltas a rewrite is reading stay exactly where they are, and stay first
+	var pinned []string
+	for _, d := range t.State.DeltaFiles {
+		if !contains(old, d) {
+			pinned = append(pinned, d)
+		}
+	}
 
 	var rows []map[string]any
 	for _, d := range old {
@@ -716,7 +787,7 @@ func (t *Table) MergeDeltas() (int, error) {
 			_ = os.Remove(filepath.Join(t.Dir, "delta", d))
 			_ = os.Remove(t.dvPath(filepath.Join("delta", d)))
 		}
-		t.State.DeltaFiles = nil
+		t.State.DeltaFiles = pinned
 		t.State.DeltaRows = 0
 		return 0, t.saveState()
 	}
@@ -724,7 +795,7 @@ func (t *Table) MergeDeltas() (int, error) {
 	t.State.Seq++
 	name := fmt.Sprintf("%06d.parquet", t.State.Seq)
 	rel := filepath.Join("delta", name)
-	if err := t.writeParquet(filepath.Join(t.Dir, rel), rows); err != nil {
+	if err := t.writeParquetCodec(filepath.Join(t.Dir, rel), rows, false); err != nil {
 		return 0, err
 	}
 	// The new file is written before the old ones are removed and before the
@@ -732,7 +803,7 @@ func (t *Table) MergeDeltas() (int, error) {
 	for i, r := range rows {
 		t.index[keyString(r[t.Key])] = loc{File: rel, Pos: i}
 	}
-	t.State.DeltaFiles = []string{name}
+	t.State.DeltaFiles = append(append([]string(nil), pinned...), name)
 	t.State.DeltaRows = len(rows)
 	if err := t.saveState(); err != nil {
 		return 0, err
@@ -793,3 +864,12 @@ func writeJSON(path string, v any) error {
 }
 
 func trimParquet(name string) string { return strings.TrimSuffix(name, ".parquet") }
+
+func contains(xs []string, x string) bool {
+	for _, v := range xs {
+		if v == x {
+			return true
+		}
+	}
+	return false
+}

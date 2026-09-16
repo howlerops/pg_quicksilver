@@ -18,16 +18,34 @@ destroying data while passing every performance check.
 
 ## The map
 
+All five shapes now converge and verify. The jsonb row is the one that changed:
+in the first round it never caught up at all.
+
 | shape | what it is | bootstrap | ingest | p50 | p99 | storage | CPU/change | RSS | correct |
 |---|---|---|---|---|---|---|---|---|---|
-| **narrow** | 4 cols, insert-only | 195k rows/s | **119k/s** | 206 ms | 6.2 s | 3.4× | 24 µs | 6 GB | ✅ |
-| **wide** | 12 cols, insert-only | 98k rows/s | **67k/s** | 206 ms | **224 ms** | 3.5× | 38 µs | 6 GB | ✅ |
-| **jsonb** | 6 KB doc/row, scalar UPDATEs | 14k rows/s | **never caught up** | — | — | — | — | — | — |
-| **churn** | UPDATEs on a hot 1% | 98k rows/s | 59k/s *(source-limited)* | 206 ms | 234 ms | **15.3×** | **9 µs** | **84 MB** | ✅ |
-| **deletes** | inserts + deletes 1:1 | 195k rows/s | **167k/s** | 206 ms | 7.6 s | 2.4× | 18 µs | 3 GB | ✅ |
+| **narrow** | 4 cols, insert-only | 195k rows/s | **132k/s** | 206 ms | 9.0 s | 3.3× | 25 µs | 5 GB | ✅ |
+| **wide** | 12 cols, insert-only | 98k rows/s | **69k/s** | 206 ms | 5.9 s | 3.3× | 45 µs | 5 GB | ✅ |
+| **jsonb** | 6 KB doc/row, scalar UPDATEs | 15k rows/s | **84k/s** | 206 ms | **486 ms** | **0.6×** | 23 µs | 7 GB | ✅ |
+| **churn** | UPDATEs on a hot 1% | 195k rows/s | 59k/s *(source-limited)* | 206 ms | **217 ms** | **15.5×** | **8 µs** | **66 MB** | ✅ |
+| **deletes** | inserts + deletes 1:1 | 195k rows/s | **240k/s** | 206 ms | 7.5 s | 3.2× | 13 µs | 4 GB | ✅ |
 
-Four of five are correct and comfortably ahead of what a single PostgreSQL
-primary would sustain in practice. The fifth is the interesting one.
+Round one for comparison: narrow 119k/s, wide 67k/s, jsonb never converged,
+churn 59k/s, deletes 167k/s.
+
+Two things in that table are worth reading twice.
+
+**jsonb storage is 0.6× — the mirror is BIGGER than the source.** That is a real
+cost of the fix below, and of the shape: every UPDATE writes a complete copy of
+the row, including the 3.3 KB document it did not touch, into a delta compressed
+with Snappy rather than zstd. Until compaction folds those away the mirror
+carries many copies of each document. A columnar mirror of a document table is
+not a storage win; it is a query win paid for with space.
+
+**The p99 tail moved, and not uniformly.** wide went 224 ms → 5.9 s between
+rounds while jsonb went from unmeasurable to 486 ms. The tail is now the
+compaction *swap*, which walks every row of the new base on the apply goroutine,
+so it tracks how many rows a shape has accumulated rather than anything about
+the shape itself. It is the top item in "what to do next" for that reason.
 
 ### churn is the best case, by a wide margin
 
@@ -41,17 +59,25 @@ This is worth stating plainly because it inverts the usual intuition. **A
 high-update OLTP table is the cheapest thing to mirror**, not the most expensive.
 What is expensive is *growth*.
 
-### jsonb does not keep up, and that is the headline
+### jsonb: the shape that did not converge, and why it does now
 
-2.9M row-changes in 12 s against a table with a 6 KB document per row, and the
-mirror was still behind after **600 seconds**. It does not converge.
+In round one, 2.9M row-changes against a table with a 6 KB document per row left
+the mirror behind after **600 seconds**. It did not converge at all.
 
-The cause is unchanged-TOAST carry-forward. PostgreSQL does not resend a large
-value that an update did not change, so for every such update the mirror has to
-fetch the previous value from its own Parquet — a point read whose smallest
-possible unit is a row group. At 8k rows per group and 3.3 KB per document that
-is ~27 MB of decode to recover a few hundred values, and the sidecar log shows
-the consequence directly:
+My explanation was wrong, and it is worth recording what wrong looked like. I
+attributed it to unchanged-TOAST carry-forward: PostgreSQL does not resend a
+large value an update did not change, so the mirror fetches the previous one
+from its own Parquet, and the smallest unit Parquet can decode is a row group —
+~27 MB of decode to recover a few hundred documents. Plausible, arithmetically
+sound, and not what was happening.
+
+A CPU profile put reads nowhere near the top. **45% of the sidecar was in
+`writeParquet`, 19% in zstd's encoder alone.** The cost was not reading the
+document back; it was re-compressing it on the way out, on every single update,
+because a delta stores the whole row. Snappy for deltas took the shape from
+"never converges" to **84k row-changes/s with a 486 ms p99**.
+
+One artefact from round one is still real and still worth understanding:
 
 ```
 compacted table=public.m rows=203
@@ -60,7 +86,8 @@ compacted table=public.m rows=203
 A rewrite of a 200,000-row table produced a 203-row base. That is not data loss —
 by the time the rewrite finished, essentially every key had moved to a newer
 delta, so the new base legitimately held almost nothing. **Under heavy churn a
-background rewrite finishes stale**, which is a property of the policy, not a bug.
+background rewrite finishes stale**, which is a property of the policy, not a
+bug, and it is why merging has to be allowed to proceed alongside one.
 
 ---
 
@@ -75,7 +102,7 @@ same harness.
 | **Size-aware compaction** (churn, not batch count) | removed the O(table)-per-32-batches rewrite | over-corrected: 203 delta files, analytical median fell to **2.3×** |
 | **Tiered delta merging** (file count triggers a merge, not a rewrite) | 203 files → 8, analytical median **2.3× → 5.8×** | merges are still synchronous |
 | **Background compaction** (goroutine + atomic swap) | wide-shape p99 **3,517 ms → 224 ms** | a real concurrency bug (below); the swap is still O(rows) on the apply loop |
-| **TOAST carry-forward** | stopped silently destroying every large unchanged column | the jsonb shape no longer converges under load |
+| **TOAST carry-forward** | stopped silently destroying every large unchanged column | a point read per update; smaller than it looked, see round two |
 | **Row-group size 64k → 8k** | drain **78k → 98k/s** on jsonb | none measurable on storage or scans at this size |
 | **Bootstrap gate on readiness** | a node with no data stops reporting ready | none |
 
@@ -153,20 +180,59 @@ one row, every time. Idempotent markers fix it.
 
 ---
 
+## Round two: what the profile said, against what I assumed
+
+The first round ended with four ranked guesses. A CPU profile of the jsonb shape
+contradicted the top one.
+
+I expected carry-forward *reads* to dominate — fetching an unchanged document
+back out of Parquet. They did not even register. The profile put **45% of the
+sidecar in `writeParquet` and 19% in zstd's encoder alone**, because every
+UPDATE re-encodes the whole row, and 2.4M updates against 3.3 KB documents is
+about 8 GB of unchanged document re-compressed in ten seconds.
+
+| change | bought | cost |
+|---|---|---|
+| **Snappy for deltas, zstd for base** | jsonb converges: never → **84k/s**, p99 **486 ms** | deltas are bigger; jsonb mirror is now larger than its source |
+| **Delta merging allowed during a rewrite** | file count stays bounded while a rewrite is in flight | the guard that keeps a merge off the rewrite's own files is defensive, not proven — removing it also passes the race test |
+| **String fast paths in `appendValue`** | removed `fmt.Sprint` from the hot path | none |
+| **`ErrStaleManifest` on a vanished file** | a reader can no longer report part of the table as all of it | every read path needs a reset-and-retry loop |
+
+### The bug the matrix found this round
+
+The jsonb shape reported a mirror of **363 rows against a source of 200,302**,
+and the mirror was completely intact — reading it moments later returned all
+200,302.
+
+Compaction saves the new manifest and then deletes the old files. A reader that
+loaded the manifest just before the swap opens files that are already gone, and
+`ForEachLive` treated a missing file as "no rows here". So a perfectly healthy
+mirror read back as 0.2% of itself, with no error anywhere.
+
+That is a product bug, not a harness one: a serving node doing the same read
+would return a fraction of the table and call it a result. A missing file is now
+`ErrStaleManifest`, and readers reload the manifest and start over. The retry
+API *requires* a reset callback, because forgetting it is equally silent — a
+replayed attempt double-counts and invents a divergence the mirror never had.
+
 ## What to do next, in order of measured value
 
-1. **Make the compaction swap O(changed).** It is the remaining tail: 6–8 s p99
-   on insert-heavy shapes against 224 ms where the base is small. The swap only
-   needs to consider keys that moved during the rewrite, which the apply loop
-   already knows.
-2. **Let delta merging run during a compaction.** Today a rewrite blocks
-   merging, so under churn the file count grows while a doomed rewrite finishes.
-   This is most of why jsonb never converges.
-3. **Bound carry-forward with a cache of recently-written rows.** Hot-set updates
-   — the common real pattern, and the cheapest shape in the table above — would
-   hit memory instead of Parquet.
-4. **Stream the snapshot and compaction writes.** Peak RSS is a materialised
+1. **Make the compaction swap O(changed).** Still the whole tail: 6–9 s p99 on
+   shapes that accumulate rows, against 217–486 ms on shapes that do not. The
+   swap walks every row of the new base to decide liveness; it only needs the
+   keys that moved during the rewrite, which the apply loop already knows.
+2. **Stop rewriting unchanged large columns into deltas.** The profile says this
+   is where the jsonb shape's time and space both go. A delta that stored only
+   the columns an update actually carried would cut both, and carry-forward
+   already knows which those are.
+3. **Stream the snapshot and compaction writes.** Peak RSS is a materialised
    `[]map[string]any` of the whole table; the writer is already batch-oriented.
+4. **Bound carry-forward with a cache of recently-written rows.** Lower priority
+   than it looked: the profile says reads are not where the time goes.
+
+Still not on the list: parallel decode. PostgreSQL's decoder caps around
+186k rows/s, which is above every ingest number here except the ones already
+limited by how fast the source can write.
 
 Not on this list, deliberately: parallel decode. PostgreSQL's decoder is the
 ceiling there, and at 186k rows/s it is above every ingest number in the matrix

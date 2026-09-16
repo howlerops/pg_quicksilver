@@ -466,9 +466,20 @@ func pump(
 				}
 			}
 			switch {
+			case t.Compacting() && t.ShouldMergeDeltas():
+				// Merging is allowed DURING a rewrite, over the deltas the
+				// rewrite is not reading. Blocking it let the file count grow
+				// unchecked behind a rewrite that heavy churn had already made
+				// stale (docs/19).
+				n, err := t.MergeDeltas()
+				if err != nil {
+					log.Warn("delta merge failed", "table", q, "err", err)
+				} else if n > 0 {
+					log.Info("merged deltas during compaction", "table", q, "rows", n)
+				}
+
 			case t.Compacting():
-				// a rewrite is in flight; do not start another and do not merge
-				// deltas underneath it
+				// a rewrite is in flight and the file count is fine
 
 			case t.ShouldCompact():
 				// Enough of the TABLE has changed to justify rewriting the base.

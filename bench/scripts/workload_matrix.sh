@@ -29,19 +29,24 @@ FAIL=0
 # 68,234 missing rows that was entirely an artifact of the harness racing
 # itself, and it is the fourth time in this project a measurement bug has
 # impersonated a product bug.
+#
+# The lock is a PID file, not flock. `exec 9>` makes the descriptor inheritable
+# by every child, and this script starts PostgreSQL daemons — which held the
+# lock long after the run that took it had finished, so the next run was refused
+# by a database. A lock a long-lived daemon can inherit is not a lock.
 LOCK=/tmp/qs-workload-matrix.lock
-exec 9>"$LOCK"
-if ! flock -n 9; then
-  echo "another workload_matrix.sh is already running (lock: $LOCK); refusing to start"
+if [ -f "$LOCK" ] && kill -0 "$(cat "$LOCK" 2>/dev/null)" 2>/dev/null; then
+  echo "another workload_matrix.sh is already running (pid $(cat "$LOCK")); refusing to start"
   exit 2
 fi
+echo $$ > "$LOCK"
 
 say()  { printf '\n=== %s ===\n' "$*"; }
 bad()  { printf '  FAIL: %s\n' "$*"; FAIL=1; }
 skip() { printf '\nINCOMPLETE — skipped, which is NOT a pass: %s\n' "$*"; exit 2; }
 psq()  { su postgres -c "$PG/psql -h /tmp -p $1 -U postgres -d ${3:-$DB} -Atc \"$2\""; }
 
-cleanup() { pkill -x qs-mirror 2>/dev/null; }
+cleanup() { pkill -x qs-mirror 2>/dev/null; rm -f "$LOCK"; }
 trap cleanup EXIT
 
 say "infrastructure"
@@ -108,8 +113,26 @@ for SHAPE in $SHAPES; do
   boot=$(echo "$(date +%s.%N)-$boot_t0"|bc)
   printf '  bootstrap     %.1fs -> %.0f rows/s\n' "$boot" "$(echo "$ROWS/$boot"|bc -l)"
 
+  # A CPU profile spanning the workload and the drain. Two hypotheses about
+  # where the sidecar's time goes have already been wrong; a profile settles it
+  # in one command.
+  if [ -n "${QS_DEBUG_ADDR:-}" ]; then
+    curl -s "http://$QS_DEBUG_ADDR/debug/pprof/profile?seconds=${CPU_PROFILE_SECONDS:-45}" \
+        -o /tmp/cpu-$SHAPE.pb.gz &
+    CPUPROF=$!
+  fi
+
   /tmp/qs-matrix -dsn "postgres://postgres@localhost:5443/$DB" -shape "$SHAPE" \
     -measure -mirror "$MIRROR" -pid "$MPID" -seconds "$SECONDS_PER" || bad "measure failed"
+
+  # The CPU profile must finish before the sidecar is killed, or curl comes back
+  # with nothing and the profile that was supposed to settle an argument is
+  # simply absent.
+  if [ -n "${CPUPROF:-}" ]; then
+    wait $CPUPROF 2>/dev/null
+    [ -s /tmp/cpu-$SHAPE.pb.gz ] && echo "  cpu profile   /tmp/cpu-$SHAPE.pb.gz"
+    CPUPROF=""
+  fi
 
   # Heap profile before the process goes away, when asked for. RSS is a
   # high-water mark the Go runtime does not return promptly, so it says almost

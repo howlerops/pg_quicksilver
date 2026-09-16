@@ -155,6 +155,23 @@ func testCompactionRaces(t *testing.T, partial bool) {
 						t.Fatalf("FinishCompaction: %v", err)
 					}
 				}
+
+				// ...and merge deltas on the same schedule the apply loop uses,
+				// INCLUDING while a rewrite is in flight. That combination is
+				// what keeps the file count bounded under churn, and it is the
+				// one ordering where a merge could renumber rows a rewrite is
+				// about to swap in.
+				if tbl.ShouldMergeDeltas() {
+					if _, err := tbl.MergeDeltas(); err != nil {
+						t.Fatalf("MergeDeltas: %v", err)
+					}
+				}
+			}
+
+			if tbl.ShouldMergeDeltas() {
+				if _, err := tbl.MergeDeltas(); err != nil {
+					t.Fatalf("MergeDeltas: %v", err)
+				}
 			}
 
 			// drain any rewrite still in flight

@@ -2,6 +2,8 @@ package mirror
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"hash/fnv"
 	"os"
@@ -120,7 +122,7 @@ func (t *Table) Live() ([]map[string]any, error) {
 		rows, err := t.readParquet(filepath.Join(t.Dir, rel), t.deadPositions(rel))
 		if err != nil {
 			if os.IsNotExist(err) {
-				return nil
+				return ErrStaleManifest
 			}
 			return err
 		}
@@ -177,6 +179,57 @@ func (a *Accumulator) Add(row map[string]any) {
 
 func (a *Accumulator) Result() (int, uint64) { return a.n, a.sum }
 
+// ErrStaleManifest means the file list a read started from no longer matches
+// what is on disk, because a compaction swapped it mid-read.
+//
+// This has to be an error and not a skip. Compaction saves the new manifest and
+// then deletes the old files, so a reader that loaded the manifest a moment
+// earlier can find the file it is about to open already gone — and treating
+// that as "no rows here" silently returns a fraction of the table. It is how a
+// 200,302-row mirror read back as 363 rows while being entirely intact on disk.
+// Every read path returns this instead, and callers reload and retry.
+var ErrStaleManifest = errors.New("mirror manifest is stale: a file was removed by compaction mid-read")
+
+// Reload re-reads the durable manifest. Callers use it to recover from
+// ErrStaleManifest; it is the only supported way for a reader outside the apply
+// goroutine to pick up a compaction.
+func (t *Table) Reload() error {
+	b, err := os.ReadFile(t.statePath())
+	if err != nil {
+		return err
+	}
+	var st State
+	if err := json.Unmarshal(b, &st); err != nil {
+		return err
+	}
+	t.State = st
+	t.index = nil
+	return nil
+}
+
+// ReadLiveWithRetry streams the live rows, reloading the manifest and starting
+// over if a compaction swaps it underneath.
+//
+// reset is called before every attempt and MUST discard whatever the previous
+// attempt accumulated. It is a required argument rather than an optional one
+// because forgetting it is silent: a retry replays rows the caller already saw,
+// so a checksum double-counts and a "divergence" appears that is purely the
+// reader's own doing. Bounded attempts, because a manifest that never settles
+// is something to report rather than spin on.
+func (t *Table) ReadLiveWithRetry(reset func(), fn func(map[string]any) error) error {
+	for attempt := 0; attempt < 5; attempt++ {
+		reset()
+		err := t.ForEachLive(fn)
+		if !errors.Is(err, ErrStaleManifest) {
+			return err
+		}
+		if err := t.Reload(); err != nil {
+			return err
+		}
+	}
+	return ErrStaleManifest
+}
+
 // ForEachLive streams the live rows one file at a time, so a caller never holds
 // more than a single file's worth.
 //
@@ -190,7 +243,7 @@ func (t *Table) ForEachLive(fn func(map[string]any) error) error {
 		rows, err := t.readParquet(filepath.Join(t.Dir, rel), t.deadPositions(rel))
 		if err != nil {
 			if os.IsNotExist(err) {
-				return nil
+				return ErrStaleManifest
 			}
 			return err
 		}

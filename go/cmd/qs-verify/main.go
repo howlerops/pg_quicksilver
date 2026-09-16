@@ -60,11 +60,17 @@ func main() {
 	// Both sides stream. Materialising them was what got this tool OOM-killed
 	// on a 5.7M-row mirror, and a verifier that dies at scale reports every
 	// large mirror as broken.
-	acc := mirror.NewAccumulator(order)
-	if err := t.ForEachLive(func(r map[string]any) error {
-		acc.Add(r)
-		return nil
-	}); err != nil {
+	// ReadLiveWithRetry, not ForEachLive: compaction can swap the manifest
+	// mid-read, and a reader that does not notice reports a fraction of the
+	// table as the whole of it.
+	var acc *mirror.Accumulator
+	err = t.ReadLiveWithRetry(
+		func() { acc = mirror.NewAccumulator(order) },
+		func(r map[string]any) error {
+			acc.Add(r)
+			return nil
+		})
+	if err != nil {
 		fail("read mirror: %v", err)
 	}
 	mc, mh := acc.Result()
@@ -102,10 +108,12 @@ func main() {
 func explain(ctx context.Context, conn *pgx.Conn, t *mirror.Table, order []string) {
 	key := t.Key
 	m := map[string]map[string]any{}
-	_ = t.ForEachLive(func(r map[string]any) error {
-		m[fmt.Sprint(r[key])] = r
-		return nil
-	})
+	_ = t.ReadLiveWithRetry(
+		func() { m = map[string]map[string]any{} },
+		func(r map[string]any) error {
+			m[fmt.Sprint(r[key])] = r
+			return nil
+		})
 	s := map[string]map[string]any{}
 	_ = eachSourceRow(ctx, conn, t.Qualified, order, func(r map[string]any) error {
 		s[fmt.Sprint(r[key])] = r
