@@ -440,10 +440,29 @@ was right the whole time.
 
 ## What to do next, in order of measured value
 
-1. **`deletes` still holds 3 GB.** Streaming the rewrite took the other shapes
-   to well under a gigabyte; this one did not follow, and nothing has been
-   profiled to say why. A heap profile is one command and has settled three
-   arguments in this project already.
+1. **The key→location index is now the cost, in both CPU and memory.** The
+   `deletes` shape did not follow the others down, so it got profiled, and the
+   answer is the same on both axes:
+
+   ```
+   heap (1.09 GB live, RSS is runtime high-water)
+     190 MB  FinishCompaction          the swap's dead set
+     188 MB  the compactor's new index
+      77 MB  fmt.Sprint                key strings
+   cpu (40 s)
+     25%     string-keyed map hashing, probing and assignment
+     30%     garbage collection (tryDeferToSpanScan, scanObject, sizeclass)
+   ```
+
+   Nothing here is Parquet, compression or decoding any more. It is
+   `map[string]loc` with 3.5M entries, held twice during a swap, and the
+   garbage collector walking it. Both halves have the same fix: make the
+   entries **pointer-free**, so the collector stops scanning them. `loc.File`
+   is a string per entry and could be an interned file id — 24 bytes to 8, and
+   one fewer pointer. Keying by int64 where the primary key is an integer,
+   which is most tables, removes the other one and makes the map opaque to GC
+   entirely. The `fmt.Sprint` line is already gone (`strconv`), which is the
+   free part; the rest is a real change to the index type.
 2. **Drop large values the mirror can see are unchanged**, rather than only the
    ones pgoutput omits (see round four). Needs a per-row hash of the large
    columns; widens the round-four win to `REPLICA IDENTITY FULL` tables and to

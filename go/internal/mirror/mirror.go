@@ -690,12 +690,25 @@ func (t *Table) fetchInto(upserts map[string]map[string]any,
 	return nil
 }
 
+// keyString renders a key the same way whatever produced it: pgoutput hands
+// over text, Parquet hands back an int64, and both have to hash to the same
+// index entry.
+//
+// The integer cases are spelled out rather than left to fmt.Sprint because this
+// runs once per row per read, and a CPU profile of the deletes shape put
+// fmt.Sprint at 77 MB of the live heap with the index already the dominant cost.
 func keyString(v any) string {
 	switch x := v.(type) {
 	case nil:
 		return ""
 	case string:
 		return x
+	case int64:
+		return strconv.FormatInt(x, 10)
+	case int32:
+		return strconv.FormatInt(int64(x), 10)
+	case int:
+		return strconv.Itoa(x)
 	default:
 		return fmt.Sprint(x)
 	}
