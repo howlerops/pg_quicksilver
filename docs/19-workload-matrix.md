@@ -577,9 +577,11 @@ spread on the same engine.
    group-by, 38× on a filtered aggregate over an inline document, **0.04× on a
    point lookup**, every answer verified against the source, and two silent
    PostgreSQL/DuckDB incompatibilities found by the benchmark failing.
-2. **Run against a real CloudNativePG operator.** The plugin is unit-tested
-   against the CNPG-I contract and the chart installs, but reconcile loops,
-   rollouts and switchovers have never been exercised by the operator itself.
+2. ~~**Run against a real CloudNativePG operator.**~~ Done —
+   [docs/21](21-against-the-real-operator.md). The real 1.30 operator discovers
+   the plugin, completes the handshake, records our capabilities, and puts the
+   sidecar in a Pod it built. Rollouts and switchovers still need a cluster that
+   can run pods; this sandbox cannot.
 3. **Bootstrap is 16k rows/s on jsonb and 49k on inline, against 195k on
    narrow.** Streaming it removed the memory but not the time, so the cost is in
    the source query or in compressing the documents, and those are

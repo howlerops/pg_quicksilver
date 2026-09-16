@@ -169,3 +169,12 @@ Short, and honestly short rather than rhetorically short:
 Everything else that [docs/16](16-deploying.md) listed as unverified — the mTLS
 dial, the metadata and capability negotiation, the patches against real Pods, the
 chart's structure — is now run on every `go test ./...`.
+
+## Postscript: and then against the real operator
+
+Everything in this document tests the plugin against the CNPG-I **contract**.
+[docs/21](21-against-the-real-operator.md) tests it against the operator, which
+turns out to be reachable without a working kubelet: the API server, the CRDs,
+the admission webhooks and the operator binary are all real, and only the pods
+are not. Six traps between "it compiles" and "it works" are recorded there, and
+none of them were findable from here.
