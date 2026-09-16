@@ -314,9 +314,16 @@ func decodeTuple(rel *pglogrepl.RelationMessage, t *pglogrepl.TupleData) map[str
 		case 'n': // null
 			out[name] = nil
 		case 'u': // unchanged TOAST value — not sent
-			// Leaving it absent is deliberate: writing nil would blank a
-			// column the source did not change. The writer carries the prior
-			// value forward because the row is re-read from the mirror.
+			// Leaving it absent is deliberate, and the distinction is load-
+			// bearing: an ABSENT column means "unchanged", a PRESENT nil means
+			// "set to NULL". The writer carries absent columns forward from the
+			// mirror (mirror.carryForward).
+			//
+			// The comment that used to be here claimed the writer already did
+			// that. It did not. Every UPDATE to a row with a large unchanged
+			// column silently wrote NULL over it — no error, no change in row
+			// count, and invisible to anything but a column-by-column
+			// comparison. See internal/mirror/toast_test.go.
 			continue
 		case 't':
 			out[name] = string(col.Data)

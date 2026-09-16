@@ -93,6 +93,10 @@ type Table struct {
 	// per batch, which is most of the 30x apply-throughput collapse measured in
 	// docs/18. Held in memory it is built once per process and updated in place.
 	index map[string]loc
+
+	// compacting is the rewrite currently in flight, if any. Only the apply
+	// goroutine touches this field.
+	compacting *Compaction
 }
 
 func New(root, schema, table, key string, cols map[string]string, order []string) (*Table, error) {
@@ -313,7 +317,21 @@ func (t *Table) Apply(txns []changestream.Transaction) (ApplyStats, error) {
 				if _, seen := upserts[k]; !seen {
 					order = append(order, k)
 				}
-				upserts[k] = c.Row
+				// An earlier change to the same key in this batch is the better
+				// base than anything on disk, so merge onto it. A column absent
+				// from BOTH is filled from the mirror afterwards.
+				if prev, seen := upserts[k]; seen {
+					merged := make(map[string]any, len(t.Order))
+					for name, v := range prev {
+						merged[name] = v
+					}
+					for name, v := range c.Row {
+						merged[name] = v
+					}
+					upserts[k] = merged
+				} else {
+					upserts[k] = c.Row
+				}
 				delete(deletes, k)
 			case changestream.OpDelete:
 				k := keyString(c.Key[t.Key])
@@ -327,6 +345,14 @@ func (t *Table) Apply(txns []changestream.Transaction) (ApplyStats, error) {
 			}
 		}
 		last = txn.CommitLSN
+	}
+
+	// Carry forward anything pgoutput did not resend. A large value that an
+	// update did not change arrives as "unchanged TOAST" — the column is simply
+	// absent — and writing NULL for it destroys the data with no error and no
+	// change in row count. Absent means "keep what is there".
+	if err := t.carryForward(upserts); err != nil {
+		return ApplyStats{}, err
 	}
 
 	// an update supersedes the old row: tombstone in base, re-insert in delta
@@ -365,6 +391,85 @@ func (t *Table) Apply(txns []changestream.Transaction) (ApplyStats, error) {
 		return ApplyStats{}, err
 	}
 	return ApplyStats{Upserts: len(upserts), Deletes: len(deletes), AppliedLSN: last}, nil
+}
+
+// carryForward fills columns that a change did not carry, from the row the
+// mirror already holds.
+//
+// Batched by file and projected to the missing columns only. Doing it per row
+// would mean a Parquet decode per update, and doing it without projection would
+// mean decoding the whole row group for a column nobody asked about — either
+// way it would reintroduce the per-batch table scan that docs/18 removed.
+func (t *Table) carryForward(upserts map[string]map[string]any) error {
+	// which keys are short, and which columns each one needs
+	needCols := map[string][]string{}
+	for k, row := range upserts {
+		if len(row) == len(t.Order) {
+			continue
+		}
+		var missing []string
+		for _, name := range t.Order {
+			if _, ok := row[name]; !ok {
+				missing = append(missing, name)
+			}
+		}
+		if len(missing) > 0 {
+			needCols[k] = missing
+		}
+	}
+	if len(needCols) == 0 {
+		return nil
+	}
+	if err := t.ensureIndex(); err != nil {
+		return err
+	}
+
+	type req struct {
+		positions []int
+		cols      map[string]bool
+		keyAt     map[int]string
+	}
+	byFile := map[string]*req{}
+	for k, missing := range needCols {
+		l, ok := t.index[k]
+		if !ok {
+			// No prior row: this is a genuine insert whose columns really are
+			// absent, so NULL is the right answer.
+			continue
+		}
+		r := byFile[l.File]
+		if r == nil {
+			r = &req{cols: map[string]bool{}, keyAt: map[int]string{}}
+			byFile[l.File] = r
+		}
+		r.positions = append(r.positions, l.Pos)
+		r.keyAt[l.Pos] = k
+		for _, c := range missing {
+			r.cols[c] = true
+		}
+	}
+
+	for rel, r := range byFile {
+		cols := make([]string, 0, len(r.cols))
+		for c := range r.cols {
+			cols = append(cols, c)
+		}
+		sort.Strings(cols)
+		got, err := t.readRowsAt(rel, r.positions, cols)
+		if err != nil {
+			return fmt.Errorf("carry-forward read of %s: %w", rel, err)
+		}
+		for pos, prior := range got {
+			k := r.keyAt[pos]
+			row := upserts[k]
+			for _, c := range needCols[k] {
+				if v, ok := prior[c]; ok {
+					row[c] = v
+				}
+			}
+		}
+	}
+	return nil
 }
 
 func keyString(v any) string {
@@ -417,7 +522,14 @@ func (t *Table) writeParquet(path string, rows []map[string]any) error {
 		return err
 	}
 	defer f.Close()
-	props := parquet.NewWriterProperties(parquet.WithCompression(compress.Codecs.Zstd))
+	props := parquet.NewWriterProperties(
+		parquet.WithCompression(compress.Codecs.Zstd),
+		// Bounded row groups. The smallest unit Parquet can decode is a row
+		// group, so this is the upper bound on the cost of fetching one row for
+		// carry-forward; with the library default the base file is one group and
+		// that fetch costs a full-table decode.
+		parquet.WithMaxRowGroupLength(RowGroupRows),
+	)
 	w, err := pqarrow.NewFileWriter(schema, f, props, pqarrow.DefaultWriterProps())
 	if err != nil {
 		return err

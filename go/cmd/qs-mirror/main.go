@@ -17,6 +17,8 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net/http"
+	_ "net/http/pprof"
 	"os"
 	"os/signal"
 	"strings"
@@ -113,6 +115,16 @@ func main() {
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+
+	// Optional pprof, off unless asked for. Profiling the apply path in place
+	// is how the O(table)-per-batch costs in docs/18 were found; guessing at
+	// them produced two wrong fixes first.
+	if addr := os.Getenv("QS_DEBUG_ADDR"); addr != "" {
+		go func() {
+			log.Info("pprof listening", "addr", addr)
+			_ = http.ListenAndServe(addr, nil)
+		}()
+	}
 
 	h := health.New(o.freshnessSLO)
 	if _, err := h.Serve(o.healthAddr); err != nil {
@@ -443,17 +455,30 @@ func pump(
 		// with traffic — measured at 5M rows as a 30x throughput collapse and a
 		// multi-gigabyte RSS spike (docs/18).
 		for q, t := range tables {
-			switch {
-			case t.ShouldCompact():
-				// enough of the TABLE has changed to justify rewriting the base
-				t0 := time.Now()
-				n, err := t.Compact()
-				if err != nil {
+			// A finished rewrite is swapped in here, on this goroutine, which is
+			// what lets the swap decide liveness against the current index with
+			// no locking.
+			if t.Compacting() {
+				if n, err := t.FinishCompaction(); err != nil {
 					log.Warn("compaction failed", "table", q, "err", err)
-					continue
+				} else if n > 0 {
+					log.Info("compacted", "table", q, "rows", n)
 				}
-				log.Info("compacted", "table", q, "rows", n,
-					"seconds", time.Since(t0).Seconds())
+			}
+			switch {
+			case t.Compacting():
+				// a rewrite is in flight; do not start another and do not merge
+				// deltas underneath it
+
+			case t.ShouldCompact():
+				// Enough of the TABLE has changed to justify rewriting the base.
+				// This runs in the BACKGROUND: doing it inline is what put p99
+				// commit-to-visible at 24.6s against a p50 of 206ms (docs/19).
+				if c := t.BeginCompaction(); c != nil {
+					log.Info("compaction started", "table", q,
+						"base_rows", t.State.BaseRows, "delta_rows", t.State.DeltaRows)
+				}
+
 			case t.ShouldMergeDeltas():
 				// too many files to read through, but not enough churn to pay
 				// for a base rewrite — merge the deltas instead, which costs

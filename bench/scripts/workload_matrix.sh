@@ -1,0 +1,140 @@
+#!/usr/bin/env bash
+# Run the production sidecar across the table shapes that break things.
+#
+# One PostgreSQL 17 primary + standby, reused across shapes; a fresh table,
+# fresh mirror and fresh sidecar per shape. Every shape is VERIFIED against its
+# source with qs-verify before its throughput number is believed — a fast mirror
+# that does not match is not a result, and the jsonb shape is in this matrix
+# precisely because it used to fail that check silently.
+#
+#   bash bench/scripts/workload_matrix.sh            # all shapes
+#   SHAPES="jsonb churn" bash bench/scripts/workload_matrix.sh
+set -uo pipefail
+cd "$(dirname "$0")/../.."
+
+PG=/usr/lib/postgresql/17/bin
+BASE=/var/lib/postgresql/qs17
+PRIMARY=$BASE/primary
+STANDBY=$BASE/standby
+HEALTH=127.0.0.1:9199
+DB=app
+ROWS=${ROWS:-400000}
+SECONDS_PER=${SECONDS_PER:-20}
+SHAPES=${SHAPES:-"narrow wide jsonb churn deletes"}
+FAIL=0
+
+# Exactly one matrix at a time. Two concurrent runs share a database, a table
+# named m, a replication slot and this output file — and the second one silently
+# recreates the table the first is verifying. That produced a "DIVERGED" with
+# 68,234 missing rows that was entirely an artifact of the harness racing
+# itself, and it is the fourth time in this project a measurement bug has
+# impersonated a product bug.
+LOCK=/tmp/qs-workload-matrix.lock
+exec 9>"$LOCK"
+if ! flock -n 9; then
+  echo "another workload_matrix.sh is already running (lock: $LOCK); refusing to start"
+  exit 2
+fi
+
+say()  { printf '\n=== %s ===\n' "$*"; }
+bad()  { printf '  FAIL: %s\n' "$*"; FAIL=1; }
+skip() { printf '\nINCOMPLETE — skipped, which is NOT a pass: %s\n' "$*"; exit 2; }
+psq()  { su postgres -c "$PG/psql -h /tmp -p $1 -U postgres -d ${3:-$DB} -Atc \"$2\""; }
+
+cleanup() { pkill -x qs-mirror 2>/dev/null; }
+trap cleanup EXIT
+
+say "infrastructure"
+pkill -x qs-mirror 2>/dev/null
+# Drop every inactive slot before starting. A slot left behind by an earlier run
+# pins WAL forever: six abandoned slots from previous benchmarks had pg_wal at
+# 12 GB and filled the disk mid-run. An inactive slot is not free.
+su postgres -c "$PG/psql -h /tmp -p 5443 -U postgres -d postgres -Atc \
+  'SELECT pg_drop_replication_slot(slot_name) FROM pg_replication_slots WHERE NOT active'" >/dev/null 2>&1
+su postgres -c "$PG/pg_ctl -D $STANDBY stop -m immediate" >/dev/null 2>&1
+su postgres -c "$PG/pg_ctl -D $PRIMARY stop -m immediate"  >/dev/null 2>&1
+rm -f $PRIMARY/postgresql.auto.conf; touch $PRIMARY/postgresql.auto.conf
+chown postgres:postgres $PRIMARY/postgresql.auto.conf
+grep -q "^listen_addresses = 'localhost'" $PRIMARY/postgresql.conf \
+  || echo "listen_addresses = 'localhost'" >> $PRIMARY/postgresql.conf
+su postgres -c "$PG/pg_ctl -D $PRIMARY -l $BASE/primary.log -w start" >/dev/null || skip "primary would not start"
+psq 5443 "DROP DATABASE IF EXISTS $DB" postgres >/dev/null
+psq 5443 "CREATE DATABASE $DB" postgres >/dev/null
+
+psq 5443 "SELECT pg_drop_replication_slot('mx_standby') FROM pg_replication_slots WHERE slot_name='mx_standby'" postgres >/dev/null
+psq 5443 "SELECT pg_create_physical_replication_slot('mx_standby', true)" postgres >/dev/null
+psq 5443 "ALTER SYSTEM SET synchronized_standby_slots = 'mx_standby'" postgres >/dev/null
+psq 5443 "SELECT pg_reload_conf()" postgres >/dev/null
+rm -rf $STANDBY
+su postgres -c "$PG/pg_basebackup -D $STANDBY -R -X stream -S mx_standby -c fast \
+  -d 'host=/tmp port=5443 user=postgres dbname=postgres'" >/dev/null 2>&1 || skip "basebackup failed"
+{ echo "port = 5444"; echo "sync_replication_slots = on"; echo "hot_standby_feedback = on"; } \
+  >> $STANDBY/postgresql.auto.conf
+su postgres -c "$PG/pg_ctl -D $STANDBY -l $BASE/standby.log -w start" >/dev/null || skip "standby would not start"
+[ "$(psq 5444 'SELECT pg_is_in_recovery()' postgres)" = "t" ] || skip "standby not in recovery"
+
+go -C go build -o /tmp/qs-mirror ./cmd/qs-mirror || skip "build failed"
+go -C go build -o /tmp/qs-matrix ./cmd/qs-matrix || skip "build failed"
+go -C go build -o /tmp/qs-verify ./cmd/qs-verify || skip "build failed"
+chmod 755 /tmp/qs-mirror /tmp/qs-matrix /tmp/qs-verify
+echo "  primary 5443, standby 5444, ${ROWS} rows/shape, ${SECONDS_PER}s workload, row_group=${ROW_GROUP:-65536}"
+
+for SHAPE in $SHAPES; do
+  say "shape: $SHAPE"
+  MIRROR=$BASE/mx-$SHAPE
+  rm -rf $MIRROR; install -d -o postgres -g postgres $MIRROR
+  psq 5443 "SELECT pg_drop_replication_slot('mx_slot') FROM pg_replication_slots WHERE slot_name='mx_slot'" >/dev/null 2>&1
+  psq 5443 "DROP PUBLICATION IF EXISTS mx_pub" >/dev/null 2>&1
+
+  /tmp/qs-matrix -dsn "postgres://postgres@localhost:5443/$DB" -shape "$SHAPE" \
+    -setup -rows "$ROWS" || { bad "setup failed"; continue; }
+
+  boot_t0=$(date +%s.%N)
+  su postgres -c "QS_CLUSTER=mx QS_MODE=shadow QS_INGEST=logical \
+    QS_TABLES=public.m QS_SLOT=mx_slot QS_PUBLICATION=mx_pub \
+    QS_MIRROR_PATH=$MIRROR QS_FRESHNESS_SLO=60s \
+    QS_PRIMARY_HOST=localhost QS_PRIMARY_PORT=5443 \
+    QS_LOCAL_SOCKET_DIR=/tmp QS_LOCAL_PORT=5444 \
+    QS_DATABASE=$DB QS_PGUSER=postgres QS_POD_NAME=mx-2 \
+    QS_ROW_GROUP=${ROW_GROUP:-65536} ${QS_DEBUG_ADDR:+QS_DEBUG_ADDR=$QS_DEBUG_ADDR} \
+    QS_HEALTH_ADDR=$HEALTH /tmp/qs-mirror" > $BASE/mx-$SHAPE.log 2>&1 &
+  sleep 1
+  MPID=$(pgrep -x qs-mirror | head -1)
+
+  for _ in $(seq 600); do curl -sf "http://$HEALTH/readyz" >/dev/null 2>&1 && break; sleep 1; done
+  if ! curl -sf "http://$HEALTH/readyz" >/dev/null 2>&1; then
+    tail -6 $BASE/mx-$SHAPE.log; bad "never became ready"; pkill -x qs-mirror; continue
+  fi
+  boot=$(echo "$(date +%s.%N)-$boot_t0"|bc)
+  printf '  bootstrap     %.1fs -> %.0f rows/s\n' "$boot" "$(echo "$ROWS/$boot"|bc -l)"
+
+  /tmp/qs-matrix -dsn "postgres://postgres@localhost:5443/$DB" -shape "$SHAPE" \
+    -measure -mirror "$MIRROR" -pid "$MPID" -seconds "$SECONDS_PER" || bad "measure failed"
+
+  # Heap profile before the process goes away, when asked for. RSS is a
+  # high-water mark the Go runtime does not return promptly, so it says almost
+  # nothing about what is actually live.
+  if [ -n "${QS_DEBUG_ADDR:-}" ]; then
+    curl -s "http://$QS_DEBUG_ADDR/debug/pprof/heap" -o /tmp/heap-$SHAPE.pb.gz && \
+      echo "  heap profile  /tmp/heap-$SHAPE.pb.gz"
+  fi
+
+  /tmp/qs-matrix -dsn "postgres://postgres@localhost:5443/$DB" -shape "$SHAPE" \
+    -settle -mirror "$MIRROR" || bad "mirror never settled"
+
+  # Correctness, every time. The jsonb shape is here because it used to pass
+  # every throughput check while silently blanking a column.
+  if /tmp/qs-verify -dsn "postgres://postgres@localhost:5443/$DB" \
+       -mirror "$MIRROR" -table public.m > /tmp/verify-$SHAPE.txt 2>&1; then
+    echo "  correctness   MATCH ($(grep -m1 'mirror ' /tmp/verify-$SHAPE.txt | sed 's/^ *//'))"
+  else
+    bad "mirror DIVERGED from source"
+    sed 's/^/    /' /tmp/verify-$SHAPE.txt | head -5
+  fi
+
+  pkill -x qs-mirror; sleep 1
+done
+
+printf '\n========================================\n'
+[ $FAIL -eq 0 ] && echo "PASS" || echo "FAIL"
+exit $FAIL

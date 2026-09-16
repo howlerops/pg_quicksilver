@@ -106,6 +106,7 @@ in [docs/04](docs/04-storage-and-query-engine.md).
 | 16 | [Deploying](docs/16-deploying.md) | **The installable part.** Two images, the Helm chart, the Cluster spec, what the plugin refuses, and what has not been verified |
 | 17 | [Testing without a cluster](docs/17-testing-without-a-cluster.md) | The CNPG-I handshake is not a Kubernetes thing. Real mTLS, real Pods from CNPG's own builder, real CRD schemas — and the capability bug that found |
 | 18 | [Measured performance](docs/18-measured-performance.md) | **The production path, measured.** Bootstrap, drain rate, commit-to-visible, storage, and the three implementation defects the benchmark found before it produced a number worth quoting |
+| 19 | [Workload matrix](docs/19-workload-matrix.md) | **Five table shapes.** Narrow, wide, a 6 KB jsonb document per row, hot-set churn, delete-heavy — what each costs, what each optimisation bought, and the one shape that does not keep up |
 | — | [ADRs](docs/adr/) | Architecture decision records (template + the decisions still open) |
 
 ## The four architectures under consideration
