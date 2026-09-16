@@ -119,7 +119,11 @@ func (t *Table) Live() ([]map[string]any, error) {
 	// carry deletion vectors exactly as base files do. Reading a delta without
 	// its vector would resurrect every superseded row.
 	read := func(rel string) error {
-		rows, err := t.readParquet(filepath.Join(t.Dir, rel), t.deadPositions(rel))
+		dead, derr := t.deadPositions(rel)
+		if derr != nil {
+			return derr
+		}
+		rows, err := t.readParquet(filepath.Join(t.Dir, rel), dead)
 		if err != nil {
 			if os.IsNotExist(err) {
 				return ErrStaleManifest
@@ -240,7 +244,11 @@ func (t *Table) ReadLiveWithRetry(reset func(), fn func(map[string]any) error) e
 // none: it turns "too big to check" into "wrong".
 func (t *Table) ForEachLive(fn func(map[string]any) error) error {
 	visit := func(rel string) error {
-		rows, err := t.readParquet(filepath.Join(t.Dir, rel), t.deadPositions(rel))
+		dead, derr := t.deadPositions(rel)
+		if derr != nil {
+			return derr
+		}
+		rows, err := t.readParquet(filepath.Join(t.Dir, rel), dead)
 		if err != nil {
 			if os.IsNotExist(err) {
 				return ErrStaleManifest

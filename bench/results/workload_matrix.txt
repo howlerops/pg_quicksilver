@@ -5,62 +5,62 @@
 === shape: narrow ===
   shape=narrow  4 columns, insert-only
   seeded 200,000 rows in 0.4s; 17 MB heap+indexes (of which 8 KB TOAST)
-  bootstrap     1.0s -> 195295 rows/s
-  workload      4,271,000 row-changes in 12.0s (355798/s into PostgreSQL)
-  drained       20.3s -> 132414 row-changes/s through the mirror
-  latency       p50=206ms p90=270ms p99=8992ms max=8992ms (n=60)
-  storage       source 448 MB / mirror 135 MB -> 3.3x smaller (4,471,262 live rows)
-  sidecar       104.8s CPU (25 us/row-change), RSS 5 GB
-  files         1 base + 17 delta
-  correctness   MATCH (mirror 4471263 rows (checksum 8308caff20fb4b61))
+  bootstrap     1.0s -> 195364 rows/s
+  workload      4,200,000 row-changes in 12.0s (349648/s into PostgreSQL)
+  drained       20.5s -> 129001 row-changes/s through the mirror
+  latency       p50=207ms p90=216ms p99=4884ms max=4884ms (n=60)
+  storage       source 441 MB / mirror 134 MB -> 3.3x smaller (4,400,265 live rows)
+  sidecar       107.4s CPU (26 us/row-change), RSS 4 GB
+  files         1 base + 3 delta
+  correctness   MATCH (mirror 4400266 rows (checksum c184f14b24670377))
 
 === shape: wide ===
   shape=wide  12 columns, insert-only
   seeded 200,000 rows in 0.9s; 41 MB heap+indexes (of which 8 KB TOAST)
-  bootstrap     2.0s -> 98090 rows/s
-  workload      2,072,000 row-changes in 12.0s (172437/s into PostgreSQL)
-  drained       17.9s -> 69149 row-changes/s through the mirror
-  latency       p50=206ms p90=221ms p99=5860ms max=5860ms (n=60)
-  storage       source 409 MB / mirror 124 MB -> 3.3x smaller (2,272,239 live rows)
-  sidecar       93.8s CPU (45 us/row-change), RSS 5 GB
-  files         1 base + 16 delta
-  correctness   MATCH (mirror 2272240 rows (checksum 6ad121c36a60f857))
+  bootstrap     2.0s -> 97934 rows/s
+  workload      2,063,500 row-changes in 12.0s (171778/s into PostgreSQL)
+  drained       16.3s -> 72993 row-changes/s through the mirror
+  latency       p50=206ms p90=218ms p99=803ms max=803ms (n=60)
+  storage       source 407 MB / mirror 151 MB -> 2.7x smaller (2,263,722 live rows)
+  sidecar       78.2s CPU (38 us/row-change), RSS 5 GB
+  files         1 base + 17 delta
+  correctness   MATCH (mirror 2263723 rows (checksum 8a317058c6ac6be5))
 
 === shape: jsonb ===
   shape=jsonb  ~6 KB jsonb per row; UPDATEs that never touch the document
-  seeded 200,000 rows in 30.8s; 810 MB heap+indexes (of which 790 MB TOAST)
-  bootstrap     13.3s -> 15016 rows/s
-  workload      2,826,200 row-changes in 12.0s (235440/s into PostgreSQL)
-  drained       21.6s -> 84156 row-changes/s through the mirror
-  latency       p50=206ms p90=212ms p99=486ms max=486ms (n=60)
-  storage       source 1 GB / mirror 2 GB -> 0.6x smaller (200,275 live rows)
-  sidecar       66.1s CPU (23 us/row-change), RSS 7 GB
-  files         1 base + 17 delta
-  correctness   MATCH (mirror 200276 rows (checksum 37aee7c80b5970dd))
+  seeded 200,000 rows in 31.6s; 810 MB heap+indexes (of which 790 MB TOAST)
+  bootstrap     12.1s -> 16501 rows/s
+  workload      2,760,800 row-changes in 12.0s (230018/s into PostgreSQL)
+  drained       20.7s -> 84462 row-changes/s through the mirror
+  latency       p50=206ms p90=211ms p99=348ms max=348ms (n=60)
+  storage       source 1 GB / mirror 2 GB -> 0.6x smaller (200,266 live rows)
+  sidecar       66.6s CPU (24 us/row-change), RSS 5 GB
+  files         1 base + 3 delta
+  correctness   MATCH (mirror 200267 rows (checksum 1de20383824478e4))
 
 === shape: churn ===
   shape=churn  UPDATEs concentrated on a hot 1% of rows
   seeded 200,000 rows in 0.4s; 17 MB heap+indexes (of which 8 KB TOAST)
-  bootstrap     1.0s -> 194583 rows/s
-  workload      722,800 row-changes in 12.0s (60137/s into PostgreSQL)
-  drained       0.1s -> 59430 row-changes/s through the mirror
-  latency       p50=206ms p90=207ms p99=217ms max=217ms (n=60)
-  storage       source 62 MB / mirror 4 MB -> 15.5x smaller (200,062 live rows)
-  sidecar       6.1s CPU (8 us/row-change), RSS 66 MB
-  files         1 base + 3 delta
-  correctness   MATCH (mirror 200063 rows (checksum ce3031bb7c225bc1))
+  bootstrap     1.0s -> 194353 rows/s
+  workload      729,800 row-changes in 12.0s (60671/s into PostgreSQL)
+  drained       0.4s -> 58761 row-changes/s through the mirror
+  latency       p50=206ms p90=207ms p99=223ms max=223ms (n=60)
+  storage       source 63 MB / mirror 4 MB -> 15.6x smaller (200,063 live rows)
+  sidecar       6.4s CPU (9 us/row-change), RSS 66 MB
+  files         1 base + 2 delta
+  correctness   MATCH (mirror 200064 rows (checksum b8580d6d9cad91ce))
 
 === shape: deletes ===
   shape=deletes  inserts mixed 1:1 with deletes of older rows
   seeded 200,000 rows in 0.4s; 17 MB heap+indexes (of which 8 KB TOAST)
-  bootstrap     1.0s -> 195270 rows/s
-  workload      7,034,000 row-changes in 12.0s (585968/s into PostgreSQL)
-  drained       17.2s -> 240467 row-changes/s through the mirror
-  latency       p50=206ms p90=220ms p99=7510ms max=7510ms (n=60)
-  storage       source 372 MB / mirror 116 MB -> 3.2x smaller (3,517,377 live rows)
-  sidecar       88.2s CPU (13 us/row-change), RSS 4 GB
-  files         1 base + 16 delta
-  correctness   MATCH (mirror 3517378 rows (checksum 265a4a08a5c1ef4c))
+  bootstrap     1.0s -> 195015 rows/s
+  workload      7,717,200 row-changes in 12.0s (642833/s into PostgreSQL)
+  drained       18.1s -> 255969 row-changes/s through the mirror
+  latency       p50=206ms p90=216ms p99=1919ms max=1919ms (n=60)
+  storage       source 405 MB / mirror 98 MB -> 4.1x smaller (3,858,986 live rows)
+  sidecar       82.9s CPU (11 us/row-change), RSS 5 GB
+  files         1 base + 17 delta
+  correctness   MATCH (mirror 3858987 rows (checksum 277a619e13c40b45))
 
 ========================================
 PASS

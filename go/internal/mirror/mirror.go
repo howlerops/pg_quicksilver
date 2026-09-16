@@ -161,7 +161,10 @@ func (t *Table) ensureIndex() error {
 			}
 			return err
 		}
-		dead := t.deadPositions(rel)
+		dead, derr := t.deadPositions(rel)
+		if derr != nil {
+			return derr
+		}
 		for i, r := range rows {
 			if dead[i] {
 				continue
@@ -175,18 +178,28 @@ func (t *Table) ensureIndex() error {
 // deadPositions reads a file's deletion vector. Every file gets one now, base
 // and delta alike: marking a superseded row dead is O(1), whereas rewriting the
 // file that holds it is O(file) and was being done on every batch.
-func (t *Table) deadPositions(rel string) map[int]bool {
+// deadPositions reads a file's deletion vector.
+//
+// A vector that exists but cannot be parsed is an ERROR, never an empty set.
+// The difference is the difference between "this file has no deleted rows" and
+// "I could not tell", and the second silently undoes every delete in the file.
+func (t *Table) deadPositions(rel string) (map[int]bool, error) {
 	dead := map[int]bool{}
 	b, err := os.ReadFile(t.dvPath(rel))
 	if err != nil {
-		return dead
+		if os.IsNotExist(err) {
+			return dead, nil // genuinely nothing deleted in this file yet
+		}
+		return nil, err
 	}
 	var pos []int
-	_ = json.Unmarshal(b, &pos)
+	if err := json.Unmarshal(b, &pos); err != nil {
+		return nil, fmt.Errorf("deletion vector for %s is unreadable: %w", rel, err)
+	}
 	for _, p := range pos {
 		dead[p] = true
 	}
-	return dead
+	return dead, nil
 }
 
 func (t *Table) dvPath(rel string) string {
@@ -364,6 +377,15 @@ func (t *Table) Apply(txns []changestream.Transaction) (ApplyStats, error) {
 		superseded[k] = true
 	}
 
+	// Tell an in-flight rewrite which keys moved out from under it. Its own
+	// index is correct for everything else, which is what lets the swap be
+	// O(changed) rather than O(table).
+	if t.compacting != nil {
+		for k := range superseded {
+			t.compacting.touched[k] = true
+		}
+	}
+
 	if len(superseded) > 0 {
 		if err := t.extendDeletionVectors(superseded); err != nil {
 			return ApplyStats{}, err
@@ -517,22 +539,13 @@ func (t *Table) writeDelta(rows []map[string]any) error {
 // updates in 10 seconds is ~8 GB of unchanged document re-compressed.
 func (t *Table) writeParquetCodec(path string, rows []map[string]any, durable bool) error {
 	schema := t.ArrowSchema()
-	bld := array.NewRecordBuilder(memory.DefaultAllocator, schema)
-	defer bld.Release()
-
-	for _, r := range rows {
-		for i, name := range t.Order {
-			appendValue(bld.Field(i), schema.Field(i).Type, r[name])
-		}
-	}
-	rec := bld.NewRecord()
-	defer rec.Release()
 
 	f, err := os.Create(path)
 	if err != nil {
 		return err
 	}
 	defer f.Close()
+
 	codec := compress.Codecs.Snappy
 	if durable {
 		codec = compress.Codecs.Zstd
@@ -549,13 +562,36 @@ func (t *Table) writeParquetCodec(path string, rows []map[string]any, durable bo
 	if err != nil {
 		return err
 	}
-	if err := w.Write(rec); err != nil {
-		return err
+
+	// Build and write ONE row group at a time. Building a single record for the
+	// whole table meant a snapshot or compaction of a few million wide rows held
+	// the entire thing as Arrow buffers before a byte was written — the 5.9 GB
+	// peak RSS in docs/18. Chunking bounds it to one row group regardless of how
+	// large the table is.
+	chunk := int(RowGroupRows)
+	for start := 0; start < len(rows); start += chunk {
+		end := start + chunk
+		if end > len(rows) {
+			end = len(rows)
+		}
+		bld := array.NewRecordBuilder(memory.DefaultAllocator, schema)
+		for _, r := range rows[start:end] {
+			for i, name := range t.Order {
+				appendValue(bld.Field(i), schema.Field(i).Type, r[name])
+			}
+		}
+		rec := bld.NewRecord()
+		err := w.Write(rec)
+		rec.Release()
+		bld.Release()
+		if err != nil {
+			return err
+		}
 	}
+	// An empty table still needs a valid file with a footer, which Close writes.
 	return w.Close()
 }
 
-// writeParquet writes a long-lived file (base, snapshot, compaction output).
 func (t *Table) writeParquet(path string, rows []map[string]any) error {
 	return t.writeParquetCodec(path, rows, true)
 }
@@ -642,7 +678,10 @@ func (t *Table) extendDeletionVectors(keys map[string]bool) error {
 		}
 	}
 	for rel, positions := range byFile {
-		existing := t.deadPositions(rel)
+		existing, err := t.deadPositions(rel)
+		if err != nil {
+			return err
+		}
 		for _, p := range positions {
 			existing[p] = true
 		}
@@ -651,11 +690,11 @@ func (t *Table) extendDeletionVectors(keys map[string]bool) error {
 			merged = append(merged, p)
 		}
 		sort.Ints(merged)
-		b, err := json.Marshal(merged)
-		if err != nil {
-			return err
-		}
-		if err := os.WriteFile(t.dvPath(rel), b, 0o644); err != nil {
+		// writeJSON, not os.WriteFile: this is a deletion vector, and a
+		// compactor on another goroutine reads it while we write. A truncate-
+		// then-write leaves a window where it parses as nothing, and "nothing
+		// is dead" undoes every delete in the file.
+		if err := writeJSON(t.dvPath(rel), merged); err != nil {
 			return err
 		}
 	}
@@ -707,9 +746,8 @@ func (t *Table) Compact() (int, error) {
 		index[k] = i
 		t.index[k] = loc{File: rel, Pos: i}
 	}
-	b, _ := json.Marshal(index)
 	stem := strings.TrimSuffix(name, ".parquet")
-	if err := os.WriteFile(filepath.Join(t.Dir, "index", stem+".idx.json"), b, 0o644); err != nil {
+	if err := writeJSON(filepath.Join(t.Dir, "index", stem+".idx.json"), index); err != nil {
 		return 0, err
 	}
 	return len(rows), t.saveState()
@@ -772,7 +810,11 @@ func (t *Table) MergeDeltas() (int, error) {
 	var rows []map[string]any
 	for _, d := range old {
 		rel := filepath.Join("delta", d)
-		got, err := t.readParquet(filepath.Join(t.Dir, rel), t.deadPositions(rel))
+		dead, derr := t.deadPositions(rel)
+		if derr != nil {
+			return 0, derr
+		}
+		got, err := t.readParquet(filepath.Join(t.Dir, rel), dead)
 		if err != nil {
 			if os.IsNotExist(err) {
 				continue
@@ -801,7 +843,12 @@ func (t *Table) MergeDeltas() (int, error) {
 	// The new file is written before the old ones are removed and before the
 	// state names it, so a crash at any point leaves a readable mirror.
 	for i, r := range rows {
-		t.index[keyString(r[t.Key])] = loc{File: rel, Pos: i}
+		k := keyString(r[t.Key])
+		t.index[k] = loc{File: rel, Pos: i}
+		// A merge moves keys too, and a rewrite in flight has to know.
+		if t.compacting != nil {
+			t.compacting.touched[k] = true
+		}
 	}
 	t.State.DeltaFiles = append(append([]string(nil), pinned...), name)
 	t.State.DeltaRows = len(rows)
@@ -855,12 +902,31 @@ func (t *Table) ShouldCompact() bool {
 	return t.State.DeltaRows >= threshold
 }
 
+// writeJSON writes atomically: temp file, fsync, rename.
+//
+// os.WriteFile truncates and then writes, so a concurrent reader can observe an
+// empty or half-written file. That matters enormously here because the files
+// this writes are DELETION VECTORS, and a deletion vector that fails to parse
+// used to read as "nothing is dead" — every deleted row in that file came back
+// to life. Background compaction reads these vectors on another goroutine while
+// the apply loop writes them, so the window is not theoretical: it resurrected
+// rows deleted 7 rounds before the rewrite even started.
 func writeJSON(path string, v any) error {
 	b, err := json.Marshal(v)
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, b, 0o644)
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, b, 0o644); err != nil {
+		return err
+	}
+	f, err := os.Open(tmp)
+	if err != nil {
+		return err
+	}
+	_ = f.Sync()
+	_ = f.Close()
+	return os.Rename(tmp, path)
 }
 
 func trimParquet(name string) string { return strings.TrimSuffix(name, ".parquet") }

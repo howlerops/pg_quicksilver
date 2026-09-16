@@ -560,6 +560,11 @@ func evolve(
 			// rebuild of this table.
 			return fmt.Errorf("halting %s: %s; the mirror must be rebuilt", qualified, reason)
 		}
+		// A rewrite in flight is reading this table's column list on another
+		// goroutine. Rather than lock the schema for the length of a rewrite,
+		// throw the rewrite away — it is recomputable, and the next one starts
+		// from the evolved schema.
+		t.AbortCompaction()
 		if err := t.Evolve(live, liveOrder, bf.MissingVals); err != nil {
 			return err
 		}

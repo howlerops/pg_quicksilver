@@ -23,14 +23,21 @@ in the first round it never caught up at all.
 
 | shape | what it is | bootstrap | ingest | p50 | p99 | storage | CPU/change | RSS | correct |
 |---|---|---|---|---|---|---|---|---|---|
-| **narrow** | 4 cols, insert-only | 195k rows/s | **132k/s** | 206 ms | 9.0 s | 3.3× | 25 µs | 5 GB | ✅ |
-| **wide** | 12 cols, insert-only | 98k rows/s | **69k/s** | 206 ms | 5.9 s | 3.3× | 45 µs | 5 GB | ✅ |
-| **jsonb** | 6 KB doc/row, scalar UPDATEs | 15k rows/s | **84k/s** | 206 ms | **486 ms** | **0.6×** | 23 µs | 7 GB | ✅ |
-| **churn** | UPDATEs on a hot 1% | 195k rows/s | 59k/s *(source-limited)* | 206 ms | **217 ms** | **15.5×** | **8 µs** | **66 MB** | ✅ |
-| **deletes** | inserts + deletes 1:1 | 195k rows/s | **240k/s** | 206 ms | 7.5 s | 3.2× | 13 µs | 4 GB | ✅ |
+| **narrow** | 4 cols, insert-only | 195k rows/s | **129k/s** | 207 ms | 4.9 s | 3.3× | 26 µs | 4 GB | ✅ |
+| **wide** | 12 cols, insert-only | 98k rows/s | **73k/s** | 206 ms | **803 ms** | 2.7× | 38 µs | 5 GB | ✅ |
+| **jsonb** | 6 KB doc/row, scalar UPDATEs | 17k rows/s | **84k/s** | 206 ms | **348 ms** | **0.6×** | 24 µs | 5 GB | ✅ |
+| **churn** | UPDATEs on a hot 1% | 194k rows/s | 59k/s *(source-limited)* | 206 ms | **223 ms** | **15.6×** | **9 µs** | **66 MB** | ✅ |
+| **deletes** | inserts + deletes 1:1 | 195k rows/s | **256k/s** | 206 ms | **1.9 s** | 4.1× | 11 µs | 5 GB | ✅ |
 
-Round one for comparison: narrow 119k/s, wide 67k/s, jsonb never converged,
-churn 59k/s, deletes 167k/s.
+Three rounds, ingest and p99:
+
+| shape | round 1 | round 2 | round 3 |
+|---|---|---|---|
+| narrow | 119k/s · 6.2 s | 132k/s · 9.0 s | **129k/s · 4.9 s** |
+| wide | 67k/s · 224 ms | 69k/s · 5.9 s | **73k/s · 803 ms** |
+| jsonb | never converged | 84k/s · 486 ms | **84k/s · 348 ms** |
+| churn | 59k/s · 234 ms | 59k/s · 217 ms | **59k/s · 223 ms** |
+| deletes | 167k/s · 7.6 s | 240k/s · 7.5 s | **256k/s · 1.9 s** |
 
 Two things in that table are worth reading twice.
 
@@ -215,20 +222,58 @@ would return a fraction of the table and call it a result. A missing file is now
 API *requires* a reset callback, because forgetting it is equally silent — a
 replayed attempt double-counts and invents a divergence the mirror never had.
 
+## Round three: the swap, the writer, and a torn deletion vector
+
+Two of the four ranked items, plus the bug they uncovered.
+
+| change | bought | cost |
+|---|---|---|
+| **O(changed) compaction swap** | p99: narrow 9.0 s → **4.9 s**, wide 5.9 s → **803 ms**, deletes 7.5 s → **1.9 s** | the rewrite must be told which keys moved; DDL now aborts a rewrite rather than racing its schema |
+| **Streaming Parquet writes** (one row group at a time) | jsonb RSS 7 GB → 5 GB | none measurable |
+| **Atomic deletion-vector writes** | correctness — see below | none |
+
+The swap used to walk every row of the new base to decide liveness. It now walks
+only the keys the apply loop touched while the rewrite ran: the compactor builds
+the new index off-loop, and installing it is a pointer assignment. That is the
+difference between a tail that tracks table size and one that tracks churn.
+
+### The bug: a deletion vector read while it was being written
+
+With the swap made cheap, the race test started failing — deleted rows coming
+back, dozens at a time. Four wrong theories later, the data named it: a key
+deleted at round 6, a rewrite that swapped at round 13, and two deleted keys at
+**adjacent positions** in the compacted output.
+
+`os.WriteFile` truncates and then writes. Deletion vectors were written that
+way, and background compaction reads them on another goroutine. A compactor
+reading in that window got a truncated file — and `deadPositions` swallowed the
+JSON error and returned an empty map, which means **"nothing in this file is
+deleted"**. Every deleted row in it came back.
+
+Both halves were silent, and both are fixed: the write is now temp-file-plus-
+rename, and a deletion vector that exists but cannot be parsed is an error. The
+distinction that matters is between *"this file has no deleted rows"* and
+*"I could not tell"* — the second must never be spelled as the first.
+
+Reverting either half reproduces it within a handful of runs, so both are
+load-bearing rather than defensive. This is the same shape as every other bug
+this project has found, one level down: an unreadable answer treated as a
+negative answer.
+
 ## What to do next, in order of measured value
 
-1. **Make the compaction swap O(changed).** Still the whole tail: 6–9 s p99 on
-   shapes that accumulate rows, against 217–486 ms on shapes that do not. The
-   swap walks every row of the new base to decide liveness; it only needs the
-   keys that moved during the rewrite, which the apply loop already knows.
-2. **Stop rewriting unchanged large columns into deltas.** The profile says this
-   is where the jsonb shape's time and space both go. A delta that stored only
-   the columns an update actually carried would cut both, and carry-forward
-   already knows which those are.
-3. **Stream the snapshot and compaction writes.** Peak RSS is a materialised
-   `[]map[string]any` of the whole table; the writer is already batch-oriented.
-4. **Bound carry-forward with a cache of recently-written rows.** Lower priority
-   than it looked: the profile says reads are not where the time goes.
+1. **Stop rewriting unchanged large columns into deltas.** Now the largest single
+   item. It is where the jsonb shape's time and its space both go — the mirror
+   is 0.6× its source because every UPDATE copies a 3.3 KB document it did not
+   touch. A delta holding only the columns an update carried would cut both;
+   carry-forward already knows which those are, and the read path would have to
+   merge partial rows, which is the real work.
+2. **The remaining tail is the compaction READ, not the swap.** narrow is still
+   4.9 s p99 while wide is 803 ms, and the swap is now O(changed) in both. What
+   is left is the rewrite itself competing for CPU and I/O on a 4-vCPU box.
+   Rate-limiting it, or writing it incrementally, is the next lever.
+3. **Bound carry-forward with a cache of recently-written rows.** Still lower
+   priority than it looked: the profile says reads are not where the time goes.
 
 Still not on the list: parallel decode. PostgreSQL's decoder caps around
 186k rows/s, which is above every ingest number here except the ones already

@@ -47,6 +47,12 @@ func testCompactionRaces(t *testing.T, partial bool) {
 		t.Run(fmt.Sprintf("seed%d", seed), func(t *testing.T) {
 			rng := rand.New(rand.NewSource(seed))
 			tbl := racyTable(t)
+			// Kept from the hunt for the torn-deletion-vector bug: knowing WHEN a
+			// key was deleted relative to when a rewrite swapped in is what
+			// turned "some rows are extra" into a mechanism.
+			var lastCompaction *Compaction
+			deletedAt := map[string]int{}
+			swapAt := []int{}
 			want := map[string]map[string]any{}
 			lsn := 0
 
@@ -79,10 +85,13 @@ func testCompactionRaces(t *testing.T, partial bool) {
 				// Start a rewrite roughly a third of the way in and again
 				// later, so batches land both before and during it.
 				if (round == 10 || round == 35) && !tbl.Compacting() {
-					if c := tbl.BeginCompaction(); c == nil {
+					c := tbl.BeginCompaction()
+					if c == nil {
 						t.Fatal("BeginCompaction returned nil with files present")
 					}
+					lastCompaction = c
 				}
+				_ = lastCompaction
 
 				var changes []changestream.Change
 				for i := 0; i < 20; i++ {
@@ -135,6 +144,7 @@ func testCompactionRaces(t *testing.T, partial bool) {
 							Row: nil, Key: row,
 						})
 						delete(want, id)
+						deletedAt[id] = round
 					case 9: // re-insert a deleted key, the nastiest case
 						id := fmt.Sprint(1 + rng.Intn(500))
 						row := map[string]any{"id": id, "v": "re", "n": "9"}
@@ -151,8 +161,12 @@ func testCompactionRaces(t *testing.T, partial bool) {
 
 				// swap in a finished rewrite, exactly as the apply loop does
 				if tbl.Compacting() {
-					if _, err := tbl.FinishCompaction(); err != nil {
+					n, err := tbl.FinishCompaction()
+					if err != nil {
 						t.Fatalf("FinishCompaction: %v", err)
+					}
+					if n > 0 {
+						swapAt = append(swapAt, round)
 					}
 				}
 
@@ -222,7 +236,17 @@ func testCompactionRaces(t *testing.T, partial bool) {
 			for k := range got {
 				if _, ok := want[k]; !ok {
 					if extra < 3 {
-						t.Errorf("row %s is in the mirror but was deleted", k)
+						loc := "not in index"
+						if l, ok2 := tbl.index[k]; ok2 {
+							loc = fmt.Sprintf("index->%s#%d", l.File, l.Pos)
+						}
+						inDV := "n/a"
+						if l, ok2 := tbl.index[k]; ok2 {
+							dp, _ := tbl.deadPositions(l.File)
+							inDV = fmt.Sprint(dp[l.Pos])
+						}
+						t.Errorf("row %s in mirror but deleted at round %d (swaps at %v) (%s; markedDead=%s)",
+							k, deletedAt[k], swapAt, loc, inDV)
 					}
 					extra++
 				}

@@ -42,11 +42,32 @@ type Compaction struct {
 
 	files map[string]bool // relative paths included in this rewrite
 	name  string          // new base file name
-	rows  []map[string]any
 	err   error
 	done  chan struct{}
 
+	// Built by the background goroutine, consumed by the swap.
+	index    map[string]loc // key -> position in the new base file
+	dupDead  []int          // positions superseded within the rewrite itself
+	rowCount int
+
+	// touched is every key the apply loop superseded or deleted while this
+	// rewrite was running. It is written only by the apply goroutine, and it is
+	// what makes the swap O(changed) instead of O(table): the rewrite's own
+	// index is correct for every key EXCEPT these.
+	touched map[string]bool
+
 	deltaRowsAtStart int
+}
+
+// Touch records that a key moved or was deleted during a rewrite. Called from
+// the apply goroutine, which also performs the swap, so no locking is needed.
+func (t *Table) Touch(keys ...string) {
+	if t.compacting == nil {
+		return
+	}
+	for _, k := range keys {
+		t.compacting.touched[k] = true
+	}
 }
 
 // Done reports whether the background work has finished, without blocking.
@@ -71,6 +92,7 @@ func (t *Table) BeginCompaction() *Compaction {
 		files:            map[string]bool{},
 		name:             fmt.Sprintf("%06d.parquet", t.State.Seq),
 		done:             make(chan struct{}),
+		touched:          map[string]bool{},
 		deltaRowsAtStart: t.State.DeltaRows,
 	}
 	for _, b := range t.State.BaseFiles {
@@ -95,7 +117,12 @@ func (t *Table) BeginCompaction() *Compaction {
 		defer close(c.done)
 		var rows []map[string]any
 		for _, rel := range snapshot {
-			got, err := t.readParquet(filepath.Join(t.Dir, rel), t.deadPositions(rel))
+			dead, derr := t.deadPositions(rel)
+			if derr != nil {
+				c.err = derr
+				return
+			}
+			got, err := t.readParquet(filepath.Join(t.Dir, rel), dead)
 			if err != nil {
 				if os.IsNotExist(err) {
 					continue
@@ -105,17 +132,78 @@ func (t *Table) BeginCompaction() *Compaction {
 			}
 			rows = append(rows, got...)
 		}
+		// Build the new index and find rows superseded within the rewrite
+		// itself. The same key can appear twice: the apply loop supersedes a row
+		// by marking its old position dead and THEN writing the new one, so a
+		// compactor reading between those steps holds both copies. Files are
+		// read base-first then deltas in sequence order, so the last occurrence
+		// is the newest.
+		newRel := filepath.Join("base", c.name)
+		idx := make(map[string]loc, len(rows))
+		var dup []int
+		for i, r := range rows {
+			k := keyString(r[t.Key])
+			if prev, ok := idx[k]; ok {
+				dup = append(dup, prev.Pos)
+			}
+			idx[k] = loc{File: newRel, Pos: i}
+		}
+
 		if err := t.writeParquet(filepath.Join(t.Dir, "base", c.name), rows); err != nil {
 			c.err = err
 			return
 		}
-		c.rows = rows
+
+		// Persist the index here rather than in the swap: marshalling a map of
+		// every key is O(table) and belongs off the apply goroutine. It is
+		// slightly stale for keys touched during the rewrite, which is safe —
+		// the deletion vector, not the index, decides what is live, and
+		// ensureIndex overlays the deltas on top when rebuilding.
+		persist := make(map[string]int, len(idx))
+		for k, l := range idx {
+			persist[k] = l.Pos
+		}
+		if err := writeJSON(filepath.Join(t.Dir, "index",
+			trimParquet(c.name)+".idx.json"), persist); err != nil {
+			c.err = err
+			return
+		}
+
+		c.index = idx
+		c.dupDead = dup
+		c.rowCount = len(rows)
 	}()
 	return c
 }
 
-// FinishCompaction swaps in the rewritten base. It runs on the apply goroutine,
-// so it alone decides which of the rewritten rows are still live.
+// AbortCompaction discards a rewrite in flight and removes its partial output.
+//
+// Needed for DDL: the background goroutine reads t.Order and t.Columns while it
+// works, and a schema change mutates both. Rather than lock the schema for the
+// length of a rewrite, a barrier throws the rewrite away — it is recomputable,
+// and the next one starts from the evolved schema.
+func (t *Table) AbortCompaction() {
+	c := t.compacting
+	if c == nil {
+		return
+	}
+	t.compacting = nil
+	go func() {
+		<-c.done
+		_ = os.Remove(filepath.Join(t.Dir, "base", c.name))
+		_ = os.Remove(filepath.Join(t.Dir, "index", trimParquet(c.name)+".idx.json"))
+	}()
+}
+
+// FinishCompaction swaps in the rewritten base.
+//
+// The work here is proportional to what CHANGED during the rewrite, not to the
+// size of the table. The compactor's index is already correct for every key it
+// folded in; only the keys the apply loop touched meanwhile need fixing up, and
+// installing the result is a pointer assignment.
+//
+// Walking every row here instead is what left p99 commit-to-visible at 6-9s on
+// shapes that accumulate rows, against 217ms on shapes that do not (docs/19).
 func (t *Table) FinishCompaction() (int, error) {
 	c := t.compacting
 	if c == nil || !c.Done() {
@@ -130,38 +218,46 @@ func (t *Table) FinishCompaction() (int, error) {
 		return 0, err
 	}
 
-	// The same key can appear TWICE in a rewrite. The apply loop supersedes a
-	// row by marking its old position dead and then writing the new row to a
-	// delta; if the compactor read the old file in the window between those two
-	// steps, it holds the stale copy as well as the fresh one. Files are read
-	// base-first and then deltas in sequence order, so the LAST occurrence is
-	// the newest — and taking the first would adopt the stale row and tombstone
-	// the live one, which is how a 2.8M-row mirror came back short by one row
-	// and a 500-row unit test came back with 162 rows reverted to their
-	// pre-update values.
-	newest := make(map[string]int, len(c.rows))
-	for i, r := range c.rows {
-		newest[keyString(r[t.Key])] = i
+	newRel := filepath.Join("base", c.name)
+	deadSet := make(map[int]bool, len(c.dupDead)+len(c.touched))
+	for _, p := range c.dupDead {
+		deadSet[p] = true
 	}
 
-	// Decide liveness per row against the CURRENT index, not against whatever
-	// was true when the rewrite started.
-	newRel := filepath.Join("base", c.name)
-	var dead []int
-	for i, r := range c.rows {
-		k := keyString(r[t.Key])
-		l, ok := t.index[k]
-		switch {
-		case newest[k] != i:
-			// a staler copy of a key that appears again later in this rewrite
-			dead = append(dead, i)
-		case ok && c.files[l.File]:
-			// still lives in a file we just folded in: it moves to the new base
-			t.index[k] = loc{File: newRel, Pos: i}
-		default:
-			// deleted, or superseded by a delta written while we were rewriting
-			dead = append(dead, i)
+	// Reconcile only the keys that moved while the rewrite ran.
+	for k := range c.touched {
+		inNew, wasFolded := c.index[k]
+		cur, stillLive := t.index[k]
+		if wasFolded && (!stillLive || cur.File != inNew.File || cur.Pos != inNew.Pos) {
+			// the copy in the new base is not the live one any more
+			deadSet[inNew.Pos] = true
 		}
+		if stillLive {
+			c.index[k] = cur
+		} else {
+			delete(c.index, k)
+		}
+	}
+
+	if os.Getenv("QS_COMPACT_DEBUG") != "" {
+		orphan := 0
+		var sample []string
+		for k := range c.index {
+			if _, live := t.index[k]; !live && !c.touched[k] {
+				orphan++
+				if len(sample) < 3 {
+					sample = append(sample, k)
+				}
+			}
+		}
+		fmt.Fprintf(os.Stderr, "[swap] folded=%d touched=%d dup=%d "+
+			"ORPHANS(in new base, not live, not touched)=%d %v\n",
+			len(c.index), len(c.touched), len(c.dupDead), orphan, sample)
+	}
+
+	dead := make([]int, 0, len(deadSet))
+	for p := range deadSet {
+		dead = append(dead, p)
 	}
 	sort.Ints(dead)
 	if len(dead) > 0 {
@@ -182,24 +278,12 @@ func (t *Table) FinishCompaction() (int, error) {
 		oldFiles = append(oldFiles, f)
 	}
 
+	t.index = c.index // O(1): the rewrite built it
 	t.State.BaseFiles = []string{c.name}
 	t.State.DeltaFiles = keptDeltas
-	t.State.BaseRows = len(c.rows) - len(dead)
+	t.State.BaseRows = c.rowCount - len(dead)
 	if t.State.DeltaRows -= c.deltaRowsAtStart; t.State.DeltaRows < 0 {
 		t.State.DeltaRows = 0
-	}
-
-	// Persist the index for the new base so a restart does not have to rebuild
-	// it by reading the file.
-	idx := make(map[string]int, len(c.rows))
-	for i, r := range c.rows {
-		if l, ok := t.index[keyString(r[t.Key])]; ok && l.File == newRel && l.Pos == i {
-			idx[keyString(r[t.Key])] = i
-		}
-	}
-	if err := writeJSON(filepath.Join(t.Dir, "index",
-		trimParquet(c.name)+".idx.json"), idx); err != nil {
-		return 0, err
 	}
 
 	// State last, then the old files. A crash before this leaves the old set
