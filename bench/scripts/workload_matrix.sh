@@ -159,6 +159,16 @@ for SHAPE in $SHAPES; do
     sed 's/^/    /' /tmp/verify-$SHAPE.txt | head -5
   fi
 
+  # The other half of the question. Everything above is the write path; this
+  # asks whether reading the mirror is actually faster than reading PostgreSQL,
+  # and whether it gives the same answers. Opt-in, because it needs duckdb and
+  # psycopg and roughly doubles the run.
+  if [ "${QS_SERVE_COMPARE:-0}" = "1" ]; then
+    go -C go build -o /tmp/qs-query ./cmd/qs-query && chmod 755 /tmp/qs-query
+    python3 bench/scripts/serve_compare.py --shape "$SHAPE" --mirror "$MIRROR" \
+      --dsn "postgres://postgres@localhost:5443/$DB" || bad "serving comparison failed"
+  fi
+
   pkill -x qs-mirror; sleep 1
 done
 

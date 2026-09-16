@@ -573,10 +573,10 @@ spread on the same engine.
 
 ## What to do next, in order of measured value
 
-1. **Serve a query.** Every number in this document is the write path. The
-   premise of the project is that a columnar mirror answers analytical SELECTs
-   a read replica cannot, and that has not been measured end to end since the
-   Python reference in docs/11.
+1. ~~**Serve a query.**~~ Done — [docs/20](20-serving-the-mirror.md). 11× on a
+   group-by, 38× on a filtered aggregate over an inline document, **0.04× on a
+   point lookup**, every answer verified against the source, and two silent
+   PostgreSQL/DuckDB incompatibilities found by the benchmark failing.
 2. **Run against a real CloudNativePG operator.** The plugin is unit-tested
    against the CNPG-I contract and the chart installs, but reconcile loops,
    rollouts and switchovers have never been exercised by the operator itself.
