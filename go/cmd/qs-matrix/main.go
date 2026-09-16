@@ -143,6 +143,37 @@ var shapes = map[string]*shape{
 		},
 	},
 
+	// The case pgoutput gives NO hint about. A ~1.2 KB document keeps the row
+	// under PostgreSQL's ~2 KB TOAST threshold, so the value stays inline and
+	// is RESENT IN FULL on every update to any other column — unlike the jsonb
+	// shape, where it is stored out of line and simply omitted. The mirror has
+	// to work out for itself that nothing changed.
+	"inline": {
+		name: "inline",
+		create: `CREATE TABLE m(id bigint primary key, status text,
+			updated_at timestamptz, doc text)`,
+		// Sized deliberately: large enough to dominate the row, small enough
+		// that PostgreSQL keeps it in the heap. Distinct per row and
+		// incompressible, for the reasons the jsonb shape's comment gives.
+		seed: `INSERT INTO m SELECT g, 'Prospecting', now(),
+			(SELECT string_agg(md5(g::text||p::text),'') FROM generate_series(1,38) p)
+			FROM generate_series(1,$1::bigint) g`,
+		columns: []string{"id", "status", "updated_at", "doc"},
+		note:    "~1.2 KB INLINE document, resent unchanged on every UPDATE",
+		workload: func(ctx context.Context, c *pgxpool.Conn, w, iter, seeded int) (int, error) {
+			// The document is named in the SET list at its current value, which
+			// is what an ORM doing a whole-row UPDATE does, and what pgoutput
+			// transmits anyway for an inline column.
+			const n = 200
+			lo := ((w*1000 + iter*n) % maxInt(seeded-n, 1)) + 1
+			_, err := c.Exec(ctx, `UPDATE m SET status = $1, updated_at = now(), doc = doc
+				WHERE id BETWEEN $2 AND $3`,
+				[]string{"Qualification", "Proposal", "Negotiation", "ClosedWon"}[iter%4],
+				lo, lo+n-1)
+			return n, err
+		},
+	},
+
 	"churn": {
 		name:    "churn",
 		create:  `CREATE TABLE m(id bigint primary key, sku text, amount numeric(12,2), ts timestamptz)`,
@@ -208,7 +239,7 @@ func insertBatch(ctx context.Context, c *pgxpool.Conn, w, iter int,
 
 var (
 	dsn        = flag.String("dsn", "postgres://postgres@localhost:5443/app", "primary")
-	shapeName  = flag.String("shape", "narrow", "one of: narrow, wide, jsonb, churn, deletes")
+	shapeName  = flag.String("shape", "narrow", "one of: narrow, wide, jsonb, inline, churn, deletes")
 	setup      = flag.Bool("setup", false, "create and seed the table")
 	measure    = flag.Bool("measure", false, "run the workload and report")
 	settle     = flag.Bool("settle", false, "wait until the mirror has applied everything, then exit")
@@ -280,7 +311,7 @@ func doMeasure(ctx context.Context, pool *pgxpool.Pool, sh *shape) {
 	var seeded int
 	must(pool.QueryRow(ctx, `SELECT count(*) FROM m`).Scan(&seeded))
 	waitCaughtUp(ctx, pool, 5*time.Minute)
-	startCPU, _ := procStats()
+	startCPU, _, startIO := procStats()
 
 	// ---- sustained workload ---------------------------------------------
 	var touched atomic.Int64
@@ -359,11 +390,16 @@ func doMeasure(ctx context.Context, pool *pgxpool.Pool, sh *shape) {
 	fmt.Printf("  storage       source %s / mirror %s -> %.1fx smaller (%s live rows)\n",
 		human(heap), human(mir), ratio, commas(live))
 
-	endCPU, endRSS := procStats()
+	endCPU, endRSS, endIO := procStats()
 	if endCPU > 0 && n > 0 {
 		cpu := endCPU - startCPU
 		fmt.Printf("  sidecar       %.1fs CPU (%.0f us/row-change), RSS %s\n",
 			cpu, cpu*1e6/float64(n), human(endRSS))
+		if endIO > startIO {
+			w := endIO - startIO
+			fmt.Printf("  wrote         %s to storage (%.0f B/row-change)\n",
+				human(w), float64(w)/float64(n))
+		}
 	}
 	st := readState(sh)
 	fmt.Printf("  files         %d base + %d delta\n", len(st.BaseFiles), len(st.DeltaFiles))
@@ -501,13 +537,19 @@ func measureLatency(ctx context.Context, pool *pgxpool.Pool, sh *shape, n int) [
 	return out
 }
 
-func procStats() (float64, int64) {
+// procStats returns CPU seconds, resident bytes and bytes written to storage.
+//
+// write_bytes is the one that says what an optimisation to the WRITE path
+// actually did. Final mirror size does not: compaction folds the deltas away,
+// so two runs that wrote wildly different amounts converge to the same
+// directory. Neither does wall-clock, when the source is the bottleneck.
+func procStats() (float64, int64, int64) {
 	if *pid == "" {
-		return 0, 0
+		return 0, 0, 0
 	}
 	stat, err := os.ReadFile("/proc/" + strings.TrimSpace(*pid) + "/stat")
 	if err != nil {
-		return 0, 0
+		return 0, 0, 0
 	}
 	rest := string(stat)
 	if i := strings.LastIndex(rest, ")"); i >= 0 {
@@ -515,7 +557,7 @@ func procStats() (float64, int64) {
 	}
 	f := strings.Fields(rest)
 	if len(f) < 13 {
-		return 0, 0
+		return 0, 0, 0
 	}
 	ut, _ := strconv.ParseFloat(f[11], 64)
 	st, _ := strconv.ParseFloat(f[12], 64)
@@ -531,7 +573,21 @@ func procStats() (float64, int64) {
 			}
 		}
 	}
-	return (ut + st) / 100.0, rss
+	var written int64
+	if b, err := os.ReadFile("/proc/" + strings.TrimSpace(*pid) + "/io"); err == nil {
+		for _, line := range strings.Split(string(b), "\n") {
+			// write_bytes is what actually reached storage, which is the
+			// question; wchar counts bytes handed to write(2) including any the
+			// page cache later coalesced away.
+			if strings.HasPrefix(line, "write_bytes:") {
+				fs := strings.Fields(line)
+				if len(fs) >= 2 {
+					written, _ = strconv.ParseInt(fs[1], 10, 64)
+				}
+			}
+		}
+	}
+	return (ut + st) / 100.0, rss, written
 }
 
 // ---- helpers -----------------------------------------------------------

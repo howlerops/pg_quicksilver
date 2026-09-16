@@ -118,7 +118,7 @@ func (t *Table) BeginCompaction() *Compaction {
 	// The new base file's id and the table's key form are resolved here, on the
 	// apply goroutine, so the background goroutine never reads anything the
 	// apply loop writes.
-	newID, numeric := baseID(c.name), t.numericKey
+	newID, numeric, hashing := baseID(c.name), t.numericKey, t.elideWorked
 	// base/... sorts before delta/..., and delta names are a zero-padded
 	// sequence, so this is base first and then deltas oldest to newest.
 	sort.Strings(snapshot)
@@ -198,7 +198,13 @@ func (t *Table) BeginCompaction() *Compaction {
 						if prev, ok := idx.get(k); ok {
 							dup = append(dup, int(prev.Pos))
 						}
-						idx.set(k, loc{File: newID, Pos: int32(out)})
+						l := loc{File: newID, Pos: int32(out)}
+						if hashing {
+							// A rewrite sees every value, so it is where a
+							// digest forgotten by a partial write comes back.
+							l.Hash, _ = largeHash(r, t.Order)
+						}
+						idx.set(k, l)
 						out++
 					}
 					return w.Append(rows)
@@ -289,7 +295,7 @@ func (t *Table) FinishCompaction() (int, error) {
 	for k := range c.touched {
 		inNew, wasFolded := c.index.get(k)
 		cur, stillLive := t.index.get(k)
-		if wasFolded && (!stillLive || cur != inNew) {
+		if wasFolded && (!stillLive || !cur.sameRow(inNew)) {
 			// the copy in the new base is not the live one any more
 			deadSet[int(inNew.Pos)] = true
 		}

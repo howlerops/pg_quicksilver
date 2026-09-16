@@ -21,23 +21,37 @@ destroying data while passing every performance check.
 All five shapes now converge and verify. The jsonb row is the one that changed:
 in the first round it never caught up at all.
 
-| shape | what it is | bootstrap | ingest | p50 | p99 | storage | CPU/change | RSS | correct |
+| shape | what it is | bootstrap | ingest | p50 | p99 | storage | CPU/change | written/change | correct |
 |---|---|---|---|---|---|---|---|---|---|
-| **narrow** | 4 cols, insert-only | 195k rows/s | **122k/s** | 208 ms | **928 ms** | 3.4× | 21 µs | **1 GB** | ✅ |
-| **wide** | 12 cols, insert-only | 98k rows/s | **72k/s** | 208 ms | 2.7 s | 2.8× | 41 µs | **943 MB** | ✅ |
-| **jsonb** | 6 KB doc/row, scalar UPDATEs | 17k rows/s | **164k/s** | 208 ms | **633 ms** | **3.2×** | **15 µs** | **206 MB** | ✅ |
-| **churn** | UPDATEs on a hot 1% | 195k rows/s | 56k/s *(source-limited)* | 209 ms | **220 ms** | **14.7×** | **8 µs** | **52 MB** | ✅ |
-| **deletes** | inserts + deletes 1:1 | 195k rows/s | **240k/s** | 208 ms | **904 ms** | 3.8× | **10 µs** | **858 MB** | ✅ |
+| **narrow** | 4 cols, insert-only | 195k rows/s | **106k/s** | 209 ms | 2.7 s | 2.7× | 21 µs | — | ✅ |
+| **wide** | 12 cols, insert-only | 98k rows/s | **64k/s** | 208 ms | **736 ms** | 2.3× | 37 µs | 105 B | ✅ |
+| **jsonb** | 6 KB TOASTed doc, scalar UPDATEs | 16k rows/s | **165k/s** | 208 ms | **648 ms** | **3.2×** | **15 µs** | 239 B | ✅ |
+| **inline** | 1.2 KB INLINE doc, resent on every UPDATE | 49k rows/s | **81k/s** | 209 ms | **519 ms** | **13.3×** | 26 µs | 516 B | ✅ |
+| **churn** | UPDATEs on a hot 1% | 194k rows/s | 54k/s *(source-limited)* | 208 ms | **229 ms** | **14.7×** | **8 µs** | **6 B** | ✅ |
+| **deletes** | inserts + deletes 1:1 | 195k rows/s | **203k/s** | 208 ms | **823 ms** | 3.2× | 12 µs | 22 B | ✅ |
+
+**written/change** is new in round seven and is the most stable thing in this
+table. Final mirror size is not a measure of what the write path did —
+compaction folds the deltas away, so two runs that wrote wildly different
+amounts converge on the same directory — and RSS is a Go runtime high-water
+mark that swings by 3× between identical runs. Bytes that actually reached
+storage, per row-change, is the number that moves when the writer changes.
+
+Read across it and the shapes stop looking alike: churn writes **6 bytes per
+change** and the inline shape writes **516**, an 86× spread on the same
+engine. Growth costs, and large values cost; re-updating a row you already
+hold costs almost nothing.
 
 Five rounds, ingest and p99:
 
-| shape | round 1 | round 2 | round 3 | round 4 | round 5 | round 6 |
-|---|---|---|---|---|---|---|
-| narrow | 119k/s · 6.2 s | 132k/s · 9.0 s | 129k/s · 4.9 s | 125k/s · 4.0 s | 104k/s · 1.1 s | **122k/s · 928 ms** |
-| wide | 67k/s · 224 ms | 69k/s · 5.9 s | 73k/s · 803 ms | 68k/s · 2.3 s | 65k/s · 3.1 s | **72k/s · 2.7 s** |
-| jsonb | never converged | 84k/s · 486 ms | 84k/s · 348 ms | 162k/s · 2.0 s | 159k/s · 708 ms | **164k/s · 633 ms** |
-| churn | 59k/s · 234 ms | 59k/s · 217 ms | 59k/s · 223 ms | 57k/s · 223 ms | 55k/s · 225 ms | **56k/s · 220 ms** |
-| deletes | 167k/s · 7.6 s | 240k/s · 7.5 s | 256k/s · 1.9 s | 242k/s · 1.8 s | 223k/s · 2.1 s | **240k/s · 904 ms** |
+| shape | round 1 | round 2 | round 3 | round 4 | round 5 | round 6 | round 7 |
+|---|---|---|---|---|---|---|---|
+| narrow | 119k/s · 6.2 s | 132k/s · 9.0 s | 129k/s · 4.9 s | 125k/s · 4.0 s | 104k/s · 1.1 s | 122k/s · 928 ms | **106k/s · 2.7 s** |
+| wide | 67k/s · 224 ms | 69k/s · 5.9 s | 73k/s · 803 ms | 68k/s · 2.3 s | 65k/s · 3.1 s | 72k/s · 2.7 s | **64k/s · 736 ms** |
+| jsonb | never converged | 84k/s · 486 ms | 84k/s · 348 ms | 162k/s · 2.0 s | 159k/s · 708 ms | 164k/s · 633 ms | **165k/s · 648 ms** |
+| inline | — | — | — | — | — | — | **81k/s · 519 ms** |
+| churn | 59k/s · 234 ms | 59k/s · 217 ms | 59k/s · 223 ms | 57k/s · 223 ms | 55k/s · 225 ms | 56k/s · 220 ms | **54k/s · 229 ms** |
+| deletes | 167k/s · 7.6 s | 240k/s · 7.5 s | 256k/s · 1.9 s | 242k/s · 1.8 s | 223k/s · 2.1 s | 240k/s · 904 ms | **203k/s · 823 ms** |
 
 Resident memory, which rounds five and six are mostly about:
 
@@ -137,6 +151,7 @@ same harness.
 | **Streaming compaction and bootstrap** (row group at a time) | RSS: wide **5 GB → 1 GB**, jsonb **3 GB → 560 MB** | a few percent of ingest on insert-heavy shapes, within run-to-run spread |
 | **Generation-numbered deletion vectors** | an independent reader can no longer be short a row; 1-in-7 failures → 10/10 passes | one extra small file per data file, reclaimed after one write |
 | **Pointer-free index** (integer file ids, int64 keys) | live heap **1.09 GB → 331 MB**; deletes RSS **3 GB → 858 MB**, p99 **2.1 s → 904 ms**; CPU/change down 10–25% on every shape | a second map for non-integer keys; the id encoding depends on file names staying a single sequence |
+| **Eliding unchanged large values** (per-key digest) | inline shape **27% fewer bytes written**, 5% faster drain, no CPU cost | 8 bytes per row of index; equality decided from a 64-bit digest |
 
 The row-group sweep is worth calling out as a *negative* result that saved
 effort: RSS was identical at 64k, 8k and 2k rows per group. The memory was never
@@ -486,27 +501,93 @@ cost is *supposed* to be. It stopped being there two rounds ago, and the only
 reason that was noticed is that a shape refused to follow the others down and
 got profiled instead of theorised about.
 
+## Round seven: the value PostgreSQL does not warn you about
+
+Round four works because pgoutput leaves an unchanged TOASTed value out of the
+change entirely. That covers exactly one case. PostgreSQL stores a value out of
+line only once the whole row passes about 2 KB, so a 1.2 KB document sits
+**inline** — and is resent, in full, on every update to any other column in the
+row. The mirror wrote it again every time, with no hint that it need not.
+
+So the mirror works the hint out for itself. It keeps, per key, a digest of the
+row's large columns; when a change arrives carrying large columns that hash to
+the same value, they did not change and are removed from the change before
+anything else looks at it. What is left is a short row, and round four's
+machinery writes it without expanding it. A sixth shape, **inline**, was added
+to measure exactly this.
+
+| inline shape, two runs each | resending | eliding |
+|---|---|---|
+| bytes written to storage | 674 MB, 629 MB | **477 MB, 475 MB** |
+| per row-change | 603 B, 563 B | **433 B, 453 B** |
+| drain rate | 81.0k/s, 77.4k/s | **85.7k/s, 81.1k/s** |
+| CPU per change | 25 µs, 23 µs | 22 µs, 23 µs |
+
+**27% fewer bytes written, 5% faster, for no CPU.** The other five shapes are
+unchanged, and the jsonb shape — which has a large column in every row and can
+*never* elide anything — is byte for byte identical either way.
+
+This is the one place in the package that decides data equality from a digest
+rather than from the bytes. That is worth being explicit about: a collision
+leaves a stale value in the mirror silently and permanently. The odds are 2^-64
+per comparison, nothing is compared unless the KEY already matches, the column
+name and the value's length are both in the digest, and the alternative is
+reading the previous value back out of Parquet — the row-group decode per
+update that this whole line of work exists to remove. `QS_ELIDE_UNCHANGED=0`
+turns it off.
+
+### Two findings, and both were nearly shipped as the opposite
+
+**The hash function decided whether the optimisation was worth having.** The
+first version used `hash/fnv`, whose Go implementation writes a byte at a time.
+Measured, it cost **18% more CPU than it saved in bytes**: 16% fewer bytes
+written for 24 µs → 28.5 µs per change. That is a trade, not a win, and it
+would have gone into the document as one. Swapping to `hash/maphash`, which is
+AES-accelerated, made the CPU cost disappear entirely and turned 16% into 27%.
+The digests never leave memory — they are not persisted and not compared across
+processes — so a per-process seed costs nothing.
+
+**Gating it on the wrong question made an unrelated shape 2× worse.** The first
+version enabled the compaction-time digest refresh as soon as a table was seen
+to *have* a large column. The jsonb shape has a 6 KB document in every row and
+can never elide anything, because pgoutput omits that document on every update
+and an omitted column makes the digest unknowable. So it paid 1.2 GB of hashing
+per rewrite for nothing, and came out with **24 delta files and a 631 MB mirror
+against 4 files and 330 MB**. The gate is now "has an elision ever actually
+fired", which is self-correcting: the first elision is bootstrapped by an
+ordinary whole-row write, and only then does a rewrite start maintaining
+digests.
+
+### The measurement that made both of them visible
+
+Neither would have been noticed from the numbers this document had. Final
+mirror size does not measure a write-path change — compaction folds the deltas
+away, so both runs converge on ~130 MB. RSS swings 3× between identical runs.
+Drain rate on a shape this source-limited moves by less than its own noise.
+
+The harness now reads `write_bytes` from `/proc/<pid>/io` and reports **bytes
+that actually reached storage, per row-change**. It is in the main table above,
+it is the number that moved, and it immediately said something nobody had
+asked: churn writes 6 bytes per change and the inline shape writes 516, an 86×
+spread on the same engine.
+
 ## What to do next, in order of measured value
 
-1. **Drop large values the mirror can see are unchanged**, rather than only the
-   ones pgoutput omits (see round four). Needs a per-row hash of the large
-   columns; widens the round-four win to `REPLICA IDENTITY FULL` tables and to
-   values just under the TOAST threshold.
-2. **Serve a query.** Every number in this document is the write path. The
+1. **Serve a query.** Every number in this document is the write path. The
    premise of the project is that a columnar mirror answers analytical SELECTs
-   that a read replica cannot, and that has not been measured end to end since
-   the Python reference in docs/11.
-3. **Run against a real CloudNativePG operator.** The plugin is unit-tested
+   a read replica cannot, and that has not been measured end to end since the
+   Python reference in docs/11.
+2. **Run against a real CloudNativePG operator.** The plugin is unit-tested
    against the CNPG-I contract and the chart installs, but reconcile loops,
    rollouts and switchovers have never been exercised by the operator itself.
-4. **Bootstrap is still 17k rows/s on jsonb against 195k on narrow.** Streaming
-   it removed the memory but not the time, so the cost is in the source query or
-   in compressing 1 GB of documents, and those are distinguishable by
-   measurement rather than argument.
-5. **`wide` is the last p99 above a second** (2.7 s against 904 ms for a shape
-   that accumulates twice as many rows). Nothing has been profiled to say why.
+3. **Bootstrap is 16k rows/s on jsonb and 49k on inline, against 195k on
+   narrow.** Streaming it removed the memory but not the time, so the cost is in
+   the source query or in compressing the documents, and those are
+   distinguishable by measurement rather than argument.
+4. **`narrow` writes the most per change of the growth shapes and has the worst
+   p99.** Nothing has been profiled to say why; the `written/change` column is
+   new and nobody has looked at it with a profiler yet.
 
 Still not on the list: parallel decode. PostgreSQL's decoder caps around
 186k rows/s, which is above every ingest number here except the ones already
-limited by how fast the source can write — and the jsonb shape has now crossed
-into that territory, so it is closer to being the ceiling than it was.
+limited by how fast the source can write.

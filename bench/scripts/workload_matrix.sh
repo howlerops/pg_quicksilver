@@ -20,7 +20,7 @@ HEALTH=127.0.0.1:9199
 DB=app
 ROWS=${ROWS:-400000}
 SECONDS_PER=${SECONDS_PER:-20}
-SHAPES=${SHAPES:-"narrow wide jsonb churn deletes"}
+SHAPES=${SHAPES:-"narrow wide jsonb inline churn deletes"}
 FAIL=0
 
 # Exactly one matrix at a time. Two concurrent runs share a database, a table
@@ -84,6 +84,7 @@ go -C go build -o /tmp/qs-verify ./cmd/qs-verify || skip "build failed"
 chmod 755 /tmp/qs-mirror /tmp/qs-matrix /tmp/qs-verify
 echo "  primary 5443, standby 5444, ${ROWS} rows/shape, ${SECONDS_PER}s workload, row_group=${ROW_GROUP:-65536}"
 echo "  column-partial deltas: ${QS_PARTIAL_DELTAS:-1} (0 writes every update as a whole row)"
+echo "  elide unchanged large values: ${QS_ELIDE_UNCHANGED:-1}"
 
 for SHAPE in $SHAPES; do
   say "shape: $SHAPE"
@@ -104,6 +105,7 @@ for SHAPE in $SHAPES; do
     QS_DATABASE=$DB QS_PGUSER=postgres QS_POD_NAME=mx-2 \
     QS_ROW_GROUP=${ROW_GROUP:-65536} ${QS_DEBUG_ADDR:+QS_DEBUG_ADDR=$QS_DEBUG_ADDR} \
     QS_PARTIAL_DELTAS=${QS_PARTIAL_DELTAS:-1} \
+    QS_ELIDE_UNCHANGED=${QS_ELIDE_UNCHANGED:-1} \
     QS_HEALTH_ADDR=$HEALTH /tmp/qs-mirror" > $BASE/mx-$SHAPE.log 2>&1 &
   sleep 1
   MPID=$(pgrep -x qs-mirror | head -1)

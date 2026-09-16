@@ -96,11 +96,24 @@ func deltaID(name string) fileID { return parseFileID(filepath.Join("delta", nam
 
 func baseID(name string) fileID { return parseFileID(filepath.Join("base", name)) }
 
-// loc is where a key's current row physically lives.
+// loc is where a key's current row physically lives, plus what the mirror knows
+// about that row's large columns.
+//
+// Hash is a digest of the row's columns that are big enough to be worth not
+// rewriting (see elide.go), or 0 for "unknown". Keeping it here rather than in
+// a second map costs 8 bytes per row and keeps the entry pointer-free, which is
+// the property this whole file exists to preserve.
 type loc struct {
 	File fileID
 	Pos  int32
+	Hash uint64
 }
+
+// sameRow compares only the location. Two locs can differ in Hash while naming
+// the same row — the compaction swap asks "did this key MOVE", and answering
+// that with a full struct comparison would tombstone rows that merely had their
+// digest learned or forgotten.
+func (a loc) sameRow(b loc) bool { return a.File == b.File && a.Pos == b.Pos }
 
 // rowKey is a primary-key value in whichever form avoids allocating.
 //

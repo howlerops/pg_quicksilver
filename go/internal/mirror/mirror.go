@@ -136,6 +136,23 @@ type Table struct {
 	// to render a file name.
 	partialCols map[fileID][]string
 
+	// sawLarge is whether any row of this table has ever carried a column big
+	// enough to be worth not rewriting. Until one does, elide.go costs nothing
+	// and does nothing.
+	sawLarge bool
+
+	// elideWorked is whether an elision has ever actually fired. It gates the
+	// only part of elide.go that is not free: a compaction hashing the large
+	// columns of every row it rewrites.
+	//
+	// "Has large columns" is NOT the same question. The jsonb shape has a 6 KB
+	// document in every row and can never elide anything, because pgoutput
+	// omits that document on every update and an omitted column makes the
+	// digest unknowable. Hashing on the first signal cost that shape 1.2 GB of
+	// hashing per rewrite for nothing, and left it with 24 delta files and a
+	// mirror 631 MB instead of 330 MB.
+	elideWorked bool
+
 	// compacting is the rewrite currently in flight, if any. Only the apply
 	// goroutine touches this field.
 	compacting *Compaction
@@ -478,6 +495,16 @@ func (t *Table) Apply(txns []changestream.Transaction) (ApplyStats, error) {
 		last = txn.CommitLSN
 	}
 
+	// Drop large values the mirror can prove it already holds. pgoutput omits an
+	// unchanged TOASTed value but resends an unchanged inline one, so this is
+	// the same saving as a column-partial delta for the columns PostgreSQL does
+	// not hint about. It runs FIRST, because everything after it simply sees a
+	// change that arrived carrying fewer columns.
+	elided, err := t.elideUnchanged(upserts)
+	if err != nil {
+		return ApplyStats{}, err
+	}
+
 	// Which of these changes can be stored as they arrived, as a patch on the
 	// row already in the base file, and which have to be expanded into whole
 	// rows. Decided before carry-forward, because carry-forward is the expansion.
@@ -568,6 +595,8 @@ func (t *Table) Apply(txns []changestream.Transaction) (ApplyStats, error) {
 		if err := t.writeUpserts(order, upserts, asPatch); err != nil {
 			return ApplyStats{}, err
 		}
+		// After the writes, so the locations the hashes attach to are current.
+		t.noteHashes(upserts, asPatch, elided)
 	}
 
 	t.State.AppliedLSN = last
@@ -954,7 +983,11 @@ func (t *Table) Compact() (int, error) {
 	for i, r := range rows {
 		k := t.keyOf(r[t.Key])
 		index[k.String()] = i
-		t.index.set(k, loc{File: id, Pos: int32(i)})
+		l := loc{File: id, Pos: int32(i)}
+		if t.elideWorked {
+			l.Hash, _ = largeHash(r, t.Order)
+		}
+		t.index.set(k, l)
 	}
 	stem := strings.TrimSuffix(name, ".parquet")
 	if err := writeJSON(filepath.Join(t.Dir, "index", stem+".idx.json"), index); err != nil {
