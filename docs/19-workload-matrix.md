@@ -23,30 +23,30 @@ in the first round it never caught up at all.
 
 | shape | what it is | bootstrap | ingest | p50 | p99 | storage | CPU/change | RSS | correct |
 |---|---|---|---|---|---|---|---|---|---|
-| **narrow** | 4 cols, insert-only | 195k rows/s | **104k/s** | 207 ms | 1.1 s | 3.3× | — | — | ✅ |
-| **wide** | 12 cols, insert-only | 98k rows/s | **65k/s** | 208 ms | 3.1 s | 2.7× | 52 µs | **1 GB** | ✅ |
-| **jsonb** | 6 KB doc/row, scalar UPDATEs | 15k rows/s | **159k/s** | 207 ms | **708 ms** | **3.1×** | **16 µs** | **560 MB** | ✅ |
-| **churn** | UPDATEs on a hot 1% | 195k rows/s | 55k/s *(source-limited)* | 207 ms | **225 ms** | **14.8×** | **9 µs** | **65 MB** | ✅ |
-| **deletes** | inserts + deletes 1:1 | 195k rows/s | **223k/s** | 208 ms | 2.1 s | 4.1× | 13 µs | 3 GB | ✅ |
+| **narrow** | 4 cols, insert-only | 195k rows/s | **122k/s** | 208 ms | **928 ms** | 3.4× | 21 µs | **1 GB** | ✅ |
+| **wide** | 12 cols, insert-only | 98k rows/s | **72k/s** | 208 ms | 2.7 s | 2.8× | 41 µs | **943 MB** | ✅ |
+| **jsonb** | 6 KB doc/row, scalar UPDATEs | 17k rows/s | **164k/s** | 208 ms | **633 ms** | **3.2×** | **15 µs** | **206 MB** | ✅ |
+| **churn** | UPDATEs on a hot 1% | 195k rows/s | 56k/s *(source-limited)* | 209 ms | **220 ms** | **14.7×** | **8 µs** | **52 MB** | ✅ |
+| **deletes** | inserts + deletes 1:1 | 195k rows/s | **240k/s** | 208 ms | **904 ms** | 3.8× | **10 µs** | **858 MB** | ✅ |
 
 Five rounds, ingest and p99:
 
-| shape | round 1 | round 2 | round 3 | round 4 | round 5 |
-|---|---|---|---|---|---|
-| narrow | 119k/s · 6.2 s | 132k/s · 9.0 s | 129k/s · 4.9 s | 125k/s · 4.0 s | **104k/s · 1.1 s** |
-| wide | 67k/s · 224 ms | 69k/s · 5.9 s | 73k/s · 803 ms | 68k/s · 2.3 s | **65k/s · 3.1 s** |
-| jsonb | never converged | 84k/s · 486 ms | 84k/s · 348 ms | 162k/s · 2.0 s | **159k/s · 708 ms** |
-| churn | 59k/s · 234 ms | 59k/s · 217 ms | 59k/s · 223 ms | 57k/s · 223 ms | **55k/s · 225 ms** |
-| deletes | 167k/s · 7.6 s | 240k/s · 7.5 s | 256k/s · 1.9 s | 242k/s · 1.8 s | **223k/s · 2.1 s** |
+| shape | round 1 | round 2 | round 3 | round 4 | round 5 | round 6 |
+|---|---|---|---|---|---|---|
+| narrow | 119k/s · 6.2 s | 132k/s · 9.0 s | 129k/s · 4.9 s | 125k/s · 4.0 s | 104k/s · 1.1 s | **122k/s · 928 ms** |
+| wide | 67k/s · 224 ms | 69k/s · 5.9 s | 73k/s · 803 ms | 68k/s · 2.3 s | 65k/s · 3.1 s | **72k/s · 2.7 s** |
+| jsonb | never converged | 84k/s · 486 ms | 84k/s · 348 ms | 162k/s · 2.0 s | 159k/s · 708 ms | **164k/s · 633 ms** |
+| churn | 59k/s · 234 ms | 59k/s · 217 ms | 59k/s · 223 ms | 57k/s · 223 ms | 55k/s · 225 ms | **56k/s · 220 ms** |
+| deletes | 167k/s · 7.6 s | 240k/s · 7.5 s | 256k/s · 1.9 s | 242k/s · 1.8 s | 223k/s · 2.1 s | **240k/s · 904 ms** |
 
-Resident memory, which round five is mostly about:
+Resident memory, which rounds five and six are mostly about:
 
-| shape | round 4 | round 5 |
-|---|---|---|
-| wide | 5 GB | **1 GB** |
-| jsonb | 3 GB | **560 MB** |
-| deletes | 5 GB | **3 GB** |
-| churn | 74 MB | **65 MB** |
+| shape | round 4 | round 5 | round 6 |
+|---|---|---|---|
+| wide | 5 GB | 1 GB | **943 MB** |
+| jsonb | 3 GB | 560 MB | **206 MB** |
+| deletes | 5 GB | 3 GB | **858 MB** |
+| churn | 74 MB | 65 MB | **52 MB** |
 
 Two things in that table are worth reading twice.
 
@@ -136,6 +136,7 @@ same harness.
 | **Derived `DeltaRows`** (from per-file counts) | the compaction trigger stopped drifting | a per-file row count in `state.json` |
 | **Streaming compaction and bootstrap** (row group at a time) | RSS: wide **5 GB → 1 GB**, jsonb **3 GB → 560 MB** | a few percent of ingest on insert-heavy shapes, within run-to-run spread |
 | **Generation-numbered deletion vectors** | an independent reader can no longer be short a row; 1-in-7 failures → 10/10 passes | one extra small file per data file, reclaimed after one write |
+| **Pointer-free index** (integer file ids, int64 keys) | live heap **1.09 GB → 331 MB**; deletes RSS **3 GB → 858 MB**, p99 **2.1 s → 904 ms**; CPU/change down 10–25% on every shape | a second map for non-integer keys; the id encoding depends on file names staying a single sequence |
 
 The row-group sweep is worth calling out as a *negative* result that saved
 effort: RSS was identical at 64k, 8k and 2k rows per group. The memory was never
@@ -438,42 +439,72 @@ writing it. Every previous bug here was in the writer and showed up as a wrong
 mirror; this one was in the *contract between writer and reader*, and the mirror
 was right the whole time.
 
+## Round six: an index the garbage collector never looks inside
+
+Round five ended by naming its own next step: the profile said the cost was no
+longer Parquet, compression or decoding but the key -> location index itself.
+One entry per row of the mirror, `map[string]loc` with `loc{File string, Pos
+int}`, held twice during a compaction swap — two pointers per entry, several
+million entries, and a collector walking every one of them on every cycle.
+
+Both halves are now integers:
+
+- **A file is an id, not a path.** Data files are named from one monotonic
+  sequence and a number is never reused, so `(kind, seq)` already IS the file's
+  identity. Making the id a pure function of the name matters twice: there is no
+  interning table to grow without bound in a process that runs for weeks, and
+  the background compactor can compute an id without touching state the apply
+  goroutine is writing.
+- **A key is an int64** when the primary key is an integer type, which is most
+  tables. pgoutput hands over `"123"` and Parquet hands back `int64(123)`; both
+  now land on the same entry without either allocating a string. Text keys fall
+  back to a second map, and a table can use both at once without either
+  misbehaving — there is a test for a text key that looks numeric.
+
+A Go map whose key and value types contain no pointers is invisible to the
+garbage collector: it is scanned as plain memory, not walked entry by entry.
+That is the whole of the idea.
+
+| deletes shape | round 5 | round 6 |
+|---|---|---|
+| live heap | 1.09 GB | **331 MB** |
+| `runtime.scanObject` | 14.9% cum | **5.4% cum** |
+| peak RSS | 3 GB | **858 MB** |
+| p99 | 2.1 s | **904 ms** |
+| CPU per change | 13 µs | **10 µs** |
+| ingest | 223k/s | **240k/s** |
+
+Every shape moved the same way — CPU per change down 10–25%, ingest up 7–17%,
+and four of the five p99s now under a second. The remaining 274 MB of live heap
+is the index map itself, which is the irreducible part: one entry per row is
+what makes an apply O(change) rather than O(table), and that trade was settled
+in docs/18.
+
+The lesson worth keeping is about where to look. Three rounds of this work were
+spent on Parquet, compression and buffering, which is where a storage engine's
+cost is *supposed* to be. It stopped being there two rounds ago, and the only
+reason that was noticed is that a shape refused to follow the others down and
+got profiled instead of theorised about.
+
 ## What to do next, in order of measured value
 
-1. **The key→location index is now the cost, in both CPU and memory.** The
-   `deletes` shape did not follow the others down, so it got profiled, and the
-   answer is the same on both axes:
-
-   ```
-   heap (1.09 GB live, RSS is runtime high-water)
-     190 MB  FinishCompaction          the swap's dead set
-     188 MB  the compactor's new index
-      77 MB  fmt.Sprint                key strings
-   cpu (40 s)
-     25%     string-keyed map hashing, probing and assignment
-     30%     garbage collection (tryDeferToSpanScan, scanObject, sizeclass)
-   ```
-
-   Nothing here is Parquet, compression or decoding any more. It is
-   `map[string]loc` with 3.5M entries, held twice during a swap, and the
-   garbage collector walking it. Both halves have the same fix: make the
-   entries **pointer-free**, so the collector stops scanning them. `loc.File`
-   is a string per entry and could be an interned file id — 24 bytes to 8, and
-   one fewer pointer. Keying by int64 where the primary key is an integer,
-   which is most tables, removes the other one and makes the map opaque to GC
-   entirely. The `fmt.Sprint` line is already gone (`strconv`), which is the
-   free part; the rest is a real change to the index type.
-2. **Drop large values the mirror can see are unchanged**, rather than only the
+1. **Drop large values the mirror can see are unchanged**, rather than only the
    ones pgoutput omits (see round four). Needs a per-row hash of the large
    columns; widens the round-four win to `REPLICA IDENTITY FULL` tables and to
    values just under the TOAST threshold.
-3. **Bootstrap is still 15k rows/s on jsonb against 195k on narrow.** Streaming
+2. **Serve a query.** Every number in this document is the write path. The
+   premise of the project is that a columnar mirror answers analytical SELECTs
+   that a read replica cannot, and that has not been measured end to end since
+   the Python reference in docs/11.
+3. **Run against a real CloudNativePG operator.** The plugin is unit-tested
+   against the CNPG-I contract and the chart installs, but reconcile loops,
+   rollouts and switchovers have never been exercised by the operator itself.
+4. **Bootstrap is still 17k rows/s on jsonb against 195k on narrow.** Streaming
    it removed the memory but not the time, so the cost is in the source query or
    in compressing 1 GB of documents, and those are distinguishable by
    measurement rather than argument.
-4. **Bound carry-forward with a cache of recently-written rows.** Lower priority
-   than it ever looked: the profile says reads are not where the time goes, and
-   column-partial deltas removed most of the carry-forward reads anyway.
+5. **`wide` is the last p99 above a second** (2.7 s against 904 ms for a shape
+   that accumulates twice as many rows). Nothing has been profiled to say why.
 
 Still not on the list: parallel decode. PostgreSQL's decoder caps around
 186k rows/s, which is above every ingest number here except the ones already

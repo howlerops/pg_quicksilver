@@ -223,7 +223,7 @@ func TestPartialDeltaRefusesAShrinkingShape(t *testing.T) {
 			t.Errorf("column %s = %v, expected %s", col, r[col], want)
 		}
 	}
-	if _, standing := tbl.patch["1"]; standing {
+	if _, standing := tbl.patch.get(tbl.keyOfString("1")); standing {
 		t.Errorf("a patch is still standing on key 1; the shrinking update " +
 			"should have materialised the row")
 	}
@@ -306,7 +306,7 @@ func TestPartialDeltaThroughMergeAndCompaction(t *testing.T) {
 				if len(changes) > 0 {
 					applyAt(t, tbl, 1+round, changes...)
 				}
-				if len(tbl.patch) > 0 {
+				if tbl.patch.len() > 0 {
 					sawPatch = true
 					if tbl.Compacting() {
 						// The window that the swap has to survive: a patch
@@ -413,7 +413,7 @@ func TestPartialDeltaSurvivesReopen(t *testing.T) {
 	if err := reopened.ensureIndex(); err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := reopened.patch["1"]; !ok {
+	if _, ok := reopened.patch.get(reopened.keyOfString("1")); !ok {
 		t.Error("the reopened mirror did not recognise the patch file")
 	}
 	applyAt(t, reopened, 3, upd(map[string]any{"id": "1", "n": "8", "doc": "small"}))

@@ -40,26 +40,26 @@ import (
 type Compaction struct {
 	Started time.Time
 
-	files map[string]bool // relative paths included in this rewrite
+	files map[fileID]bool // data files included in this rewrite
 	name  string          // new base file name
 	err   error
 	done  chan struct{}
 
 	// Built by the background goroutine, consumed by the swap.
-	index    map[string]loc // key -> position in the new base file
-	dupDead  []int          // positions superseded within the rewrite itself
+	index    *keyIndex // key -> position in the new base file
+	dupDead  []int     // positions superseded within the rewrite itself
 	rowCount int
 
 	// touched is every key the apply loop superseded or deleted while this
 	// rewrite was running. It is written only by the apply goroutine, and it is
 	// what makes the swap O(changed) instead of O(table): the rewrite's own
 	// index is correct for every key EXCEPT these.
-	touched map[string]bool
+	touched map[rowKey]bool
 }
 
 // Touch records that a key moved or was deleted during a rewrite. Called from
 // the apply goroutine, which also performs the swap, so no locking is needed.
-func (t *Table) Touch(keys ...string) {
+func (t *Table) Touch(keys ...rowKey) {
 	if t.compacting == nil {
 		return
 	}
@@ -87,16 +87,16 @@ func (t *Table) BeginCompaction() *Compaction {
 	t.State.Seq++
 	c := &Compaction{
 		Started: time.Now(),
-		files:   map[string]bool{},
+		files:   map[fileID]bool{},
 		name:    fmt.Sprintf("%06d.parquet", t.State.Seq),
 		done:    make(chan struct{}),
-		touched: map[string]bool{},
+		touched: map[rowKey]bool{},
 	}
 	for _, b := range t.State.BaseFiles {
-		c.files[filepath.Join("base", b)] = true
+		c.files[baseID(b)] = true
 	}
 	for _, d := range t.State.DeltaFiles {
-		c.files[filepath.Join("delta", d)] = true
+		c.files[deltaID(d)] = true
 	}
 	if len(c.files) == 0 {
 		return nil
@@ -109,11 +109,16 @@ func (t *Table) BeginCompaction() *Compaction {
 	snapshot := make([]string, 0, len(c.files))
 	pcols := map[string][]string{}
 	for f := range c.files {
-		snapshot = append(snapshot, f)
-		if pc := t.partialColsOf(f); pc != nil {
-			pcols[f] = pc
+		rel := f.name()
+		snapshot = append(snapshot, rel)
+		if pc := t.partialCols[f]; pc != nil {
+			pcols[rel] = pc
 		}
 	}
+	// The new base file's id and the table's key form are resolved here, on the
+	// apply goroutine, so the background goroutine never reads anything the
+	// apply loop writes.
+	newID, numeric := baseID(c.name), t.numericKey
 	// base/... sorts before delta/..., and delta names are a zero-padded
 	// sequence, so this is base first and then deltas oldest to newest.
 	sort.Strings(snapshot)
@@ -125,7 +130,7 @@ func (t *Table) BeginCompaction() *Compaction {
 		// Patches first, because they amend rows that come from other files.
 		// They are bounded by the delta files, which the compaction policy keeps
 		// small; the whole rows are not, and are never held.
-		var overlay map[string]map[string]any
+		var overlay map[rowKey]map[string]any
 		for _, rel := range snapshot {
 			if pcols[rel] == nil {
 				continue
@@ -144,12 +149,12 @@ func (t *Table) BeginCompaction() *Compaction {
 				return
 			}
 			if overlay == nil {
-				overlay = make(map[string]map[string]any, len(got))
+				overlay = make(map[rowKey]map[string]any, len(got))
 			}
 			// A rewrite is where patches stop being patches: the file it writes
 			// holds whole rows again.
 			for _, r := range got {
-				overlay[keyString(r[t.Key])] = r
+				overlay[keyFor(numeric, r[t.Key])] = r
 			}
 		}
 
@@ -164,8 +169,7 @@ func (t *Table) BeginCompaction() *Compaction {
 		// dead and THEN writing the new one, so a compactor reading between
 		// those steps holds both copies. Files are read base-first then deltas
 		// in sequence order, so the last occurrence is the newest.
-		newRel := filepath.Join("base", c.name)
-		idx := make(map[string]loc)
+		idx := newKeyIndex(t.State.BaseRows)
 		var dup []int
 		out := 0
 
@@ -187,14 +191,14 @@ func (t *Table) BeginCompaction() *Compaction {
 			err := t.forEachRowGroup(filepath.Join(t.Dir, rel), dead, nil,
 				func(rows []map[string]any, _ int) error {
 					for _, r := range rows {
-						k := keyString(r[t.Key])
+						k := keyFor(numeric, r[t.Key])
 						if p, ok := overlay[k]; ok {
 							applyPatch(r, p)
 						}
-						if prev, ok := idx[k]; ok {
-							dup = append(dup, prev.Pos)
+						if prev, ok := idx.get(k); ok {
+							dup = append(dup, int(prev.Pos))
 						}
-						idx[k] = loc{File: newRel, Pos: out}
+						idx.set(k, loc{File: newID, Pos: int32(out)})
 						out++
 					}
 					return w.Append(rows)
@@ -218,10 +222,8 @@ func (t *Table) BeginCompaction() *Compaction {
 		// slightly stale for keys touched during the rewrite, which is safe —
 		// the deletion vector, not the index, decides what is live, and
 		// ensureIndex overlays the deltas on top when rebuilding.
-		persist := make(map[string]int, len(idx))
-		for k, l := range idx {
-			persist[k] = l.Pos
-		}
+		persist := make(map[string]int, idx.len())
+		idx.each(func(k rowKey, l loc) { persist[k.String()] = int(l.Pos) })
 		if err := writeJSON(filepath.Join(t.Dir, "index",
 			trimParquet(c.name)+".idx.json"), persist); err != nil {
 			c.err = err
@@ -285,33 +287,33 @@ func (t *Table) FinishCompaction() (int, error) {
 
 	// Reconcile only the keys that moved while the rewrite ran.
 	for k := range c.touched {
-		inNew, wasFolded := c.index[k]
-		cur, stillLive := t.index[k]
-		if wasFolded && (!stillLive || cur.File != inNew.File || cur.Pos != inNew.Pos) {
+		inNew, wasFolded := c.index.get(k)
+		cur, stillLive := t.index.get(k)
+		if wasFolded && (!stillLive || cur != inNew) {
 			// the copy in the new base is not the live one any more
-			deadSet[inNew.Pos] = true
+			deadSet[int(inNew.Pos)] = true
 		}
 		if stillLive {
-			c.index[k] = cur
+			c.index.set(k, cur)
 		} else {
-			delete(c.index, k)
+			c.index.del(k)
 		}
 	}
 
 	if os.Getenv("QS_COMPACT_DEBUG") != "" {
 		orphan := 0
 		var sample []string
-		for k := range c.index {
-			if _, live := t.index[k]; !live && !c.touched[k] {
+		c.index.each(func(k rowKey, _ loc) {
+			if _, live := t.index.get(k); !live && !c.touched[k] {
 				orphan++
 				if len(sample) < 3 {
-					sample = append(sample, k)
+					sample = append(sample, k.String())
 				}
 			}
-		}
+		})
 		fmt.Fprintf(os.Stderr, "[swap] folded=%d touched=%d dup=%d "+
 			"ORPHANS(in new base, not live, not touched)=%d %v\n",
-			len(c.index), len(c.touched), len(c.dupDead), orphan, sample)
+			c.index.len(), len(c.touched), len(c.dupDead), orphan, sample)
 	}
 
 	dead := make([]int, 0, len(deadSet))
@@ -332,7 +334,7 @@ func (t *Table) FinishCompaction() (int, error) {
 	// Keep every delta written after the rewrite began.
 	var keptDeltas []string
 	for _, d := range t.State.DeltaFiles {
-		if !c.files[filepath.Join("delta", d)] {
+		if !c.files[deltaID(d)] {
 			keptDeltas = append(keptDeltas, d)
 		} else {
 			t.forgetDeltaFile(d)
@@ -340,7 +342,7 @@ func (t *Table) FinishCompaction() (int, error) {
 	}
 	oldFiles := make([]string, 0, len(c.files))
 	for f := range c.files {
-		oldFiles = append(oldFiles, f)
+		oldFiles = append(oldFiles, f.name())
 	}
 
 	// Every patch the rewrite folded in lived in a file it is about to delete,
@@ -349,11 +351,7 @@ func (t *Table) FinishCompaction() (int, error) {
 	// flight), so this empties the map — but it is written as a filter, because
 	// "it should be empty" is how the last three silent-corruption bugs in this
 	// package were reasoned into existence.
-	for k, p := range t.patch {
-		if c.files[p.File] {
-			delete(t.patch, k)
-		}
-	}
+	t.patch.deleteWhere(func(p loc) bool { return c.files[p.File] })
 
 	t.index = c.index // O(1): the rewrite built it
 	t.State.BaseFiles = []string{c.name}

@@ -89,7 +89,7 @@ func (t *Table) Snapshot(ctx context.Context, conn *pgx.Conn, atLSN string) (int
 		for i, c := range t.Order {
 			m[c] = vals[i]
 		}
-		index[keyString(m[t.Key])] = n
+		index[t.keyOf(m[t.Key]).String()] = n
 		n++
 		buf = append(buf, m)
 		if len(buf) == cap(buf) {

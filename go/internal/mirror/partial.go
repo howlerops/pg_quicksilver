@@ -69,6 +69,16 @@ func (t *Table) partialColsOf(rel string) []string {
 	return t.State.PartialCols[filepath.Base(rel)]
 }
 
+// rebuildPartialCols mirrors State.PartialCols into a map keyed by file id, so
+// that the per-key question "does the file this patch lives in carry column c?"
+// costs a lookup rather than rendering a file name.
+func (t *Table) rebuildPartialCols() {
+	t.partialCols = make(map[fileID][]string, len(t.State.PartialCols))
+	for name, cols := range t.State.PartialCols {
+		t.partialCols[deltaID(name)] = cols
+	}
+}
+
 // colSignature names the shape of a change: which of the table's columns it
 // carried, in the table's own column order.
 func colSignature(row map[string]any, order []string) (string, []string) {
@@ -93,23 +103,23 @@ func containsStr(xs []string, x string) bool {
 // canPatch decides whether a change can be stored as it arrived. Every "no"
 // here means the row gets carried forward and written whole, which is correct
 // by construction — it is what the mirror did before any of this existed.
-func (t *Table) canPatch(k string, row map[string]any) bool {
+func (t *Table) canPatch(k rowKey, row map[string]any) bool {
 	if len(row) >= len(t.Order) {
 		return false // carries everything; there is nothing to leave behind
 	}
 	if _, ok := row[t.Key]; !ok {
 		return false // without the key it cannot be matched to a row
 	}
-	if _, ok := t.index[k]; !ok {
+	if _, ok := t.index.get(k); !ok {
 		// No whole row to stand on. This is a genuine insert, or a key whose
 		// row was deleted; either way the change is all there is.
 		return false
 	}
-	if p, ok := t.patch[k]; ok {
+	if p, ok := t.patch.get(k); ok {
 		// Superseding a patch means covering everything it carried; otherwise
 		// the older patch's columns would have to survive underneath it, and
 		// that is the chain this design exists to avoid.
-		for _, c := range t.partialColsOf(p.File) {
+		for _, c := range t.partialCols[p.File] {
 			if _, has := row[c]; !has {
 				return false
 			}
@@ -119,15 +129,15 @@ func (t *Table) canPatch(k string, row map[string]any) bool {
 }
 
 // classifyPartial picks the keys in a batch that will be written as patches.
-func (t *Table) classifyPartial(upserts map[string]map[string]any) (map[string]bool, error) {
-	out := map[string]bool{}
+func (t *Table) classifyPartial(upserts map[rowKey]map[string]any) (map[rowKey]bool, error) {
+	out := map[rowKey]bool{}
 	if !PartialDeltas || len(upserts) == 0 {
 		return out, nil
 	}
 	if err := t.ensureIndex(); err != nil {
 		return nil, err
 	}
-	bySig := map[string][]string{}
+	bySig := map[string][]rowKey{}
 	for k, row := range upserts {
 		if !t.canPatch(k, row) {
 			continue
@@ -168,11 +178,11 @@ func (t *Table) classifyPartial(upserts map[string]map[string]any) (map[string]b
 // columns their change carried. The read path reads them once per scan rather
 // than seeking into them per row, because a patch stands on a base row and
 // random access into Parquet costs a row group either way.
-func (t *Table) patchOverlay() (map[string]map[string]any, error) {
+func (t *Table) patchOverlay() (map[rowKey]map[string]any, error) {
 	if len(t.State.PartialCols) == 0 {
 		return nil, nil
 	}
-	var out map[string]map[string]any
+	var out map[rowKey]map[string]any
 	for _, d := range t.State.DeltaFiles {
 		cols := t.State.PartialCols[d]
 		if len(cols) == 0 {
@@ -191,11 +201,11 @@ func (t *Table) patchOverlay() (map[string]map[string]any, error) {
 			return nil, err
 		}
 		if out == nil {
-			out = make(map[string]map[string]any, len(rows))
+			out = make(map[rowKey]map[string]any, len(rows))
 		}
 		// Files are listed oldest first, so a later patch for the same key wins.
 		for _, r := range rows {
-			out[keyString(r[t.Key])] = r
+			out[t.keyOf(r[t.Key])] = r
 		}
 	}
 	return out, nil
@@ -214,6 +224,7 @@ func applyPatch(row, patch map[string]any) {
 func (t *Table) forgetDeltaFile(name string) {
 	delete(t.State.PartialCols, name)
 	delete(t.State.FileRows, name)
+	delete(t.partialCols, deltaID(name))
 }
 
 // recountDeltaRows recomputes the compaction trigger from the files that
@@ -237,5 +248,9 @@ func (t *Table) noteDeltaFile(name string, rows int, cols []string) {
 			t.State.PartialCols = map[string][]string{}
 		}
 		t.State.PartialCols[name] = cols
+		if t.partialCols == nil {
+			t.partialCols = map[fileID][]string{}
+		}
+		t.partialCols[deltaID(name)] = cols
 	}
 }

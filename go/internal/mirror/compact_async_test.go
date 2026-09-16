@@ -159,7 +159,7 @@ func testCompactionRaces(t *testing.T, partial bool) {
 				if len(changes) > 0 {
 					apply(changes)
 				}
-				if len(tbl.patch) > 0 && tbl.Compacting() {
+				if tbl.patch.len() > 0 && tbl.Compacting() {
 					patchedDuringRewrite = true
 				}
 
@@ -248,17 +248,15 @@ func testCompactionRaces(t *testing.T, partial bool) {
 			for k := range got {
 				if _, ok := want[k]; !ok {
 					if extra < 3 {
-						loc := "not in index"
-						if l, ok2 := tbl.index[k]; ok2 {
-							loc = fmt.Sprintf("index->%s#%d", l.File, l.Pos)
-						}
+						where := "not in index"
 						inDV := "n/a"
-						if l, ok2 := tbl.index[k]; ok2 {
-							dp, _ := tbl.deadPositions(l.File)
-							inDV = fmt.Sprint(dp[l.Pos])
+						if l, ok2 := tbl.index.get(tbl.keyOfString(k)); ok2 {
+							where = fmt.Sprintf("index->%s#%d", l.File.name(), l.Pos)
+							dp, _ := tbl.deadPositions(l.File.name())
+							inDV = fmt.Sprint(dp[int(l.Pos)])
 						}
 						t.Errorf("row %s in mirror but deleted at round %d (swaps at %v) (%s; markedDead=%s)",
-							k, deletedAt[k], swapAt, loc, inDV)
+							k, deletedAt[k], swapAt, where, inDV)
 					}
 					extra++
 				}

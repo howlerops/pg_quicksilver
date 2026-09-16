@@ -154,7 +154,7 @@ func (t *Table) Reload() error {
 		return err
 	}
 	t.State = st
-	t.index, t.patch = nil, nil
+	t.index, t.patch, t.partialCols = nil, nil, nil
 	return nil
 }
 
@@ -218,7 +218,7 @@ func (t *Table) ForEachLive(fn func(map[string]any) error) error {
 		}
 		for _, r := range rows {
 			if overlay != nil {
-				if p, ok := overlay[keyString(r[t.Key])]; ok {
+				if p, ok := overlay[t.keyOf(r[t.Key])]; ok {
 					applyPatch(r, p)
 				}
 			}
