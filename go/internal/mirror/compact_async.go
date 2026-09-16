@@ -121,10 +121,16 @@ func (t *Table) BeginCompaction() *Compaction {
 	t.compacting = c
 	go func() {
 		defer close(c.done)
-		var rows []map[string]any
+
+		// Patches first, because they amend rows that come from other files.
+		// They are bounded by the delta files, which the compaction policy keeps
+		// small; the whole rows are not, and are never held.
 		var overlay map[string]map[string]any
 		for _, rel := range snapshot {
-			dead, derr := t.deadPositions(rel)
+			if pcols[rel] == nil {
+				continue
+			}
+			dead, derr := t.deadPositionsLatest(rel)
 			if derr != nil {
 				c.err = derr
 				return
@@ -137,43 +143,72 @@ func (t *Table) BeginCompaction() *Compaction {
 				c.err = err
 				return
 			}
-			if pcols[rel] != nil {
-				// A patch file contributes no rows of its own; it amends rows
-				// that came from the base file. A rewrite is where patches stop
-				// being patches — the file it writes holds whole rows again.
-				if overlay == nil {
-					overlay = make(map[string]map[string]any, len(got))
-				}
-				for _, r := range got {
-					overlay[keyString(r[t.Key])] = r
-				}
-				continue
+			if overlay == nil {
+				overlay = make(map[string]map[string]any, len(got))
 			}
-			rows = append(rows, got...)
-		}
-		for _, r := range rows {
-			if p, ok := overlay[keyString(r[t.Key])]; ok {
-				applyPatch(r, p)
+			// A rewrite is where patches stop being patches: the file it writes
+			// holds whole rows again.
+			for _, r := range got {
+				overlay[keyString(r[t.Key])] = r
 			}
-		}
-		// Build the new index and find rows superseded within the rewrite
-		// itself. The same key can appear twice: the apply loop supersedes a row
-		// by marking its old position dead and THEN writing the new one, so a
-		// compactor reading between those steps holds both copies. Files are
-		// read base-first then deltas in sequence order, so the last occurrence
-		// is the newest.
-		newRel := filepath.Join("base", c.name)
-		idx := make(map[string]loc, len(rows))
-		var dup []int
-		for i, r := range rows {
-			k := keyString(r[t.Key])
-			if prev, ok := idx[k]; ok {
-				dup = append(dup, prev.Pos)
-			}
-			idx[k] = loc{File: newRel, Pos: i}
 		}
 
-		if err := t.writeParquet(filepath.Join(t.Dir, "base", c.name), rows); err != nil {
+		// Then the whole rows, ONE ROW GROUP AT A TIME, straight into the new
+		// file. Reading them all into a slice first is four million Go maps on
+		// the narrow shape, which is where this process's resident memory went
+		// — and the garbage collector it implies pauses the apply goroutine too.
+		//
+		// The index is built as the rows stream past, which also finds rows
+		// superseded within the rewrite itself: the same key can appear twice,
+		// because the apply loop supersedes a row by marking its old position
+		// dead and THEN writing the new one, so a compactor reading between
+		// those steps holds both copies. Files are read base-first then deltas
+		// in sequence order, so the last occurrence is the newest.
+		newRel := filepath.Join("base", c.name)
+		idx := make(map[string]loc)
+		var dup []int
+		out := 0
+
+		w, err := t.newParquetWriter(filepath.Join(t.Dir, "base", c.name), nil, true)
+		if err != nil {
+			c.err = err
+			return
+		}
+		for _, rel := range snapshot {
+			if pcols[rel] != nil {
+				continue
+			}
+			dead, derr := t.deadPositionsLatest(rel)
+			if derr != nil {
+				w.Close()
+				c.err = derr
+				return
+			}
+			err := t.forEachRowGroup(filepath.Join(t.Dir, rel), dead, nil,
+				func(rows []map[string]any, _ int) error {
+					for _, r := range rows {
+						k := keyString(r[t.Key])
+						if p, ok := overlay[k]; ok {
+							applyPatch(r, p)
+						}
+						if prev, ok := idx[k]; ok {
+							dup = append(dup, prev.Pos)
+						}
+						idx[k] = loc{File: newRel, Pos: out}
+						out++
+					}
+					return w.Append(rows)
+				})
+			if err != nil {
+				if os.IsNotExist(err) {
+					continue
+				}
+				w.Close()
+				c.err = err
+				return
+			}
+		}
+		if err := w.Close(); err != nil {
 			c.err = err
 			return
 		}
@@ -195,7 +230,7 @@ func (t *Table) BeginCompaction() *Compaction {
 
 		c.index = idx
 		c.dupDead = dup
-		c.rowCount = len(rows)
+		c.rowCount = out
 	}()
 	return c
 }
@@ -285,9 +320,13 @@ func (t *Table) FinishCompaction() (int, error) {
 	}
 	sort.Ints(dead)
 	if len(dead) > 0 {
-		if err := writeJSON(t.dvPath(newRel), dead); err != nil {
+		if err := writeJSON(t.dvPathGen(newRel, 1), dead); err != nil {
 			return 0, err
 		}
+		if t.State.DVGen == nil {
+			t.State.DVGen = map[string]int{}
+		}
+		t.State.DVGen[dvStem(newRel)] = 1
 	}
 
 	// Keep every delta written after the rewrite began.
@@ -328,8 +367,7 @@ func (t *Table) FinishCompaction() (int, error) {
 		return 0, err
 	}
 	for _, rel := range oldFiles {
-		_ = os.Remove(filepath.Join(t.Dir, rel))
-		_ = os.Remove(t.dvPath(rel))
+		t.removeDataFile(rel)
 	}
 	return t.State.BaseRows, nil
 }

@@ -37,62 +37,13 @@ func (t *Table) readParquet(path string, dead map[int]bool) ([]map[string]any, e
 // column it does not carry is one the change never touched, which is not the
 // same statement as NULL and must not be turned into one.
 func (t *Table) readParquetCols(path string, dead map[int]bool, cols []string) ([]map[string]any, error) {
-	want, fill := cols, false
-	if want == nil {
-		want, fill = t.Order, true
-	}
-	f, err := os.Open(path)
+	var out []map[string]any
+	err := t.forEachRowGroup(path, dead, cols, func(rows []map[string]any, _ int) error {
+		out = append(out, rows...)
+		return nil
+	})
 	if err != nil {
 		return nil, err
-	}
-	defer f.Close()
-
-	rdr, err := file.NewParquetReader(f)
-	if err != nil {
-		return nil, err
-	}
-	defer rdr.Close()
-
-	ar, err := pqarrow.NewFileReader(rdr, pqarrow.ArrowReadProperties{}, memory.DefaultAllocator)
-	if err != nil {
-		return nil, err
-	}
-	tbl, err := ar.ReadTable(context.Background())
-	if err != nil {
-		return nil, err
-	}
-	defer tbl.Release()
-
-	present := map[string]int{}
-	for i := 0; i < int(tbl.NumCols()); i++ {
-		present[tbl.Schema().Field(i).Name] = i
-	}
-
-	out := make([]map[string]any, 0, tbl.NumRows())
-	for row := 0; row < int(tbl.NumRows()); row++ {
-		if dead[row] {
-			continue
-		}
-		m := make(map[string]any, len(want))
-		for _, name := range want {
-			ci, ok := present[name]
-			if !ok {
-				if !fill {
-					continue
-				}
-				// This file predates an ADD COLUMN. NULL is right only when the
-				// column was added without a default; otherwise PostgreSQL
-				// reads these rows back as attmissingval and so must we.
-				if mv, has := t.State.MissingVals[name]; has {
-					m[name] = mv
-				} else {
-					m[name] = nil
-				}
-				continue
-			}
-			m[name] = chunkedValue(tbl.Column(ci).Data(), row)
-		}
-		out = append(out, m)
 	}
 	return out, nil
 }

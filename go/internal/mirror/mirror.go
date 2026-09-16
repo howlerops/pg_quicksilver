@@ -11,7 +11,12 @@
 //	<root>/<schema.table>/
 //	  base/000001.parquet     compacted data
 //	  delta/000007.parquet    recent micro-batches, append-only
-//	  dv/000001.dv.json       dead row POSITIONS in the matching base file
+//	  dv/000001.000000003.dv.json
+//	                          dead row POSITIONS in the matching data file, as
+//	                          of generation 3. Vectors are never modified in
+//	                          place; state.json names the generation that
+//	                          belongs to each file, so a manifest and the
+//	                          vectors it names are one point in time.
 //	  index/000001.idx.json   key -> row position, needed to build a dv
 //	  state.json              applied_lsn + manifest
 //
@@ -31,10 +36,6 @@ import (
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/arrow/array"
 	"github.com/apache/arrow-go/v18/arrow/decimal128"
-	"github.com/apache/arrow-go/v18/arrow/memory"
-	"github.com/apache/arrow-go/v18/parquet"
-	"github.com/apache/arrow-go/v18/parquet/compress"
-	"github.com/apache/arrow-go/v18/parquet/pqarrow"
 
 	"github.com/howlerops/pg_quicksilver/go/internal/changestream"
 )
@@ -72,6 +73,25 @@ type State struct {
 	// and DeltaRows is the compaction trigger, so drift there is a mirror that
 	// either rewrites constantly or never.
 	FileRows map[string]int `json:"file_rows,omitempty"`
+
+	// DVGen names WHICH deletion vector belongs to each data file.
+	//
+	// Deletion vectors used to be overwritten in place, at a fixed path per data
+	// file, and that made a manifest and its vectors two different points in
+	// time. A reader that loaded this file and then read a vector could see a
+	// row marked dead by a write whose replacement row was not in the manifest
+	// it holds — the row is then in neither place, and the reader is silently
+	// short by exactly one row. It reproduced about once in seven benchmark
+	// runs, and it is the failure mode a mirror can least afford: the reader is
+	// wrong while every file on disk is right.
+	//
+	// Vectors are now written to a NEW generation and never modified, so a
+	// manifest describes a complete, immutable snapshot. Old generations are
+	// kept for one further write before being removed, and a reader that finds
+	// the generation its manifest names already gone gets ErrStaleManifest and
+	// retries — which is the difference between "I could not tell" and a wrong
+	// answer, again.
+	DVGen map[string]int `json:"dv_gen,omitempty"`
 
 	// Halted, when set, is why this mirror stopped and must not be served.
 	// It is durable on purpose: a halt that lives only in a running process is
@@ -207,35 +227,87 @@ func (t *Table) ensureIndex() error {
 	return nil
 }
 
-// deadPositions reads a file's deletion vector. Every file gets one now, base
-// and delta alike: marking a superseded row dead is O(1), whereas rewriting the
-// file that holds it is O(file) and was being done on every batch.
-// deadPositions reads a file's deletion vector.
+// deadPositions reads the deletion vector THIS MANIFEST names for a file. Every
+// file gets one, base and delta alike: marking a superseded row dead is O(1),
+// whereas rewriting the file that holds it is O(file) and was being done on
+// every batch.
 //
-// A vector that exists but cannot be parsed is an ERROR, never an empty set.
-// The difference is the difference between "this file has no deleted rows" and
-// "I could not tell", and the second silently undoes every delete in the file.
+// Two ways of not getting an answer are errors rather than empty sets, and both
+// distinctions were paid for:
+//
+//   - a vector that exists but cannot be parsed. "This file has no deleted
+//     rows" and "I could not tell" are not the same statement, and spelling the
+//     second as the first resurrects every delete in the file.
+//   - a vector the manifest names that is no longer on disk. That means the
+//     manifest is older than the mirror, and answering from a newer vector
+//     would drop rows whose replacements this manifest cannot see.
 func (t *Table) deadPositions(rel string) (map[int]bool, error) {
-	dead := map[int]bool{}
-	b, err := os.ReadFile(t.dvPath(rel))
+	gen := t.State.DVGen[dvStem(rel)]
+	if gen == 0 {
+		return map[int]bool{}, nil // genuinely nothing deleted in this file yet
+	}
+	return t.readDV(t.dvPathGen(rel, gen), rel)
+}
+
+// deadPositionsLatest reads the newest deletion vector on disk for a file,
+// ignoring the manifest.
+//
+// This is for the background compactor, which cannot read t.State.DVGen — the
+// apply goroutine writes it on every batch — and does not need to: seeing MORE
+// rows as dead than its snapshot accounts for is safe there, because every key
+// that moved while the rewrite ran is reconciled against the live index at swap
+// time anyway. An external reader must never do this; see deadPositions.
+func (t *Table) deadPositionsLatest(rel string) (map[int]bool, error) {
+	matches, err := filepath.Glob(filepath.Join(t.Dir, "dv", dvStem(rel)+".*.dv.json"))
+	if err != nil || len(matches) == 0 {
+		return map[int]bool{}, err
+	}
+	sort.Strings(matches)
+	return t.readDV(matches[len(matches)-1], rel)
+}
+
+func (t *Table) readDV(path, rel string) (map[int]bool, error) {
+	b, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return dead, nil // genuinely nothing deleted in this file yet
+			return nil, ErrStaleManifest
 		}
 		return nil, err
 	}
 	var pos []int
 	if err := json.Unmarshal(b, &pos); err != nil {
-		return nil, fmt.Errorf("deletion vector for %s is unreadable: %w", rel, err)
+		return nil, fmt.Errorf("deletion vector %s is unreadable: %w", path, err)
 	}
+	dead := make(map[int]bool, len(pos))
 	for _, p := range pos {
 		dead[p] = true
 	}
 	return dead, nil
 }
 
-func (t *Table) dvPath(rel string) string {
-	return filepath.Join(t.Dir, "dv", trimParquet(filepath.Base(rel))+".dv.json")
+func dvStem(rel string) string { return trimParquet(filepath.Base(rel)) }
+
+// dvPathGen names one generation of a file's deletion vector. Generations are
+// zero-padded so that lexical order is numeric order, which is what lets the
+// compactor find the newest with a glob.
+func (t *Table) dvPathGen(rel string, gen int) string {
+	return filepath.Join(t.Dir, "dv", fmt.Sprintf("%s.%09d.dv.json", dvStem(rel), gen))
+}
+
+// dropDV removes every generation of a file's deletion vector, for when the
+// data file itself is going away.
+func (t *Table) dropDV(rel string) {
+	matches, _ := filepath.Glob(filepath.Join(t.Dir, "dv", dvStem(rel)+".*.dv.json"))
+	for _, m := range matches {
+		_ = os.Remove(m)
+	}
+	delete(t.State.DVGen, dvStem(rel))
+}
+
+// removeDataFile deletes a data file and the deletion vectors that described it.
+func (t *Table) removeDataFile(rel string) {
+	_ = os.Remove(filepath.Join(t.Dir, rel))
+	t.dropDV(rel)
 }
 
 func (t *Table) statePath() string { return filepath.Join(t.Dir, "state.json") }
@@ -696,80 +768,28 @@ func (t *Table) writeDelta(rows []map[string]any, cols []string) error {
 	return nil
 }
 
-// writeParquet writes a file. `durable` selects the compression trade:
-//
-//   - base files are written once and scanned many times, so they get zstd
-//   - delta files are written constantly and read until the next compaction
-//     folds them away, so they get Snappy
-//
-// This is not a micro-optimisation. A CPU profile of the jsonb shape put 45% of
-// the sidecar in writeParquet and 19% in zstd's encoder alone, because every
-// UPDATE rewrites the whole row — including a 3.3 KB document the update never
-// touched — into a new delta, and zstd re-compresses it every time. 2.4M
-// updates in 10 seconds is ~8 GB of unchanged document re-compressed.
 func (t *Table) writeParquetCodec(path string, rows []map[string]any, durable bool) error {
 	return t.writeParquetCols(path, rows, nil, durable)
 }
 
-// cols == nil writes every column; otherwise the file carries only those, which
-// is how a column-partial delta stores a change as it arrived.
+// writeParquetCols writes a whole slice at once. cols == nil writes every
+// column; otherwise the file carries only those, which is how a column-partial
+// delta stores a change as it arrived.
+//
+// Row groups are bounded regardless of how much is handed over, because a row
+// group is the smallest unit Parquet can decode and therefore the upper bound
+// on the cost of fetching one row for carry-forward. See parquetWriter.
 func (t *Table) writeParquetCols(path string, rows []map[string]any,
 	cols []string, durable bool,
 ) error {
-	if cols == nil {
-		cols = t.Order
-	}
-	schema := t.arrowSchemaFor(cols)
-
-	f, err := os.Create(path)
+	w, err := t.newParquetWriter(path, cols, durable)
 	if err != nil {
 		return err
 	}
-	defer f.Close()
-
-	codec := compress.Codecs.Snappy
-	if durable {
-		codec = compress.Codecs.Zstd
-	}
-	props := parquet.NewWriterProperties(
-		parquet.WithCompression(codec),
-		// Bounded row groups. The smallest unit Parquet can decode is a row
-		// group, so this is the upper bound on the cost of fetching one row for
-		// carry-forward; with the library default the base file is one group and
-		// that fetch costs a full-table decode.
-		parquet.WithMaxRowGroupLength(RowGroupRows),
-	)
-	w, err := pqarrow.NewFileWriter(schema, f, props, pqarrow.DefaultWriterProps())
-	if err != nil {
+	if err := w.Append(rows); err != nil {
+		w.Close()
 		return err
 	}
-
-	// Build and write ONE row group at a time. Building a single record for the
-	// whole table meant a snapshot or compaction of a few million wide rows held
-	// the entire thing as Arrow buffers before a byte was written — the 5.9 GB
-	// peak RSS in docs/18. Chunking bounds it to one row group regardless of how
-	// large the table is.
-	chunk := int(RowGroupRows)
-	for start := 0; start < len(rows); start += chunk {
-		end := start + chunk
-		if end > len(rows) {
-			end = len(rows)
-		}
-		bld := array.NewRecordBuilder(memory.DefaultAllocator, schema)
-		for _, r := range rows[start:end] {
-			for i, name := range cols {
-				appendValue(bld.Field(i), schema.Field(i).Type, r[name])
-			}
-		}
-		rec := bld.NewRecord()
-		err := w.Write(rec)
-		rec.Release()
-		bld.Release()
-		if err != nil {
-			return err
-		}
-	}
-	// An empty table still needs a valid file with a footer, which Close writes.
 	return w.Close()
 }
 
@@ -838,16 +858,20 @@ func appendValue(b array.Builder, dt arrow.DataType, v any) {
 	}
 }
 
-// extendDeletionVectors marks row positions dead in each base file. This is the
-// work query time does NOT do — the whole point of the docs/11 correction.
-// extendDeletionVectors marks the previous rows for the given keys dead,
-// wherever they physically live, using the in-memory index.
+// markDead marks the previous rows for the given keys dead, wherever they
+// physically live. This is the work query time does NOT do — the whole point of
+// the docs/11 correction.
 //
-// This replaces two O(table) costs that ran on every single batch: a full JSON
+// It replaces two O(table) costs that ran on every single batch: a full JSON
 // parse of the base index, and a read-and-rewrite of every delta file. Both
 // scaled with the mirror rather than with the change, which is why apply
 // throughput collapsed as the table grew (docs/18). Marking a position dead is
 // O(1) per key, and the file it lives in is never rewritten.
+//
+// Each call publishes a NEW deletion-vector generation rather than overwriting
+// the one a reader may be holding; see State.DVGen. The generation two back is
+// removed, which leaves any reader a full write cycle of grace and turns the
+// remaining case into a retry rather than a wrong answer.
 func (t *Table) markDead(byFile map[string][]int) error {
 	for rel, positions := range byFile {
 		existing, err := t.deadPositions(rel)
@@ -862,12 +886,22 @@ func (t *Table) markDead(byFile map[string][]int) error {
 			merged = append(merged, p)
 		}
 		sort.Ints(merged)
-		// writeJSON, not os.WriteFile: this is a deletion vector, and a
-		// compactor on another goroutine reads it while we write. A truncate-
-		// then-write leaves a window where it parses as nothing, and "nothing
-		// is dead" undoes every delete in the file.
-		if err := writeJSON(t.dvPath(rel), merged); err != nil {
+
+		stem := dvStem(rel)
+		gen := t.State.DVGen[stem] + 1
+		// writeJSON, not os.WriteFile: a new generation is still a file another
+		// goroutine may open the instant it appears, and a truncate-then-write
+		// leaves a window where it parses as nothing — which reads as "nothing
+		// is dead" and undoes every delete in the file.
+		if err := writeJSON(t.dvPathGen(rel, gen), merged); err != nil {
 			return err
+		}
+		if t.State.DVGen == nil {
+			t.State.DVGen = map[string]int{}
+		}
+		t.State.DVGen[stem] = gen
+		if gen > 2 {
+			_ = os.Remove(t.dvPathGen(rel, gen-2))
 		}
 	}
 	return nil
@@ -882,7 +916,7 @@ func (t *Table) truncate() error {
 	}
 	t.State.BaseFiles, t.State.DeltaFiles = nil, nil
 	t.State.BaseRows, t.State.DeltaRows = 0, 0
-	t.State.PartialCols, t.State.FileRows = nil, nil
+	t.State.PartialCols, t.State.FileRows, t.State.DVGen = nil, nil, nil
 	t.index, t.patch = nil, nil
 	return nil
 }
@@ -1033,8 +1067,7 @@ func (t *Table) mergeGroup(old []string, cols []string) (int, error) {
 	if len(rows) == 0 {
 		// everything in them was superseded; just drop the files
 		for _, d := range old {
-			_ = os.Remove(filepath.Join(t.Dir, "delta", d))
-			_ = os.Remove(t.dvPath(filepath.Join("delta", d)))
+			t.removeDataFile(filepath.Join("delta", d))
 			t.forgetDeltaFile(d)
 		}
 		t.State.DeltaFiles = kept
@@ -1074,8 +1107,7 @@ func (t *Table) mergeGroup(old []string, cols []string) (int, error) {
 		return 0, err
 	}
 	for _, d := range old {
-		_ = os.Remove(filepath.Join(t.Dir, "delta", d))
-		_ = os.Remove(t.dvPath(filepath.Join("delta", d)))
+		t.removeDataFile(filepath.Join("delta", d))
 	}
 	return len(rows), nil
 }

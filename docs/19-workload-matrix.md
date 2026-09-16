@@ -23,21 +23,30 @@ in the first round it never caught up at all.
 
 | shape | what it is | bootstrap | ingest | p50 | p99 | storage | CPU/change | RSS | correct |
 |---|---|---|---|---|---|---|---|---|---|
-| **narrow** | 4 cols, insert-only | 195k rows/s | **125k/s** | 206 ms | 4.0 s | 3.1× | 25 µs | 4 GB | ✅ |
-| **wide** | 12 cols, insert-only | 98k rows/s | **68k/s** | 207 ms | 2.3 s | 3.3× | 44 µs | 5 GB | ✅ |
-| **jsonb** | 6 KB doc/row, scalar UPDATEs | 17k rows/s | **162k/s** | 207 ms | 2.0 s | **3.2×** | **15 µs** | 3 GB | ✅ |
-| **churn** | UPDATEs on a hot 1% | 195k rows/s | 57k/s *(source-limited)* | 207 ms | **223 ms** | **15.2×** | **9 µs** | **74 MB** | ✅ |
-| **deletes** | inserts + deletes 1:1 | 195k rows/s | **242k/s** | 207 ms | **1.8 s** | 4.1× | 11 µs | 5 GB | ✅ |
+| **narrow** | 4 cols, insert-only | 195k rows/s | **104k/s** | 207 ms | 1.1 s | 3.3× | — | — | ✅ |
+| **wide** | 12 cols, insert-only | 98k rows/s | **65k/s** | 208 ms | 3.1 s | 2.7× | 52 µs | **1 GB** | ✅ |
+| **jsonb** | 6 KB doc/row, scalar UPDATEs | 15k rows/s | **159k/s** | 207 ms | **708 ms** | **3.1×** | **16 µs** | **560 MB** | ✅ |
+| **churn** | UPDATEs on a hot 1% | 195k rows/s | 55k/s *(source-limited)* | 207 ms | **225 ms** | **14.8×** | **9 µs** | **65 MB** | ✅ |
+| **deletes** | inserts + deletes 1:1 | 195k rows/s | **223k/s** | 208 ms | 2.1 s | 4.1× | 13 µs | 3 GB | ✅ |
 
-Four rounds, ingest and p99:
+Five rounds, ingest and p99:
 
-| shape | round 1 | round 2 | round 3 | round 4 |
-|---|---|---|---|---|
-| narrow | 119k/s · 6.2 s | 132k/s · 9.0 s | 129k/s · 4.9 s | **125k/s · 4.0 s** |
-| wide | 67k/s · 224 ms | 69k/s · 5.9 s | 73k/s · 803 ms | **68k/s · 2.3 s** |
-| jsonb | never converged | 84k/s · 486 ms | 84k/s · 348 ms | **162k/s · 2.0 s** |
-| churn | 59k/s · 234 ms | 59k/s · 217 ms | 59k/s · 223 ms | **57k/s · 223 ms** |
-| deletes | 167k/s · 7.6 s | 240k/s · 7.5 s | 256k/s · 1.9 s | **242k/s · 1.8 s** |
+| shape | round 1 | round 2 | round 3 | round 4 | round 5 |
+|---|---|---|---|---|---|
+| narrow | 119k/s · 6.2 s | 132k/s · 9.0 s | 129k/s · 4.9 s | 125k/s · 4.0 s | **104k/s · 1.1 s** |
+| wide | 67k/s · 224 ms | 69k/s · 5.9 s | 73k/s · 803 ms | 68k/s · 2.3 s | **65k/s · 3.1 s** |
+| jsonb | never converged | 84k/s · 486 ms | 84k/s · 348 ms | 162k/s · 2.0 s | **159k/s · 708 ms** |
+| churn | 59k/s · 234 ms | 59k/s · 217 ms | 59k/s · 223 ms | 57k/s · 223 ms | **55k/s · 225 ms** |
+| deletes | 167k/s · 7.6 s | 240k/s · 7.5 s | 256k/s · 1.9 s | 242k/s · 1.8 s | **223k/s · 2.1 s** |
+
+Resident memory, which round five is mostly about:
+
+| shape | round 4 | round 5 |
+|---|---|---|
+| wide | 5 GB | **1 GB** |
+| jsonb | 3 GB | **560 MB** |
+| deletes | 5 GB | **3 GB** |
+| churn | 74 MB | **65 MB** |
 
 Two things in that table are worth reading twice.
 
@@ -125,6 +134,8 @@ same harness.
 | **Streaming Parquet writes** | jsonb RSS 7 GB → 5 GB | none measurable |
 | **Column-partial deltas** | jsonb drain **86k → 173k/s**, mirror **2 GB → 330 MB**, CPU **23 → 13 µs/change** | a second index (key → patch); the read path merges; applies only to tables with a TOASTed column |
 | **Derived `DeltaRows`** (from per-file counts) | the compaction trigger stopped drifting | a per-file row count in `state.json` |
+| **Streaming compaction and bootstrap** (row group at a time) | RSS: wide **5 GB → 1 GB**, jsonb **3 GB → 560 MB** | a few percent of ingest on insert-heavy shapes, within run-to-run spread |
+| **Generation-numbered deletion vectors** | an independent reader can no longer be short a row; 1-in-7 failures → 10/10 passes | one extra small file per data file, reclaimed after one write |
 
 The row-group sweep is worth calling out as a *negative* result that saved
 effort: RSS was identical at 64k, 8k and 2k rows per group. The memory was never
@@ -356,26 +367,96 @@ It is now derived: `FileRows` records the row count of each delta file, and
 `DeltaRows` is recomputed from the files that actually exist. Cheap — there are
 at most a couple of dozen delta files by construction — and it cannot drift.
 
+## Round five: streaming the rewrite, and a reader that was quietly wrong
+
+Two items from round four's list, and the bug that the second one's benchmark
+turned up.
+
+### Compaction no longer holds the table in memory
+
+The writer had already been made to emit one row group at a time. The *reader*
+had not: a rewrite read every live row into a `[]map[string]any` before writing
+a byte, which on the narrow shape is four million Go maps. That is where the
+resident memory went, and it is not only memory — allocating and collecting
+millions of maps is garbage-collector work, and a GC pause stops the apply
+goroutine exactly as it stops the compactor.
+
+Reading row group by row group, straight into the new file, took wide from 5 GB
+to 1 GB and jsonb from 3 GB to 560 MB. `Snapshot` got the same treatment, since
+it held the whole *source* table before writing it.
+
+Three of the five p99 numbers came down with it (narrow 4.0 s → 1.1 s, jsonb
+2.0 s → 708 ms, deletes unchanged within noise), which is consistent with GC
+pressure having been part of that tail — but read the p99 caveat above before
+believing any single one of those. Ingest is a few percent lower on the
+insert-heavy shapes, which may be the per-row-group overhead of the streaming
+reader or may be run-to-run variance; it is smaller than the spread between
+repeated runs, so this document does not claim it either way.
+
+### The bug: a reader that was short exactly one row
+
+On the run that measured all this, the churn shape came back DIVERGED, missing
+one row out of 200,063 — the settle marker. Every previous round had passed it.
+
+Everything on disk was correct. The marker was in `delta/000116`, alive, with no
+deletion vector. The mirror's `state.json` named that file. And the verifier had
+still failed to see it.
+
+The verifier had printed `applied_lsn=10/665780B0`; the mirror's state said
+`10/66578168`. It had loaded the manifest one batch too early — which should be
+harmless, because an older manifest is still a valid older snapshot. It was not
+harmless, because **deletion vectors were overwritten in place**:
+
+1. the reader loads `state.json`, naming files up to `delta/000115`
+2. the writer marks the marker's old copy dead in `dv/000115`, writes the
+   replacement to `delta/000116`, and saves the manifest
+3. the reader reads `dv/000115` — and gets the *new* vector
+
+The row is now dead in a file the reader can see and alive only in a file the
+reader's manifest does not mention. It is in neither place. A manifest and the
+vectors it named were two different points in time, so "an older snapshot" was
+not a snapshot at all.
+
+The fix is that a deletion vector is never modified. Each write publishes a new
+generation, `state.json` records which generation belongs to each file, and a
+manifest therefore describes a complete, immutable set. Old generations are kept
+for one further write and then reclaimed; a reader holding a manifest older than
+that gets `ErrStaleManifest` and re-reads, which is the same distinction this
+package has now had to make four times — **"I cannot tell" must never be spelled
+as an answer.**
+
+It reproduced about once in seven benchmark runs before the fix, and ten out of
+ten runs pass after it. The regression test drives it deterministically: an
+independent reader opens the mirror, the writer supersedes a row, and the reader
+must come back with either value for that row but never with 99 rows out of 100.
+Pointing `deadPositions` back at the newest vector on disk makes it fail with
+exactly the production symptom.
+
+This is the most important finding in this document, because of what it is
+*about*. The mirror exists to be read by something other than the process
+writing it. Every previous bug here was in the writer and showed up as a wrong
+mirror; this one was in the *contract between writer and reader*, and the mirror
+was right the whole time.
+
 ## What to do next, in order of measured value
 
-1. **Compaction materialises the entire table as Go maps.** This is where the
-   4–7 GB of RSS on every growing shape comes from, and it is now the most
-   likely source of the remaining multi-second p99 as well: one `map[string]any`
-   per row for several million rows is enormous garbage-collector pressure, and
-   GC pauses stop the apply goroutine too. The writer already streams a row
-   group at a time; the *reader* does not. Reading row group by row group would
-   bound the rewrite's memory to one group regardless of table size.
-2. **The same is true of bootstrap.** `Snapshot` holds the whole source table in
-   memory before writing it, which is most of why the jsonb shape bootstraps at
-   17k rows/s against 195k for narrow.
-3. **Drop large values the mirror can see are unchanged**, rather than only the
-   ones pgoutput omits (see round four above). Needs a per-row hash; widens the
-   round-four win to tables whose large column is sent on every update.
-4. **Bound carry-forward with a cache of recently-written rows.** Still lower
-   priority than it looked: the profile says reads are not where the time goes,
-   and column-partial deltas removed most of the carry-forward reads anyway.
+1. **`deletes` still holds 3 GB.** Streaming the rewrite took the other shapes
+   to well under a gigabyte; this one did not follow, and nothing has been
+   profiled to say why. A heap profile is one command and has settled three
+   arguments in this project already.
+2. **Drop large values the mirror can see are unchanged**, rather than only the
+   ones pgoutput omits (see round four). Needs a per-row hash of the large
+   columns; widens the round-four win to `REPLICA IDENTITY FULL` tables and to
+   values just under the TOAST threshold.
+3. **Bootstrap is still 15k rows/s on jsonb against 195k on narrow.** Streaming
+   it removed the memory but not the time, so the cost is in the source query or
+   in compressing 1 GB of documents, and those are distinguishable by
+   measurement rather than argument.
+4. **Bound carry-forward with a cache of recently-written rows.** Lower priority
+   than it ever looked: the profile says reads are not where the time goes, and
+   column-partial deltas removed most of the carry-forward reads anyway.
 
 Still not on the list: parallel decode. PostgreSQL's decoder caps around
 186k rows/s, which is above every ingest number here except the ones already
 limited by how fast the source can write — and the jsonb shape has now crossed
-into that territory at 162k/s, so it is closer to being the ceiling than it was.
+into that territory, so it is closer to being the ceiling than it was.
