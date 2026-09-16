@@ -27,6 +27,20 @@ import (
 // column list wins and missing columns come back nil, so old files NULL-fill
 // rather than erroring.
 func (t *Table) readParquet(path string, dead map[int]bool) ([]map[string]any, error) {
+	return t.readParquetCols(path, dead, nil)
+}
+
+// readParquetCols reads only the named columns. cols == nil means the table's
+// full column list, with absent columns filled as PostgreSQL would read them.
+//
+// A column-partial delta is read with its OWN column list and no filling: a
+// column it does not carry is one the change never touched, which is not the
+// same statement as NULL and must not be turned into one.
+func (t *Table) readParquetCols(path string, dead map[int]bool, cols []string) ([]map[string]any, error) {
+	want, fill := cols, false
+	if want == nil {
+		want, fill = t.Order, true
+	}
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, err
@@ -59,10 +73,13 @@ func (t *Table) readParquet(path string, dead map[int]bool) ([]map[string]any, e
 		if dead[row] {
 			continue
 		}
-		m := make(map[string]any, len(t.Order))
-		for _, name := range t.Order {
+		m := make(map[string]any, len(want))
+		for _, name := range want {
 			ci, ok := present[name]
 			if !ok {
+				if !fill {
+					continue
+				}
 				// This file predates an ADD COLUMN. NULL is right only when the
 				// column was added without a default; otherwise PostgreSQL
 				// reads these rows back as attmissingval and so must we.
@@ -115,33 +132,12 @@ func arrayValue(a arrow.Array, i int) any {
 // vectors, plus the deltas.
 func (t *Table) Live() ([]map[string]any, error) {
 	var out []map[string]any
-	// Deltas are no longer rewritten when a row in them is superseded, so they
-	// carry deletion vectors exactly as base files do. Reading a delta without
-	// its vector would resurrect every superseded row.
-	read := func(rel string) error {
-		dead, derr := t.deadPositions(rel)
-		if derr != nil {
-			return derr
-		}
-		rows, err := t.readParquet(filepath.Join(t.Dir, rel), dead)
-		if err != nil {
-			if os.IsNotExist(err) {
-				return ErrStaleManifest
-			}
-			return err
-		}
-		out = append(out, rows...)
+	err := t.ForEachLive(func(r map[string]any) error {
+		out = append(out, r)
 		return nil
-	}
-	for _, base := range t.State.BaseFiles {
-		if err := read(filepath.Join("base", base)); err != nil {
-			return nil, err
-		}
-	}
-	for _, d := range t.State.DeltaFiles {
-		if err := read(filepath.Join("delta", d)); err != nil {
-			return nil, err
-		}
+	})
+	if err != nil {
+		return nil, err
 	}
 	return out, nil
 }
@@ -207,7 +203,7 @@ func (t *Table) Reload() error {
 		return err
 	}
 	t.State = st
-	t.index = nil
+	t.index, t.patch = nil, nil
 	return nil
 }
 
@@ -243,7 +239,21 @@ func (t *Table) ReadLiveWithRetry(reset func(), fn func(map[string]any) error) e
 // verification tool that cannot run at the size it is verifying is worse than
 // none: it turns "too big to check" into "wrong".
 func (t *Table) ForEachLive(fn func(map[string]any) error) error {
+	// Patches are folded in first, then merged onto the whole rows as those
+	// stream past. A patch always stands on a row in a BASE file (partial.go),
+	// so this is one pass over small files plus one pass over the table — not a
+	// seek into a delta per row, which would cost a row group every time.
+	overlay, err := t.patchOverlay()
+	if err != nil {
+		return err
+	}
 	visit := func(rel string) error {
+		// Deltas are no longer rewritten when a row in them is superseded, so
+		// they carry deletion vectors exactly as base files do. Reading a delta
+		// without its vector would resurrect every superseded row.
+		if t.partialColsOf(rel) != nil {
+			return nil // already in the overlay; not rows in their own right
+		}
 		dead, derr := t.deadPositions(rel)
 		if derr != nil {
 			return derr
@@ -256,6 +266,11 @@ func (t *Table) ForEachLive(fn func(map[string]any) error) error {
 			return err
 		}
 		for _, r := range rows {
+			if overlay != nil {
+				if p, ok := overlay[keyString(r[t.Key])]; ok {
+					applyPatch(r, p)
+				}
+			}
 			if err := fn(r); err != nil {
 				return err
 			}

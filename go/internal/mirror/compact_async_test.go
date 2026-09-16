@@ -53,6 +53,7 @@ func testCompactionRaces(t *testing.T, partial bool) {
 			var lastCompaction *Compaction
 			deletedAt := map[string]int{}
 			swapAt := []int{}
+			patchedDuringRewrite := false
 			want := map[string]map[string]any{}
 			lsn := 0
 
@@ -158,6 +159,9 @@ func testCompactionRaces(t *testing.T, partial bool) {
 				if len(changes) > 0 {
 					apply(changes)
 				}
+				if len(tbl.patch) > 0 && tbl.Compacting() {
+					patchedDuringRewrite = true
+				}
 
 				// swap in a finished rewrite, exactly as the apply loop does
 				if tbl.Compacting() {
@@ -193,6 +197,14 @@ func testCompactionRaces(t *testing.T, partial bool) {
 				if _, err := tbl.FinishCompaction(); err != nil {
 					t.Fatalf("FinishCompaction: %v", err)
 				}
+			}
+
+			// The partial variant exists to drive column-partial deltas through
+			// the swap. If none was ever written during a rewrite it is running
+			// the whole-row path twice and proving half of what it claims.
+			if partial && PartialDeltas && !patchedDuringRewrite {
+				t.Fatal("no column-partial delta was written while a rewrite " +
+					"was in flight")
 			}
 
 			got := map[string]map[string]any{}

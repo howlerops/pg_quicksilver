@@ -61,6 +61,18 @@ type State struct {
 	BaseRows  int `json:"base_rows"`
 	DeltaRows int `json:"delta_rows"`
 
+	// PartialCols names, per delta file, the columns that file's rows carry
+	// when it holds PATCHES rather than whole rows. A file absent from this map
+	// holds whole rows. See partial.go.
+	PartialCols map[string][]string `json:"partial_cols,omitempty"`
+
+	// FileRows is the row count of each delta file. DeltaRows is recomputed
+	// from it rather than accumulated, because the running total drifted every
+	// time a merge or a compaction swap removed files it had already counted —
+	// and DeltaRows is the compaction trigger, so drift there is a mirror that
+	// either rewrites constantly or never.
+	FileRows map[string]int `json:"file_rows,omitempty"`
+
 	// Halted, when set, is why this mirror stopped and must not be served.
 	// It is durable on purpose: a halt that lives only in a running process is
 	// undone by the next restart, which re-reads the catalog, sees the new
@@ -94,6 +106,12 @@ type Table struct {
 	// docs/18. Held in memory it is built once per process and updated in place.
 	index map[string]loc
 
+	// patch maps key -> the newest PARTIAL row for that key, which stands on
+	// top of the whole row index points at. Empty unless column-partial deltas
+	// are in use; at most one entry per key, and only ever pointing into a
+	// delta file. See partial.go.
+	patch map[string]loc
+
 	// compacting is the rewrite currently in flight, if any. Only the apply
 	// goroutine touches this field.
 	compacting *Compaction
@@ -126,6 +144,7 @@ func (t *Table) ensureIndex() error {
 		return nil
 	}
 	t.index = make(map[string]loc)
+	t.patch = make(map[string]loc)
 
 	for _, base := range t.State.BaseFiles {
 		rel := filepath.Join("base", base)
@@ -154,24 +173,37 @@ func (t *Table) ensureIndex() error {
 
 	for _, d := range t.State.DeltaFiles {
 		rel := filepath.Join("delta", d)
-		rows, err := t.readParquet(filepath.Join(t.Dir, rel), nil)
+		partial := t.State.PartialCols[d]
+		rows, err := t.readParquetCols(filepath.Join(t.Dir, rel), nil, partial)
 		if err != nil {
 			if os.IsNotExist(err) {
 				continue
 			}
 			return err
 		}
+		// A mirror written before FileRows existed has no count for this file,
+		// and DeltaRows is derived from those counts. Filling it in from the
+		// read we are doing anyway is the difference between a mirror that
+		// compacts and one that never reaches the trigger again.
+		if _, known := t.State.FileRows[d]; !known {
+			t.noteDeltaFile(d, len(rows), nil)
+		}
 		dead, derr := t.deadPositions(rel)
 		if derr != nil {
 			return derr
+		}
+		target := t.index
+		if partial != nil {
+			target = t.patch
 		}
 		for i, r := range rows {
 			if dead[i] {
 				continue
 			}
-			t.index[keyString(r[t.Key])] = loc{File: rel, Pos: i}
+			target[keyString(r[t.Key])] = loc{File: rel, Pos: i}
 		}
 	}
+	t.recountDeltaRows()
 	return nil
 }
 
@@ -261,9 +293,11 @@ func (t *Table) Halted() string { return t.State.Halted }
 // ArrowSchema maps declared Postgres types to a FIXED Arrow schema. Inferring
 // per batch makes an all-NULL column null-typed, so schemas drift between delta
 // files and the union read path breaks (found by the Python reference).
-func (t *Table) ArrowSchema() *arrow.Schema {
-	fields := make([]arrow.Field, 0, len(t.Order))
-	for _, name := range t.Order {
+func (t *Table) ArrowSchema() *arrow.Schema { return t.arrowSchemaFor(t.Order) }
+
+func (t *Table) arrowSchemaFor(cols []string) *arrow.Schema {
+	fields := make([]arrow.Field, 0, len(cols))
+	for _, name := range cols {
 		fields = append(fields, arrow.Field{
 			Name: name, Type: arrowType(t.Columns[name]), Nullable: true,
 		})
@@ -360,50 +394,94 @@ func (t *Table) Apply(txns []changestream.Transaction) (ApplyStats, error) {
 		last = txn.CommitLSN
 	}
 
+	// Which of these changes can be stored as they arrived, as a patch on the
+	// row already in the base file, and which have to be expanded into whole
+	// rows. Decided before carry-forward, because carry-forward is the expansion.
+	asPatch, err := t.classifyPartial(upserts)
+	if err != nil {
+		return ApplyStats{}, err
+	}
+
 	// Carry forward anything pgoutput did not resend. A large value that an
 	// update did not change arrives as "unchanged TOAST" — the column is simply
 	// absent — and writing NULL for it destroys the data with no error and no
 	// change in row count. Absent means "keep what is there".
-	if err := t.carryForward(upserts); err != nil {
+	if err := t.carryForward(upserts, asPatch); err != nil {
 		return ApplyStats{}, err
 	}
 
-	// an update supersedes the old row: tombstone in base, re-insert in delta
+	// Tombstones, in two kinds. A whole-row write supersedes both the row the
+	// mirror holds and any patch standing on it. A PATCH supersedes only the
+	// previous patch — the row underneath stays alive, exactly where it is,
+	// which is the entire point: the large column nobody touched is not
+	// rewritten.
 	superseded := make(map[string]bool, len(upserts)+len(deletes))
+	patchDead := make(map[string]bool, len(upserts)+len(deletes))
 	for k := range upserts {
-		superseded[k] = true
+		patchDead[k] = true
+		if !asPatch[k] {
+			superseded[k] = true
+		}
 	}
 	for k := range deletes {
 		superseded[k] = true
+		patchDead[k] = true
 	}
 
 	// Tell an in-flight rewrite which keys moved out from under it. Its own
 	// index is correct for everything else, which is what lets the swap be
 	// O(changed) rather than O(table).
+	//
+	// A PATCH is deliberately not reported. The whole row did not move: the
+	// rewrite folds in the pre-patch version, the patch lands in a delta
+	// outside the rewrite's snapshot and therefore survives the swap, and the
+	// read path puts the two back together. Reporting it would make the swap
+	// mark the rewrite's own copy dead and then point the index at a file it
+	// is about to delete.
 	if t.compacting != nil {
-		for k := range superseded {
+		for k := range upserts {
+			if !asPatch[k] {
+				t.compacting.touched[k] = true
+			}
+		}
+		for k := range deletes {
 			t.compacting.touched[k] = true
 		}
 	}
 
-	if len(superseded) > 0 {
-		if err := t.extendDeletionVectors(superseded); err != nil {
+	if len(superseded) > 0 || len(patchDead) > 0 {
+		if err := t.ensureIndex(); err != nil {
+			return ApplyStats{}, err
+		}
+		byFile := map[string][]int{}
+		for k := range superseded {
+			if l, ok := t.index[k]; ok {
+				byFile[l.File] = append(byFile[l.File], l.Pos)
+			}
+		}
+		for k := range patchDead {
+			if l, ok := t.patch[k]; ok {
+				byFile[l.File] = append(byFile[l.File], l.Pos)
+			}
+		}
+		if err := t.markDead(byFile); err != nil {
 			return ApplyStats{}, err
 		}
 		// A deleted key has no current location. Leaving it in the index would
 		// make a later re-insert of the same key tombstone the wrong row.
 		for k := range deletes {
 			delete(t.index, k)
+			delete(t.patch, k)
+		}
+		// A whole row replaces whatever patch stood on the old one.
+		for k := range upserts {
+			if !asPatch[k] {
+				delete(t.patch, k)
+			}
 		}
 	}
 	if len(upserts) > 0 {
-		rows := make([]map[string]any, 0, len(upserts))
-		for _, k := range order {
-			if r, ok := upserts[k]; ok {
-				rows = append(rows, r)
-			}
-		}
-		if err := t.writeDelta(rows); err != nil {
+		if err := t.writeUpserts(order, upserts, asPatch); err != nil {
 			return ApplyStats{}, err
 		}
 	}
@@ -418,15 +496,15 @@ func (t *Table) Apply(txns []changestream.Transaction) (ApplyStats, error) {
 // carryForward fills columns that a change did not carry, from the row the
 // mirror already holds.
 //
-// Batched by file and projected to the missing columns only. Doing it per row
-// would mean a Parquet decode per update, and doing it without projection would
-// mean decoding the whole row group for a column nobody asked about — either
-// way it would reintroduce the per-batch table scan that docs/18 removed.
-func (t *Table) carryForward(upserts map[string]map[string]any) error {
+// skip names the keys that will be written as PATCHES, and therefore must not
+// be expanded at all: leaving their columns absent is exactly what keeps the
+// large value they never touched out of the file. Everything else is filled in,
+// because a whole-row write that left a column absent would write NULL over it.
+func (t *Table) carryForward(upserts map[string]map[string]any, skip map[string]bool) error {
 	// which keys are short, and which columns each one needs
 	needCols := map[string][]string{}
 	for k, row := range upserts {
-		if len(row) == len(t.Order) {
+		if skip[k] || len(row) == len(t.Order) {
 			continue
 		}
 		var missing []string
@@ -446,14 +524,60 @@ func (t *Table) carryForward(upserts map[string]map[string]any) error {
 		return err
 	}
 
+	// A column's newest value may be in a PATCH rather than in the row the
+	// index points at, and the row underneath still holds the stale one. So
+	// patches are read first, and only what they do not supply is read from
+	// the whole row.
+	fromPatch := map[string][]string{}
+	fromRow := map[string][]string{}
+	for k, missing := range needCols {
+		rest := missing
+		if p, ok := t.patch[k]; ok {
+			pc := t.partialColsOf(p.File)
+			var want, left []string
+			for _, c := range missing {
+				if containsStr(pc, c) {
+					want = append(want, c)
+				} else {
+					left = append(left, c)
+				}
+			}
+			if len(want) > 0 {
+				fromPatch[k] = want
+			}
+			rest = left
+		}
+		if len(rest) > 0 {
+			fromRow[k] = rest
+		}
+	}
+
+	if err := t.fetchInto(upserts, fromPatch, t.patch); err != nil {
+		return err
+	}
+	return t.fetchInto(upserts, fromRow, t.index)
+}
+
+// fetchInto reads the named columns for the named keys out of wherever `where`
+// says they live, batched by file and projected to the columns actually wanted.
+//
+// Per row it would mean a Parquet decode per update; without the projection it
+// would mean decoding a whole row group for a column nobody asked about. Either
+// way it would reintroduce the per-batch table scan that docs/18 removed.
+func (t *Table) fetchInto(upserts map[string]map[string]any,
+	need map[string][]string, where map[string]loc,
+) error {
+	if len(need) == 0 {
+		return nil
+	}
 	type req struct {
 		positions []int
 		cols      map[string]bool
 		keyAt     map[int]string
 	}
 	byFile := map[string]*req{}
-	for k, missing := range needCols {
-		l, ok := t.index[k]
+	for k := range need {
+		l, ok := where[k]
 		if !ok {
 			// No prior row: this is a genuine insert whose columns really are
 			// absent, so NULL is the right answer.
@@ -466,7 +590,7 @@ func (t *Table) carryForward(upserts map[string]map[string]any) error {
 		}
 		r.positions = append(r.positions, l.Pos)
 		r.keyAt[l.Pos] = k
-		for _, c := range missing {
+		for _, c := range need[k] {
 			r.cols[c] = true
 		}
 	}
@@ -484,7 +608,7 @@ func (t *Table) carryForward(upserts map[string]map[string]any) error {
 		for pos, prior := range got {
 			k := r.keyAt[pos]
 			row := upserts[k]
-			for _, c := range needCols[k] {
+			for _, c := range need[k] {
 				if v, ok := prior[c]; ok {
 					row[c] = v
 				}
@@ -505,14 +629,56 @@ func keyString(v any) string {
 	}
 }
 
-func (t *Table) writeDelta(rows []map[string]any) error {
+// writeUpserts lands a batch: the whole rows in one file, and each distinct
+// partial column shape in one file of its own.
+func (t *Table) writeUpserts(order []string, upserts map[string]map[string]any,
+	asPatch map[string]bool,
+) error {
+	var full []map[string]any
+	groups := map[string][]map[string]any{}
+	groupCols := map[string][]string{}
+	var groupOrder []string
+	for _, k := range order {
+		r, ok := upserts[k]
+		if !ok {
+			continue
+		}
+		if !asPatch[k] {
+			full = append(full, r)
+			continue
+		}
+		sig, cols := colSignature(r, t.Order)
+		if _, seen := groups[sig]; !seen {
+			groupOrder = append(groupOrder, sig)
+			groupCols[sig] = cols
+		}
+		groups[sig] = append(groups[sig], r)
+	}
+
+	if len(full) > 0 {
+		if err := t.writeDelta(full, nil); err != nil {
+			return err
+		}
+	}
+	for _, sig := range groupOrder {
+		if err := t.writeDelta(groups[sig], groupCols[sig]); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// writeDelta appends one delta file. cols == nil means whole rows; otherwise
+// the file holds patches carrying exactly those columns.
+func (t *Table) writeDelta(rows []map[string]any, cols []string) error {
 	t.State.Seq++
 	name := fmt.Sprintf("%06d.parquet", t.State.Seq)
-	if err := t.writeParquetCodec(filepath.Join(t.Dir, "delta", name), rows, false); err != nil {
+	if err := t.writeParquetCols(filepath.Join(t.Dir, "delta", name), rows, cols, false); err != nil {
 		return err
 	}
 	t.State.DeltaFiles = append(t.State.DeltaFiles, name)
-	t.State.DeltaRows += len(rows)
+	t.noteDeltaFile(name, len(rows), cols)
+	t.recountDeltaRows()
 
 	// The new rows are now the current location for their keys. Updating the
 	// index here rather than rebuilding it is what keeps apply O(change).
@@ -520,8 +686,12 @@ func (t *Table) writeDelta(rows []map[string]any) error {
 		return err
 	}
 	rel := filepath.Join("delta", name)
+	target := t.index
+	if cols != nil {
+		target = t.patch
+	}
 	for i, r := range rows {
-		t.index[keyString(r[t.Key])] = loc{File: rel, Pos: i}
+		target[keyString(r[t.Key])] = loc{File: rel, Pos: i}
 	}
 	return nil
 }
@@ -538,7 +708,18 @@ func (t *Table) writeDelta(rows []map[string]any) error {
 // touched — into a new delta, and zstd re-compresses it every time. 2.4M
 // updates in 10 seconds is ~8 GB of unchanged document re-compressed.
 func (t *Table) writeParquetCodec(path string, rows []map[string]any, durable bool) error {
-	schema := t.ArrowSchema()
+	return t.writeParquetCols(path, rows, nil, durable)
+}
+
+// cols == nil writes every column; otherwise the file carries only those, which
+// is how a column-partial delta stores a change as it arrived.
+func (t *Table) writeParquetCols(path string, rows []map[string]any,
+	cols []string, durable bool,
+) error {
+	if cols == nil {
+		cols = t.Order
+	}
+	schema := t.arrowSchemaFor(cols)
 
 	f, err := os.Create(path)
 	if err != nil {
@@ -576,7 +757,7 @@ func (t *Table) writeParquetCodec(path string, rows []map[string]any, durable bo
 		}
 		bld := array.NewRecordBuilder(memory.DefaultAllocator, schema)
 		for _, r := range rows[start:end] {
-			for i, name := range t.Order {
+			for i, name := range cols {
 				appendValue(bld.Field(i), schema.Field(i).Type, r[name])
 			}
 		}
@@ -667,16 +848,7 @@ func appendValue(b array.Builder, dt arrow.DataType, v any) {
 // scaled with the mirror rather than with the change, which is why apply
 // throughput collapsed as the table grew (docs/18). Marking a position dead is
 // O(1) per key, and the file it lives in is never rewritten.
-func (t *Table) extendDeletionVectors(keys map[string]bool) error {
-	if err := t.ensureIndex(); err != nil {
-		return err
-	}
-	byFile := map[string][]int{}
-	for k := range keys {
-		if l, ok := t.index[k]; ok {
-			byFile[l.File] = append(byFile[l.File], l.Pos)
-		}
-	}
+func (t *Table) markDead(byFile map[string][]int) error {
 	for rel, positions := range byFile {
 		existing, err := t.deadPositions(rel)
 		if err != nil {
@@ -710,7 +882,8 @@ func (t *Table) truncate() error {
 	}
 	t.State.BaseFiles, t.State.DeltaFiles = nil, nil
 	t.State.BaseRows, t.State.DeltaRows = 0, 0
-	t.index = nil
+	t.State.PartialCols, t.State.FileRows = nil, nil
+	t.index, t.patch = nil, nil
 	return nil
 }
 
@@ -740,6 +913,8 @@ func (t *Table) Compact() (int, error) {
 
 	index := make(map[string]int, len(rows))
 	t.index = make(map[string]loc, len(rows))
+	// Every patch has just been folded into the whole rows above.
+	t.patch = map[string]loc{}
 	rel := filepath.Join("base", name)
 	for i, r := range rows {
 		k := keyString(r[t.Key])
@@ -790,6 +965,10 @@ func (t *Table) ShouldMergeDeltas() bool {
 // vectors. Cost is proportional to the rows in the deltas, not to the table, so
 // it can run often — which is what keeps the read path's file count bounded
 // without paying for a full base rewrite.
+// Files of DIFFERENT column shapes are merged separately: a whole-row delta and
+// a patch delta cannot be folded into one file, because that would mean
+// inventing a value for a column the patch never carried, and absent is not
+// NULL. In practice a table has one or two shapes, so this is one or two merges.
 func (t *Table) MergeDeltas() (int, error) {
 	mergeable := t.mergeableDeltas()
 	if len(mergeable) < 2 {
@@ -798,12 +977,40 @@ func (t *Table) MergeDeltas() (int, error) {
 	if err := t.ensureIndex(); err != nil {
 		return 0, err
 	}
-	old := append([]string(nil), mergeable...)
-	// deltas a rewrite is reading stay exactly where they are, and stay first
-	var pinned []string
+	groups := map[string][]string{}
+	var groupOrder []string
+	for _, d := range mergeable {
+		sig := strings.Join(t.State.PartialCols[d], "\x00")
+		if _, seen := groups[sig]; !seen {
+			groupOrder = append(groupOrder, sig)
+		}
+		groups[sig] = append(groups[sig], d)
+	}
+	total := 0
+	for _, sig := range groupOrder {
+		n, err := t.mergeGroup(groups[sig], t.State.PartialCols[groups[sig][0]])
+		if err != nil {
+			return total, err
+		}
+		total += n
+	}
+	return total, nil
+}
+
+// mergeGroup folds delta files that share a column shape into one.
+//
+// Cost is proportional to the rows in those files, not to the table, so it can
+// run often — which is what keeps the read path's file count bounded without
+// paying for a full base rewrite.
+func (t *Table) mergeGroup(old []string, cols []string) (int, error) {
+	if len(old) < 2 {
+		return 0, nil
+	}
+	// everything not being merged stays exactly where it is, in order
+	var kept []string
 	for _, d := range t.State.DeltaFiles {
 		if !contains(old, d) {
-			pinned = append(pinned, d)
+			kept = append(kept, d)
 		}
 	}
 
@@ -814,7 +1021,7 @@ func (t *Table) MergeDeltas() (int, error) {
 		if derr != nil {
 			return 0, derr
 		}
-		got, err := t.readParquet(filepath.Join(t.Dir, rel), dead)
+		got, err := t.readParquetCols(filepath.Join(t.Dir, rel), dead, cols)
 		if err != nil {
 			if os.IsNotExist(err) {
 				continue
@@ -828,30 +1035,41 @@ func (t *Table) MergeDeltas() (int, error) {
 		for _, d := range old {
 			_ = os.Remove(filepath.Join(t.Dir, "delta", d))
 			_ = os.Remove(t.dvPath(filepath.Join("delta", d)))
+			t.forgetDeltaFile(d)
 		}
-		t.State.DeltaFiles = pinned
-		t.State.DeltaRows = 0
+		t.State.DeltaFiles = kept
+		t.recountDeltaRows()
 		return 0, t.saveState()
 	}
 
 	t.State.Seq++
 	name := fmt.Sprintf("%06d.parquet", t.State.Seq)
 	rel := filepath.Join("delta", name)
-	if err := t.writeParquetCodec(filepath.Join(t.Dir, rel), rows, false); err != nil {
+	if err := t.writeParquetCols(filepath.Join(t.Dir, rel), rows, cols, false); err != nil {
 		return 0, err
 	}
 	// The new file is written before the old ones are removed and before the
 	// state names it, so a crash at any point leaves a readable mirror.
+	target := t.index
+	if cols != nil {
+		target = t.patch
+	}
 	for i, r := range rows {
 		k := keyString(r[t.Key])
-		t.index[k] = loc{File: rel, Pos: i}
-		// A merge moves keys too, and a rewrite in flight has to know.
-		if t.compacting != nil {
+		target[k] = loc{File: rel, Pos: i}
+		// A merge moves keys too, and a rewrite in flight has to know. Patches
+		// never move during a rewrite (they only exist inside its snapshot,
+		// which mergeableDeltas excludes), so this is a whole-row question.
+		if t.compacting != nil && cols == nil {
 			t.compacting.touched[k] = true
 		}
 	}
-	t.State.DeltaFiles = append(append([]string(nil), pinned...), name)
-	t.State.DeltaRows = len(rows)
+	for _, d := range old {
+		t.forgetDeltaFile(d)
+	}
+	t.State.DeltaFiles = append(append([]string(nil), kept...), name)
+	t.noteDeltaFile(name, len(rows), cols)
+	t.recountDeltaRows()
 	if err := t.saveState(); err != nil {
 		return 0, err
 	}

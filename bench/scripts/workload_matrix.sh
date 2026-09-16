@@ -83,6 +83,7 @@ go -C go build -o /tmp/qs-matrix ./cmd/qs-matrix || skip "build failed"
 go -C go build -o /tmp/qs-verify ./cmd/qs-verify || skip "build failed"
 chmod 755 /tmp/qs-mirror /tmp/qs-matrix /tmp/qs-verify
 echo "  primary 5443, standby 5444, ${ROWS} rows/shape, ${SECONDS_PER}s workload, row_group=${ROW_GROUP:-65536}"
+echo "  column-partial deltas: ${QS_PARTIAL_DELTAS:-1} (0 writes every update as a whole row)"
 
 for SHAPE in $SHAPES; do
   say "shape: $SHAPE"
@@ -102,6 +103,7 @@ for SHAPE in $SHAPES; do
     QS_LOCAL_SOCKET_DIR=/tmp QS_LOCAL_PORT=5444 \
     QS_DATABASE=$DB QS_PGUSER=postgres QS_POD_NAME=mx-2 \
     QS_ROW_GROUP=${ROW_GROUP:-65536} ${QS_DEBUG_ADDR:+QS_DEBUG_ADDR=$QS_DEBUG_ADDR} \
+    QS_PARTIAL_DELTAS=${QS_PARTIAL_DELTAS:-1} \
     QS_HEALTH_ADDR=$HEALTH /tmp/qs-mirror" > $BASE/mx-$SHAPE.log 2>&1 &
   sleep 1
   MPID=$(pgrep -x qs-mirror | head -1)

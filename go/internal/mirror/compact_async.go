@@ -55,8 +55,6 @@ type Compaction struct {
 	// what makes the swap O(changed) instead of O(table): the rewrite's own
 	// index is correct for every key EXCEPT these.
 	touched map[string]bool
-
-	deltaRowsAtStart int
 }
 
 // Touch records that a key moved or was deleted during a rewrite. Called from
@@ -88,12 +86,11 @@ func (t *Table) BeginCompaction() *Compaction {
 	}
 	t.State.Seq++
 	c := &Compaction{
-		Started:          time.Now(),
-		files:            map[string]bool{},
-		name:             fmt.Sprintf("%06d.parquet", t.State.Seq),
-		done:             make(chan struct{}),
-		touched:          map[string]bool{},
-		deltaRowsAtStart: t.State.DeltaRows,
+		Started: time.Now(),
+		files:   map[string]bool{},
+		name:    fmt.Sprintf("%06d.parquet", t.State.Seq),
+		done:    make(chan struct{}),
+		touched: map[string]bool{},
 	}
 	for _, b := range t.State.BaseFiles {
 		c.files[filepath.Join("base", b)] = true
@@ -106,23 +103,33 @@ func (t *Table) BeginCompaction() *Compaction {
 	}
 
 	// The file list is captured; everything below reads immutable files.
+	// The column shapes are captured too, and not read through t.State: the
+	// apply goroutine adds an entry to that map on every batch that writes a
+	// patch, and reading it from here would be a genuine data race.
 	snapshot := make([]string, 0, len(c.files))
+	pcols := map[string][]string{}
 	for f := range c.files {
 		snapshot = append(snapshot, f)
+		if pc := t.partialColsOf(f); pc != nil {
+			pcols[f] = pc
+		}
 	}
+	// base/... sorts before delta/..., and delta names are a zero-padded
+	// sequence, so this is base first and then deltas oldest to newest.
 	sort.Strings(snapshot)
 
 	t.compacting = c
 	go func() {
 		defer close(c.done)
 		var rows []map[string]any
+		var overlay map[string]map[string]any
 		for _, rel := range snapshot {
 			dead, derr := t.deadPositions(rel)
 			if derr != nil {
 				c.err = derr
 				return
 			}
-			got, err := t.readParquet(filepath.Join(t.Dir, rel), dead)
+			got, err := t.readParquetCols(filepath.Join(t.Dir, rel), dead, pcols[rel])
 			if err != nil {
 				if os.IsNotExist(err) {
 					continue
@@ -130,7 +137,24 @@ func (t *Table) BeginCompaction() *Compaction {
 				c.err = err
 				return
 			}
+			if pcols[rel] != nil {
+				// A patch file contributes no rows of its own; it amends rows
+				// that came from the base file. A rewrite is where patches stop
+				// being patches — the file it writes holds whole rows again.
+				if overlay == nil {
+					overlay = make(map[string]map[string]any, len(got))
+				}
+				for _, r := range got {
+					overlay[keyString(r[t.Key])] = r
+				}
+				continue
+			}
 			rows = append(rows, got...)
+		}
+		for _, r := range rows {
+			if p, ok := overlay[keyString(r[t.Key])]; ok {
+				applyPatch(r, p)
+			}
 		}
 		// Build the new index and find rows superseded within the rewrite
 		// itself. The same key can appear twice: the apply loop supersedes a row
@@ -271,6 +295,8 @@ func (t *Table) FinishCompaction() (int, error) {
 	for _, d := range t.State.DeltaFiles {
 		if !c.files[filepath.Join("delta", d)] {
 			keptDeltas = append(keptDeltas, d)
+		} else {
+			t.forgetDeltaFile(d)
 		}
 	}
 	oldFiles := make([]string, 0, len(c.files))
@@ -278,13 +304,23 @@ func (t *Table) FinishCompaction() (int, error) {
 		oldFiles = append(oldFiles, f)
 	}
 
+	// Every patch the rewrite folded in lived in a file it is about to delete,
+	// and its value is now part of the whole row in the new base. No patches
+	// can have been created since (canPatch refuses while a rewrite is in
+	// flight), so this empties the map — but it is written as a filter, because
+	// "it should be empty" is how the last three silent-corruption bugs in this
+	// package were reasoned into existence.
+	for k, p := range t.patch {
+		if c.files[p.File] {
+			delete(t.patch, k)
+		}
+	}
+
 	t.index = c.index // O(1): the rewrite built it
 	t.State.BaseFiles = []string{c.name}
 	t.State.DeltaFiles = keptDeltas
 	t.State.BaseRows = c.rowCount - len(dead)
-	if t.State.DeltaRows -= c.deltaRowsAtStart; t.State.DeltaRows < 0 {
-		t.State.DeltaRows = 0
-	}
+	t.recountDeltaRows()
 
 	// State last, then the old files. A crash before this leaves the old set
 	// intact and the new base as an orphan; a crash after leaves the new set.

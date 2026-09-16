@@ -23,41 +23,44 @@ in the first round it never caught up at all.
 
 | shape | what it is | bootstrap | ingest | p50 | p99 | storage | CPU/change | RSS | correct |
 |---|---|---|---|---|---|---|---|---|---|
-| **narrow** | 4 cols, insert-only | 195k rows/s | **129k/s** | 207 ms | 4.9 s | 3.3× | 26 µs | 4 GB | ✅ |
-| **wide** | 12 cols, insert-only | 98k rows/s | **73k/s** | 206 ms | **803 ms** | 2.7× | 38 µs | 5 GB | ✅ |
-| **jsonb** | 6 KB doc/row, scalar UPDATEs | 17k rows/s | **84k/s** | 206 ms | **348 ms** | **0.6×** | 24 µs | 5 GB | ✅ |
-| **churn** | UPDATEs on a hot 1% | 194k rows/s | 59k/s *(source-limited)* | 206 ms | **223 ms** | **15.6×** | **9 µs** | **66 MB** | ✅ |
-| **deletes** | inserts + deletes 1:1 | 195k rows/s | **256k/s** | 206 ms | **1.9 s** | 4.1× | 11 µs | 5 GB | ✅ |
+| **narrow** | 4 cols, insert-only | 195k rows/s | **125k/s** | 206 ms | 4.0 s | 3.1× | 25 µs | 4 GB | ✅ |
+| **wide** | 12 cols, insert-only | 98k rows/s | **68k/s** | 207 ms | 2.3 s | 3.3× | 44 µs | 5 GB | ✅ |
+| **jsonb** | 6 KB doc/row, scalar UPDATEs | 17k rows/s | **162k/s** | 207 ms | 2.0 s | **3.2×** | **15 µs** | 3 GB | ✅ |
+| **churn** | UPDATEs on a hot 1% | 195k rows/s | 57k/s *(source-limited)* | 207 ms | **223 ms** | **15.2×** | **9 µs** | **74 MB** | ✅ |
+| **deletes** | inserts + deletes 1:1 | 195k rows/s | **242k/s** | 207 ms | **1.8 s** | 4.1× | 11 µs | 5 GB | ✅ |
 
-Three rounds, ingest and p99:
+Four rounds, ingest and p99:
 
-| shape | round 1 | round 2 | round 3 |
-|---|---|---|---|
-| narrow | 119k/s · 6.2 s | 132k/s · 9.0 s | **129k/s · 4.9 s** |
-| wide | 67k/s · 224 ms | 69k/s · 5.9 s | **73k/s · 803 ms** |
-| jsonb | never converged | 84k/s · 486 ms | **84k/s · 348 ms** |
-| churn | 59k/s · 234 ms | 59k/s · 217 ms | **59k/s · 223 ms** |
-| deletes | 167k/s · 7.6 s | 240k/s · 7.5 s | **256k/s · 1.9 s** |
+| shape | round 1 | round 2 | round 3 | round 4 |
+|---|---|---|---|---|
+| narrow | 119k/s · 6.2 s | 132k/s · 9.0 s | 129k/s · 4.9 s | **125k/s · 4.0 s** |
+| wide | 67k/s · 224 ms | 69k/s · 5.9 s | 73k/s · 803 ms | **68k/s · 2.3 s** |
+| jsonb | never converged | 84k/s · 486 ms | 84k/s · 348 ms | **162k/s · 2.0 s** |
+| churn | 59k/s · 234 ms | 59k/s · 217 ms | 59k/s · 223 ms | **57k/s · 223 ms** |
+| deletes | 167k/s · 7.6 s | 240k/s · 7.5 s | 256k/s · 1.9 s | **242k/s · 1.8 s** |
 
 Two things in that table are worth reading twice.
 
-**jsonb storage is 0.6× — the mirror is BIGGER than the source.** That is a real
-cost of the fix below, and of the shape: every UPDATE writes a complete copy of
-the row, including the 3.3 KB document it did not touch, into a delta compressed
-with Snappy rather than zstd. Until compaction folds those away the mirror
-carries many copies of each document. A columnar mirror of a document table is
-not a storage win; it is a query win paid for with space.
+**jsonb storage went from 0.6× to 3.2×.** For three rounds the mirror of the
+document table was *larger than the PostgreSQL table it mirrored*, because every
+UPDATE wrote a complete copy of the row — including the 3.3 KB document it never
+touched — into a delta. Round four stopped doing that; the mechanism is below.
+Ingest on that shape roughly doubled at the same time, which is the same fact
+seen from the other end: those bytes were being compressed and written on the
+critical path.
 
-**The p99 tail moved, and not uniformly.** wide went 224 ms → 5.9 s between
-rounds while jsonb went from unmeasurable to 486 ms. The tail is now the
-compaction *swap*, which walks every row of the new base on the apply goroutine,
-so it tracks how many rows a shape has accumulated rather than anything about
-the shape itself. It is the top item in "what to do next" for that reason.
+**The p99 column is the least trustworthy number in this document, and should
+be read as an order of magnitude.** It is the worst of 60 commit-to-visible
+samples in a 12-second window, and across four runs of the *same* code the wide
+shape has measured 803 ms, 2.3 s, 4.0 s and 4.8 s. Only differences of several
+times over are worth anything here; the p50, the storage ratio, the CPU per
+change and the ingest rate are all stable to within a few percent run to run.
 
 ### churn is the best case, by a wide margin
 
-Updates concentrated on a hot 1% of rows cost **9 µs of CPU per change, 84 MB of
-RSS, and compress 15.3×**. Every other shape is 30–70× heavier on memory. The
+Updates concentrated on a hot 1% of rows cost **9 µs of CPU per change, under
+100 MB of RSS, and compress ~15×**. Every other shape is 30–70× heavier on
+memory. The
 reason is that the mirror is a key-addressed store: re-updating the same key
 replaces a row rather than adding one, so the working set — index, deltas,
 everything — stays the size of the table rather than the size of the traffic.
@@ -96,6 +99,12 @@ delta, so the new base legitimately held almost nothing. **Under heavy churn a
 background rewrite finishes stale**, which is a property of the policy, not a
 bug, and it is why merging has to be allowed to proceed alongside one.
 
+It also turned out to matter for round four. The first version of column-partial
+deltas required the row a patch stands on to be in a *base* file, which sounded
+conservative; on this shape `base_rows` was 200 against 200,102 rows in deltas,
+so almost every update was refused and the optimisation did not happen at all.
+The measurement that caught it was a single `state.json`, not a benchmark number.
+
 ---
 
 ## What each change bought
@@ -112,6 +121,10 @@ same harness.
 | **TOAST carry-forward** | stopped silently destroying every large unchanged column | a point read per update; smaller than it looked, see round two |
 | **Row-group size 64k → 8k** | drain **78k → 98k/s** on jsonb | none measurable on storage or scans at this size |
 | **Bootstrap gate on readiness** | a node with no data stops reporting ready | none |
+| **O(changed) compaction swap** | p99: narrow 9.0 s → 4.9 s, wide 5.9 s → 803 ms | the rewrite must be told which keys moved; DDL aborts a rewrite |
+| **Streaming Parquet writes** | jsonb RSS 7 GB → 5 GB | none measurable |
+| **Column-partial deltas** | jsonb drain **86k → 173k/s**, mirror **2 GB → 330 MB**, CPU **23 → 13 µs/change** | a second index (key → patch); the read path merges; applies only to tables with a TOASTed column |
+| **Derived `DeltaRows`** (from per-file counts) | the compaction trigger stopped drifting | a per-file row count in `state.json` |
 
 The row-group sweep is worth calling out as a *negative* result that saved
 effort: RSS was identical at 64k, 8k and 2k rows per group. The memory was never
@@ -260,25 +273,109 @@ load-bearing rather than defensive. This is the same shape as every other bug
 this project has found, one level down: an unreadable answer treated as a
 negative answer.
 
+## Round four: a delta that stores the change, not the row
+
+The top-ranked item from round three, implemented and priced.
+
+Until now every change was written as a **whole row**. pgoutput does not resend
+a large value an UPDATE did not touch — it omits the column entirely — so the
+mirror read the old value back out of itself (`carryForward`) and wrote it
+again. For the jsonb shape that meant re-compressing a 3.3 KB document on every
+update to a status field.
+
+A **column-partial delta** stores the change as it arrived: only the columns the
+change carried. The row it supersedes stays exactly where it is, alive, and the
+read path merges the two. Three invariants keep this from becoming a chain of
+patches, which is what would make reads unbounded:
+
+- a patch stands on a **whole row**, never on another patch;
+- a key has **at most one** live patch, and a second partial update may only
+  replace it if it carries at least the same columns;
+- anything that does not fit falls back to the previous behaviour — carry
+  forward and write the row whole.
+
+### What it bought
+
+Same box, same workload, back to back, the flag being the only difference
+(`QS_PARTIAL_DELTAS=0` writes every update as a whole row):
+
+| jsonb, 200k rows, 12 s workload | whole rows | column-partial | |
+|---|---|---|---|
+| drain rate | 86,432/s | **173,404/s** | 2.0× |
+| time to drain after the workload | 21.9 s | **4.6 s** | 4.8× |
+| mirror size | 2 GB (0.6×) | **330 MB (3.2×)** | 6× smaller |
+| sidecar CPU | 68.8 s (23 µs/change) | **37.9 s (13 µs/change)** | 1.8× |
+| peak RSS | 5 GB | **3 GB** | |
+| correctness | MATCH | MATCH | |
+
+The end state of the two runs says the same thing more plainly than the rates
+do. Writing whole rows, the mirror finished with `base_rows: 200` and
+`delta_rows: 399,882` — compaction never caught up, because every rewrite was
+moving documents. Writing patches, it finished with `base_rows: 200,046` and
+`delta_rows: 79`: fully compacted, with time to spare.
+
+### The other four shapes did not move, and that is the result
+
+narrow, wide, churn and deletes are all within run-to-run noise of the whole-row
+baseline, and a poll of `state.json` every 500 ms through a full matrix run says
+exactly why:
+
+```
+  jsonb     max partial files 15 (max delta files 21)
+  narrow    max partial files 0
+  wide      max partial files 0
+  churn     max partial files 0
+  deletes   max partial files 0
+```
+
+Not one partial delta was written outside the jsonb shape. **The only reason a
+column is ever missing from a change is that PostgreSQL stored it out of line
+and the UPDATE did not touch it.** Everything else — every narrow column, every
+small text field, every timestamp — is sent on every update whether it changed
+or not. So this optimisation is precisely a TOAST optimisation, it applies to
+exactly the tables that have a large column, and on those tables it is worth
+roughly a factor of two in throughput and six in space.
+
+That is a useful thing to know in both directions. It also means the obvious
+extension — having the mirror *itself* decide to drop a large value it can see
+is unchanged, rather than waiting for pgoutput to omit it — would widen the
+benefit to `REPLICA IDENTITY FULL` tables and to values just under the TOAST
+threshold. It needs a per-row hash of the large columns to avoid the read it is
+trying to avoid, and it is not implemented.
+
+### The bookkeeping bug found on the way
+
+`DeltaRows` drives the compaction trigger, and it was a running total: merges
+set it to what they wrote, and a compaction swap subtracted what it had folded.
+Both are approximations, and they drift — a swap subtracts a count taken when
+the rewrite *began*, so every merge that ran meanwhile is double-counted. The
+trigger that decides whether to rewrite a multi-million-row table was therefore
+a number nobody was reconciling.
+
+It is now derived: `FileRows` records the row count of each delta file, and
+`DeltaRows` is recomputed from the files that actually exist. Cheap — there are
+at most a couple of dozen delta files by construction — and it cannot drift.
+
 ## What to do next, in order of measured value
 
-1. **Stop rewriting unchanged large columns into deltas.** Now the largest single
-   item. It is where the jsonb shape's time and its space both go — the mirror
-   is 0.6× its source because every UPDATE copies a 3.3 KB document it did not
-   touch. A delta holding only the columns an update carried would cut both;
-   carry-forward already knows which those are, and the read path would have to
-   merge partial rows, which is the real work.
-2. **The remaining tail is the compaction READ, not the swap.** narrow is still
-   4.9 s p99 while wide is 803 ms, and the swap is now O(changed) in both. What
-   is left is the rewrite itself competing for CPU and I/O on a 4-vCPU box.
-   Rate-limiting it, or writing it incrementally, is the next lever.
-3. **Bound carry-forward with a cache of recently-written rows.** Still lower
-   priority than it looked: the profile says reads are not where the time goes.
+1. **Compaction materialises the entire table as Go maps.** This is where the
+   4–7 GB of RSS on every growing shape comes from, and it is now the most
+   likely source of the remaining multi-second p99 as well: one `map[string]any`
+   per row for several million rows is enormous garbage-collector pressure, and
+   GC pauses stop the apply goroutine too. The writer already streams a row
+   group at a time; the *reader* does not. Reading row group by row group would
+   bound the rewrite's memory to one group regardless of table size.
+2. **The same is true of bootstrap.** `Snapshot` holds the whole source table in
+   memory before writing it, which is most of why the jsonb shape bootstraps at
+   17k rows/s against 195k for narrow.
+3. **Drop large values the mirror can see are unchanged**, rather than only the
+   ones pgoutput omits (see round four above). Needs a per-row hash; widens the
+   round-four win to tables whose large column is sent on every update.
+4. **Bound carry-forward with a cache of recently-written rows.** Still lower
+   priority than it looked: the profile says reads are not where the time goes,
+   and column-partial deltas removed most of the carry-forward reads anyway.
 
 Still not on the list: parallel decode. PostgreSQL's decoder caps around
 186k rows/s, which is above every ingest number here except the ones already
-limited by how fast the source can write.
-
-Not on this list, deliberately: parallel decode. PostgreSQL's decoder is the
-ceiling there, and at 186k rows/s it is above every ingest number in the matrix
-except the ones that are already source-limited.
+limited by how fast the source can write — and the jsonb shape has now crossed
+into that territory at 162k/s, so it is closer to being the ceiling than it was.
