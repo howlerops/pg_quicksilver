@@ -1,0 +1,38 @@
+=== MERGE BOUNDED (8) ===
+=== shape: narrow ===
+  drained       27.8s -> 99602 row-changes/s through the mirror
+  storage       source 416 MB / mirror 176 MB -> 2.4x smaller (4,163,337 live rows)
+  wrote         233 MB to storage (62 B/row-change)
+  slow ticks    27 over 200ms; worst:
+                  total_ms=5112 apply_ms=4698 finish_compaction_ms=406 is_primary_ms=7
+                  total_ms=3879 apply_ms=3866 head_lsn_ms=12
+                  total_ms=3055 apply_ms=3050 head_lsn_ms=2 is_primary_ms=2
+  correctness   MATCH (mirror 4163338 rows (checksum 7cdcfd72850ec3f3))
+=== shape: wide ===
+  drained       20.3s -> 48604 row-changes/s through the mirror
+  storage       source 319 MB / mirror 123 MB -> 2.6x smaller (1,770,262 live rows)
+  wrote         195 MB to storage (130 B/row-change)
+  slow ticks    11 over 200ms; worst:
+                  total_ms=10006 apply_ms=9997 head_lsn_ms=7 is_primary_ms=1
+                  total_ms=5471 apply_ms=5229 finish_compaction_ms=238 is_primary_ms=3
+                  total_ms=3637 merge_during_compaction_ms=3631 apply_ms=5
+  correctness   MATCH (mirror 1770263 rows (checksum e43af9f3d403b546))
+=== MERGE UNBOUNDED ===
+=== shape: narrow ===
+  drained       30.7s -> 85339 row-changes/s through the mirror
+  storage       source 384 MB / mirror 164 MB -> 2.3x smaller (3,845,867 live rows)
+  wrote         218 MB to storage (63 B/row-change)
+  slow ticks    25 over 200ms; worst:
+                  total_ms=7490 apply_ms=7357 finish_compaction_ms=119 is_primary_ms=13
+                  total_ms=3211 apply_ms=3132 is_primary_ms=78
+                  total_ms=2777 apply_ms=2143 finish_compaction_ms=633
+  correctness   MATCH (mirror 3845868 rows (checksum d1fff5df71687f0a))
+=== shape: wide ===
+  drained       22.8s -> 58198 row-changes/s through the mirror
+  storage       source 401 MB / mirror 148 MB -> 2.7x smaller (2,227,288 live rows)
+  wrote         224 MB to storage (116 B/row-change)
+  slow ticks    14 over 200ms; worst:
+                  total_ms=8012 apply_ms=8000 is_primary_ms=8 head_lsn_ms=3
+                  total_ms=6079 merge_during_compaction_ms=6073 apply_ms=4
+                  total_ms=4067 apply_ms=4067
+  correctness   MATCH (mirror 2227289 rows (checksum abed9a5e80012d1b))
