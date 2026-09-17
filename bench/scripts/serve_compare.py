@@ -138,6 +138,25 @@ QUERIES = {
 }
 
 
+
+# The mirror is only a drop-in for a read replica if the same SQL means the same
+# thing, and ORDER BY does not by default: PostgreSQL sorts NULLs last on ASC
+# and FIRST on DESC, DuckDB sorts them last on both. docs/20 says a reader must
+# pin this; a benchmark that did not pin it would be measuring a configuration
+# the documentation tells nobody to use.
+NULL_ORDER = "NULLS_LAST_ON_ASC_FIRST_ON_DESC"
+
+
+def duck_connect(view_sql=None):
+    """A DuckDB connection configured the way docs/20 tells readers to."""
+    con = duckdb.connect()
+    con.execute(f"SET default_null_order = '{NULL_ORDER}'")
+    if view_sql is not None:
+        con.execute(f"CREATE VIEW qs AS {view_sql}")
+    return con
+
+
+
 def check_null_ordering(pg, duck, table):
     """Report, rather than trip over, the one incompatibility this found.
 
@@ -159,6 +178,17 @@ def check_null_ordering(pg, duck, table):
     same = pg_order == duck_order
     print(f"  ORDER BY x DESC:  postgres {pg_order}   duckdb {duck_order}"
           f"   {'same' if same else 'DIFFERENT — NULL placement'}")
+    if not same:
+        # This used to be a standing report of a known difference, printed on
+        # every run forever. It is now an assertion, because the connection was
+        # opened with default_null_order set to what docs/20 tells readers to
+        # use -- so a difference here means that setting no longer does what it
+        # claims, which is a mirror that silently answers ORDER BY differently
+        # from the source.
+        print(f"  FAIL: default_null_order = '{NULL_ORDER}' did not reproduce "
+              f"PostgreSQL's ordering. docs/20 tells readers to set this; if it "
+              f"no longer works, the mirror answers ORDER BY over a nullable "
+              f"column differently from the source and nothing says so.")
     return same
 
 
@@ -331,8 +361,7 @@ def main():
     header, view_sql = out.stdout.split("\n", 1)
     print(f"  {header.strip()}")
 
-    duck = duckdb.connect()
-    duck.execute(f"CREATE VIEW qs AS {view_sql}")
+    duck = duck_connect(view_sql)
     pg = CONNECT(args.dsn)
 
     # A row-count agreement check before any timing. If the two sides do not
@@ -346,7 +375,7 @@ def main():
         sys.exit(f"  MISMATCH: source has {pg_n} rows, mirror view has {duck_n}. "
                  f"Nothing below would mean anything.")
     print(f"  both sides hold {pg_n:,} rows")
-    check_null_ordering(pg, duck, args.table)
+    null_order_ok = check_null_ordering(pg, duck, args.table)
     print()
     if args.cold:
         print("  COLD: shared_buffers and the page cache are emptied before "
@@ -384,8 +413,7 @@ def main():
                 # its buffer manager is as much a cache as shared_buffers.
                 duck.close()
                 drop_page_cache()
-                duck = duckdb.connect()
-                duck.execute(f"CREATE VIEW qs AS {view_sql}")
+                duck = duck_connect(view_sql)
                 b0 = disk_read_bytes()
                 qs_first, qs_med, qs_rows = timed(run_duck, 1)
                 qs_bytes = disk_read_bytes() - b0
@@ -430,6 +458,10 @@ def main():
     if failures:
         print(f"  {failures} queries did not agree — this is a correctness failure, "
               f"not a slow result")
+        sys.exit(1)
+    if not null_order_ok:
+        # Its return value used to be discarded, so the difference was printed
+        # on every run and failed none of them.
         sys.exit(1)
     print("  all queries agreed")
 

@@ -128,7 +128,7 @@ scattered (1,563,904 isolated positions)  207.7 ms
 The clustered one is marginally *slower*. Encoding for runs would have shipped a
 structure tuned to the shape of a benchmark loop.
 
-This is the same failure [docs/20](20-the-read-path.md) had with a filter that
+This is the same failure [docs/20](20-serving-the-mirror.md) had with a filter that
 matched nothing and [docs/27](27-the-pruning-that-already-works.md) had with
 DuckDB's startup cost landing on the first measured query: **the measurement
 produced a plausible number instead of an error.** Three times now. It is the
@@ -219,11 +219,52 @@ between compactions is not a mirror anybody needs.
 
 ---
 
+## Re-measured end to end
+
+[`bench/results/large_scale_20m.txt`](../bench/results/large_scale_20m.txt),
+20,458,270 rows, one base file and eight deltas, vectors on five of them:
+
+```
+query                            postgres       mirror   speedup  agree
+count(*)                         311.4 ms     269.2 ms     1.16x  yes
+date arithmetic                  497.3 ms     298.7 ms     1.67x  yes
+truncate to the hour            1125.8 ms     220.7 ms     5.10x  yes
+sum one column                   558.7 ms     232.3 ms     2.41x  yes
+group by sku top 10             3337.2 ms     755.9 ms     4.41x  yes
+filter + aggregate               603.4 ms     134.6 ms     4.48x  yes
+point lookup by key                0.3 ms      49.0 ms     0.01x  yes
+
+MATCH (mirror 20458270 rows, checksum 4636486f65f841ef)
+PASS
+```
+
+Against the run this document opens with:
+
+```
+count(*)         422.9 ms  0.72x  ->  269.2 ms  1.16x
+sum one column   743.2 ms  0.85x  ->  232.3 ms  2.41x
+```
+
+Both results that were slower than PostgreSQL are gone, on comparable data:
+1,509,100 dead positions against 1,563,904, and vectors on five files rather
+than two. The mirror is not being handed an easier problem.
+
+**This is also the first twenty-million-row run this project has verified.** The
+two before it reported `FAIL` because `qs-verify` was OOM-killed, which is worse
+than a divergence — a divergence is a finding, an unverified run is nothing at
+all. It died at 13.3 GB against a mirror weighing 120 MB, because `ForEachLive`
+called `readParquet`, which returns a whole file as a `[]map[string]any`; on a
+mirror whose base file holds the table that is 21.6 million Go maps. The row-
+group streaming already existed in the writer and the decoder, and `readParquet`
+existed only to append the groups back into one slice. `qs-verify`'s own comment
+said *both sides stream* — its accumulator did, and the thing feeding it did
+not. Peak RSS is now 170 MB and it answers.
+
 ## What is still open
 
-The trade-off is now fully specified in both directions, which it was not this
-morning. What has *not* been decided is the policy change itself, and it should
-not be decided from one shape on one machine:
+The compaction trade-off is now specified in both directions, which it was not
+this morning. What has *not* been decided is the policy change itself, and it
+should not be decided from one shape on one machine:
 
 - A second trigger on absolute dead rows is the obvious move, but the table
   above says its benefit is sublinear — going from 1.5M dead to 100k buys 62 ms
@@ -234,11 +275,12 @@ not be decided from one shape on one machine:
   is a floor to the read cost that no policy removes. The 25 ms at 1,000 dead
   positions is that floor at twenty million rows, and it is twelve times the
   footer answer.
-- None of this has been re-measured end to end. The Parquet vectors are in and
-  tested; the large-scale run has not been repeated on top of them.
+- The sidecar itself holds **2.5 GB of RSS** for a 120 MB mirror, 130 bytes per
+  live row, which is the key index. Bounded and paid for, but it is the number
+  that decides what memory limit a CNPG Pod needs, and it has not been attacked.
 
-The point lookup in the opening table — 0.3 ms against 176.0 ms — is a separate
+The point lookup — 0.3 ms against 176.0 ms before, 49.0 ms after — is a separate
 question this document does not touch. A columnar mirror losing a point lookup
-to a B-tree by five hundred times is the expected shape of the trade, and
-[docs/20](20-the-read-path.md) already says so. It is in the table because
+to a B-tree by a hundred times is the expected shape of the trade, and
+[docs/20](20-serving-the-mirror.md) already says so. It is in the table because
 leaving it out would have been the flattering choice.
