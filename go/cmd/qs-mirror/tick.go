@@ -46,10 +46,29 @@ func envDuration(key string, def time.Duration) time.Duration {
 
 // MaxTickChanges bounds how many row-changes one tick may apply.
 //
-// 50,000 is roughly a quarter-second of apply on the slowest shape measured,
-// which keeps a tick near the 200 ms interval it is supposed to fit in. Zero
-// disables the cap and restores the old unbounded behaviour for A/B.
-var maxTickChanges = int(envInt("QS_MAX_TICK_CHANGES", 50_000))
+// There is a real trade here and the first version of this got it wrong by
+// assuming there was not. Smaller batches mean more delta files, more per-batch
+// overhead and more merging, so bounding the tick is not free. Measured, drain
+// rate against the worst apply tick:
+//
+//	cap          narrow                    wide
+//	50,000        80,021/s    318 ms        52,435/s     508 ms
+//	250,000      100,931/s   6303 ms        57,490/s    5993 ms
+//	1,000,000     94,477/s   9258 ms        58,367/s   12023 ms
+//	unbounded     95,045/s  18650 ms        57,372/s   13069 ms
+//
+// 250,000 is the knee: it costs no measurable throughput against unbounded --
+// it was faster on both shapes, within run-to-run noise -- and it cuts the
+// worst stall by about three times. Going to 50,000 bounds the stall to under
+// half a second and costs 15% of the drain rate, which is the right choice only
+// for a deployment whose freshness SLO is tight enough to care.
+//
+// The stall matters because readiness gates on freshness. An eighteen-second
+// tick against the default 30s SLO is a third of the budget spent in one place
+// where nothing else in the loop can run.
+//
+// Zero disables the cap and restores the old unbounded behaviour for A/B.
+var maxTickChanges = int(envInt("QS_MAX_TICK_CHANGES", 250_000))
 
 func envInt(key string, def int64) int64 {
 	if v := os.Getenv(key); v != "" {

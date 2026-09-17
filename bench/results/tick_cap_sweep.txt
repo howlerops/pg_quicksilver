@@ -1,0 +1,32 @@
+=== CAP=250000 ===
+=== shape: narrow ===
+  drained       28.5s -> 100931 row-changes/s through the mirror
+  slow ticks    20 over 200ms; worst:
+                  total_ms=6308 apply_ms=6303 confirm_ms=2 is_primary_ms=1
+                  total_ms=5449 merge_during_compaction_ms=5445 apply_ms=2 head_lsn_ms=1
+                  total_ms=3526 apply_ms=3299 finish_compaction_ms=226
+  correctness   MATCH (mirror 4286345 rows (checksum 58e0e96445b9a))
+=== shape: wide ===
+  drained       23.4s -> 57490 row-changes/s through the mirror
+  slow ticks    17 over 200ms; worst:
+                  total_ms=6106 apply_ms=5993 finish_compaction_ms=109 head_lsn_ms=3
+                  total_ms=5248 apply_ms=5221 is_primary_ms=10 confirm_ms=2 head_lsn_ms=1
+                  total_ms=4215 apply_ms=4194 head_lsn_ms=16 confirm_ms=4
+  correctness   MATCH (mirror 2234794 rows (checksum 4b76f2d520e38a28))
+=== CAP=1000000 ===
+=== shape: narrow ===
+  drained       31.0s -> 94477 row-changes/s through the mirror
+  slow ticks    14 over 200ms; worst:
+                  total_ms=9259 apply_ms=9258
+                  total_ms=8739 apply_ms=8424 finish_compaction_ms=314
+                  total_ms=8293 apply_ms=7273 finish_compaction_ms=1018
+  correctness   MATCH (mirror 4265871 rows (checksum 50f38f0243137f05))
+=== shape: wide ===
+  drained       22.1s -> 58367 row-changes/s through the mirror
+  slow ticks    10 over 200ms; worst:
+                  total_ms=12394 apply_ms=12023 finish_compaction_ms=370
+                  total_ms=8633 apply_ms=8631 is_primary_ms=1
+                  total_ms=6303 apply_ms=6105 finish_compaction_ms=197
+  correctness   MATCH (mirror 2189781 rows (checksum 2af55b529a7696))
+
+[exited with code 0]

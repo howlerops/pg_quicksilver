@@ -186,6 +186,13 @@ Compaction is asynchronous ([docs/19](19-workload-matrix.md) round five); this
 merge is not. It happens inline on the tick, and it is the entire tail on those
 shapes.
 
+> **Answered in [docs/26](26-the-fifteen-second-tick.md), and the answer was
+> neither candidate below.** Instrumenting every phase of the apply loop showed
+> the tail is `apply` itself during catch-up — 15,528 ms on one tick, growing
+> tick over tick as the backlog outran the drain. The merge finding here is
+> still correct; it describes the steady state, which is the only window the
+> latency samples ever covered.
+
 **On the narrow shape it is not that, and I have not established what it is.**
 narrow logged no such merges in the run that reported a 1106 ms tail.
 
@@ -221,8 +228,12 @@ document is about. **Unidentified**, recorded as such.
    slice, copies it into a map keyed by column name, and the writer then reads
    it back out by column name. For a 4-column row that is most of the work.
 3. **Move the delta merge off the apply tick,** the way the rewrite already is.
-   It is a 2.3-second stall on a 200 ms loop.
-4. **Sample latency properly.** Sixty samples cannot support a p99; either take
-   enough of them or report the maximum and call it that.
-5. **Find narrow's tail.** It is not the merge, and everything above is guessing
-   until it is instrumented.
+   It is a 2.3-second stall on a 200 ms loop. (Still open — but see
+   [docs/26](26-the-fifteen-second-tick.md): apply itself was the larger stall
+   and is now bounded, which makes the merge the top one.)
+4. **Sample latency properly.** Sixty samples cannot support a p99; the tables
+   now print `n/a` rather than the maximum under a percentile's name. Still
+   open: the samples are taken *after* the drain, so they have never covered
+   the phase where the mirror behaves worst (docs/26).
+5. ~~**Find narrow's tail.**~~ — done, by instrumenting rather than guessing:
+   [docs/26](26-the-fifteen-second-tick.md).

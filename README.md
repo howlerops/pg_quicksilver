@@ -113,6 +113,7 @@ in [docs/04](docs/04-storage-and-query-engine.md).
 | 23 | [Storing an instant](docs/23-storing-an-instant.md) | Temporal columns become real Arrow timestamps: queries that previously would not parse, a value the mirror refuses rather than guesses, and a storage claim that turned out to be false |
 | 24 | [Nothing cached](docs/24-nothing-cached.md) | **The read path with an empty cache.** The point-lookup worst case is 20× warm and 1.4× cold; a published benchmark number that was measuring an empty result; and bytes off the block device per query |
 | 25 | [Where the bootstrap goes](docs/25-where-the-bootstrap-goes.md) | Two shapes, two different bottlenecks hiding behind one unit; a codec that won on every axis including the one it was supposed to lose; and two published numbers that described the harness rather than the mirror |
+| 26 | [The fifteen-second tick](docs/26-the-fifteen-second-tick.md) | Instrumenting the apply loop found a stall an order of magnitude worse than anything reported — and the fix for it cost throughput, which took two more measurements to explain |
 | — | [ADRs](docs/adr/) | Architecture decision records (template + the decisions still open) |
 
 ## The four architectures under consideration
