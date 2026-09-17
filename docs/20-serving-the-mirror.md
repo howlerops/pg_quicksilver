@@ -41,16 +41,22 @@ WITH qs_whole AS (
   SELECT "id", "sku", "amount", "ts"
     FROM read_parquet('…/delta/000012.parquet', file_row_number = true)
    WHERE file_row_number NOT IN (
-     SELECT unnest(v) FROM read_json('…/dv/000012.000000001.dv.json',
-                                     columns = {'v': 'BIGINT[]'},
-                                     format = 'unstructured'))
+     SELECT p FROM read_parquet('…/dv/000012.000000001.dv.parquet'))
 )
 SELECT …
 ```
 
-`read_parquet` and `read_json`, nothing else. Any engine with those two — DuckDB,
-DataFusion, Spark, ClickHouse — can evaluate it, and no engine needs to know
-anything about the layout.
+`read_parquet`, nothing else. Any engine with it — DuckDB, DataFusion, Spark,
+ClickHouse — can evaluate this, and no engine needs to know anything about the
+layout.
+
+Deletion vectors used to be JSON arrays here, and the change is not cosmetic:
+parsing 13 MB of decimal positions was over a third of the cost of every query
+against a file with deletes, at twenty million rows. See
+[docs/29](29-what-a-delete-costs-to-read.md). A mirror written before the change
+still has `.dv.json` on disk and the view still emits `read_json` for those,
+because a vector a reader cannot find does not raise anything — it reads as
+*nothing in this file is dead*.
 
 Two properties are worth spelling out:
 

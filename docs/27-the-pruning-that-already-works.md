@@ -29,6 +29,12 @@ columns (added in docs/23), and — where a deletion vector exists — a
 Any of those could stop a predicate reaching the scan, and then the statistics
 are irrelevant because nothing is pushed down to use them.
 
+> The semi-join reads `read_parquet` rather than `read_json` now. The table
+> below is the first sighting of why — *deletion vectors stripped* reads 1.6 MB
+> where the published view reads 24.4 MB — and it was read here only as "a
+> vector does not block pruning", which was the question being asked.
+> [docs/29](29-what-a-delete-costs-to-read.md) asks what it costs.
+
 So: measure first. `bench/scripts/pruning_check.py`, bytes off the block device,
 cold, median of three.
 
