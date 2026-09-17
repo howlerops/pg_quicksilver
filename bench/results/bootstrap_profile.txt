@@ -1,73 +1,14 @@
-
-=== infrastructure ===
-  400000 rows/shape, profiles under /tmp/bootstrap-profiles
-
+ok  	github.com/howlerops/pg_quicksilver/go/cmd/qs-mirror	0.014s
+ok  	github.com/howlerops/pg_quicksilver/go/internal/mirror	3.111s
+ok  	github.com/howlerops/pg_quicksilver/go/internal/pgtext	0.004s
+ok  	github.com/howlerops/pg_quicksilver/go/internal/plugin	0.012s
+ok  	github.com/howlerops/pg_quicksilver/go/internal/mirror	17.119s
 === shape: narrow ===
-  shape=narrow  4 columns, insert-only
-  seeded 400,000 rows in 0.7s; 34 MB heap+indexes (of which 8 KB TOAST)
   source        34M (89 B/row)
-  bootstrap     2.2s -> 185074 rows/s -> 16.5 MB/s
-  profile       /tmp/bootstrap-profiles/boot-narrow.pb.gz
-    File: qs-mirror
-    Build ID: b31c116f2ec808c50fe4bf31c5f0906e071ac0a0
-    Type: cpu
-    Time: 2026-09-17 09:04:31 UTC
-    Duration: 30s, Total samples = 1880ms ( 6.27%)
-    Showing nodes accounting for 820ms, 43.62% of 1880ms total
-    Showing top 12 nodes out of 348
-          flat  flat%   sum%        cum   cum%
-         160ms  8.51%  8.51%      300ms 15.96%  runtime.tryDeferToSpanScan
-         120ms  6.38% 14.89%      120ms  6.38%  runtime.spanClass.sizeclass (inline)
-          80ms  4.26% 19.15%       80ms  4.26%  cmpbody
-          80ms  4.26% 23.40%       80ms  4.26%  internal/runtime/maps.ctrlGroup.matchH2
-          80ms  4.26% 27.66%       80ms  4.26%  runtime.memclrNoHeapPointers
-          70ms  3.72% 31.38%       70ms  3.72%  internal/runtime/syscall/linux.Syscall6
-          50ms  2.66% 34.04%       50ms  2.66%  runtime.memmove
-          40ms  2.13% 36.17%       40ms  2.13%  github.com/apache/arrow-go/v18/internal/hashing.(*HashTable[go.shape.int32]).lookup
-          40ms  2.13% 38.30%       40ms  2.13%  internal/runtime/maps.memHashAES
-          40ms  2.13% 40.43%      230ms 12.23%  runtime.mallocgc
-          30ms  1.60% 42.02%       30ms  1.60%  github.com/apache/arrow-go/v18/internal/hashing.(*HashTable[go.shape.int32]).upsize
-          30ms  1.60% 43.62%       30ms  1.60%  github.com/apache/arrow-go/v18/internal/hashing.(*HashTable[go.shape.int64]).lookup
-    --- allocation, cumulative ---
-    File: qs-mirror
-          30ms  1.60%  1.60%     1360ms 72.34%  github.com/howlerops/pg_quicksilver/go/internal/mirror.(*Table).Snapshot
-          20ms  1.06%  2.66%      800ms 42.55%  github.com/howlerops/pg_quicksilver/go/internal/mirror.(*parquetWriter).flush
-             0     0%  2.66%      780ms 41.49%  github.com/howlerops/pg_quicksilver/go/internal/mirror.(*Table).Snapshot.func1 (inline)
-             0     0%  2.66%      780ms 41.49%  github.com/howlerops/pg_quicksilver/go/internal/mirror.(*parquetWriter).Append
-             0     0%  2.66%      390ms 20.74%  github.com/howlerops/pg_quicksilver/go/internal/mirror.appendValue
-
+  bootstrap     1.2s -> 347484 rows/s -> 30.9 MB/s
 === shape: jsonb ===
-  shape=jsonb  ~6 KB jsonb per row; UPDATEs that never touch the document
-  seeded 400,000 rows in 54.9s; 2 GB heap+indexes (of which 2 GB TOAST)
   source        1.6G (4249 B/row)
-  bootstrap     25.4s -> 15763 rows/s -> 67.0 MB/s
-  profile       /tmp/bootstrap-profiles/boot-jsonb.pb.gz
-    File: qs-mirror
-    Build ID: b31c116f2ec808c50fe4bf31c5f0906e071ac0a0
-    Type: cpu
-    Time: 2026-09-17 09:05:58 UTC
-    Duration: 30s, Total samples = 22030ms (73.43%)
-    Showing nodes accounting for 17400ms, 78.98% of 22030ms total
-    Dropped 309 nodes (cum <= 110.15ms)
-    Showing top 12 nodes out of 151
-          flat  flat%   sum%        cum   cum%
-        7740ms 35.13% 35.13%     9090ms 41.26%  github.com/klauspost/compress/zstd.(*doubleFastEncoder).Encode
-        2450ms 11.12% 46.26%     2450ms 11.12%  internal/runtime/syscall/linux.Syscall6
-        2390ms 10.85% 57.10%     2390ms 10.85%  runtime.memmove
-        1400ms  6.35% 63.46%     1400ms  6.35%  github.com/apache/arrow-go/v18/arrow/memory._memset_avx2
-         570ms  2.59% 66.05%      570ms  2.59%  runtime.futex
-         520ms  2.36% 68.41%      520ms  2.36%  github.com/klauspost/compress/zstd.hashLen (inline)
-         470ms  2.13% 70.54%      470ms  2.13%  runtime.memclrNoHeapPointers
-         450ms  2.04% 72.58%      450ms  2.04%  github.com/klauspost/compress/huff0.(*Scratch).countSimple
-         450ms  2.04% 74.63%      450ms  2.04%  github.com/klauspost/compress/zstd/internal/xxhash.writeBlocks
-         330ms  1.50% 76.12%      330ms  1.50%  github.com/klauspost/compress/zstd.matchLen
-         320ms  1.45% 77.58%      320ms  1.45%  github.com/klauspost/compress/huff0.(*bitWriter).encFourSymbols (inline)
-    --- allocation, cumulative ---
-    File: qs-mirror
-         0.03s  0.14%  0.14%     20.22s 91.78%  github.com/howlerops/pg_quicksilver/go/internal/mirror.(*Table).Snapshot
-         0.17s  0.77%  0.91%     17.11s 77.67%  github.com/howlerops/pg_quicksilver/go/internal/mirror.(*parquetWriter).flush
-             0     0%  0.91%     16.80s 76.26%  github.com/howlerops/pg_quicksilver/go/internal/mirror.(*Table).Snapshot.func1 (inline)
-             0     0%  0.91%     16.80s 76.26%  github.com/howlerops/pg_quicksilver/go/internal/mirror.(*parquetWriter).Append
-
-========================================
+  bootstrap     24.6s -> 16276 rows/s -> 69.2 MB/s
 PASS
+
+[exited with code 0]

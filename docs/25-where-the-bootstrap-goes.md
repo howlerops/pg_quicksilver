@@ -48,7 +48,15 @@ Duration: 30s, Total samples = 1880ms (6.27%)
 1.88s of CPU inside a 2.2s bootstrap: it is **saturating a single core**, not
 waiting on a disk or a socket. And 16.5 MB/s is an absurd rate for a machine
 that reads 310 MB/s cold and 7.3 GB/s warm ([docs/24](24-nothing-cached.md)).
-Nothing here is I/O. The time goes on per-row work — a `map[string]any` and two
+Nothing here is I/O.
+
+> **The attribution in the next sentence is wrong, and is left here because the
+> correction is the useful part.** It blames per-row work in the writer; removing
+> that changed nothing. Timing the parts instead found the index write — a sort
+> of 400,000 JSON keys — and removing it made this shape 88% faster. See
+> [docs/26](26-the-fifteen-second-tick.md).
+
+The time goes on per-row work — a `map[string]any` and two
 slices allocated per row, then Arrow builders appended one value at a time.
 
 ### jsonb: one core, spent on bytes
@@ -224,9 +232,9 @@ document is about. **Unidentified**, recorded as such.
    different reasons, and the snapshot is a straight-line loop: read rows,
    build maps, append, encode. Reading and encoding could be pipelined, and
    encoding could be sharded by row range.
-2. **Stop building a `map[string]any` per row.** The snapshot scans into a
-   slice, copies it into a map keyed by column name, and the writer then reads
-   it back out by column name. For a 4-column row that is most of the work.
+2. ~~**Stop building a `map[string]any` per row.**~~ — done, and it bought
+   nothing. The cost was the index write, not the map
+   ([docs/26](26-the-fifteen-second-tick.md)).
 3. **Move the delta merge off the apply tick,** the way the rewrite already is.
    It is a 2.3-second stall on a 200 ms loop. (Still open — but see
    [docs/26](26-the-fifteen-second-tick.md): apply itself was the larger stall

@@ -174,10 +174,11 @@ after    2.2s -> 185544 rows/s -> 16.5 MB/s
 ```
 
 **Nothing.** CPU during the bootstrap went from 1.88s to 1.76s, which is inside
-noise at this sample size, and the wall time did not move at all. The map was
-real per-row work and it was not enough of the per-row work to matter; what is
-left — the scan boxing every value into an `any`, the Arrow builder appends, the
-encoding — dominates it.
+noise at this sample size, and the wall time did not move at all.
+
+> **The right third was found afterwards, by splitting the bootstrap up instead
+> of guessing at it — see below.** It was not the per-row map and it was not the
+> scan. It was writing the key index.
 
 The change stays, because it is simpler and allocates less, but the honest
 record is that the optimisation this was undertaken for did not land. **The
@@ -197,6 +198,50 @@ writer, where every path has to go through it.
 
 ---
 
+---
+
+## The third that was actually there
+
+Two guesses had now missed: docs/25 blamed per-row work in the writer, and
+removing the per-row map above changed nothing. So the bootstrap was split into
+its parts and each one timed, on 400,000 narrow rows against a 2.2-second
+bootstrap.
+
+```
+query + wire, no scan            201 ms
++ scan into []any                174 ms      (the scan itself is free)
+of which ::text rendering         79 ms
+building the key index map       169 ms
+marshalling that map to JSON     511 ms
+```
+
+**The query, the wire and the scan together are a tenth of it.** The
+key → position map is nearly a third, and the marshal dominates that for a
+reason that is invisible until you look: `encoding/json` **sorts map keys**, so
+writing the index is a sort of 400,000 strings. It also costs 6.2 MB on disk per
+base file.
+
+And what that file holds is *"the key at row i"* — for a file whose row i holds
+that key in its key column. It is a cache of the data sitting next to it.
+`ensureIndex` already had a path to rebuild it, kept for truncated writes; that
+path is now the only one, and the snapshot writes nothing.
+
+The rebuild had its own defect. It passed `nil` for the column list, which means
+*every column* — on the jsonb shape, decoding a 6 KB document per row to learn
+its id. It asks for the key column alone now, which is the entire point of a
+column store.
+
+```
+              before                          after
+narrow    2.2s -> 185,074 rows/s, 16.5 MB/s   1.2s -> 347,484 rows/s, 30.9 MB/s
+jsonb    25.4s ->  15,763 rows/s, 67.0 MB/s  24.6s ->  16,276 rows/s, 69.2 MB/s
+```
+
+**narrow bootstraps 88% faster.** jsonb moves 3%, which is the confirmation
+rather than a disappointment: that shape is codec-bound (41% inside zstd), so
+the index was never its problem, and a change that helped it too would have
+meant the diagnosis was wrong again.
+
 ## What to do next
 
 1. **Actually move the merge off the tick,** rather than bounding it. Bounding
@@ -208,10 +253,9 @@ writer, where every path has to go through it.
 3. **`head_lsn` is a second round trip per tick.** Cheaper than the connection
    was, and still a query per tick to ask a question that changes on its own
    schedule.
-4. **Find what bootstrap's per-row cost actually is.** Removing the map was a
-   reasoned guess and it bought nothing; the remaining candidates are the scan
-   boxing every value into an `any` and the Arrow builder appends, and neither
-   has been measured on its own.
+4. ~~**Find what bootstrap's per-row cost actually is.**~~ — done, by timing
+   the parts rather than guessing at them. See *The third that was actually
+   there*, below.
 5. **Repeat the throughput runs.** Several conclusions in this document rest on
    single runs of a benchmark whose drain rate varies by 20% between identical
    builds. That is enough to see a 6-second stall become 3.6; it is not enough
