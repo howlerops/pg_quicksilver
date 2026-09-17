@@ -68,11 +68,45 @@ func main() {
 	// usable if the reader can decide whether it is fresh enough.
 	fmt.Printf("-- quicksilver mirror %s applied_lsn=%s\n", t.Qualified, t.State.AppliedLSN)
 	if *view != "" {
+		// -view emits statements to run, so it emits the engine settings the
+		// view depends on as well. Without -view the caller is embedding the
+		// SELECT in something of their own and the settings would corrupt it,
+		// so they go to stderr instead — see nullOrderNote.
+		fmt.Println(duckdbPreamble)
 		fmt.Printf("CREATE OR REPLACE VIEW %s AS\n%s;\n", *view, sql)
 		return
 	}
 	fmt.Println(sql)
+	fmt.Fprintln(os.Stderr, nullOrderNote)
 }
+
+// ORDER BY does not mean the same thing to both engines, and the difference is
+// silent.
+//
+// PostgreSQL sorts NULLs last on ASC and FIRST on DESC. DuckDB defaults to
+// NULLS_LAST for both. So `ORDER BY ts DESC LIMIT 10` over a nullable column
+// returns different rows from the mirror than from the source, with no error
+// and no warning — the 20M-row run caught it only because the harness compares
+// the two:
+//
+//	postgres [NULL, 3, 1]   duckdb [3, 1, NULL]
+//
+// This is the same class of problem as docs/22: a value that two engines agree
+// they hold and disagree how to present. That one was fixed by pinning the
+// rendering on every connection (internal/pgtext). This one cannot be — the
+// ORDER BY belongs to the reader's query, not to the view — so the mirror's job
+// is to say so rather than to hope.
+//
+// DuckDB has the exact setting. NULLS_LAST_ON_ASC_FIRST_ON_DESC reproduces
+// PostgreSQL in both directions, verified against PostgreSQL 17.
+const duckdbPreamble = `-- ORDER BY differs between the engines unless this is set: PostgreSQL sorts
+-- NULLs last on ASC and first on DESC, DuckDB defaults to last on both.
+SET default_null_order = 'NULLS_LAST_ON_ASC_FIRST_ON_DESC';`
+
+const nullOrderNote = "note: ORDER BY over a NULLABLE column will not match the source " +
+	"unless the reader\n      sets PostgreSQL's null ordering. In DuckDB:\n" +
+	"      SET default_null_order = 'NULLS_LAST_ON_ASC_FIRST_ON_DESC';\n" +
+	"      PostgreSQL sorts NULLs last on ASC and FIRST on DESC; DuckDB defaults to last on both."
 
 // columns prefers the live catalog, because the mirror's own column order is
 // only recoverable from a file and the catalog is authoritative. Without a DSN

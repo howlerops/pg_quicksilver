@@ -72,6 +72,42 @@ Two properties are worth spelling out:
 
 ---
 
+## One thing the view cannot fix for you: `ORDER BY` and NULLs
+
+PostgreSQL sorts NULLs **last on `ASC` and first on `DESC`**. DuckDB defaults to
+last on both. So this:
+
+```sql
+SELECT * FROM mirror ORDER BY ts DESC LIMIT 10
+```
+
+returns different rows from the mirror than from the source whenever `ts` is
+nullable — no error, no warning, just a different answer. The 21.6M-row run
+caught it only because the harness compares the two engines directly:
+
+```
+ORDER BY x DESC:  postgres [NULL, 3, 1]   duckdb [3, 1, NULL]
+```
+
+This is the same family as [docs/22](22-one-instant-two-spellings.md): a value
+both engines agree they hold and disagree how to present. That one was fixed by
+pinning the rendering on every connection (`internal/pgtext`). **This one cannot
+be fixed the same way**, because the `ORDER BY` lives in the reader's query and
+not in the view, so there is nothing for `ViewSQL` to pin. The mirror's job is to
+say so rather than to hope nobody sorts on a nullable column.
+
+DuckDB has the exact setting, and it reproduces PostgreSQL in both directions:
+
+```sql
+SET default_null_order = 'NULLS_LAST_ON_ASC_FIRST_ON_DESC';
+```
+
+`qs-query -view` emits that line above the `CREATE VIEW`. Without `-view` the
+caller is embedding the `SELECT` in something of their own, where an injected
+`SET` would corrupt it, so the requirement goes to stderr instead.
+
+---
+
 ## The numbers
 
 `bench/scripts/serve_compare.py`, run from the workload matrix
