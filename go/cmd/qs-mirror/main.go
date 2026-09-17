@@ -219,6 +219,50 @@ func isPrimary(ctx context.Context, o options) (bool, error) {
 	return !inRecovery, nil
 }
 
+// roleWatch answers "has this node been promoted?" without opening a connection
+// to ask.
+//
+// The apply loop asks once per tick, and the version above CONNECTS every time:
+// five PostgreSQL backends a second at the 200 ms interval, and far more during
+// a drain, where the ticker refires in a millisecond. It did not show up while
+// ticks were huge, because one connection amortised over fifteen seconds of
+// apply is nothing. Bounding the tick made it the dominant per-tick cost and
+// took 13% off the drain rate — the cap did not cost that throughput, this did.
+//
+// The connection is reused and reopened on error. The QUESTION is asked exactly
+// as often as before, so the window in which a promoted node could keep
+// streaming is unchanged; only the cost of asking is gone.
+type roleWatch struct {
+	o    options
+	conn *pgx.Conn
+}
+
+func (r *roleWatch) isPrimary(ctx context.Context) (bool, error) {
+	if r.conn == nil || r.conn.IsClosed() {
+		c, err := pgx.Connect(ctx, r.o.localDSN())
+		if err != nil {
+			return false, err
+		}
+		r.conn = c
+	}
+	var inRecovery bool
+	if err := r.conn.QueryRow(ctx, "SELECT pg_is_in_recovery()").Scan(&inRecovery); err != nil {
+		// A broken connection must not read as "not promoted". Drop it so the
+		// next tick reconnects, and report the error rather than a guess.
+		_ = r.conn.Close(ctx)
+		r.conn = nil
+		return false, err
+	}
+	return !inRecovery, nil
+}
+
+func (r *roleWatch) close(ctx context.Context) {
+	if r.conn != nil {
+		_ = r.conn.Close(ctx)
+		r.conn = nil
+	}
+}
+
 // clearStaleSyncSlots removes synchronized_standby_slots entries naming slots
 // that do not exist on this server. It is deliberately narrow: an entry that
 // DOES resolve belongs to a standby this node is legitimately waiting for, and
@@ -377,6 +421,11 @@ func pump(
 	ticker := time.NewTicker(200 * time.Millisecond)
 	defer ticker.Stop()
 
+	// One connection for the role check, held for the life of the loop rather
+	// than opened per tick. See roleWatch.
+	role := &roleWatch{o: o}
+	defer role.close(ctx)
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -390,7 +439,7 @@ func pump(
 		// Checking here rather than only in the supervisor keeps the window
 		// small: a mirror that keeps streaming after its node is promoted is
 		// reading its own writes.
-		if primary, err := isPrimary(ctx, o); err == nil && primary {
+		if primary, err := role.isPrimary(ctx); err == nil && primary {
 			return fmt.Errorf("this node was promoted; handing back to the supervisor")
 		}
 		tt.done("is_primary")
