@@ -248,7 +248,11 @@ var (
 	pid        = flag.String("pid", "", "sidecar pid, for CPU and RSS")
 	seconds    = flag.Int("seconds", 20, "workload duration")
 	writers    = flag.Int("writers", 6, "concurrent writers")
-	markers    = flag.Int("markers", 60, "commit-to-visible samples")
+	// 60 is enough for a median and not for a p99; the output says so rather
+	// than printing the maximum under a percentile's name. A thousand takes
+	// about three and a half minutes, because each sample waits for its own
+	// marker to become visible before the next one is committed.
+	markers = flag.Int("markers", 60, "commit-to-visible samples (>=1000 for a real p99)")
 )
 
 func main() {
@@ -370,9 +374,16 @@ func doMeasure(ctx context.Context, pool *pgxpool.Pool, sh *shape) {
 	lat := measureLatency(ctx, pool, sh, *markers)
 	if len(lat) > 0 {
 		sort.Slice(lat, func(i, j int) bool { return lat[i] < lat[j] })
-		fmt.Printf("  latency       p50=%.0fms p90=%.0fms p99=%.0fms max=%.0fms (n=%d)\n",
-			ms(pct(lat, 50)), ms(pct(lat, 90)), ms(pct(lat, 99)),
+		// p99 prints as n/a below a thousand samples rather than silently
+		// reporting the maximum under a percentile's name. See supports().
+		fmt.Printf("  latency       %s %s %s max=%.0fms (n=%d)\n",
+			pctLabel(lat, 50), pctLabel(lat, 90), pctLabel(lat, 99),
 			ms(lat[len(lat)-1]), len(lat))
+		// The p50 is not a property of the mirror. The apply loop runs on a
+		// 200 ms ticker, so this figure is that interval plus the work, and it
+		// would read the same if the mirror were ten times faster (docs/25).
+		fmt.Printf("  %-13s (p50 includes the 200ms apply interval; "+
+			"grep the sidecar log for 'slow tick' to attribute the tail)\n", "")
 	}
 
 	// ---- storage and cost ------------------------------------------------
@@ -607,6 +618,24 @@ func pct(sorted []time.Duration, p int) time.Duration {
 		i = len(sorted) - 1
 	}
 	return sorted[i]
+}
+
+// supports says whether n samples can carry the pth percentile at all.
+//
+// The ninety-ninth percentile of sixty observations is the maximum -- the index
+// arithmetic above lands on the last element -- so the tables printed p99 and
+// max as the same number every time because they WERE the same number, for the
+// whole life of docs/18 and docs/19. Roughly 1/(1-p) samples are needed before
+// a percentile means anything, and several times that before it is stable; the
+// rule here is ten times, so p99 needs a thousand.
+func supports(n, p int) bool { return n >= 10*100/(100-p) }
+
+// pctLabel prints a percentile, or says why it will not.
+func pctLabel(sorted []time.Duration, p int) string {
+	if !supports(len(sorted), p) {
+		return fmt.Sprintf("p%d=n/a", p)
+	}
+	return fmt.Sprintf("p%d=%.0fms", p, ms(pct(sorted, p)))
 }
 
 func ms(d time.Duration) float64 { return float64(d.Microseconds()) / 1000 }

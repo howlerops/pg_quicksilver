@@ -384,6 +384,8 @@ func pump(
 		case <-ticker.C:
 		}
 
+		tt := newTickTimer()
+
 		// A promotion of THIS node means we are now the primary and must stop.
 		// Checking here rather than only in the supervisor keeps the window
 		// small: a mirror that keeps streaming after its node is promoted is
@@ -391,16 +393,19 @@ func pump(
 		if primary, err := isPrimary(ctx, o); err == nil && primary {
 			return fmt.Errorf("this node was promoted; handing back to the supervisor")
 		}
+		tt.done("is_primary")
 
 		fresh, err := st.Transactions(ctx)
 		if err != nil {
 			return err
 		}
+		tt.done("read_stream")
 		pending = append(pending, fresh...)
 		if len(pending) == 0 {
 			// Idle is not stale. An unchanging source is perfectly fresh, and
 			// conflating the two reports a quiet database as broken.
 			h.RecordCaughtUp()
+			tt.report(log)
 			continue
 		}
 		txns := pending
@@ -432,13 +437,16 @@ func pump(
 				return fmt.Errorf("apply: %w", err)
 			}
 		}
+		tt.done("apply")
 		last := head[len(head)-1]
 		if err := st.Confirm(ctx, last.NextLSN); err != nil {
 			return fmt.Errorf("confirm: %w", err)
 		}
+		tt.done("confirm")
 
 		var headLSN string
 		_ = conn.QueryRow(ctx, "SELECT pg_current_wal_lsn()::text").Scan(&headLSN)
+		tt.done("head_lsn")
 		backlog := 0
 		for _, t := range tables {
 			backlog += t.CompactionBacklog()
@@ -450,6 +458,7 @@ func pump(
 				h.RecordVerification(true)
 				return err
 			}
+			tt.done("evolve")
 		}
 
 		// Compaction is triggered by how much has CHANGED, not by how many
@@ -467,6 +476,12 @@ func pump(
 				} else if n > 0 {
 					log.Info("compacted", "table", q, "rows", n)
 				}
+				// The rewrite itself is asynchronous; THIS is the part that is
+				// not. The swap walks the rewritten file deciding liveness
+				// against the current index, so it is O(rows in the file) on
+				// the apply goroutine, and on a shape with a large base and
+				// small deltas it is the only candidate for a tail.
+				tt.done("finish_compaction")
 			}
 			switch {
 			case t.Compacting() && t.ShouldMergeDeltas():
@@ -480,6 +495,7 @@ func pump(
 				} else if n > 0 {
 					log.Info("merged deltas during compaction", "table", q, "rows", n)
 				}
+				tt.done("merge_during_compaction")
 
 			case t.Compacting():
 				// a rewrite is in flight and the file count is fine
@@ -492,6 +508,7 @@ func pump(
 					log.Info("compaction started", "table", q,
 						"base_rows", t.State.BaseRows, "delta_rows", t.State.DeltaRows)
 				}
+				tt.done("begin_compaction")
 
 			case t.ShouldMergeDeltas():
 				// too many files to read through, but not enough churn to pay
@@ -505,8 +522,11 @@ func pump(
 				}
 				log.Info("merged deltas", "table", q, "rows", n,
 					"seconds", time.Since(t0).Seconds())
+				tt.done("merge_deltas")
 			}
 		}
+
+		tt.report(log)
 
 		// Whatever the barrier cut off is held in `pending` and applied on the
 		// next tick, against the schema we just re-read.

@@ -109,6 +109,7 @@ for SHAPE in $SHAPES; do
     QS_ELIDE_UNCHANGED=${QS_ELIDE_UNCHANGED:-1} \
     QS_ZSTD_LEVEL=${QS_ZSTD_LEVEL:-1} \
     QS_SNAPPY_DELTAS=${QS_SNAPPY_DELTAS:-0} \
+    QS_SLOW_TICK=${QS_SLOW_TICK:-200ms} \
     QS_HEALTH_ADDR=$HEALTH /tmp/qs-mirror" > $BASE/mx-$SHAPE.log 2>&1 &
   sleep 1
   MPID=$(pgrep -x qs-mirror | head -1)
@@ -156,6 +157,21 @@ for SHAPE in $SHAPES; do
 
   /tmp/qs-matrix -dsn "postgres://postgres@localhost:5443/$DB" -shape "$SHAPE" \
     -settle -mirror "$MIRROR" || bad "mirror never settled"
+
+  # Attribute the latency tail rather than reporting it as a bare number. Each
+  # slow-tick line names every phase of the apply loop that took a millisecond
+  # or more, so the worst tick comes with its cause attached. The wide shape's
+  # tail was inferable from the merge log; the narrow shape's was not, and that
+  # is exactly why the loop is now instrumented rather than read between.
+  SLOW=$(grep -c "slow tick" $BASE/mx-$SHAPE.log 2>/dev/null || echo 0)
+  if [ "$SLOW" -gt 0 ]; then
+    echo "  slow ticks    $SLOW over ${QS_SLOW_TICK:-200ms}; worst:"
+    grep "slow tick" $BASE/mx-$SHAPE.log \
+      | sed 's/.*total_ms=/total_ms=/' \
+      | sort -t= -k2 -rn | head -3 | sed 's/^/                  /'
+  else
+    echo "  slow ticks    none over ${QS_SLOW_TICK:-200ms}"
+  fi
 
   # Correctness, every time. The jsonb shape is here because it used to pass
   # every throughput check while silently blanking a column.
