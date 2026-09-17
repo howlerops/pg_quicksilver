@@ -430,6 +430,23 @@ func pump(
 		if cut >= 0 {
 			head = txns[:cut+1]
 		}
+		// And a SIZE barrier, for the same reason the DDL one exists: whatever
+		// is not applied this tick is held in `pending` and applied on the next.
+		//
+		// Without it a tick applies whatever the stream handed over, and during
+		// catch-up that grows without limit — measured at 849ms, 2452ms,
+		// 5706ms, 9332ms, 15528ms on five consecutive ticks of the narrow
+		// shape, each one bigger because the backlog outran the drain. A tick
+		// that takes fifteen seconds is fifteen seconds in which nothing else
+		// in this loop runs: no confirm, no freshness update, no compaction
+		// swap. It is the largest stall in the system and it was invisible
+		// until the phases were timed, because the latency samples are taken
+		// after the drain and never saw it.
+		//
+		// Capping costs no throughput. The ticker already fires again in a
+		// millisecond whenever `pending` is non-empty, so the same work is done
+		// in more, smaller ticks — which is the entire point.
+		head = capBatch(head)
 		pending = append([]changestream.Transaction(nil), txns[len(head):]...)
 
 		for _, t := range tables {

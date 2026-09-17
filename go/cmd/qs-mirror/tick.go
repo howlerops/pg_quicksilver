@@ -22,6 +22,8 @@ import (
 	"sort"
 	"strconv"
 	"time"
+
+	"github.com/howlerops/pg_quicksilver/go/internal/changestream"
 )
 
 // slowTick is the threshold for saying something. 200 ms is the interval
@@ -40,6 +42,43 @@ func envDuration(key string, def time.Duration) time.Duration {
 		return time.Duration(ms) * time.Millisecond
 	}
 	return def
+}
+
+// MaxTickChanges bounds how many row-changes one tick may apply.
+//
+// 50,000 is roughly a quarter-second of apply on the slowest shape measured,
+// which keeps a tick near the 200 ms interval it is supposed to fit in. Zero
+// disables the cap and restores the old unbounded behaviour for A/B.
+var maxTickChanges = int(envInt("QS_MAX_TICK_CHANGES", 50_000))
+
+func envInt(key string, def int64) int64 {
+	if v := os.Getenv(key); v != "" {
+		if n, err := strconv.ParseInt(v, 10, 64); err == nil {
+			return n
+		}
+	}
+	return def
+}
+
+// capBatch returns the longest prefix of txns whose total row-changes fit the
+// cap, never splitting a transaction.
+//
+// A transaction is indivisible here for the reason the whole apply path is
+// built around: half a transaction in the mirror is a state the source never
+// had. So a single transaction larger than the cap is applied whole and
+// overruns, which is correct — the alternative is not applying it at all.
+func capBatch(txns []changestream.Transaction) []changestream.Transaction {
+	if maxTickChanges <= 0 || len(txns) <= 1 {
+		return txns
+	}
+	n := 0
+	for i, t := range txns {
+		n += len(t.Changes)
+		if n >= maxTickChanges {
+			return txns[:i+1]
+		}
+	}
+	return txns
 }
 
 type phase struct {
