@@ -83,10 +83,10 @@ func TestUnchangedToastIsCarriedForward(t *testing.T) {
 		t.Errorf("status = %v, want shipped", got["status"])
 	}
 	if got["doc"] == nil || got["doc"] == "" {
-		t.Fatalf("the document was DESTROYED by an update that never touched it.\n"+
-			"pgoutput does not resend an unchanged TOASTed value, so the column is "+
-			"absent from the change — and an absent column must mean 'keep what is "+
-			"there', not 'set to NULL'. Row counts still match and nothing errors, "+
+		t.Fatalf("the document was DESTROYED by an update that never touched it.\n" +
+			"pgoutput does not resend an unchanged TOASTed value, so the column is " +
+			"absent from the change — and an absent column must mean 'keep what is " +
+			"there', not 'set to NULL'. Row counts still match and nothing errors, " +
 			"which is what makes this the worst shape a bug can take.")
 	}
 	if got["doc"] != doc {

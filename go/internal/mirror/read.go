@@ -63,6 +63,18 @@ func arrayValue(a arrow.Array, i int) any {
 		return nil
 	}
 	switch v := a.(type) {
+	// Temporal arrays render back to exactly the text PostgreSQL would print,
+	// because that text is what the checksum compares against the source.
+	case *array.Timestamp:
+		k := kindTimestamp
+		if tt, ok := v.DataType().(*arrow.TimestampType); ok && tt.TimeZone != "" {
+			k = kindTimestampTZ
+		}
+		return renderTemporal(k, int64(v.Value(i)))
+	case *array.Date32:
+		return renderTemporal(kindDate, int64(v.Value(i)))
+	case *array.Time64:
+		return renderTemporal(kindTime, int64(v.Value(i)))
 	case *array.Int64:
 		return v.Value(i)
 	case *array.Float64:

@@ -139,3 +139,5 @@ statistics still describe strings rather than instants.
 That is the next item, and it is now a smaller one: with the rendering pinned,
 every temporal value in a mirror is ISO-8601 in UTC, which is exactly the
 precondition for parsing it into an Arrow timestamp without guessing.
+
+**Done in [docs/23](23-storing-an-instant.md).**

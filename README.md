@@ -107,6 +107,10 @@ in [docs/04](docs/04-storage-and-query-engine.md).
 | 17 | [Testing without a cluster](docs/17-testing-without-a-cluster.md) | The CNPG-I handshake is not a Kubernetes thing. Real mTLS, real Pods from CNPG's own builder, real CRD schemas — and the capability bug that found |
 | 18 | [Measured performance](docs/18-measured-performance.md) | **The production path, measured.** Bootstrap, drain rate, commit-to-visible, storage, and the three implementation defects the benchmark found before it produced a number worth quoting |
 | 19 | [Workload matrix](docs/19-workload-matrix.md) | **Five table shapes.** Narrow, wide, a 6 KB jsonb document per row, hot-set churn, delete-heavy — what each costs, what each optimisation bought, and the one shape that does not keep up |
+| 20 | [Serving the mirror](docs/20-serving-the-mirror.md) | **The read path, measured for the first time.** A directory is not a table, so the mirror publishes the SELECT that reconstructs it — 2–38× on six shapes, 0.02× on a point lookup, and two silent PostgreSQL incompatibilities |
+| 21 | [Against the real operator](docs/21-against-the-real-operator.md) | The plugin talking to an actual CloudNativePG operator, and the six traps between a passing handshake test and a reconciled Cluster |
+| 22 | [One instant, two spellings](docs/22-one-instant-two-spellings.md) | Text is a property of the *session*, not the value. Three sessions render into a mirror and nothing made them agree — a silent-corruption bug found by chasing a harness detail |
+| 23 | [Storing an instant](docs/23-storing-an-instant.md) | Temporal columns become real Arrow timestamps: queries that previously would not parse, a value the mirror refuses rather than guesses, and a storage claim that turned out to be false |
 | — | [ADRs](docs/adr/) | Architecture decision records (template + the decisions still open) |
 
 ## The four architectures under consideration

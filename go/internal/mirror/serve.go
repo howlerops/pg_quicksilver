@@ -44,6 +44,9 @@ import (
 // sqlType is the engine type a column reads back as, so that a file predating
 // an ADD COLUMN can be given a correctly typed literal instead of erroring.
 func sqlType(pgType string) string {
+	if k := temporalOf(pgType); k != notTemporal {
+		return temporalSQLType(k)
+	}
 	switch dt := arrowType(pgType).(type) {
 	case *arrow.Decimal128Type:
 		return fmt.Sprintf("DECIMAL(%d,%d)", dt.Precision, dt.Scale)
@@ -98,6 +101,17 @@ func (t *Table) branch(rel string, want []string) (string, error) {
 	sel := make([]string, 0, len(want))
 	for _, c := range want {
 		if have[c] {
+			// A temporal column is CAST rather than named. Files written before
+			// temporal.go hold it as text, and a UNION ALL that mixes a VARCHAR
+			// branch with a TIMESTAMP one either fails to plan or silently
+			// degrades every branch to VARCHAR. The cast is a no-op the engine
+			// elides when the types already agree, and a migration when they do
+			// not.
+			if k := temporalOf(t.Columns[c]); k != notTemporal {
+				sel = append(sel, fmt.Sprintf("CAST(%s AS %s) AS %s",
+					sqlIdent(c), temporalSQLType(k), sqlIdent(c)))
+				continue
+			}
 			sel = append(sel, sqlIdent(c))
 			continue
 		}

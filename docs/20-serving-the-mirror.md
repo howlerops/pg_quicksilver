@@ -133,6 +133,9 @@ say this out loud; **this project says it out loud.**
 
 ### The mirror's timestamps are not timestamps
 
+*(Fixed since this was written — [docs/23](23-storing-an-instant.md). Left here
+because it is how the two documents that follow got started.)*
+
 The writer maps anything it does not recognise to a string, so `timestamptz`
 lands in Parquet as `VARCHAR`. A query engine can group and compare those as
 text — ISO-8601 with a fixed offset happens to sort correctly — but it cannot do
@@ -144,6 +147,11 @@ from a Python datetime), which is only a harness detail. **The fact underneath
 was not**, and chasing it found a silent-corruption bug — see
 [docs/22](22-one-instant-two-spellings.md). Text is a property of the SESSION
 that rendered it, and nothing made the mirror's three sessions agree.
+
+Pinning the rendering (docs/22) was the precondition for parsing the text into
+an instant (docs/23), which is what actually closed the gap: `timestamptz`,
+`timestamp`, `date` and `time` are now native Arrow types, and the query this
+section says needs a cast runs unchanged, 2.84× faster than the source.
 
 ---
 
@@ -164,11 +172,10 @@ directory that `duckdb.allowed_directories` permits.
 
 ## What to do next
 
-1. **Map temporal types to Arrow timestamps** (and dates, and intervals). Today
-   they are text, which works for grouping and ordering and fails for
-   arithmetic. This is the largest remaining compatibility gap. The *correctness*
-   half of it is fixed — [docs/22](22-one-instant-two-spellings.md) — but a
-   query engine still sees VARCHAR.
+1. ~~**Map temporal types to Arrow timestamps**~~ — done:
+   [docs/22](22-one-instant-two-spellings.md) pinned the rendering and
+   [docs/23](23-storing-an-instant.md) stores the instant. `interval` is the one
+   temporal type still text.
 2. **Measure a cold cache.** Every number above is a warm page cache on both
    sides — the first-run timings are printed alongside the medians and are 1–2×
    the median for the mirror. A cold comparison is a different, and fairer,

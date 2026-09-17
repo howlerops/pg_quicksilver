@@ -407,6 +407,11 @@ func (t *Table) arrowSchemaFor(cols []string) *arrow.Schema {
 }
 
 func arrowType(pgType string) arrow.DataType {
+	// Temporal types first: see temporal.go for why they were text until
+	// docs/22 made parsing them a fact rather than a guess.
+	if k := temporalOf(pgType); k != notTemporal {
+		return temporalArrowType(k)
+	}
 	s := strings.ToLower(strings.TrimSpace(pgType))
 	switch {
 	case strings.HasPrefix(s, "numeric"), strings.HasPrefix(s, "decimal"):
@@ -810,6 +815,19 @@ func (t *Table) writeParquetCodec(path string, rows []map[string]any, durable bo
 func (t *Table) writeParquetCols(path string, rows []map[string]any,
 	cols []string, durable bool,
 ) error {
+	// cols == nil means "every column", and it has to be resolved HERE rather
+	// than left to the writer: checkTemporal walks the list it is given, and a
+	// nil list checks nothing at all. That is not hypothetical — a whole-row
+	// write passes nil, which is most writes, so the check silently covered
+	// only the column-partial ones until a test caught it.
+	if cols == nil {
+		cols = t.Order
+	}
+	// A value Arrow cannot hold is caught BEFORE anything is written, so the
+	// mirror halts with the file untouched rather than half a batch on disk.
+	if err := t.checkTemporal(rows, cols); err != nil {
+		return err
+	}
 	w, err := t.newParquetWriter(path, cols, durable)
 	if err != nil {
 		return err
@@ -831,6 +849,16 @@ func appendValue(b array.Builder, dt arrow.DataType, v any) {
 		return
 	}
 	switch bb := b.(type) {
+	case *array.TimestampBuilder:
+		k := kindTimestamp
+		if tt, ok := dt.(*arrow.TimestampType); ok && tt.TimeZone != "" {
+			k = kindTimestampTZ
+		}
+		appendTemporal(bb.Append, arrow.Timestamp(0), k, v, bb.AppendNull)
+	case *array.Date32Builder:
+		appendTemporal(bb.Append, arrow.Date32(0), kindDate, v, bb.AppendNull)
+	case *array.Time64Builder:
+		appendTemporal(bb.Append, arrow.Time64(0), kindTime, v, bb.AppendNull)
 	case *array.Int64Builder:
 		if str, ok := v.(string); ok {
 			if n, err := strconv.ParseInt(strings.TrimSpace(str), 10, 64); err == nil {

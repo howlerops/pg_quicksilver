@@ -50,6 +50,15 @@ except ImportError:
 QUERIES = {
     "narrow": [
         ("count(*)", "SELECT count(*) FROM {t}"),
+        # Date arithmetic. Before temporal.go the mirror stored ts as VARCHAR,
+        # and this query did not fail -- it did not PARSE, which is worse,
+        # because it means a query written against PostgreSQL cannot be pointed
+        # at the mirror at all.
+        ("date arithmetic",
+         "SELECT count(*) FROM {t} WHERE ts > now() - interval '1 hour'"),
+        ("truncate to the hour",
+         "SELECT date_trunc('hour', ts) h, count(*) FROM {t} "
+         "GROUP BY 1 ORDER BY 1 NULLS LAST LIMIT 5"),
         ("sum one column", "SELECT sum(amount) FROM {t}"),
         ("group by sku top 10",
          "SELECT sku, count(*) c, sum(amount) s FROM {t} GROUP BY sku ORDER BY s DESC NULLS LAST, sku NULLS LAST LIMIT 10"),
@@ -59,6 +68,8 @@ QUERIES = {
     ],
     "wide": [
         ("count(*)", "SELECT count(*) FROM {t}"),
+        ("date arithmetic",
+         "SELECT count(*) FROM {t} WHERE ts > now() - interval '1 hour'"),
         ("two columns of twelve",
          "SELECT region, sum(amount) FROM {t} GROUP BY region ORDER BY 2 DESC NULLS LAST, 1 NULLS LAST"),
         ("three-column group by",
