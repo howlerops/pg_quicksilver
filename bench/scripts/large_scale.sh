@@ -55,11 +55,27 @@ trap cleanup EXIT
 # disk halfway through an hour-long run, so it is computed rather than assumed.
 AVAIL_KB=$(df --output=avail / | tail -1)
 AVAIL_MB=$((AVAIL_KB / 1024))
-BYTES_PER_ROW=${BYTES_PER_ROW:-89}          # narrow, measured
-RESERVE_MB=${RESERVE_MB:-1500}              # WAL, logs, headroom
+RESERVE_MB=${RESERVE_MB:-2000}              # logs, headroom, the checkpoint gap
 USABLE_MB=$((AVAIL_MB - RESERVE_MB))
-# 2 copies of the source + ~0.4 for the mirror and its deltas
-MAX_ROWS=$(( USABLE_MB * 1024 * 1024 / (BYTES_PER_ROW * 24 / 10) ))
+
+# 190 B/row, not 89, and the difference is the whole lesson.
+#
+# The first version of this took 89 from pg_total_relation_size/rows, which is
+# what the heap and its primary-key index actually weigh. It then sized the run
+# at 41 million rows and ran the disk from 9.7 GB to 4.1 GB by row 28 million,
+# because the table is not the only thing written:
+#
+#   heap + pk index        ~89 B/row
+#   WAL for the inserts    ~85 B/row, retained until a checkpoint releases it
+#   the standby's copy     the whole thing again
+#   the mirror             ~25 B/row
+#
+# So the real figure is roughly (89 + 85) * 2 + 25. An estimate that leaves out
+# WAL is not conservative, it is wrong by a factor of two, and the failure it
+# produces is a full disk in the middle of an hour-long run rather than a bad
+# number at the end of one.
+BYTES_PER_ROW=${BYTES_PER_ROW:-190}
+MAX_ROWS=$(( USABLE_MB * 1024 * 1024 / (BYTES_PER_ROW * 2) ))
 ROWS=${ROWS:-$MAX_ROWS}
 
 say "budget"
@@ -82,10 +98,10 @@ psq 5443 "DROP DATABASE IF EXISTS $DB" postgres >/dev/null 2>&1
 psq 5443 "CREATE DATABASE $DB" postgres >/dev/null || skip "could not create $DB"
 
 psq 5443 "SELECT pg_drop_replication_slot(slot_name) FROM pg_replication_slots WHERE NOT active" postgres >/dev/null 2>&1
-psq 5443 "SELECT pg_drop_replication_slot('lg_standby') FROM pg_replication_slots WHERE slot_name='lg_standby'" postgres >/dev/null 2>&1
-psq 5443 "SELECT pg_create_physical_replication_slot('lg_standby', true)" postgres >/dev/null
-psq 5443 "ALTER SYSTEM SET synchronized_standby_slots = 'lg_standby'" postgres >/dev/null
-psq 5443 "SELECT pg_reload_conf()" postgres >/dev/null
+# The physical slot is created AFTER seeding, deliberately. Creating it first
+# pins every WAL segment the seed produces -- 4.6 GB of pg_wal that no
+# checkpoint can recycle, for a slot with no consumer yet. That is what filled
+# the disk on the first attempt at this script.
 
 say "seeding $(printf "%'d" "$ROWS") rows"
 seed_t0=$(date +%s.%N)
@@ -99,7 +115,20 @@ while [ "$done_rows" -lt "$ROWS" ]; do
   psq 5443 "INSERT INTO m SELECT g,'SKU-'||(g%100000),(g%997)/7.0,now()
             FROM generate_series($((done_rows+1)),$hi) g" >/dev/null || { bad "seed failed"; break; }
   done_rows=$hi
-  printf '\r  %s rows' "$(printf "%'d" "$done_rows")"
+  # A checkpoint per chunk lets WAL be recycled as we go; without it the seed's
+  # own WAL is a second copy of the table on disk.
+  psq 5443 "CHECKPOINT" >/dev/null 2>&1
+  free_mb=$(( $(df --output=avail / | tail -1) / 1024 ))
+  printf '\r  %s rows, %s MB free   ' "$(printf "%'d" "$done_rows")" "$free_mb"
+  # Stop before the disk does. A run that dies at 90% full leaves a cluster to
+  # clean up and no measurement; one that stops early leaves a smaller, valid
+  # measurement.
+  if [ "$free_mb" -lt "$RESERVE_MB" ]; then
+    printf '\n'
+    ok "stopping the seed at $(printf "%'d" "$done_rows") rows: only ${free_mb} MB left"
+    ROWS=$done_rows
+    break
+  fi
 done
 printf '\n'
 seed=$(echo "$(date +%s.%N)-$seed_t0"|bc)
@@ -108,6 +137,12 @@ printf '  seeded in %.0fs — %s on disk (%.0f B/row)\n' "$seed" \
   "$(numfmt --to=iec "$SRC_BYTES")" "$(echo "$SRC_BYTES/$ROWS"|bc -l)"
 
 say "standby"
+# Now the slot, with the seed WAL already checkpointed away.
+psq 5443 "CHECKPOINT" >/dev/null 2>&1
+psq 5443 "SELECT pg_drop_replication_slot('lg_standby') FROM pg_replication_slots WHERE slot_name='lg_standby'" postgres >/dev/null 2>&1
+psq 5443 "SELECT pg_create_physical_replication_slot('lg_standby', true)" postgres >/dev/null
+psq 5443 "ALTER SYSTEM SET synchronized_standby_slots = 'lg_standby'" postgres >/dev/null
+psq 5443 "SELECT pg_reload_conf()" postgres >/dev/null
 su postgres -c "$PG/pg_ctl -D $STANDBY stop -m immediate" >/dev/null 2>&1
 rm -rf $STANDBY
 su postgres -c "$PG/pg_basebackup -D $STANDBY -R -X stream -S lg_standby -c fast \
