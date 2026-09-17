@@ -42,6 +42,42 @@ except ImportError:
 _WHOLE_DISK = re.compile(r"^(vd[a-z]+|sd[a-z]+|nvme\d+n\d+)$")
 
 
+MARKER = "WHERE file_row_number NOT IN ("
+
+
+def strip_deletion_vectors(sql):
+    """Remove every deletion-vector filter from a view, by BALANCING PARENS.
+
+    The version of this that counted parens with a regex — `read_json\\([^)]*\\)
+    [^)]*\\)\\)` — was tied to one exact spelling of one encoding, and the cost
+    of being wrong is not an error. The regex matches nothing, the stripped SQL
+    equals the original, and the measurement is skipped in silence. Vectors are
+    Parquet now (docs/29) and were JSON before; a filter's subquery is a
+    balanced group either way, so scan for the close instead of guessing how
+    many there are.
+    """
+    out, i = [], 0
+    while True:
+        j = sql.find(MARKER, i)
+        if j < 0:
+            out.append(sql[i:])
+            return "".join(out)
+        out.append(sql[i:j].rstrip(" \n"))
+        depth, k = 1, j + len(MARKER)
+        while k < len(sql) and depth:
+            if sql[k] == "(":
+                depth += 1
+            elif sql[k] == ")":
+                depth -= 1
+            k += 1
+        if depth:
+            # Unbalanced: say so rather than returning a mangled query.
+            raise SystemExit("could not find the end of a deletion-vector "
+                             "filter in the view; refusing to measure a "
+                             "query this script has mangled")
+        i = k
+
+
 def disk_read_bytes():
     total = 0
     with open("/proc/diskstats") as f:
@@ -131,10 +167,13 @@ def main():
     # machinery -- but the bytes say what it costs to be right, and on this
     # mirror eleven files carry a vector that between them retires thirty rows
     # out of 3.8 million.
-    stripped = re.sub(
-        r"\s*WHERE file_row_number NOT IN \(SELECT unnest\(v\) FROM read_json\([^)]*\)[^)]*\)\)",
-        "", view_sql)
+    stripped = strip_deletion_vectors(view_sql)
     stripped = stripped.replace(", file_row_number = true", "")
+    if stripped == view_sql and "file_row_number NOT IN" in view_sql:
+        print("  WARNING: the view applies deletion vectors and this script "
+              "could not strip\n           them, so their cost is NOT measured "
+              "below. The view's shape has\n           changed and "
+              "strip_deletion_vectors has not.")
     if stripped != view_sql:
         nodv, nodv_ans = measure(
             f"CREATE VIEW qs AS {stripped}; SELECT count(*) FROM qs WHERE {pred}",
