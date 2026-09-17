@@ -1,0 +1,25 @@
+
+=== a primary, a standby and a small table ===
+  ok: 400000 rows, standby in recovery
+
+=== a sidecar whose slot may hold only 64K ===
+  ok: bootstrapped and ready
+
+=== produce more WAL than the limit allows ===
+
+=== 1. the guard fired, and said what it was doing ===
+  ok: retained_bytes=1918840
+
+=== 2. the slot was actually dropped, and the WAL came back ===
+  ok: the supervisor performed the drop, not just the guard deciding to
+  ok: the current gd_slot (rebuilt) pins 56, not the runaway amount
+
+=== 3. the primary is still serving ===
+  ok: the primary answers, with all 400000 rows — which is the entire point
+
+=== 4. the mirror rebuilds itself ===
+  ok: a second snapshot completed: the mirror rebuilt on a fresh slot
+  ok: and it matches the source again
+
+========================================
+PASS

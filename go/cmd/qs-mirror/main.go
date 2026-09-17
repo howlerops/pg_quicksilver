@@ -480,6 +480,7 @@ func pump(
 	// a mirror that cannot keep up fills the PRIMARY's disk, which the
 	// large-scale run demonstrated by doing it.
 	guard := &slotGuard{slot: o.slot, conn: conn, last: time.Now()}
+	warnedStuck := false
 
 	for {
 		select {
@@ -508,7 +509,47 @@ func pump(
 		if len(pending) == 0 {
 			// Idle is not stale. An unchanging source is perfectly fresh, and
 			// conflating the two reports a quiet database as broken.
-			h.RecordCaughtUp()
+			//
+			// But "the stream handed me nothing" has TWO causes and this branch
+			// used to assume the harmless one. The other is a stream that has
+			// stopped delivering, and the mirror cannot tell them apart from
+			// the inside — so it reported `ready: true, lag 0.0s` for three
+			// minutes while receiving nothing and sitting 24 MB behind, with a
+			// walsender wedged in `catchup` because synchronized_standby_slots
+			// named a slot that no longer existed (docs/15's trap, arriving on
+			// a primary rather than after a promotion).
+			//
+			// The slot itself distinguishes them. An idle source retains almost
+			// nothing; a stuck stream retains more with every commit. So the
+			// question the guard already asks every interval answers this one
+			// too: silence plus a growing slot is not idleness.
+			retained, gerr := guard.check(ctx, log)
+			if gerr != nil {
+				return gerr
+			}
+			if retained >= 0 {
+				h.RecordSlotRetention(retained)
+			}
+			if retained >= stuckSlotBytes {
+				// Deliberately NOT RecordCaughtUp: lag_seconds keeps growing
+				// from the last real progress, so readiness fails once the SLO
+				// is exceeded and this node leaves the read endpoint. Serving
+				// stale rows behind a green light is the failure this whole
+				// project is arranged against.
+				if !warnedStuck {
+					warnedStuck = true
+					log.Warn("the stream is delivering nothing while this mirror's "+
+						"slot keeps growing, so this is NOT an idle source: readiness "+
+						"will fail once the freshness SLO is exceeded",
+						"slot", o.slot, "retained_bytes", retained,
+						"check", "does synchronized_standby_slots name a slot that "+
+							"exists? A missing one makes logical decoding wait forever "+
+							"with no error to any client (docs/15)")
+				}
+			} else {
+				warnedStuck = false
+				h.RecordCaughtUp()
+			}
 			tt.report(log)
 			continue
 		}

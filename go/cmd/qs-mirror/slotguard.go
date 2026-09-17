@@ -63,6 +63,7 @@ type slotGuard struct {
 	conn    *pgx.Conn
 	last    time.Time
 	dropped bool
+	warned  bool
 }
 
 // check reports the WAL this slot is holding, and drops the slot if that has
@@ -84,11 +85,26 @@ func (g *slotGuard) check(ctx context.Context, log *slog.Logger) (int64, error) 
 	if err != nil {
 		// A slot that has vanished is not a reason to tear anything down: the
 		// stream will fail on its own and say so more precisely than this can.
-		if err == pgx.ErrNoRows {
+		if errors.Is(err, pgx.ErrNoRows) {
 			return -1, nil
+		}
+		// Anything else is a guard that is not guarding, and it must SAY so.
+		//
+		// The first version of this returned (-1, nil) for every error, which is
+		// the exact failure this project keeps finding written into the thing
+		// meant to prevent it: a guard that cannot run looks identical to a
+		// guard that found nothing wrong. It is rate-limited rather than
+		// silenced, because the interesting case is that it happens on every
+		// check, forever, while the primary fills up.
+		if !g.warned {
+			g.warned = true
+			log.Error("the slot guard cannot measure its own slot, so it is NOT "+
+				"protecting the primary; set max_slot_wal_keep_size, which does "+
+				"not depend on this", "slot", g.slot, "err", err)
 		}
 		return -1, nil
 	}
+	g.warned = false
 	if retained < maxSlotWAL {
 		return retained, nil
 	}
@@ -139,3 +155,13 @@ func dropSlot(ctx context.Context, o options, slot string, log *slog.Logger) {
 	log.Error("could not drop the runaway slot after 30s; the primary is still "+
 		"accumulating WAL and needs manual attention", "slot", slot)
 }
+
+// stuckSlotBytes is how much retained WAL turns "the stream gave me nothing"
+// from idleness into a fault.
+//
+// One WAL segment. A mirror whose source is genuinely quiet sits well under a
+// segment, because restart_lsn follows what it confirms; a mirror whose stream
+// has stopped passes a segment as soon as anything is written and keeps going.
+// The two states are far enough apart that the exact figure does not matter
+// much, which is the only reason a single threshold can serve.
+var stuckSlotBytes = envInt("QS_STUCK_SLOT_BYTES", 16<<20)
