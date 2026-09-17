@@ -1,0 +1,90 @@
+
+== 0. primary on 5443, listening on localhost ==
+  seeded 20000 rows BEFORE the mirror exists
+
+== 1. standby with sync_replication_slots ==
+  standby up and in recovery
+
+== 2. the sidecar, configured only by the plugin's environment ==
+  sidecar live; /healthz answering
+
+== 3. it bootstraps by snapshot and becomes ready ==
+  "snapshot complete" table=public.events rows=20000 seconds=0.083403705
+
+== 4. live changes reach the mirror ==
+applied_lsn=26/1D0E0CF8
+mirror 21500 rows (checksum 4d086a10544147a7)
+source 21500 rows (checksum 4d086a10544147a7)
+MATCH
+
+== 5. DDL crosses as a barrier, not as corruption ==
+  barrier observed: "added channel text" backfilled=map[channel:web]
+applied_lsn=26/1D0E34F0
+mirror 21501 rows (checksum bb5aaa25019d5dfb)
+source 21501 rows (checksum bb5aaa25019d5dfb)
+MATCH
+
+== 5b. a backfill the stream cannot carry HALTS the mirror, durably ==
+  halted: "halting public.events: column(s) nonce were backfilled by a table rewrite; their values never appear in the c
+  halt is persisted in state.json, so a restart cannot quietly resume
+  /readyz is failing, so this node leaves the read endpoint
+
+== 5c. recovery: clearing the halt rebuilds from a fresh snapshot ==
+applied_lsn=26/1D3A1500
+mirror 21502 rows (checksum a83444d21256d6a3)
+source 21502 rows (checksum a83444d21256d6a3)
+MATCH
+
+== 6. readiness reflects freshness, and idle is not stale ==
+  still ready after 20s idle with a 15s SLO — idle is correctly not stale
+  quicksilver_lag_seconds 0.190
+  quicksilver_lag_bytes 0
+  quicksilver_ready 1
+  quicksilver_compaction_backlog 0
+  quicksilver_diverged 0
+  quicksilver_bootstrapped 1
+
+== 6b. the sidecar is killed and restarts: it RESUMES, it does not re-snapshot ==
+  resumed from applied_lsn 26/1D3B73F0 without a new snapshot
+applied_lsn=26/1D3CCFE0
+mirror 22502 rows (checksum f3b490a66df860bf)
+source 22502 rows (checksum f3b490a66df860bf)
+MATCH
+
+== 6c. the key index is rebuilt from the base file, not from a cache ==
+applied_lsn=26/1D3ED320
+mirror 22502 rows (checksum 7b3c4ca2ee08f51b)
+source 22502 rows (checksum 7b3c4ca2ee08f51b)
+MATCH
+  0 index file(s) deleted; updates still retired the right rows
+
+== 6d. the PUBLISHED VIEW answers what the source answers ==
+  -- quicksilver mirror public.events applied_lsn=26/1D3ED320
+    count(*)                   agrees   source=[(22502,)] view=[(22502,)]
+    sum(amount)                agrees   source=[(Decimal('1452466.17'),)] view=[(Decimal('1452466.17'),)]
+    group by channel           agrees   source=[('mobile', 1), ('web', 22501)] view=[('mobile', 1), ('web', 22501)]
+    a deleted range is gone    agrees   source=[(0,)] view=[(0,)]
+
+== 6e. two tables in one sidecar ==
+applied_lsn=26/1D507BE8
+mirror 22502 rows (checksum 7b3c4ca2ee08f51b)
+source 22502 rows (checksum 7b3c4ca2ee08f51b)
+MATCH
+  public.events matches
+applied_lsn=26/1D507BE8
+mirror 1010 rows (checksum 6615047f491ac668)
+source 6000 rows (checksum 5ab02823c66761b0)
+DIVERGED
+  rows only in source: 4990, only in mirror: 0
+  missing from mirror: id=3180
+  missing from mirror: id=4749
+  missing from mirror: id=4987
+FAIL: public.orders diverged with two tables in one sidecar
+
+== 7. promote the standby: the sidecar must stand down ==
+  "this node is the primary — standing down; the mirror is built on replicas"
+  cleared the inherited synchronized_standby_slots entry (docs/15)
+  synchronized_standby_slots is now empty on the new primary
+
+========================================
+FAIL

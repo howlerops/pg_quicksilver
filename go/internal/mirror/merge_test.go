@@ -224,3 +224,66 @@ func TestIndexRebuildsFromTheBaseFileAlone(t *testing.T) {
 		}
 	}
 }
+
+// A table that joins a slot the others are already using is snapshotted at the
+// CURRENT LSN while the stream resumes from the slot's older position. Without
+// a per-table floor it replays changes from before its own snapshot on top of
+// it, writing values the source had already moved past — with correct row
+// counts and no error anywhere.
+func TestApplyIgnoresTransactionsOlderThanTheSnapshot(t *testing.T) {
+	tbl := racyTable(t)
+
+	// Stand in for a snapshot at LSN 0/500: the current value, and a floor.
+	row := map[string]any{"id": "1", "v": "from-the-snapshot", "n": "9"}
+	if _, err := tbl.Apply([]changestream.Transaction{{
+		CommitLSN: "0/500", NextLSN: "0/501", Changes: []changestream.Change{{
+			Op: changestream.OpInsert, Schema: "public", Table: "r", Row: row, Key: row,
+		}},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	// The stream now replays an OLDER transaction, as it does when the slot's
+	// confirmed position is behind the snapshot.
+	stale := map[string]any{"id": "1", "v": "stale-from-before", "n": "1"}
+	if _, err := tbl.Apply([]changestream.Transaction{{
+		CommitLSN: "0/100", NextLSN: "0/101", Changes: []changestream.Change{{
+			Op: changestream.OpUpdate, Schema: "public", Table: "r", Row: stale, Key: stale,
+		}},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	got := ""
+	if err := tbl.ForEachLive(func(r map[string]any) error {
+		got = Render(r["v"])
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if got != "from-the-snapshot" {
+		t.Errorf("the mirror holds %q: a transaction older than this table's "+
+			"snapshot was applied over it", got)
+	}
+
+	// And a NEWER transaction must still land, or the floor has broken the
+	// normal path instead of protecting it.
+	fresh := map[string]any{"id": "1", "v": "after-the-snapshot", "n": "2"}
+	if _, err := tbl.Apply([]changestream.Transaction{{
+		CommitLSN: "0/900", NextLSN: "0/901", Changes: []changestream.Change{{
+			Op: changestream.OpUpdate, Schema: "public", Table: "r", Row: fresh, Key: fresh,
+		}},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := tbl.ForEachLive(func(r map[string]any) error {
+		got = Render(r["v"])
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if got != "after-the-snapshot" {
+		t.Errorf("the mirror holds %q: the floor rejected a transaction that "+
+			"comes after the snapshot", got)
+	}
+}

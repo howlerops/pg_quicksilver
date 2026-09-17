@@ -21,6 +21,7 @@ import (
 	_ "net/http/pprof"
 	"os"
 	"os/signal"
+	"sort"
 	"strings"
 	"syscall"
 	"time"
@@ -398,6 +399,46 @@ func runMirror(ctx context.Context, log *slog.Logger, o options, h *health.Healt
 			return err
 		}
 	} else {
+		// A table can join a slot the others are already using — QS_TABLES
+		// gained an entry, or the `tables:` pattern started matching one.
+		// snapshot.go has listed that as a case needing a snapshot since it was
+		// written; the decision here was made per-SLOT rather than per-TABLE,
+		// so it never got one.
+		//
+		// What that produced was the shape this project keeps finding. The new
+		// table received every change from the moment it was added and nothing
+		// before it: 1,010 rows against a source of 6,000, no error, no warning,
+		// and a mirror that answers questions. The end-to-end suite found it the
+		// first time it ran two tables through one sidecar.
+		//
+		// The snapshot is taken at the CURRENT LSN while the stream resumes from
+		// the slot's older position, so this depends on the per-table LSN floor
+		// in Table.Apply to discard the replayed prefix. Without that floor this
+		// would write pre-snapshot values over post-snapshot ones.
+		var fresh []string
+		for q, t := range tables {
+			if t.State.AppliedLSN == "" {
+				fresh = append(fresh, q)
+			}
+		}
+		if len(fresh) > 0 {
+			sort.Strings(fresh)
+			at, err := currentLSN(ctx, conn)
+			if err != nil {
+				return fmt.Errorf("current lsn for a newly added table: %w", err)
+			}
+			log.Info("tables added to an existing slot; snapshotting just those",
+				"tables", fresh, "at", at)
+			for _, q := range fresh {
+				t0 := time.Now()
+				n, err := tables[q].Snapshot(ctx, conn, at)
+				if err != nil {
+					return fmt.Errorf("snapshot %s: %w", q, err)
+				}
+				log.Info("snapshot complete", "table", q, "rows", n,
+					"seconds", time.Since(t0).Seconds())
+			}
+		}
 		log.Info("resuming from the existing slot", "slot", o.slot)
 		if err := st.Start(ctx, 0); err != nil {
 			return err

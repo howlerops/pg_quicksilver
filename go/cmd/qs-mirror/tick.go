@@ -17,11 +17,14 @@ package main
 // logs what it was doing, in order, worst phase first.
 
 import (
+	"context"
 	"log/slog"
 	"os"
 	"sort"
 	"strconv"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/howlerops/pg_quicksilver/go/internal/changestream"
 )
@@ -149,4 +152,14 @@ func (t *tickTimer) report(log *slog.Logger) {
 	}
 	log.Warn("slow tick: the apply loop overran its interval, "+
 		"which is what a latency tail is made of", args...)
+}
+
+// currentLSN is where a newly added table's snapshot is anchored. It is the
+// write position rather than the slot's, because the snapshot sees the table as
+// it is NOW; the stream then replays from the slot's older position and the
+// per-table floor in Table.Apply discards everything before this point.
+func currentLSN(ctx context.Context, conn *pgx.Conn) (string, error) {
+	var lsn string
+	err := conn.QueryRow(ctx, "SELECT pg_current_wal_lsn()::text").Scan(&lsn)
+	return lsn, err
 }

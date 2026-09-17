@@ -219,10 +219,22 @@ wait_ready 90 || { tail -20 $BASE/mirror.log; bad "no readiness after the index 
 psq 5443 "UPDATE events SET amount = amount + 100 WHERE id BETWEEN 300001 AND 300400" >/dev/null
 sleep 8
 if /tmp/qs-verify -dsn "postgres://postgres@localhost:5443/$DB" -mirror $MIRROR -table public.events; then
-  echo "  $idx_before index file(s) deleted; updates still retired the right rows"
+  # Say what was actually true. The first run of this printed "0 index file(s)
+  # deleted" and called it a pass, which reads as though a cache had been
+  # cleared when there was none to clear — the snapshot no longer writes one.
+  # Zero is the expected state and the assertion is that the mirror is correct
+  # WITHOUT it; a non-zero count means a compaction had written one and that
+  # was cleared too.
+  if [ "$idx_before" -eq 0 ]; then
+    echo "  no persisted index existed (the snapshot writes none); updates still retired the right rows"
+  else
+    echo "  $idx_before index file(s) from compaction deleted; updates still retired the right rows"
+  fi
 else
   bad "with no persisted index the mirror diverged: the rebuild does not agree with the file"
 fi
+[ -z "$(ls $MIRROR/public.events/index/*.idx.json 2>/dev/null)" ] \
+  || echo "  (a compaction has since written a fresh index, which is expected)"
 
 say "6d. the PUBLISHED VIEW answers what the source answers"
 # Everything above verifies the mirror through qs-verify, which reads it the way

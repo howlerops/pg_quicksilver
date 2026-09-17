@@ -465,7 +465,22 @@ func (t *Table) Apply(txns []changestream.Transaction) (ApplyStats, error) {
 	deletes := map[rowKey]bool{}
 	last := t.State.AppliedLSN
 
+	// Per-table LSN floor. A transaction this table has already applied is
+	// skipped, and the reason is not idempotence — the mirror is upsert-by-key,
+	// so replaying the same change twice converges anyway.
+	//
+	// It is for a table that joined a slot the others were already using. That
+	// table is snapshotted at the CURRENT LSN while the stream resumes from the
+	// slot's older confirmed position, so without a floor it would replay
+	// changes from BEFORE its snapshot on top of it — writing values the source
+	// had moved past, with correct row counts and no error anywhere. A table
+	// that has never been bootstrapped has no floor and takes everything.
+	floor := changestream.ParseLSN(t.State.AppliedLSN)
+
 	for _, txn := range txns {
+		if floor > 0 && changestream.ParseLSN(txn.CommitLSN) < floor {
+			continue
+		}
 		for _, c := range txn.Changes {
 			if c.Qualified() != t.Qualified {
 				continue
