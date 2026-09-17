@@ -221,22 +221,40 @@ func (t *Table) ForEachLive(fn func(map[string]any) error) error {
 		if derr != nil {
 			return derr
 		}
-		rows, err := t.readParquet(filepath.Join(t.Dir, rel), dead)
+		// One ROW GROUP at a time, not one file.
+		//
+		// This used to call readParquet, which returns the whole file as a
+		// []map[string]any. On a mirror whose base file holds the table that is
+		// not "one file at a time", it is the entire table as Go maps: 21.6
+		// million of them took qs-verify to 13.3 GB and the OOM killer, on a
+		// mirror weighing 126 MB on disk. The tool that exists to say whether
+		// the mirror is correct died before answering, which reports every
+		// large mirror as unverified.
+		//
+		// The streaming was already here — the writer emits fixed-size row
+		// groups and forEachRowGroup decodes them one at a time (stream.go).
+		// readParquet's only contribution was to append them all back into one
+		// slice. qs-verify's own comment claimed both sides stream; its
+		// accumulator did, and this did not.
+		err := t.forEachRowGroup(filepath.Join(t.Dir, rel), dead, nil,
+			func(rows []map[string]any, _ int) error {
+				for _, r := range rows {
+					if overlay != nil {
+						if p, ok := overlay[t.keyOf(r[t.Key])]; ok {
+							applyPatch(r, p)
+						}
+					}
+					if err := fn(r); err != nil {
+						return err
+					}
+				}
+				return nil
+			})
 		if err != nil {
 			if os.IsNotExist(err) {
 				return ErrStaleManifest
 			}
 			return err
-		}
-		for _, r := range rows {
-			if overlay != nil {
-				if p, ok := overlay[t.keyOf(r[t.Key])]; ok {
-					applyPatch(r, p)
-				}
-			}
-			if err := fn(r); err != nil {
-				return err
-			}
 		}
 		return nil
 	}

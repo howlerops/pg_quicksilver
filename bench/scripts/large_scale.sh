@@ -151,11 +151,18 @@ printf '  seeded in %.0fs — %s on disk (%.0f B/row)\n' "$seed" \
 say "standby"
 # Now the slot, with the seed WAL already checkpointed away.
 psq 5443 "CHECKPOINT" >/dev/null 2>&1
+# Stop the standby BEFORE dropping its slot. PostgreSQL will not drop a slot
+# that is active, and the standby from the previous run is still streaming from
+# this one — so the drop silently failed, the create printed
+# `ERROR: replication slot "lg_standby" already exists`, and the run continued
+# on the old slot. A streaming standby keeps its restart_lsn current so this
+# cost nothing measurable, but the intent here is a slot with no history behind
+# it, and that is not what the code was getting.
+su postgres -c "$PG/pg_ctl -D $STANDBY stop -m immediate" >/dev/null 2>&1
 psq 5443 "SELECT pg_drop_replication_slot('lg_standby') FROM pg_replication_slots WHERE slot_name='lg_standby'" postgres >/dev/null 2>&1
 psq 5443 "SELECT pg_create_physical_replication_slot('lg_standby', true)" postgres >/dev/null
 psq 5443 "ALTER SYSTEM SET synchronized_standby_slots = 'lg_standby'" postgres >/dev/null
 psq 5443 "SELECT pg_reload_conf()" postgres >/dev/null
-su postgres -c "$PG/pg_ctl -D $STANDBY stop -m immediate" >/dev/null 2>&1
 rm -rf $STANDBY
 su postgres -c "$PG/pg_basebackup -D $STANDBY -R -X stream -S lg_standby -c fast \
   -d 'host=/tmp port=5443 user=postgres dbname=postgres'" >/dev/null 2>&1 || skip "basebackup failed"
