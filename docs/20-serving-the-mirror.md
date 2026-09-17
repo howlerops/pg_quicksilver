@@ -83,6 +83,15 @@ view, median of three, every result compared value by value first.
 
 Every query agreed with PostgreSQL on every shape.
 
+> **Two corrections since, both from [docs/24](24-nothing-cached.md).** The
+> wide shape's "filtered aggregate" — 3.9× above — filtered on a status value
+> the shape never generates, so it matched **nothing**: both engines agreed on
+> `count 0`, the correctness check passed, and a number about row-group pruning
+> went into this table labelled as a number about filtering. And every figure
+> here is a warm cache; on a cold one the point lookup is **1.4–3.4× slower,
+> not 20–50×**, because an index lookup is only 0.3 ms when its pages are
+> already in RAM.
+
 ### The best case is the one PostgreSQL is worst at
 
 **inline is the biggest win in the table — 38.5× — and it is the smallest table
@@ -176,10 +185,8 @@ directory that `duckdb.allowed_directories` permits.
    [docs/22](22-one-instant-two-spellings.md) pinned the rendering and
    [docs/23](23-storing-an-instant.md) stores the instant. `interval` is the one
    temporal type still text.
-2. **Measure a cold cache.** Every number above is a warm page cache on both
-   sides — the first-run timings are printed alongside the medians and are 1–2×
-   the median for the mirror. A cold comparison is a different, and fairer,
-   question.
+2. ~~**Measure a cold cache.**~~ — done: [docs/24](24-nothing-cached.md). It
+   was a different question, and the answer was not the expected one.
 3. **Run the view through the confined `pg_duckdb` of docs/12.** The two halves
    have been built and measured separately and have never been put together.
 4. **Push predicates into the manifest.** Parquet row-group statistics are

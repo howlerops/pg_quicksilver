@@ -1,0 +1,132 @@
+
+=== infrastructure ===
+  primary 5443, standby 5444, 200000 rows/shape, 12s workload, row_group=65536
+  column-partial deltas: 1 (0 writes every update as a whole row)
+  elide unchanged large values: 1
+
+=== shape: narrow ===
+  shape=narrow  4 columns, insert-only
+  seeded 200,000 rows in 0.4s; 17 MB heap+indexes (of which 8 KB TOAST)
+  bootstrap     1.0s -> 192870 rows/s
+  workload      4,161,500 row-changes in 12.0s (346612/s into PostgreSQL)
+  drained       29.9s -> 99261 row-changes/s through the mirror
+  latency       p50=209ms p90=215ms p99=1106ms max=1106ms (n=60)
+  storage       source 436 MB / mirror 123 MB -> 3.5x smaller (4,361,859 live rows)
+  sidecar       95.9s CPU (23 us/row-change), RSS 2 GB
+  wrote         149 MB to storage (38 B/row-change)
+  files         1 base + 16 delta
+  correctness   MATCH (mirror 4361860 rows (checksum f78b5e048ea89802))
+  -- quicksilver mirror public.m applied_lsn=20/FB7DB9D8
+  both sides hold 4,361,860 rows
+  ORDER BY x DESC:  postgres [None, 3, 1]   duckdb [3, 1, None]   DIFFERENT — NULL placement
+
+  query                            postgres       mirror   speedup  agree
+  ---------------------------- ------------ ------------ ---------  -----
+  count(*)                          57.7 ms      18.5 ms     3.11x  yes
+                               (first 58 ms) (first 20 ms)
+  date arithmetic                  112.5 ms      20.6 ms     5.45x  yes
+                               (first 108 ms) (first 23 ms)
+  truncate to the hour             271.3 ms      12.0 ms    22.52x  yes
+                               (first 260 ms) (first 21 ms)
+  sum one column                   120.5 ms      10.9 ms    11.10x  yes
+                               (first 123 ms) (first 12 ms)
+  group by sku top 10             3670.3 ms     296.8 ms    12.37x  yes
+                               (first 3670 ms) (first 301 ms)
+  filter + aggregate               170.8 ms      11.7 ms    14.57x  yes
+                               (first 183 ms) (first 15 ms)
+  point lookup by key                0.3 ms       5.9 ms     0.05x  yes
+                               (first 1 ms) (first 6 ms)
+
+  all queries agreed
+
+  --- cold cache ---
+  -- quicksilver mirror public.m applied_lsn=20/FB7DB9D8
+  both sides hold 4,361,860 rows
+  ORDER BY x DESC:  postgres [None, 3, 1]   duckdb [3, 1, None]   DIFFERENT — NULL placement
+
+  COLD: shared_buffers and the page cache are emptied before every timing below,
+  and each side runs exactly once, because a second run is a warm run.
+
+  query                            postgres       mirror   speedup  agree
+  ---------------------------- ------------ ------------ ---------  -----
+  count(*)                         195.6 ms      36.0 ms     5.44x  yes
+    bytes read                     302.5 MB      41.3 MB     7.32x
+  date arithmetic                  130.5 ms      41.0 ms     3.18x  yes
+    bytes read                     302.8 MB      51.2 MB     5.91x
+  truncate to the hour             263.4 ms      32.0 ms     8.22x  yes
+    bytes read                     302.8 MB       8.5 MB    35.46x
+  sum one column                   138.6 ms      17.0 ms     8.15x  yes
+    bytes read                     302.3 MB       8.9 MB    34.04x
+  group by sku top 10             4073.8 ms     341.7 ms    11.92x  yes
+    bytes read                     432.2 MB      45.2 MB     9.56x
+  filter + aggregate               187.4 ms      18.0 ms    10.39x  yes
+    bytes read                     303.6 MB       7.4 MB    40.88x
+  point lookup by key                5.6 ms       7.7 ms     0.73x  yes
+    bytes read                       4.7 MB       4.0 MB     1.17x
+
+  all queries agreed
+
+=== shape: wide ===
+  shape=wide  12 columns, insert-only
+  seeded 200,000 rows in 0.7s; 41 MB heap+indexes (of which 8 KB TOAST)
+  bootstrap     2.0s -> 97868 rows/s
+  workload      2,044,000 row-changes in 12.0s (170091/s into PostgreSQL)
+  drained       22.7s -> 58891 row-changes/s through the mirror
+  latency       p50=209ms p90=211ms p99=2830ms max=2830ms (n=60)
+  storage       source 404 MB / mirror 121 MB -> 3.3x smaller (2,244,286 live rows)
+  sidecar       91.5s CPU (45 us/row-change), RSS 1 GB
+  wrote         278 MB to storage (142 B/row-change)
+  files         1 base + 16 delta
+  correctness   MATCH (mirror 2244287 rows (checksum 45aa55295fa58781))
+  -- quicksilver mirror public.m applied_lsn=21/1E323BD0
+  both sides hold 2,244,287 rows
+  ORDER BY x DESC:  postgres [None, 3, 1]   duckdb [3, 1, None]   DIFFERENT — NULL placement
+
+  query                            postgres       mirror   speedup  agree
+  ---------------------------- ------------ ------------ ---------  -----
+  count(*)                          44.9 ms      12.1 ms     3.72x  yes
+                               (first 45 ms) (first 13 ms)
+  date arithmetic                   69.0 ms      12.9 ms     5.33x  yes
+                               (first 76 ms) (first 14 ms)
+  two columns of twelve            121.2 ms      11.5 ms    10.54x  yes
+                               (first 121 ms) (first 12 ms)
+  three-column group by            157.8 ms      25.5 ms     6.20x  yes
+                               (first 158 ms) (first 26 ms)
+  filter + aggregate                66.9 ms       5.1 ms    13.22x  yes
+                               (first 69 ms) (first 6 ms)
+  filter + aggregate, unclustered      72.0 ms       7.2 ms     9.94x  yes
+                               (first 72 ms) (first 9 ms)
+  point lookup by key                0.3 ms       9.9 ms     0.03x  yes
+                               (first 1 ms) (first 24 ms)
+
+  all queries agreed
+
+  --- cold cache ---
+  -- quicksilver mirror public.m applied_lsn=21/1E323BD0
+  both sides hold 2,244,287 rows
+  ORDER BY x DESC:  postgres [None, 3, 1]   duckdb [3, 1, None]   DIFFERENT — NULL placement
+
+  COLD: shared_buffers and the page cache are emptied before every timing below,
+  and each side runs exactly once, because a second run is a warm run.
+
+  query                            postgres       mirror   speedup  agree
+  ---------------------------- ------------ ------------ ---------  -----
+  count(*)                         331.7 ms      30.1 ms    11.02x  yes
+    bytes read                     347.8 MB      62.4 MB     5.57x
+  date arithmetic                  145.7 ms      34.5 ms     4.22x  yes
+    bytes read                     347.9 MB      72.1 MB     4.83x
+  two columns of twelve            148.3 ms      17.4 ms     8.50x  yes
+    bytes read                     347.5 MB      10.0 MB    34.89x
+  three-column group by            178.6 ms      27.8 ms     6.42x  yes
+    bytes read                     348.0 MB       3.7 MB    94.72x
+  filter + aggregate               122.5 ms       5.2 ms    23.72x  yes
+    bytes read                     348.0 MB       0.1 MB  5310.44x
+  filter + aggregate, unclustered     120.0 ms       9.3 ms    12.88x  yes
+    bytes read                     348.0 MB       0.3 MB  1023.69x
+  point lookup by key                7.6 ms      26.4 ms     0.29x  yes
+    bytes read                       4.9 MB      10.6 MB     0.46x
+
+  all queries agreed
+
+========================================
+PASS
