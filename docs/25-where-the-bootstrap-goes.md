@@ -118,24 +118,37 @@ defaults. Both verified against the source.
 
 | | | before | after |
 |---|---|---|---|
-| **narrow** | mirror on disk | 139 MB (3.2×) | **109 MB (3.9×)** |
-| | written to storage | 195 MB (49 B/change) | **125 MB (32 B/change)** |
 | **jsonb** | drain rate | 151,872/s | **170,699/s** |
 | | mirror on disk | 334 MB | 334 MB |
+| **narrow**, 12s run | mirror on disk | 139 MB | 109 MB |
+| | written to storage | 195 MB (49 B/change) | 125 MB (32 B/change) |
+| **narrow**, 8s run | mirror on disk | 108 MB | 107 MB |
+| | written to storage | 146 MB (56 B/change) | 134 MB (52 B/change) |
+| | bootstrap | 192,773 rows/s | 192,957 rows/s |
 
-narrow writes **36% fewer bytes** and keeps **22% less** on disk, which is the
-Snappy deltas going away. jsonb's size does not move at all, exactly as the
-micro-benchmark predicted — its bytes are the base file, and level 1 against the
-default is 1.2% there.
+jsonb's drain is **12% faster** and its size does not move at all — exactly what
+the micro-benchmark predicts, since its bytes are the base file and level 1
+against the default is 1.2% there.
 
-**Bootstrap time is deliberately absent from that table.** The 2.8× faster
-base-file write is a micro-benchmark result and the matrix could not confirm or
-refute it, for the reason in the next section: until this work the harness
-measured bootstrap with a one-second poll, so a 1.5-second bootstrap reported as
-`1.0s` or `2.0s` depending on where the tick landed. Two runs of the same build
-differed by "2×" that way. With the poll at 20 ms, narrow bootstraps in 1.0s at
-192,957 rows/s; the matched comparison against the old codec is still running,
-and this section gets the number when it does rather than a plausible one now.
+**The narrow storage saving is not a settled number, and the two runs above are
+why.** A 12-second workload showed 22% less on disk and 36% fewer bytes written;
+an 8-second workload showed 1% and 8%. Both are honest measurements of the same
+change. What differs is how much of the mirror was sitting in un-compacted delta
+files when the tape was measured — the deltas are where Snappy was, so the
+saving is a function of the delta fraction at that instant, not a property of
+the mirror. The solid number is the micro-benchmark, where the same data is
+61.4 MB under Snappy and 33.8 MB under zstd level 1.
+
+**narrow's bootstrap does not move at all**: 192,773 against 192,957 rows/s.
+That is the correct outcome and worth stating, because it confirms the split
+this document is about — narrow's bootstrap is per-row bound, so making the
+codec 2.8× faster buys it nothing. The codec speedup is jsonb's to collect.
+
+Getting that comparison at all required fixing the harness. Until this work the
+readiness poll slept one second, so a 1.5-second bootstrap reported as `1.0s` or
+`2.0s` depending on where the tick fell — and an earlier pass of this very A/B
+showed narrow "regressing" from 1.0s to 2.0s, which was entirely the tick. Every
+bootstrap rows/s in docs/18 and docs/19 carries that error bar.
 
 ---
 
@@ -174,10 +187,14 @@ merge is not. It happens inline on the tick, and it is the entire tail on those
 shapes.
 
 **On the narrow shape it is not that, and I have not established what it is.**
-narrow logged no such merges in the run that reported a 1106 ms tail. Its tail
-did drop from 5041 ms to 1092 ms when the delta codec changed, which is
-suggestive — smaller deltas, less work per tick — but that is one sample against
-one sample, and the honest statement is that the mechanism is unidentified.
+narrow logged no such merges in the run that reported a 1106 ms tail.
+
+Its tail is consistently lower under the new codec — 5041 → 1092 ms on the
+12-second run, 1961 → 792 ms on the 8-second one — and "smaller deltas, less
+work per tick" is a plausible mechanism. But each of those is a single sample
+(see above: n=60 makes the "p99" a maximum), the two runs disagree by 2.5×, and
+a plausible mechanism with no measurement behind it is exactly what this
+document is about. **Unidentified**, recorded as such.
 
 ---
 
@@ -189,7 +206,7 @@ one sample, and the honest statement is that the mechanism is unidentified.
 | Profiling coverage | started at `readyz` | starts before the snapshot |
 | Base file codec | zstd default | zstd level 1 — 2.8× faster write, +1.2% size |
 | Delta file codec | Snappy | zstd level 1 — 45% smaller, 51% faster write, no slower to read |
-| narrow storage | 139 MB, 195 MB written | 109 MB, 125 MB written |
+| narrow storage | — | 1–22% less, depending entirely on the delta fraction at that instant |
 | What `p50` means | the mirror's latency | a 200 ms ticker plus ~9 ms |
 | What `p99` means | a percentile | the worst of 60 samples |
 | Bootstrap timing resolution | quantised to 1s by the readiness poll | 20 ms |

@@ -1,0 +1,55 @@
+=== OLD (zstd default base, snappy deltas) ===
+=== shape: jsonb ===
+  bootstrap     9.5s -> 21065 rows/s
+  drained       6.5s -> 151872 row-changes/s through the mirror
+  latency       p50=210ms p90=225ms p99=680ms max=680ms (n=60)
+  storage       source 1 GB / mirror 334 MB -> 3.2x smaller (200,124 live rows)
+  wrote         992 MB to storage (371 B/row-change)
+  files         1 base + 9 delta
+  correctness   MATCH (mirror 200125 rows (checksum f23139d7b1a4a36f))
+=== shape: narrow ===
+  bootstrap     1.0s -> 194620 rows/s
+  drained       33.7s -> 91897 row-changes/s through the mirror
+  latency       p50=209ms p90=212ms p99=5041ms max=5041ms (n=60)
+  storage       source 440 MB / mirror 139 MB -> 3.2x smaller (4,399,896 live rows)
+  wrote         195 MB to storage (49 B/row-change)
+  files         1 base + 16 delta
+  correctness   MATCH (mirror 4399897 rows (checksum ee54d4153b8cfc5c))
+
+[exited with code 0]
+=== NEW (zstd level 1 everywhere) ===
+=== shape: jsonb ===
+  bootstrap     9.4s -> 21234 rows/s
+  drained       4.7s -> 170699 row-changes/s through the mirror
+  latency       p50=209ms p90=215ms p99=712ms max=712ms (n=60)
+  storage       source 1 GB / mirror 334 MB -> 3.2x smaller (200,107 live rows)
+  wrote         988 MB to storage (363 B/row-change)
+  files         1 base + 5 delta
+  correctness   MATCH (mirror 200108 rows (checksum c759c5c7d5920c19))
+=== shape: narrow ===
+  bootstrap     2.0s -> 98135 rows/s
+  drained       31.8s -> 92449 row-changes/s through the mirror
+  latency       p50=209ms p90=211ms p99=1092ms max=1092ms (n=60)
+  storage       source 425 MB / mirror 109 MB -> 3.9x smaller (4,251,878 live rows)
+  wrote         125 MB to storage (32 B/row-change)
+  files         1 base + 16 delta
+  correctness   MATCH (mirror 4251879 rows (checksum 1c491ac64d4585a5))
+
+[exited with code 0]
+ok
+=== NEW, precise bootstrap timing ===
+=== shape: narrow ===
+  bootstrap     1.0s -> 192957 rows/s
+  latency       p50=209ms p90=212ms p99=792ms max=792ms (n=60)
+  storage       source 289 MB / mirror 107 MB -> 2.7x smaller (2,897,243 live rows)
+  wrote         134 MB to storage (52 B/row-change)
+  correctness   MATCH (mirror 2897244 rows (checksum a141d488d9e90d2e))
+=== OLD, precise bootstrap timing ===
+=== shape: narrow ===
+  bootstrap     1.0s -> 192773 rows/s
+  latency       p50=209ms p90=212ms p99=1961ms max=1961ms (n=60)
+  storage       source 295 MB / mirror 108 MB -> 2.7x smaller (2,957,756 live rows)
+  wrote         146 MB to storage (56 B/row-change)
+  correctness   MATCH (mirror 2957757 rows (checksum 31a66039a6a25db6))
+
+[exited with code 0]
