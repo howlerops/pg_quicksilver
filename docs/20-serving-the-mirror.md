@@ -140,9 +140,10 @@ date arithmetic, so `WHERE ts > now() - interval '1 day'` needs an explicit cast
 that a query written against PostgreSQL will not have.
 
 It surfaced as a spelling difference (`…+00` from the mirror against `…+00:00`
-from a Python datetime) which is only a harness detail; the fact underneath is
-not. **Mapping temporal types to Arrow timestamps is the top item in "what to do
-next" below.**
+from a Python datetime), which is only a harness detail. **The fact underneath
+was not**, and chasing it found a silent-corruption bug — see
+[docs/22](22-one-instant-two-spellings.md). Text is a property of the SESSION
+that rendered it, and nothing made the mirror's three sessions agree.
 
 ---
 
@@ -165,7 +166,9 @@ directory that `duckdb.allowed_directories` permits.
 
 1. **Map temporal types to Arrow timestamps** (and dates, and intervals). Today
    they are text, which works for grouping and ordering and fails for
-   arithmetic. This is the largest remaining compatibility gap.
+   arithmetic. This is the largest remaining compatibility gap. The *correctness*
+   half of it is fixed — [docs/22](22-one-instant-two-spellings.md) — but a
+   query engine still sees VARCHAR.
 2. **Measure a cold cache.** Every number above is a warm page cache on both
    sides — the first-run timings are printed alongside the medians and are 1–2×
    the median for the mirror. A cold comparison is a different, and fairer,

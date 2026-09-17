@@ -31,6 +31,7 @@ import (
 	"github.com/howlerops/pg_quicksilver/go/internal/ddl"
 	"github.com/howlerops/pg_quicksilver/go/internal/health"
 	"github.com/howlerops/pg_quicksilver/go/internal/mirror"
+	"github.com/howlerops/pg_quicksilver/go/internal/pgtext"
 )
 
 type options struct {
@@ -50,26 +51,26 @@ type options struct {
 	password     string
 	podName      string
 	localSocket  string
-	healthAddr string
+	healthAddr   string
 }
 
 func loadOptions() options {
 	o := options{
-		cluster:      env("QS_CLUSTER", ""),
-		mode:         env("QS_MODE", "shadow"),
-		ingest:       env("QS_INGEST", "logical"),
-		slot:         env("QS_SLOT", "quicksilver"),
-		publication:  env("QS_PUBLICATION", "quicksilver"),
-		mirrorPath:   env("QS_MIRROR_PATH", "/var/lib/postgresql/data/quicksilver"),
-		primaryHost:  env("QS_PRIMARY_HOST", ""),
-		primaryPort:  env("QS_PRIMARY_PORT", "5432"),
-		localPort:    env("QS_LOCAL_PORT", "5432"),
-		database:     env("QS_DATABASE", "app"),
-		user:         env("QS_PGUSER", "postgres"),
-		password:     env("QS_PGPASSWORD", ""),
-		podName:      env("QS_POD_NAME", ""),
-		localSocket:  env("QS_LOCAL_SOCKET_DIR", "/controller/run"),
-		healthAddr:   env("QS_HEALTH_ADDR", ":9187"),
+		cluster:     env("QS_CLUSTER", ""),
+		mode:        env("QS_MODE", "shadow"),
+		ingest:      env("QS_INGEST", "logical"),
+		slot:        env("QS_SLOT", "quicksilver"),
+		publication: env("QS_PUBLICATION", "quicksilver"),
+		mirrorPath:  env("QS_MIRROR_PATH", "/var/lib/postgresql/data/quicksilver"),
+		primaryHost: env("QS_PRIMARY_HOST", ""),
+		primaryPort: env("QS_PRIMARY_PORT", "5432"),
+		localPort:   env("QS_LOCAL_PORT", "5432"),
+		database:    env("QS_DATABASE", "app"),
+		user:        env("QS_PGUSER", "postgres"),
+		password:    env("QS_PGPASSWORD", ""),
+		podName:     env("QS_POD_NAME", ""),
+		localSocket: env("QS_LOCAL_SOCKET_DIR", "/controller/run"),
+		healthAddr:  env("QS_HEALTH_ADDR", ":9187"),
 	}
 	for _, t := range strings.Split(env("QS_TABLES", ""), ",") {
 		if t = strings.TrimSpace(t); t != "" {
@@ -97,7 +98,9 @@ func (o options) primaryDSN() string {
 		dsn = fmt.Sprintf("postgres://%s:%s@%s:%s/%s",
 			o.user, o.password, o.primaryHost, o.primaryPort, o.database)
 	}
-	return dsn + "?sslmode=prefer"
+	// Pinned: the mirror stores the TEXT PostgreSQL renders, and that text is a
+	// property of the session, not of the value. See internal/pgtext.
+	return pgtext.PinDSN(dsn + "?sslmode=prefer")
 }
 
 // localDSN talks to the PostgreSQL in this same Pod over its unix socket. It is
@@ -105,8 +108,8 @@ func (o options) primaryDSN() string {
 // deliberately does not carry a password: peer authentication on the socket is
 // both sufficient and the only thing available before the app secret is read.
 func (o options) localDSN() string {
-	return fmt.Sprintf("postgres://postgres@/%s?host=%s&port=%s",
-		o.database, o.localSocket, o.localPort)
+	return pgtext.PinDSN(fmt.Sprintf("postgres://postgres@/%s?host=%s&port=%s",
+		o.database, o.localSocket, o.localPort))
 }
 
 func main() {

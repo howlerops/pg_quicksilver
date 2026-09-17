@@ -22,6 +22,7 @@ import (
 
 	"github.com/howlerops/pg_quicksilver/go/internal/ddl"
 	"github.com/howlerops/pg_quicksilver/go/internal/mirror"
+	"github.com/howlerops/pg_quicksilver/go/internal/pgtext"
 )
 
 func main() {
@@ -42,7 +43,10 @@ func main() {
 		fail("table must be schema.table")
 	}
 
-	conn, err := pgx.Connect(ctx, *dsn)
+	// Pinned like every other connection: this one COMPARES the mirror's text
+	// against freshly rendered text, so an unpinned verifier reports a
+	// divergence whenever its own session disagrees about spelling.
+	conn, err := pgx.Connect(ctx, pgtext.PinDSN(*dsn))
 	if err != nil {
 		fail("connect: %v", err)
 	}

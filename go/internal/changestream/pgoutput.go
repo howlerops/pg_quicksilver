@@ -35,6 +35,8 @@ import (
 	"time"
 
 	"github.com/jackc/pglogrepl"
+
+	"github.com/howlerops/pg_quicksilver/go/internal/pgtext"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgproto3"
 )
@@ -70,6 +72,11 @@ type Streaming struct {
 // NewStreaming dials a dedicated replication connection. dsn must NOT already
 // carry replication=database; it is added here.
 func NewStreaming(ctx context.Context, dsn, slot, publication string, tables []string) (*Streaming, error) {
+	// A logical replication connection is a backend of its own, and pgoutput
+	// renders every value as text using ITS session settings — not the ones the
+	// snapshot ran under. Pinning here as well as at the caller is deliberate:
+	// this is the session that renders most of the mirror's lifetime.
+	dsn = pgtext.PinDSN(dsn)
 	sep := "?"
 	if strings.Contains(dsn, "?") {
 		sep = "&"

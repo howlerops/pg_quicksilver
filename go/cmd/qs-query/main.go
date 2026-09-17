@@ -27,6 +27,7 @@ import (
 
 	"github.com/howlerops/pg_quicksilver/go/internal/ddl"
 	"github.com/howlerops/pg_quicksilver/go/internal/mirror"
+	"github.com/howlerops/pg_quicksilver/go/internal/pgtext"
 )
 
 func main() {
@@ -81,7 +82,7 @@ func main() {
 func columns(dsn, root, schema, name string) (map[string]string, []string, error) {
 	if dsn != "" {
 		ctx := context.Background()
-		conn, err := pgx.Connect(ctx, dsn)
+		conn, err := pgx.Connect(ctx, pgtext.PinDSN(dsn))
 		if err != nil {
 			return nil, nil, fmt.Errorf("connect: %w", err)
 		}
