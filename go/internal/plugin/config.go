@@ -90,6 +90,28 @@ type Config struct {
 	// a role with REPLICATION, SELECT on the mirrored tables, and CREATE on the
 	// database (for the publication and the DDL event trigger).
 	CredentialsSecret string
+
+	// SidecarMemory is the memory request AND limit for the mirror sidecar.
+	//
+	// This has to be settable, because the right value is a function of
+	// something the plugin cannot see: how many ROWS the mirrored tables hold.
+	// The sidecar's heap is dominated by one structure — the key index, one
+	// entry per live row — and a profile against a 20.5M-row mirror put it at
+	// 95.76% of the live heap:
+	//
+	//	862.64MB 95.76%  mirror.newKeyIndex
+	//	 18.80MB  2.09%  mirror.forEachRowGroup
+	//
+	// That is 42 bytes per live row resident, and roughly twice that in RSS,
+	// because Go's collector targets a heap around twice the live set by
+	// default. Measured peak for that mirror: 1,854 MB.
+	//
+	// The old value — 256Mi, request only, no limit — is correct up to about
+	// three million rows and wrong by sevenfold at twenty. Being wrong here is
+	// not a sidecar problem: a container that requests far less than it uses is
+	// Burstable, and the Pod it makes an eviction candidate is the one running
+	// PostgreSQL.
+	SidecarMemory string
 }
 
 // Defaults that apply when a parameter is absent.
@@ -98,6 +120,11 @@ const (
 	DefaultMirrorPath   = "/var/lib/postgresql/data/quicksilver"
 	DefaultDatabase     = "app"
 	DefaultSidecarImage = "ghcr.io/howlerops/pg_quicksilver-mirror:latest"
+
+	// DefaultSidecarMemory suits a mirror up to roughly three million rows.
+	// Past that it is wrong, and see Config.SidecarMemory for the arithmetic:
+	// budget about 90 bytes of RSS per live row across the mirrored tables.
+	DefaultSidecarMemory = "256Mi"
 )
 
 var (
@@ -134,6 +161,7 @@ func ParseConfig(clusterName string, params map[string]string) Config {
 
 		Database:          get("database", DefaultDatabase),
 		CredentialsSecret: get("credentialsSecret", clusterName+"-superuser"),
+		SidecarMemory:     get("sidecarMemory", DefaultSidecarMemory),
 	}
 
 	for _, t := range strings.Split(get("tables", ""), ",") {
@@ -176,7 +204,7 @@ func Validate(cluster *apiv1.Cluster, params map[string]string) []*operator.Vali
 		"mode": true, "ingest": true, "tables": true, "freshnessSLO": true,
 		"sidecarImage": true, "slotName": true, "publication": true,
 		"mirrorPath": true, AcknowledgeParam: true,
-		"database": true, "credentialsSecret": true,
+		"database": true, "credentialsSecret": true, "sidecarMemory": true,
 	}
 	for k := range params {
 		if !known[k] {

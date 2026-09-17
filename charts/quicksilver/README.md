@@ -78,5 +78,58 @@ of defence, not a substitute**: a guard running inside the process it guards
 cannot be trusted alone, and a wedged sidecar is exactly the case where the slot
 grows fastest. Set the PostgreSQL parameter.
 
+### Size `sidecarMemory` from your ROW COUNT, not your disk
+
+```yaml
+  plugins:
+    - name: quicksilver.howlerops.io
+      parameters:
+        tables: public.events
+        sidecarMemory: 2Gi      # ~90 bytes of RSS per live row
+```
+
+The sidecar's heap is dominated by one structure — the key index, one entry per
+live row. A heap profile against a 20.5M-row mirror:
+
+```
+862.64MB 95.76%  mirror.newKeyIndex
+ 18.80MB  2.09%  mirror.forEachRowGroup
+  8.50MB  0.94%  changestream.decodeTuple
+```
+
+That is 42 bytes per live row of live heap, and roughly twice that resident.
+The mirror weighed 120 MB on disk and the sidecar peaked at 1,854 MB, so
+**sizing from the mirror's size on disk is wrong by an order of magnitude.**
+
+| rows | `sidecarMemory` |
+|---|---|
+| 1M | `256Mi` (the default) |
+| 5M | `512Mi` |
+| 20M | `2Gi` |
+
+It is applied as a request *and* a limit, which puts the sidecar in Guaranteed
+QoS. That matters more than the exact number: a container requesting far less
+than it uses is Burstable, and the Pod it makes an eviction candidate is the one
+running PostgreSQL — the same principle as the slot guard above. The mirror is
+an optimisation; the database is the database.
+
+Setting it too low makes the mirror **slower, not dead**. The sidecar runs with
+`GOMEMLIMIT` at 80% of the limit, so Go collects harder rather than growing past
+it. Leave the headroom, though — measured at 20.5M rows, against a 901 MB live
+heap:
+
+```
+setting                peak RSS   drain
+default (GOGC=100)      1854 MB     12s
+GOMEMLIMIT 1600MiB      1536 MB     12s   binding, and free
+GOMEMLIMIT 1200MiB      1174 MB    125s   thrashing, ten times slower
+```
+
+Do not reach for `GOGC` instead. It is a ratio, so it cannot tell a heap that is
+one big long-lived index from a heap that is garbage — and here it is almost
+entirely the former. `GOGC=25` finished with *more* resident memory than the
+default (2,013 MB) and took 183s, because collecting harder slows the apply loop
+and the changes left in flight are themselves heap.
+
 See [`examples/cluster-shadow.yaml`](../../examples/cluster-shadow.yaml) and
 [docs/16](../../docs/16-deploying.md).

@@ -3,6 +3,7 @@ package plugin
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
 
 	corev1 "k8s.io/api/core/v1"
@@ -123,6 +124,11 @@ func MirrorSidecar(clusterName string, cfg Config) *corev1.Container {
 			{Name: "QS_PUBLICATION", Value: cfg.Publication},
 			{Name: "QS_MIRROR_PATH", Value: cfg.MirrorPath},
 			{Name: "QS_FRESHNESS_SLO", Value: cfg.FreshnessSLO.String()},
+			// A soft heap ceiling derived from the container's memory limit, so
+			// that a mirror too large for its limit gets SLOWER rather than
+			// killed. See sidecarResources for the measured cliff this is
+			// sized to stay clear of.
+			{Name: "GOMEMLIMIT", Value: goMemLimit(sidecarMemory(cfg))},
 			{
 				Name: "QS_POD_NAME",
 				ValueFrom: &corev1.EnvVarSource{
@@ -191,12 +197,7 @@ func MirrorSidecar(clusterName string, cfg Config) *corev1.Container {
 			PeriodSeconds:    10,
 			FailureThreshold: 6,
 		},
-		Resources: corev1.ResourceRequirements{
-			Requests: corev1.ResourceList{
-				corev1.ResourceCPU:    resource.MustParse("100m"),
-				corev1.ResourceMemory: resource.MustParse("256Mi"),
-			},
-		},
+		Resources: sidecarResources(cfg),
 		SecurityContext: &corev1.SecurityContext{
 			AllowPrivilegeEscalation: boolPtr(false),
 			ReadOnlyRootFilesystem:   boolPtr(true),
@@ -209,3 +210,70 @@ func MirrorSidecar(clusterName string, cfg Config) *corev1.Container {
 const HealthPort = 9187
 
 func boolPtr(b bool) *bool { return &b }
+
+// sidecarResources sets the mirror sidecar's memory request AND limit to the
+// same value, and derives GOMEMLIMIT from it.
+//
+// Request == limit puts the sidecar in the Guaranteed QoS class. The old spec
+// set a 256Mi request and no limit, which is Burstable, and the Pod that makes
+// an eviction candidate is the one running PostgreSQL — so the mirror, which is
+// an optimisation, could get the database evicted under node memory pressure.
+// That is the same principle as the slot guard in docs/28: the mirror must
+// never be the reason the primary goes down.
+//
+// GOMEMLIMIT is a soft ceiling: past it Go collects harder rather than growing,
+// which turns "the container is killed" into "the mirror runs slower". That is
+// the right trade for a sidecar next to a database, but it is a real trade and
+// it has a cliff. Measured against the 20.5M-row mirror, whose live heap is
+// 901 MB, draining one 20,000-row UPDATE:
+//
+//	setting                peak RSS   drain
+//	default (GOGC=100)      1854 MB     12s
+//	GOMEMLIMIT 2000MiB      1860 MB     12s   above the natural peak; not binding
+//	GOMEMLIMIT 1600MiB      1536 MB     12s   binding, and free
+//	GOMEMLIMIT 1200MiB      1174 MB    125s   THRASHING — ten times slower
+//	GOGC 50                 1392 MB     12s
+//	GOGC 25                 2013 MB    183s   WORSE ON BOTH AXES
+//
+// A ceiling close to the live heap makes the collector run continuously. So the
+// fraction below is deliberately generous: at 80% of the limit, an operator who
+// sizes the limit by the documented rule (~90 bytes of RSS per live row) lands
+// around 1.7x the live heap — 1600MiB against 901 MB live is 1.78x, which is
+// the row that was free. An operator who undersizes it gets a slow mirror
+// instead of a killed one, which is the failure this is chosen to produce.
+//
+// GOGC is deliberately NOT the knob, and GOGC=25 is why. Collecting harder
+// slows the apply loop, a slower apply loop leaves more changes in flight, and
+// changes in flight are heap — so tightening the ratio cost 15x the drain time
+// and finished with MORE resident memory than the default. A ratio cannot
+// distinguish "this heap is one big long-lived index" from "this heap is
+// garbage", and here it is almost entirely the former. GOMEMLIMIT can, because
+// it is an absolute ceiling rather than a multiple of the live set.
+func sidecarResources(cfg Config) corev1.ResourceRequirements {
+	mem := sidecarMemory(cfg)
+	return corev1.ResourceRequirements{
+		Requests: corev1.ResourceList{
+			corev1.ResourceCPU:    resource.MustParse("100m"),
+			corev1.ResourceMemory: mem,
+		},
+		Limits: corev1.ResourceList{
+			corev1.ResourceMemory: mem,
+		},
+	}
+}
+
+// goMemLimit is the soft heap ceiling for a container limited to `mem`, as a
+// GOMEMLIMIT value. See sidecarResources for why it is 80% and not 95%.
+func goMemLimit(mem resource.Quantity) string {
+	return strconv.FormatInt(mem.Value()/5*4, 10)
+}
+
+// sidecarMemory parses the configured limit, falling back to the default rather
+// than failing: an unparseable value must not stop a Pod from being admitted.
+func sidecarMemory(cfg Config) resource.Quantity {
+	mem, err := resource.ParseQuantity(cfg.SidecarMemory)
+	if err != nil {
+		return resource.MustParse(DefaultSidecarMemory)
+	}
+	return mem
+}

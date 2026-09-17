@@ -70,6 +70,28 @@ spec:
         database: app
         credentialsSecret: app-superuser
 
+        # The sidecar's memory scales with the ROW COUNT of the mirrored
+        # tables, not with their size on disk. Its heap is dominated by one
+        # structure — the key index, one entry per live row — which a profile
+        # against a 20.5M-row mirror put at 95.76% of the live heap.
+        #
+        # Budget about 90 bytes of RSS per live row, and round up:
+        #
+        #     1M rows      256Mi   (the default)
+        #     5M rows      512Mi
+        #    20M rows        2Gi   measured peak 1,854 MB
+        #
+        # This is a request AND a limit, so the sidecar is Guaranteed QoS. That
+        # matters more than the number: a container that requests far less than
+        # it uses is Burstable, and the Pod it makes an eviction candidate is
+        # this one — the one running PostgreSQL.
+        #
+        # Set it too low and the mirror gets slower, not killed: the sidecar
+        # runs with GOMEMLIMIT at 80% of this value, so Go collects harder
+        # instead of growing past the limit. Measured at 20.5M rows, a ceiling
+        # near the live heap costs 10x the drain time, so leave the headroom.
+        sidecarMemory: 2Gi
+
   bootstrap:
     initdb:
       database: app
