@@ -115,6 +115,7 @@ in [docs/04](docs/04-storage-and-query-engine.md).
 | 25 | [Where the bootstrap goes](docs/25-where-the-bootstrap-goes.md) | Two shapes, two different bottlenecks hiding behind one unit; a codec that won on every axis including the one it was supposed to lose; and two published numbers that described the harness rather than the mirror |
 | 26 | [The fifteen-second tick](docs/26-the-fifteen-second-tick.md) | Instrumenting the apply loop found a stall an order of magnitude worse than anything reported — and the fix for it cost throughput, which took two more measurements to explain |
 | 27 | [The pruning that already works](docs/27-the-pruning-that-already-works.md) | A planned feature, measured before it was built, and retracted — plus the fourth measurement defect of the week and what the four have in common |
+| 28 | [The slot is a loaded gun](docs/28-the-slot-is-a-loaded-gun.md) | The large-scale test took the database down — reproducing a risk the register had named and nobody had implemented. Why a logical slot makes a slow mirror the primary's problem, and the two defences that now exist |
 | — | [ADRs](docs/adr/) | Architecture decision records (template + the decisions still open) |
 
 ## The four architectures under consideration

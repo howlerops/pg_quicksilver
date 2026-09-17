@@ -15,6 +15,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -189,6 +190,14 @@ func supervise(ctx context.Context, log *slog.Logger, o options, h *health.Healt
 		err = runMirror(ctx, log, o, h)
 		if ctx.Err() != nil {
 			return
+		}
+		// The slot guard fires from inside the apply loop, which cannot drop
+		// the slot while its own stream is holding it. So the drop happens
+		// here, once that stream is gone — and it must happen before the retry,
+		// or the next start resumes the same runaway slot and the primary keeps
+		// filling up.
+		if errors.Is(err, ErrSlotTooFar) {
+			dropSlot(ctx, o, o.slot, log)
 		}
 		log.Error("mirror stopped", "err", err, "retry_in", backoff)
 		sleep(ctx, backoff)
@@ -467,6 +476,11 @@ func pump(
 	role := &roleWatch{o: o}
 	defer role.close(ctx)
 
+	// And a guard on how much WAL this mirror's slot may pin. See slotguard.go:
+	// a mirror that cannot keep up fills the PRIMARY's disk, which the
+	// large-scale run demonstrated by doing it.
+	guard := &slotGuard{slot: o.slot, conn: conn, last: time.Now()}
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -554,6 +568,13 @@ func pump(
 		var headLSN string
 		_ = conn.QueryRow(ctx, "SELECT pg_current_wal_lsn()::text").Scan(&headLSN)
 		tt.done("head_lsn")
+
+		if retained, err := guard.check(ctx, log); err != nil {
+			return err
+		} else if retained >= 0 {
+			h.RecordSlotRetention(retained)
+		}
+		tt.done("slot_guard")
 		backlog := 0
 		for _, t := range tables {
 			backlog += t.CompactionBacklog()

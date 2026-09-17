@@ -193,6 +193,26 @@ while [ "$(date +%s)" -lt "$END" ]; do
   psq 5443 "UPDATE m SET amount = amount + 1, ts = now()
             WHERE id BETWEEN $lo AND $((lo + 20000))" >/dev/null 2>&1
   changes=$((changes + 20001))
+
+  # THE WORKLOAD IS THE DANGEROUS PHASE, not the seed, and the first version of
+  # this script only guarded the seed.
+  #
+  # Updates write WAL, and the mirror's logical slot pins every segment it has
+  # not confirmed. Producing changes faster than the mirror drains them turns
+  # the difference into WAL that no checkpoint can reclaim. Measured here:
+  # 196,632 changes/s in against a mirror draining ~95,000/s took 6.6 GB of
+  # free space to 272 KB in under a minute and stopped PostgreSQL.
+  #
+  # That is a real property of the product, not of this script — see docs/28 —
+  # and the sidecar now bounds its own slot. This guard exists so the HARNESS
+  # stops before the disk does even when that guard is off or set high.
+  free_mb=$(( $(df --output=avail / | tail -1) / 1024 ))
+  if [ "$free_mb" -lt "$RESERVE_MB" ]; then
+    printf '\n'
+    ok "stopping the workload early: ${free_mb} MB left, which is the slot"
+    ok "pinning WAL faster than the mirror confirms it — see docs/28"
+    break
+  fi
 done
 work=$(echo "$(date +%s.%N)-$work_t0"|bc)
 printf '  %s row-changes in %.0fs (%.0f/s into PostgreSQL)\n' \

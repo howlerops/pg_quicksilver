@@ -45,6 +45,20 @@ spec:
       # rather than silently overridden.
       shared_buffers: 512MB
 
+      # THIS ONE IS NOT OPTIONAL, and it protects the database from the mirror.
+      #
+      # A logical slot pins every WAL segment its consumer has not confirmed.
+      # That is what lets a restarted mirror resume instead of re-snapshotting,
+      # and it means a mirror that CANNOT KEEP UP fills this primary's disk
+      # until PostgreSQL stops. Measured: a 60-second workload of 11.7 million
+      # row-changes against a mirror draining at about half that rate took
+      # 6.6 GB of free space to 272 KB and brought the server down (docs/28).
+      #
+      # With this set, PostgreSQL invalidates the slot instead. The mirror
+      # rebuilds from a fresh snapshot and this cluster keeps serving.
+      # A quarter of the volume is a reasonable starting point.
+      max_slot_wal_keep_size: 4GB
+
   plugins:
     - name: quicksilver.howlerops.io
       enabled: true

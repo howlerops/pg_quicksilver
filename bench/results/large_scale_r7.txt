@@ -1,0 +1,98 @@
+
+=== budget ===
+  11G free, reserving 2000 MB
+  shape=narrow at 190 B/row, stored twice plus a mirror
+  rows: 22795490
+
+=== infrastructure ===
+
+=== seeding 22795490 rows ===
+  2000000 rows, 10132 MB free     4000000 rows, 9995 MB free     6000000 rows, 9841 MB free     8000000 rows, 9703 MB free     10000000 rows, 9566 MB free     12000000 rows, 9412 MB free     14000000 rows, 9258 MB free     16000000 rows, 9105 MB free     18000000 rows, 8935 MB free     20000000 rows, 8782 MB free     22000000 rows, 8644 MB free     22795490 rows, 8609 MB free   
+  seeded in 32s — 1.9G on disk (89 B/row)
+
+=== standby ===
+  standby on 5444, in recovery
+  6.6G free after two copies
+
+=== bootstrap ===
+  59.8s -> 381381 rows/s -> 33.9 MB/s
+  RSS after bootstrap: 113M
+
+=== a workload on top, for 60s ===
+  11700585 row-changes in 60s (196632/s into PostgreSQL)
+
+=== drain ===
+psql: error: connection to server on socket "/tmp/.s.PGSQL.5443" failed: FATAL:  the database system is not yet accepting connections
+DETAIL:  Consistent recovery state has not been yet reached.
+psql: error: connection to server on socket "/tmp/.s.PGSQL.5443" failed: FATAL:  the database system is not yet accepting connections
+DETAIL:  Consistent recovery state has not been yet reached.
+psql: error: connection to server on socket "/tmp/.s.PGSQL.5443" failed: FATAL:  the database system is not yet accepting connections
+DETAIL:  Consistent recovery state has not been yet reached.
+Traceback (most recent call last):
+  File "<string>", line 5, in <module>
+  File "<string>", line 4, in p
+ValueError: not enough values to unpack (expected 2, got 1)
+Traceback (most recent call last):
+  File "<string>", line 5, in <module>
+  File "<string>", line 4, in p
+ValueError: not enough values to unpack (expected 2, got 1)
+Traceback (most recent call last):
+  File "<string>", line 5, in <module>
+  File "<string>", line 4, in p
+ValueError: not enough values to unpack (expected 2, got 1)
+Traceback (most recent call last):
+  File "<string>", line 5, in <module>
+  File "<string>", line 4, in p
+ValueError: not enough values to unpack (expected 2, got 1)
+Traceback (most recent call last):
+  File "<string>", line 5, in <module>
+  File "<string>", line 4, in p
+ValueError: not enough values to unpack (expected 2, got 1)
+Traceback (most recent call last):
+  File "<string>", line 5, in <module>
+  File "<string>", line 4, in p
+ValueError: not enough values to unpack (expected 2, got 1)
+Traceback (most recent call last):
+  File "<string>", line 5, in <module>
+  File "<string>", line 4, in p
+ValueError: not enough values to unpack (expected 2, got 1)
+Traceback (most recent call last):
+  File "<string>", line 5, in <module>
+  File "<string>", line 4, in p
+ValueError: not enough values to unpack (expected 2, got 1)
+Traceback (most recent call last):
+  File "<string>", line 5, in <module>
+  File "<string>", line 4, in p
+ValueError: not enough values to unpack (expected 2, got 1)
+Traceback (most recent call last):
+  File "<string>", line 5, in <module>
+  File "<string>", line 4, in p
+ValueError: not enough values to unpack (expected 2, got 1)
+Traceback (most recent call last):
+  File "<string>", line 5, in <module>
+  File "<string>", line 4, in p
+ValueError: not enough values to unpack (expected 2, got 1)
+Traceback (most recent call last):
+  File "<string>", line 5, in <module>
+  File "<string>", line 4, in p
+ValueError: not enough values to unpack (expected 2, got 1)
+Traceback (most recent call last):
+  File "<string>", line 5, in <module>
+  File "<string>", line 4, in p
+ValueError: not enough values to unpack (expected 2, got 1)
+Traceback (most recent call last):
+  File "<string>", line 5, in <module>
+  File "<string>", line 4, in p
+ValueError: not enough values to unpack (expected 2, got 1)
+Traceback (most recent call last):
+  File "<string>", line 5, in <module>
+  File "<string>", line 4, in p
+ValueError: not enough values to unpack (expected 2, got 1)
+Traceback (most recent call last):
+  File "<string>", line 5, in <module>
+  File "<string>", line 4, in p
+ValueError: not enough values to unpack (expected 2, got 1)
+Traceback (most recent call last):
+  File "<string>", line 5, in <module>
+  File "<string>", line 4, in p
+ValueError: not enough values to unpack (expected 2, got 1)

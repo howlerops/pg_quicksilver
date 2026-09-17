@@ -34,19 +34,27 @@ type Snapshot struct {
 	Diverged          bool    `json:"diverged"`
 	Bootstrapped      bool    `json:"bootstrapped"`
 	VerifiedAgo       float64 `json:"verified_seconds_ago"`
+
+	// SlotRetainedBytes is how much WAL this mirror's replication slot is
+	// pinning on the PRIMARY. It is the one number here that describes damage
+	// the mirror is doing to something else, which is why it is exported even
+	// though nothing gates on it: an operator watching a mirror fall behind
+	// wants to see this climbing long before the guard fires (slotguard.go).
+	SlotRetainedBytes int64 `json:"slot_retained_bytes"`
 }
 
 type Health struct {
 	slo time.Duration
 
-	mu         sync.Mutex
-	appliedLSN string
-	headLSN    string
-	lagBytes   uint64
-	caughtUpAt time.Time
-	backlog    int
-	diverged   bool
-	verifiedAt time.Time
+	mu           sync.Mutex
+	appliedLSN   string
+	headLSN      string
+	lagBytes     uint64
+	caughtUpAt   time.Time
+	backlog      int
+	diverged     bool
+	verifiedAt   time.Time
+	slotRetained int64
 
 	// bootstrapped is false until the mirror has a complete copy of the source
 	// to serve from. Without it a freshly-started node is READY: lag is
@@ -59,6 +67,13 @@ type Health struct {
 
 func New(slo time.Duration) *Health {
 	return &Health{slo: slo, caughtUpAt: time.Now()}
+}
+
+// RecordSlotRetention notes how much WAL the slot is holding on the primary.
+func (h *Health) RecordSlotRetention(b int64) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.slotRetained = b
 }
 
 func (h *Health) RecordApply(appliedLSN, headLSN string, backlog int) {
@@ -104,6 +119,7 @@ func (h *Health) Snapshot() Snapshot {
 		LagSeconds:        time.Since(h.caughtUpAt).Seconds(),
 		CompactionBacklog: h.backlog, Diverged: h.diverged,
 		Bootstrapped:      h.bootstrapped,
+		SlotRetainedBytes: h.slotRetained,
 	}
 	if !h.verifiedAt.IsZero() {
 		s.VerifiedAgo = time.Since(h.verifiedAt).Seconds()
@@ -159,7 +175,10 @@ quicksilver_diverged %d
 # HELP quicksilver_bootstrapped 1 once the mirror holds a complete copy to serve.
 # TYPE quicksilver_bootstrapped gauge
 quicksilver_bootstrapped %d
-`, s.LagSeconds, s.LagBytes, ready, s.CompactionBacklog, diverged, boot)
+# HELP quicksilver_slot_retained_bytes WAL this mirror's slot pins on the PRIMARY
+# TYPE quicksilver_slot_retained_bytes gauge
+quicksilver_slot_retained_bytes %d
+`, s.LagSeconds, s.LagBytes, ready, s.CompactionBacklog, diverged, boot, s.SlotRetainedBytes)
 }
 
 // Serve exposes /readyz (the Kubernetes readiness probe), /healthz (liveness —
