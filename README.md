@@ -114,6 +114,7 @@ in [docs/04](docs/04-storage-and-query-engine.md).
 | 24 | [Nothing cached](docs/24-nothing-cached.md) | **The read path with an empty cache.** The point-lookup worst case is 20× warm and 1.4× cold; a published benchmark number that was measuring an empty result; and bytes off the block device per query |
 | 25 | [Where the bootstrap goes](docs/25-where-the-bootstrap-goes.md) | Two shapes, two different bottlenecks hiding behind one unit; a codec that won on every axis including the one it was supposed to lose; and two published numbers that described the harness rather than the mirror |
 | 26 | [The fifteen-second tick](docs/26-the-fifteen-second-tick.md) | Instrumenting the apply loop found a stall an order of magnitude worse than anything reported — and the fix for it cost throughput, which took two more measurements to explain |
+| 27 | [The pruning that already works](docs/27-the-pruning-that-already-works.md) | A planned feature, measured before it was built, and retracted — plus the fourth measurement defect of the week and what the four have in common |
 | — | [ADRs](docs/adr/) | Architecture decision records (template + the decisions still open) |
 
 ## The four architectures under consideration

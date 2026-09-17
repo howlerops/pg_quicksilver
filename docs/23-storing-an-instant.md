@@ -104,11 +104,13 @@ the result; the multiplier is a detail.
 
 Note how much better `date_trunc` does than the range filter: 11.3× against
 2.8×. Truncating to the hour is arithmetic on the stored integer and touches one
-column. The range filter still reads the whole column because the view does not
-yet use row-group statistics to skip files — which is
-[docs/20](20-serving-the-mirror.md)'s item 4, and this makes it worth more than
-it was, because statistics over instants are prunable in a way statistics over
-strings are not.
+column. The range filter reads more of the column, and the reason is not what this
+originally said. It blamed the view for not using row-group statistics to skip
+files; [docs/27](27-the-pruning-that-already-works.md) measured that and the
+view is transparent — the engine prunes on those footers already. What is left
+is that `ts` here is an insert-time clock, so a one-hour window covers a large,
+contiguous and recent part of the table, while `date_trunc` touches one column
+and skips nothing at all.
 
 ### The storage claim, which turned out to be wrong
 
@@ -182,8 +184,9 @@ already agree, and a migration when they do not.
 
 1. **`interval` as `MonthDayNano`.** The one temporal type left as text for a
    reason that is a gap rather than a principle.
-2. **Prune on the statistics.** Worth more now than it was: the view names every
-   file the manifest holds, and a range filter on an instant is exactly the
-   predicate a min/max footer can answer without opening the file.
+2. ~~**Prune on the statistics.**~~ — retracted:
+   [docs/27](27-the-pruning-that-already-works.md) measured it. The engine reads
+   those min/max footers already, and the statistics this work made prunable are
+   being used — they just are not the mirror's to act on.
 3. **Measure a cold cache** — still [docs/20](20-serving-the-mirror.md)'s item
    2, and still the fairer question.

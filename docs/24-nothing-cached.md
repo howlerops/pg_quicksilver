@@ -195,9 +195,11 @@ still right; the shape that would show it is a compacted, vector-free mirror.
 1. **Measure a working set larger than RAM.** Cold-per-query is still a
    best-case disk; a table several times the size of the page cache is the
    scenario the mirror is actually for, and none of these shapes reach it.
-2. **Prune on the manifest.** The clustered/unclustered pair above shows what
-   row-group pruning is worth *inside a file*; the view still names every file
-   the manifest holds. Same idea, one level up.
+2. ~~**Prune on the manifest.**~~ — retracted, with evidence:
+   [docs/27](27-the-pruning-that-already-works.md). The engine already prunes at
+   row-group granularity and the view is transparent to it; a selective
+   predicate reads 1/27 of an unfiltered scan on wide. File-level pruning would
+   save opening footers and nothing else.
 3. **Run the view through the confined `pg_duckdb` of
    [docs/12](12-s5-serving-path.md)** — still built and measured separately,
    still never put together.
