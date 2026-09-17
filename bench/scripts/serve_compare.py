@@ -14,6 +14,19 @@ value by value before its timing is believed.
 
     python3 bench/scripts/serve_compare.py --shape jsonb
     python3 bench/scripts/serve_compare.py --shape narrow --repeat 5
+    python3 bench/scripts/serve_compare.py --shape narrow --cold   # see below
+
+COLD AND WARM ARE DIFFERENT QUESTIONS. By default every timing here is a warm
+page cache on both sides: the data has just been written, it is still in RAM,
+and neither engine touches a disk. That is a real scenario -- a dashboard
+refreshing the same query -- and it is the one that flatters a column store
+least, because the row store's disadvantage is BYTES READ and bytes that are
+already in RAM are nearly free.
+
+--cold measures the other one. Before every single timing it restarts
+PostgreSQL, which is the only way to empty shared_buffers, and drops the OS page
+cache. Requires root, and each side is run ONCE, because the second run of a
+cold query is a warm query.
 """
 
 import argparse
@@ -74,8 +87,22 @@ QUERIES = {
          "SELECT region, sum(amount) FROM {t} GROUP BY region ORDER BY 2 DESC NULLS LAST, 1 NULLS LAST"),
         ("three-column group by",
          "SELECT region, channel, status, count(*) FROM {t} GROUP BY 1,2,3 ORDER BY 4 DESC NULLS LAST, 1 NULLS LAST, 2 NULLS LAST, 3 NULLS LAST LIMIT 20"),
+        # 'pending' and not 'shipped'. The wide shape only ever generates
+        # ok/pending/refunded, so this filter matched NOTHING for as long as it
+        # existed -- and a filter that matches nothing measures row-group
+        # pruning, not filtering. It looked like the most ordinary line in the
+        # table. See check_empty_results below.
         ("filter + aggregate",
-         "SELECT count(*), sum(qty), avg(discount) FROM {t} WHERE status = 'shipped'"),
+         "SELECT count(*), sum(qty), avg(discount) FROM {t} WHERE status = 'pending'"),
+        # The same filter shape over a column whose values are NOT clustered.
+        # The pair matters: 'pending' exists only in the seeded rows, which sit
+        # at the front of the mirror, so DuckDB prunes almost every row group
+        # from its footers and the speedup is mostly about PRUNING. qty is
+        # 1+id%9, uniform across every row group, so nothing can be skipped and
+        # what is left is the columnar scan on its own. Reporting only the
+        # first would credit the format for a property of the data.
+        ("filter + aggregate, unclustered",
+         "SELECT count(*), sum(qty), avg(discount) FROM {t} WHERE qty = 5"),
         ("point lookup by key", "SELECT * FROM {t} WHERE id = 12345"),
     ],
     "jsonb": [
@@ -178,6 +205,92 @@ def normalise(rows):
     return sorted(out, key=lambda r: tuple("\x00" if v is None else str(v) for v in r))
 
 
+_WHOLE_DISK = re.compile(r"^(vd[a-z]+|sd[a-z]+|nvme\d+n\d+)$")
+
+
+def disk_read_bytes():
+    """Sectors read from the block device, for every process on the machine.
+
+    The whole system rather than one PID, on purpose: a PostgreSQL query can
+    fan out to parallel workers whose I/O never appears in the leader's
+    /proc/<pid>/io, and undercounting one side of a comparison is worse than
+    including a little background noise. Nothing else runs during a timing.
+
+    This is the MECHANISM behind every number in the table. A column store is
+    not faster because it is clever; it is faster because it reads fewer bytes,
+    and on a warm cache that advantage is nearly free to the row store.
+    """
+    total = 0
+    with open("/proc/diskstats") as f:
+        for line in f:
+            parts = line.split()
+            # Whole disks only. A partition is counted again by its parent, and
+            # summing both would double every number here.
+            if len(parts) > 5 and _WHOLE_DISK.match(parts[2]):
+                total += int(parts[5]) * 512  # field 6: sectors read
+    return total
+
+
+def is_empty_result(rows):
+    """A filtered query that matched nothing, which is not a measurement.
+
+    The wide shape's `filter + aggregate` filtered on status = 'shipped' for as
+    long as it existed, and the shape only ever generates ok/pending/refunded.
+    Both engines agreed -- on count 0 -- so the correctness check passed, and
+    the timing went into a published table. What it actually measured was how
+    fast each engine can establish that there is nothing to do: PostgreSQL scans
+    341 MB to find out, DuckDB reads a row-group footer, and the ratio is a
+    number about pruning wearing the label of a number about filtering.
+
+    An empty result is never wrong, which is exactly why it has to be SAID.
+    """
+    if not rows:
+        return True
+    # A single aggregate row of count 0 / all NULLs is empty in every sense that
+    # matters here.
+    if len(rows) == 1:
+        vals = list(rows[0])
+        return all(v is None or v == 0 for v in vals)
+    return False
+
+
+def mb(n):
+    if n is None:
+        return "—"
+    if n < 0:  # a counter that went backwards is noise, not a measurement
+        return "?"
+    return f"{n / 1e6:.1f} MB"
+
+
+def drop_page_cache():
+    """Empty the OS page cache. Everything the mirror reads goes through it."""
+    subprocess.run(["sh", "-c", "sync; echo 3 > /proc/sys/vm/drop_caches"],
+                   check=True)
+
+
+def restart_postgres(pgdata, pgbin, logfile):
+    """Empty shared_buffers, which nothing short of a restart does.
+
+    Dropping the OS page cache alone would be a rigged comparison: PostgreSQL
+    would still answer from its own buffer pool while the mirror went to disk.
+
+    `-l` is not optional and the reason is worth writing down. Without it the
+    restarted postmaster INHERITS this script's stdout and stderr pipes, and
+    capture_output reads a pipe until EOF -- which never comes, because the
+    server holds the write end open for as long as it runs. The result is not a
+    crash but a hang: pg_ctl exits, the child shows up as a zombie, and the
+    benchmark waits forever on a database that is already serving queries. The
+    timeout turns a future version of that into an error instead of a stall.
+    """
+    r = subprocess.run(
+        ["su", "postgres", "-c",
+         f"{pgbin}/pg_ctl -D {pgdata} -l {logfile} -w -m fast restart"],
+        capture_output=True, text=True, timeout=120)
+    if r.returncode != 0:
+        sys.exit(f"  could not restart PostgreSQL to empty shared_buffers: "
+                 f"{r.stderr.strip() or r.stdout.strip()}")
+
+
 def timed(fn, repeat):
     """Report the MEDIAN of repeated runs, and the first run separately.
 
@@ -201,6 +314,12 @@ def main():
     ap.add_argument("--dsn", default="postgres://postgres@localhost:5443/app")
     ap.add_argument("--repeat", type=int, default=3)
     ap.add_argument("--qs-query", default="/tmp/qs-query")
+    ap.add_argument("--cold", action="store_true",
+                    help="empty shared_buffers and the page cache before every "
+                         "timing; needs root")
+    ap.add_argument("--pgdata", default="/var/lib/postgresql/qs17/primary")
+    ap.add_argument("--pgbin", default="/usr/lib/postgresql/17/bin")
+    ap.add_argument("--pglog", default="/var/lib/postgresql/qs17/primary.log")
     args = ap.parse_args()
     mirror = args.mirror or f"/var/lib/postgresql/qs17/mx-{args.shape}"
 
@@ -229,10 +348,16 @@ def main():
     print(f"  both sides hold {pg_n:,} rows")
     check_null_ordering(pg, duck, args.table)
     print()
+    if args.cold:
+        print("  COLD: shared_buffers and the page cache are emptied before "
+              "every timing below,")
+        print("  and each side runs exactly once, because a second run is a "
+              "warm run.")
+        print()
     print(f"  {'query':<28} {'postgres':>12} {'mirror':>12} {'speedup':>9}  agree")
     print(f"  {'-' * 28} {'-' * 12} {'-' * 12} {'-' * 9}  -----")
 
-    failures = 0
+    failures, empty = 0, []
     for label, q in QUERIES.get(args.shape, QUERIES["narrow"]):
         def run_pg():
             with pg.cursor() as cur:
@@ -243,8 +368,31 @@ def main():
             return duck.execute(q.format(t="qs")).fetchall()
 
         try:
-            pg_first, pg_med, pg_rows = timed(run_pg, args.repeat)
-            qs_first, qs_med, qs_rows = timed(run_duck, args.repeat)
+            if args.cold:
+                # Restart FIRST, then drop the cache: a restart reads its own
+                # files back in, so dropping before it would warm the very
+                # thing being measured.
+                restart_postgres(args.pgdata, args.pgbin, args.pglog)
+                pg.close()
+                drop_page_cache()
+                pg = CONNECT(args.dsn)
+                b0 = disk_read_bytes()
+                pg_first, pg_med, pg_rows = timed(run_pg, 1)
+                pg_bytes = disk_read_bytes() - b0
+
+                # A fresh DuckDB for the same reason PostgreSQL is restarted:
+                # its buffer manager is as much a cache as shared_buffers.
+                duck.close()
+                drop_page_cache()
+                duck = duckdb.connect()
+                duck.execute(f"CREATE VIEW qs AS {view_sql}")
+                b0 = disk_read_bytes()
+                qs_first, qs_med, qs_rows = timed(run_duck, 1)
+                qs_bytes = disk_read_bytes() - b0
+            else:
+                pg_bytes = qs_bytes = None
+                pg_first, pg_med, pg_rows = timed(run_pg, args.repeat)
+                qs_first, qs_med, qs_rows = timed(run_duck, args.repeat)
         except Exception as e:  # a query the shape does not support
             print(f"  {label:<28} {'—':>12} {'—':>12} {'—':>9}  ERROR {str(e)[:40]}")
             failures += 1
@@ -253,16 +401,32 @@ def main():
         agree = normalise(pg_rows) == normalise(qs_rows)
         if not agree:
             failures += 1
+        if is_empty_result(pg_rows):
+            empty.append(label)
         ratio = pg_med / qs_med if qs_med else 0
         print(f"  {label:<28} {pg_med:>9.1f} ms {qs_med:>9.1f} ms "
               f"{ratio:>8.2f}x  {'yes' if agree else 'NO'}")
         if not agree:
             print(f"      postgres: {normalise(pg_rows)[:2]}")
             print(f"      mirror:   {normalise(qs_rows)[:2]}")
-        print(f"  {'':<28} {'(first ' + format(pg_first, '.0f') + ' ms)':>12} "
-              f"{'(first ' + format(qs_first, '.0f') + ' ms)':>12}")
+        if args.cold:
+            # The mechanism, not just the outcome: bytes off the block device.
+            fewer = (f"{pg_bytes / qs_bytes:>8.2f}x" if qs_bytes else f"{'—':>9}")
+            print(f"  {'  bytes read':<28} {mb(pg_bytes):>12} {mb(qs_bytes):>12} "
+                  f"{fewer}")
+        else:
+            print(f"  {'':<28} {'(first ' + format(pg_first, '.0f') + ' ms)':>12} "
+                  f"{'(first ' + format(qs_first, '.0f') + ' ms)':>12}")
 
     print()
+    if empty:
+        print(f"  WARNING: {', '.join(empty)} returned an empty result on BOTH "
+              f"sides.")
+        print(f"  Those timings measure how fast each engine finds nothing, not "
+              f"how fast it")
+        print(f"  filters. Do not quote them as filter numbers — fix the "
+              f"predicate instead.")
+        print()
     if failures:
         print(f"  {failures} queries did not agree — this is a correctness failure, "
               f"not a slow result")

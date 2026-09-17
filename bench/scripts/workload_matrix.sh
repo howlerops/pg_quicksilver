@@ -165,11 +165,30 @@ for SHAPE in $SHAPES; do
   # psycopg and roughly doubles the run.
   if [ "${QS_SERVE_COMPARE:-0}" = "1" ]; then
     go -C go build -o /tmp/qs-query ./cmd/qs-query && chmod 755 /tmp/qs-query
-    python3 bench/scripts/serve_compare.py --shape "$SHAPE" --mirror "$MIRROR" \
+    python3 -u bench/scripts/serve_compare.py --shape "$SHAPE" --mirror "$MIRROR" \
       --dsn "postgres://postgres@localhost:5443/$DB" || bad "serving comparison failed"
   fi
 
   pkill -x qs-mirror; sleep 1
+
+  # And the same comparison with nothing cached. This runs AFTER the sidecar is
+  # stopped, deliberately: it restarts the primary before every timing, which
+  # would otherwise tear down the replication stream underneath a running
+  # mirror. The mirror is already built and already verified by this point, so
+  # there is nothing left for the sidecar to do.
+  if [ "${QS_COLD:-0}" = "1" ]; then
+    printf '\n  --- cold cache ---\n'
+    python3 -u bench/scripts/serve_compare.py --shape "$SHAPE" --mirror "$MIRROR" \
+      --cold --pgdata "$PRIMARY" \
+      --dsn "postgres://postgres@localhost:5443/$DB" || bad "cold comparison failed"
+    # The restarts dropped the standby's stream. It reconnects on its own, but
+    # the next shape needs it up, so wait rather than assume.
+    for _ in $(seq 60); do
+      [ -n "$(su postgres -c "$PG/psql -h /tmp -p 5443 -U postgres -d postgres -Atc \
+        \"SELECT 1 FROM pg_stat_replication LIMIT 1\"" 2>/dev/null)" ] && break
+      sleep 1
+    done
+  fi
 done
 
 printf '\n========================================\n'

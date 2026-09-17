@@ -74,6 +74,64 @@ func TestViewSQLNamesTheManifestAndItsVectors(t *testing.T) {
 	}
 }
 
+// file_row_number is a generated column, and asking for it stops an engine
+// answering count(*) from the Parquet footer. It belongs on the files that have
+// a deletion vector and on no others -- getting that backwards either costs
+// every query a file open (too many) or resurrects retired rows (too few).
+func TestViewSQLAsksForRowNumbersOnlyWhereAVectorNeedsThem(t *testing.T) {
+	tbl := racyTable(t)
+	var seed []changestream.Change
+	for i := 1; i <= 50; i++ {
+		row := map[string]any{"id": itoa(i), "v": "x", "n": "0"}
+		seed = append(seed, changestream.Change{Op: changestream.OpInsert,
+			Schema: "public", Table: "r", Row: row, Key: row})
+	}
+	if _, err := tbl.Apply([]changestream.Transaction{{
+		CommitLSN: "0/1", NextLSN: "0/1", Changes: seed,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tbl.Compact(); err != nil {
+		t.Fatal(err)
+	}
+
+	// Insert-only so far: nothing has been superseded, so no file carries a
+	// vector and no branch should pay for row numbers.
+	sql, err := tbl.ViewSQL()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(sql, "file_row_number") {
+		t.Errorf("an insert-only mirror asks for file_row_number, which costs a "+
+			"metadata-only count(*) a file open per branch:\n%s", sql)
+	}
+
+	// Now supersede a row. Exactly the branches carrying a vector gain it.
+	row := map[string]any{"id": "7", "v": "y", "n": "1"}
+	if _, err := tbl.Apply([]changestream.Transaction{{
+		CommitLSN: "0/2", NextLSN: "0/2", Changes: []changestream.Change{{
+			Op: changestream.OpUpdate, Schema: "public", Table: "r",
+			Row: row, Key: row,
+		}},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	sql, err = tbl.ViewSQL()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Every branch that applies a vector must also have asked for the column it
+	// filters on, or the SQL does not even parse.
+	if n, m := strings.Count(sql, "file_row_number NOT IN"),
+		strings.Count(sql, "file_row_number = true"); n != m {
+		t.Errorf("%d branches filter on file_row_number but %d ask for it:\n%s",
+			n, m, sql)
+	}
+	if !strings.Contains(sql, "file_row_number NOT IN") {
+		t.Error("the deletion vector is not applied, so row 7 reads twice")
+	}
+}
+
 func TestViewSQLRefusesAHaltedMirror(t *testing.T) {
 	tbl := racyTable(t)
 	if err := tbl.Halt("a column was backfilled by a table rewrite"); err != nil {

@@ -127,10 +127,22 @@ func (t *Table) branch(rel string, want []string) (string, error) {
 		}
 	}
 
-	q := fmt.Sprintf("SELECT %s FROM read_parquet(%s, file_row_number = true)",
-		strings.Join(sel, ", "), sqlString(abs))
-
+	// file_row_number is asked for ONLY where a deletion vector needs it.
+	//
+	// Requesting it everywhere is what the first version did, and it is not
+	// free: it is a generated column, so an engine that could have answered
+	// `count(*)` from the Parquet footer has to open the file instead. On the
+	// cold-cache run that cost the wide shape 70.8 MB of reads for a query
+	// whose answer is a number in the metadata. Most files in an insert-only
+	// mirror have no vector at all.
 	gen := t.State.DVGen[dvStem(rel)]
+	opts := ""
+	if gen != 0 {
+		opts = ", file_row_number = true"
+	}
+	q := fmt.Sprintf("SELECT %s FROM read_parquet(%s%s)",
+		strings.Join(sel, ", "), sqlString(abs), opts)
+
 	if gen != 0 {
 		dv := t.dvPathGen(rel, gen)
 		if _, err := os.Stat(dv); err != nil {
