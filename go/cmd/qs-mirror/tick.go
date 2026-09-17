@@ -163,3 +163,16 @@ func currentLSN(ctx context.Context, conn *pgx.Conn) (string, error) {
 	err := conn.QueryRow(ctx, "SELECT pg_current_wal_lsn()::text").Scan(&lsn)
 	return lsn, err
 }
+
+// maxPendingChanges is how much may wait in memory before the loop stops
+// reading from the stream.
+//
+// Four ticks' worth. Enough that a tick never waits on the network for work it
+// could already have, and small enough that the queue is a buffer rather than a
+// second copy of the backlog: at the default cap that is a million row-changes,
+// which is bounded, whereas "whatever the stream has" is not.
+//
+// The number that matters is not this one but the ratio to maxTickChanges.
+// Reading without a bound while applying with one is what put 2.4 GB of
+// resident memory behind a 139 MB mirror.
+var maxPendingChanges = int(envInt("QS_MAX_PENDING_CHANGES", 4*int64(maxTickChanges)))

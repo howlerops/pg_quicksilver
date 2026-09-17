@@ -1,0 +1,67 @@
+
+=== budget ===
+  9.2G free, reserving 2000 MB
+  shape=narrow at 190 B/row, stored twice plus a mirror
+  rows: 20367209
+
+=== infrastructure ===
+
+=== seeding 20367209 rows ===
+  2000000 rows, 8787 MB free     4000000 rows, 8752 MB free     6000000 rows, 8428 MB free     8000000 rows, 8105 MB free     10000000 rows, 7782 MB free     12000000 rows, 7459 MB free     14000000 rows, 7135 MB free     16000000 rows, 6813 MB free     18000000 rows, 6477 MB free     20000000 rows, 6151 MB free     20367209 rows, 6144 MB free   
+  seeded in 28s — 1.7G on disk (89 B/row)
+
+=== standby ===
+  standby on 5444, in recovery
+  7.0G free after two copies
+
+=== bootstrap ===
+  52.0s -> 391547 rows/s -> 34.8 MB/s
+  RSS after bootstrap: 98M
+
+=== a workload on top, for 60s ===
+  1580079 row-changes in 72s (21846/s into PostgreSQL)
+  paced: waited 60s for the mirror to catch up (slot kept under 512M)
+
+=== drain ===
+  caught up in 1s (1403365 row-changes/s through the mirror)
+
+=== what it cost ===
+  source 1.7G / mirror 139M -> 12.5x smaller (20367210 live rows)
+  files: 1 base + 8 delta
+  RSS: 2.4G (125 bytes per live row)
+  slow ticks: 7
+    total_ms=13866 apply_ms=13865
+    total_ms=2305 apply_ms=2305
+    total_ms=2173 apply_ms=2173
+  6.1G free
+
+=== correctness — the only part that is not optional ===
+bench/scripts/large_scale.sh: line 288: 19813 Killed                  /tmp/qs-verify -dsn "postgres://postgres@localhost:5443/$DB" -mirror "$MIRROR" -table public.m > /tmp/large-verify.txt 2>&1
+  FAIL: DIVERGED at 20367210 rows
+
+=== the read path at this size ===
+  -- quicksilver mirror public.m applied_lsn=2A/1632AA18
+  both sides hold 20,367,210 rows
+  ORDER BY x DESC:  postgres [None, 3, 1]   duckdb [3, 1, None]   DIFFERENT — NULL placement
+
+  query                            postgres       mirror   speedup  agree
+  ---------------------------- ------------ ------------ ---------  -----
+  count(*)                         303.5 ms     422.9 ms     0.72x  yes
+                               (first 303 ms) (first 412 ms)
+  date arithmetic                  480.9 ms     445.7 ms     1.08x  yes
+                               (first 470 ms) (first 533 ms)
+  truncate to the hour            1138.8 ms     735.3 ms     1.55x  yes
+                               (first 1103 ms) (first 600 ms)
+  sum one column                   635.0 ms     743.2 ms     0.85x  yes
+                               (first 635 ms) (first 624 ms)
+  group by sku top 10             3204.7 ms     945.8 ms     3.39x  yes
+                               (first 3355 ms) (first 988 ms)
+  filter + aggregate               589.8 ms     259.5 ms     2.27x  yes
+                               (first 657 ms) (first 286 ms)
+  point lookup by key                0.3 ms     176.0 ms     0.00x  yes
+                               (first 1 ms) (first 197 ms)
+
+  all queries agreed
+
+========================================
+FAIL

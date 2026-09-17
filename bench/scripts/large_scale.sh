@@ -279,12 +279,28 @@ printf '  slow ticks: %s\n' "$SLOW"
 printf '  %s free\n' "$(df -h / | tail -1 | awk '{print $4}')"
 
 say "correctness — the only part that is not optional"
-if /tmp/qs-verify -dsn "postgres://postgres@localhost:5443/$DB" \
-     -mirror "$MIRROR" -table public.m > /tmp/large-verify.txt 2>&1; then
+# Stop the sidecar first. It holds the mirror's in-memory index, and qs-verify
+# builds its own; at twenty million rows both at once is what got the verifier
+# OOM-killed on the first complete run.
+pkill -x qs-mirror 2>/dev/null; sleep 2
+/tmp/qs-verify -dsn "postgres://postgres@localhost:5443/$DB" \
+  -mirror "$MIRROR" -table public.m > /tmp/large-verify.txt 2>&1
+vrc=$?
+if [ $vrc -eq 0 ]; then
   ok "MATCH ($(grep -m1 'mirror ' /tmp/large-verify.txt | sed 's/^ *//'))"
-else
+elif grep -q "DIVERGED" /tmp/large-verify.txt; then
   bad "DIVERGED at $(printf "%'d" "$LIVE") rows"
   sed 's/^/    /' /tmp/large-verify.txt | head -8
+else
+  # A verifier that was killed did not find a divergence, it found nothing.
+  # The first run of this printed "DIVERGED at 20,367,210 rows" for a process
+  # the OOM killer had removed, which is the harness inventing a product bug --
+  # and the exact failure this project keeps writing down about other people's
+  # measurements.
+  bad "qs-verify did not complete (exit $vrc) — this is NOT a divergence, it is"
+  bad "an unverified run, which is worse: nothing was checked"
+  [ -s /tmp/large-verify.txt ] && sed 's/^/    /' /tmp/large-verify.txt | head -5
+  dmesg 2>/dev/null | grep -i "killed process.*qs-verify" | tail -1 | sed 's/^/    /'
 fi
 
 say "the read path at this size"

@@ -500,12 +500,32 @@ func pump(
 		}
 		tt.done("is_primary")
 
-		fresh, err := st.Transactions(ctx)
-		if err != nil {
-			return err
+		// BACKPRESSURE. Do not drain the stream into memory when there is
+		// already more waiting than a tick will apply.
+		//
+		// This is the half of the tick cap that was missing. Capping what a tick
+		// APPLIES, without capping what it READS, does not slow the backlog
+		// down — it moves it from PostgreSQL's WAL, where it costs disk, into
+		// this process's heap, where it costs RSS. The large-scale run measured
+		// the result: 2.4 GB resident for a mirror holding a 139 MB table,
+		// 125 bytes per live row, and a qs-verify OOM-killed beside it.
+		//
+		// Skipping the read is safe because nothing is lost: the stream's buffer
+		// and then the slot hold what is not taken, which is what they are for.
+		// It is the WAL that should absorb a backlog, not the sidecar — and the
+		// slot guard already bounds how much WAL that may be.
+		queued := 0
+		for _, t := range pending {
+			queued += len(t.Changes)
+		}
+		if queued < maxPendingChanges {
+			fresh, err := st.Transactions(ctx)
+			if err != nil {
+				return err
+			}
+			pending = append(pending, fresh...)
 		}
 		tt.done("read_stream")
-		pending = append(pending, fresh...)
 		if len(pending) == 0 {
 			// Idle is not stale. An unchanging source is perfectly fresh, and
 			// conflating the two reports a quiet database as broken.
