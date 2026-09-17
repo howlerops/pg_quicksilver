@@ -85,6 +85,7 @@ chmod 755 /tmp/qs-mirror /tmp/qs-matrix /tmp/qs-verify
 echo "  primary 5443, standby 5444, ${ROWS} rows/shape, ${SECONDS_PER}s workload, row_group=${ROW_GROUP:-65536}"
 echo "  column-partial deltas: ${QS_PARTIAL_DELTAS:-1} (0 writes every update as a whole row)"
 echo "  elide unchanged large values: ${QS_ELIDE_UNCHANGED:-1}"
+echo "  zstd level: ${QS_ZSTD_LEVEL:-1}  (QS_SNAPPY_DELTAS=${QS_SNAPPY_DELTAS:-0} restores Snappy deltas)"
 
 for SHAPE in $SHAPES; do
   say "shape: $SHAPE"
@@ -106,6 +107,8 @@ for SHAPE in $SHAPES; do
     QS_ROW_GROUP=${ROW_GROUP:-65536} ${QS_DEBUG_ADDR:+QS_DEBUG_ADDR=$QS_DEBUG_ADDR} \
     QS_PARTIAL_DELTAS=${QS_PARTIAL_DELTAS:-1} \
     QS_ELIDE_UNCHANGED=${QS_ELIDE_UNCHANGED:-1} \
+    QS_ZSTD_LEVEL=${QS_ZSTD_LEVEL:-1} \
+    QS_SNAPPY_DELTAS=${QS_SNAPPY_DELTAS:-0} \
     QS_HEALTH_ADDR=$HEALTH /tmp/qs-mirror" > $BASE/mx-$SHAPE.log 2>&1 &
   sleep 1
   MPID=$(pgrep -x qs-mirror | head -1)

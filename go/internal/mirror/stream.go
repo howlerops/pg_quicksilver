@@ -40,14 +40,35 @@ type parquetWriter struct {
 	pending []map[string]any
 }
 
-// durable selects the compression trade:
+// ZstdLevel is the compression level every Parquet file is written at.
 //
-//   - base files are written once and scanned many times, so they get zstd
-//   - delta files are written constantly and read until the next compaction
-//     folds them away, so they get Snappy
+// One is not a compromise on this data; it is the point where the curve stops
+// paying. Same 20,000-row jsonb batch, all four settings measured, write and
+// read (TestCodecCost, docs/25):
 //
-// This is not a micro-optimisation. A CPU profile of the jsonb shape put 45% of
-// the sidecar in the writer and 19% in zstd's encoder alone (docs/19 round two).
+//	snappy         61.4 MB   write  529 ms   read 197 ms
+//	zstd level 1   33.8 MB   write  258 ms   read 190 ms
+//	zstd default   33.4 MB   write  712 ms   read 222 ms
+//	zstd level 6   32.7 MB   write 1369 ms   read 182 ms
+//
+// Level 1 writes 2.8x faster than the default for 1.2% more bytes. Everything
+// above it buys a rounding error in size for multiples of the CPU, and the
+// bootstrap profile put 41% of the sidecar inside zstd's encoder.
+var ZstdLevel = int(envInt("QS_ZSTD_LEVEL", 1))
+
+// SnappyDeltas restores the delta codec this used to use, for A/B only.
+//
+// The old reasoning was that delta files are written constantly and read until
+// the next compaction folds them away, so they should get the codec that
+// DEcompresses fastest. The reasoning was sound and the premise was not:
+// measured, zstd level 1 beats Snappy on all three axes at once — 45% smaller,
+// 51% faster to write, and no slower to read, because Snappy's file is 1.8x
+// bigger and those bytes have to be fetched and touched too.
+var SnappyDeltas = os.Getenv("QS_SNAPPY_DELTAS") == "1"
+
+// durable distinguishes a base file from a delta. Both are zstd now; the flag
+// still exists because it also selects the fsync behaviour, and because
+// SnappyDeltas needs to know which is which.
 func (t *Table) newParquetWriter(path string, cols []string, durable bool) (*parquetWriter, error) {
 	if cols == nil {
 		cols = t.Order
@@ -58,12 +79,13 @@ func (t *Table) newParquetWriter(path string, cols []string, durable bool) (*par
 	if err != nil {
 		return nil, err
 	}
-	codec := compress.Codecs.Snappy
-	if durable {
-		codec = compress.Codecs.Zstd
+	codec := compress.Codecs.Zstd
+	if SnappyDeltas && !durable {
+		codec = compress.Codecs.Snappy
 	}
 	props := parquet.NewWriterProperties(
 		parquet.WithCompression(codec),
+		parquet.WithCompressionLevel(ZstdLevel),
 		parquet.WithMaxRowGroupLength(RowGroupRows),
 	)
 	w, err := pqarrow.NewFileWriter(schema, f, props, pqarrow.DefaultWriterProps())
