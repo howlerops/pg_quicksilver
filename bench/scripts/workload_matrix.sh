@@ -113,7 +113,12 @@ for SHAPE in $SHAPES; do
   sleep 1
   MPID=$(pgrep -x qs-mirror | head -1)
 
-  for _ in $(seq 600); do curl -sf "http://$HEALTH/readyz" >/dev/null 2>&1 && break; sleep 1; done
+  # 20 ms, not 1 second. The bootstrap figure this reports is the time until
+  # readyz answers, so the poll interval is the measurement's resolution: at
+  # `sleep 1` the narrow shape's ~1.5s bootstrap was quantised to 1.0s or 2.0s
+  # depending on where the tick fell, and two runs of the SAME build differed by
+  # "2x". Every bootstrap rows/s in docs/18 and docs/19 carries that error bar.
+  for _ in $(seq 30000); do curl -sf "http://$HEALTH/readyz" >/dev/null 2>&1 && break; sleep 0.02; done
   if ! curl -sf "http://$HEALTH/readyz" >/dev/null 2>&1; then
     tail -6 $BASE/mx-$SHAPE.log; bad "never became ready"; pkill -x qs-mirror; continue
   fi
