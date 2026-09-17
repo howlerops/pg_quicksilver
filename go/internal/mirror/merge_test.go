@@ -8,6 +8,9 @@ package mirror
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/howlerops/pg_quicksilver/go/internal/changestream"
@@ -139,5 +142,85 @@ func TestUnboundedMergeStillFoldsEverything(t *testing.T) {
 	}
 	if got := len(tbl.State.DeltaFiles); got != 1 {
 		t.Errorf("an unbounded merge left %d delta files, expected 1", got)
+	}
+}
+
+// The snapshot no longer writes a key -> position index, so ensureIndex has to
+// reconstruct it from the base file. That path existed before as a fallback for
+// a truncated write; it is now the normal one, and a mirror that reopens with a
+// wrong index leaves superseded rows visible forever while every count matches.
+func TestIndexRebuildsFromTheBaseFileAlone(t *testing.T) {
+	tbl := racyTable(t)
+	const rows = 200
+	var changes []changestream.Change
+	for i := 0; i < rows; i++ {
+		row := map[string]any{"id": fmt.Sprint(i), "v": fmt.Sprintf("first-%d", i), "n": "0"}
+		changes = append(changes, changestream.Change{
+			Op: changestream.OpInsert, Schema: "public", Table: "r", Row: row, Key: row,
+		})
+	}
+	if _, err := tbl.Apply([]changestream.Transaction{{
+		CommitLSN: "0/1", NextLSN: "0/2", Changes: changes,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tbl.Compact(); err != nil {
+		t.Fatal(err)
+	}
+
+	// Remove every persisted index, which is the state a snapshot now leaves.
+	idx, _ := filepath.Glob(filepath.Join(tbl.Dir, "index", "*.idx.json"))
+	for _, p := range idx {
+		if err := os.Remove(p); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Reopen and update half the rows. Each update has to find and retire the
+	// row the rebuilt index points at; if a position is wrong, the old copy
+	// stays live and the mirror holds two rows for one key.
+	root := strings.TrimSuffix(tbl.Dir, "/public.r")
+	re, err := New(root, "public", "r", "id",
+		map[string]string{"id": "bigint", "v": "text", "n": "bigint"},
+		[]string{"id", "v", "n"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var updates []changestream.Change
+	for i := 0; i < rows; i += 2 {
+		row := map[string]any{"id": fmt.Sprint(i), "v": fmt.Sprintf("second-%d", i), "n": "1"}
+		updates = append(updates, changestream.Change{
+			Op: changestream.OpUpdate, Schema: "public", Table: "r", Row: row, Key: row,
+		})
+	}
+	if _, err := re.Apply([]changestream.Transaction{{
+		CommitLSN: "0/3", NextLSN: "0/4", Changes: updates,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	seen := map[string]string{}
+	if err := re.ForEachLive(func(r map[string]any) error {
+		id := Render(r["id"])
+		if prev, dup := seen[id]; dup {
+			t.Fatalf("id=%s is live twice (%q and %q): the rebuilt index did not "+
+				"point at the row the update had to retire", id, prev, Render(r["v"]))
+		}
+		seen[id] = Render(r["v"])
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if len(seen) != rows {
+		t.Fatalf("read back %d rows, expected %d", len(seen), rows)
+	}
+	for i := 0; i < rows; i++ {
+		want := fmt.Sprintf("first-%d", i)
+		if i%2 == 0 {
+			want = fmt.Sprintf("second-%d", i)
+		}
+		if got := seen[fmt.Sprint(i)]; got != want {
+			t.Errorf("id=%d: mirror holds %q, want %q", i, got, want)
+		}
 	}
 }

@@ -62,22 +62,24 @@ func (t *Table) Snapshot(ctx context.Context, conn *pgx.Conn, atLSN string) (int
 		return 0, err
 	}
 
-	// Rows go from the scan straight into the writer in COLUMN ORDER. The old
-	// route built a map[string]any per row so the writer could look the values
-	// back out by name — one allocation and N inserts on the way in, N lookups
-	// on the way out, per row, to move a slice to a slice. Bootstrap is per-row
-	// CPU bound (docs/25) and that was the per-row work.
+	// Rows go from the scan straight into the writer in COLUMN ORDER, and no
+	// key -> position map is built or written along the way.
 	//
-	// `ptrs` is built once and reused: it holds the ADDRESSES of the value
-	// slots, and the slots themselves are fresh per row because the writer
-	// keeps them until the row group is flushed.
-	index := map[string]int{}
-	keyAt := 0
-	for i, c := range t.Order {
-		if c == t.Key {
-			keyAt = i
-		}
-	}
+	// Where the bootstrap second actually goes, measured on 400,000 narrow rows
+	// against a 2.2s bootstrap:
+	//
+	//	query + wire + scan            200 ms     9%
+	//	building the index map         169 ms     8%
+	//	marshalling it to JSON         511 ms    23%
+	//
+	// The marshal dominates because encoding/json SORTS map keys, so writing
+	// that file is a sort of 400,000 strings — plus 6.2 MB on disk per base
+	// file. And what it held was "the key at row i", for a file whose row i
+	// holds that key in its key column. ensureIndex reads it back from the
+	// file instead, one column, which is what a column store is for.
+	//
+	// docs/25 blamed the per-row map for this shape's 16.5 MB/s and docs/26
+	// recorded that removing it changed nothing. This is where the time was.
 	n := 0
 	for rows.Next() {
 		vals := make([]any, len(t.Order))
@@ -89,7 +91,6 @@ func (t *Table) Snapshot(ctx context.Context, conn *pgx.Conn, atLSN string) (int
 			w.Close()
 			return 0, err
 		}
-		index[t.keyOf(vals[keyAt]).String()] = n
 		n++
 		if err := w.AppendValues(vals); err != nil {
 			w.Close()
@@ -106,10 +107,6 @@ func (t *Table) Snapshot(ctx context.Context, conn *pgx.Conn, atLSN string) (int
 
 	if n > 0 {
 		t.State.BaseFiles = []string{name}
-		if err := writeJSON(fmt.Sprintf("%s/index/%s.idx.json", t.Dir,
-			trimParquet(name)), index); err != nil {
-			return 0, err
-		}
 	} else {
 		// An empty table gets no base file, exactly as before; the footer-only
 		// file the writer just produced would otherwise sit in the manifest

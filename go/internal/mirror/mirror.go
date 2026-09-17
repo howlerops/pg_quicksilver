@@ -203,10 +203,16 @@ func (t *Table) ensureIndex() error {
 				continue
 			}
 		}
-		// No persisted index (an older mirror, or a truncated write): rebuild
-		// it from the file rather than silently indexing nothing, which would
-		// leave superseded rows visible forever.
-		if err := t.forEachRowGroup(filepath.Join(t.Dir, rel), nil, nil,
+		// No persisted index: rebuild it from the file. This is not a degraded
+		// path, it is the normal one — the snapshot stopped writing that JSON
+		// because the file already holds everything it said.
+		//
+		// ONE COLUMN, not all of them. The key column and the row's position
+		// are the entire content of the index, and this is a column store, so
+		// asking for the key alone reads a fraction of the file. Passing nil
+		// here meant "every column", which on the jsonb shape is a 6 KB
+		// document per row decoded to learn its id.
+		if err := t.forEachRowGroup(filepath.Join(t.Dir, rel), nil, []string{t.Key},
 			func(rows []map[string]any, first int) error {
 				for i, r := range rows {
 					t.index.set(t.keyOf(r[t.Key]), loc{File: id, Pos: int32(first + i)})
