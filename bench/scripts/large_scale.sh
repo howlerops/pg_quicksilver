@@ -46,6 +46,28 @@ psq()  { su postgres -c "$PG/psql -h /tmp -p $1 -U postgres -d ${3:-$DB} -Atc \"
 cleanup() { pkill -x qs-mirror 2>/dev/null; return 0; }
 trap cleanup EXIT
 
+# ---- reclaim first, THEN size -----------------------------------------------
+#
+# The order here is load-bearing and used not to be. The budget below is
+# computed from free disk, and the largest single thing on that disk is what the
+# PREVIOUS run of this script left behind — a 20M-row table, its standby copy
+# and a mirror. Sizing before reclaiming meant every run was smaller than the
+# one before it: the 20.4M-row run left 6.1 GB free, so the next run sized
+# itself at 11.3 million rows and would have "found" that the mirror had stopped
+# scaling. The comment on the reclaim said "before sizing anything" while
+# sitting thirty lines after it.
+say "infrastructure"
+pkill -x qs-mirror 2>/dev/null
+rm -f /tmp/qs-workload-matrix.lock
+psq 5443 "SELECT 1" postgres >/dev/null 2>&1 || \
+  su postgres -c "$PG/pg_ctl -D $PRIMARY -l $BASE/primary.log -w start" >/dev/null 2>&1
+psq 5443 "SELECT 1" postgres >/dev/null 2>&1 || skip "primary would not start"
+for d in app tzapp; do psq 5443 "DROP DATABASE IF EXISTS $d" postgres >/dev/null 2>&1; done
+psq 5443 "DROP DATABASE IF EXISTS $DB" postgres >/dev/null 2>&1
+rm -rf "$MIRROR"
+psq 5443 "SELECT pg_drop_replication_slot(slot_name) FROM pg_replication_slots WHERE NOT active" postgres >/dev/null 2>&1
+psq 5443 "CHECKPOINT" postgres >/dev/null 2>&1
+
 # ---- how big can this actually get? -----------------------------------------
 #
 # The source is stored TWICE before the mirror exists — the primary has it and
@@ -86,18 +108,8 @@ if [ "$ROWS" -lt 1000000 ]; then
   skip "only ${ROWS} rows fit; this test is pointless below a million"
 fi
 
-say "infrastructure"
-pkill -x qs-mirror 2>/dev/null
-rm -f /tmp/qs-workload-matrix.lock
-psq 5443 "SELECT 1" postgres >/dev/null 2>&1 || \
-  su postgres -c "$PG/pg_ctl -D $PRIMARY -l $BASE/primary.log -w start" >/dev/null 2>&1
-psq 5443 "SELECT 1" postgres >/dev/null 2>&1 || skip "primary would not start"
-# Reclaim whatever earlier benchmarks left behind before sizing anything.
-for d in app tzapp; do psq 5443 "DROP DATABASE IF EXISTS $d" postgres >/dev/null 2>&1; done
-psq 5443 "DROP DATABASE IF EXISTS $DB" postgres >/dev/null 2>&1
 psq 5443 "CREATE DATABASE $DB" postgres >/dev/null || skip "could not create $DB"
 
-psq 5443 "SELECT pg_drop_replication_slot(slot_name) FROM pg_replication_slots WHERE NOT active" postgres >/dev/null 2>&1
 # The physical slot is created AFTER seeding, deliberately. Creating it first
 # pins every WAL segment the seed produces -- 4.6 GB of pg_wal that no
 # checkpoint can recycle, for a slot with no consumer yet. That is what filled

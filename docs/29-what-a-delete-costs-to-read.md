@@ -159,6 +159,30 @@ a number in the footer.
 means trimming dead rows is close to worthless and folding them away is close to
 everything. Only compaction does the second.
 
+### The floor is not an artefact of the join, either
+
+One hypothesis survived that table: perhaps the 25 ms at a thousand positions is
+the price of expressing a tiny vector as a *join against a second file*, when it
+could be a literal list the filter evaluates inline. It is not. Same base file,
+same positions, the vector written as SQL literals instead:
+
+```
+positions      NOT IN (SELECT p FROM read_parquet(...))      NOT IN (1, 5, 9, ...)
+      100                                      44.1 ms                    608.5 ms
+    1,000                                      56.0 ms                   5683.3 ms
+   10,000                                     103.8 ms          did not finish
+```
+
+Fourteen times worse at a hundred positions, a hundred times worse at a
+thousand, and at ten thousand it ran for minutes before being killed. DuckDB
+turns a literal `IN` list into a chain of comparisons rather than a hash set, so
+the cost is quadratic in a way the join never is. The join is not the floor's
+cause; it is the reason the floor is as low as it is.
+
+(These four numbers come from a separate run under different load than the table
+above — 44.1 ms here against 25.0 ms there for comparable work. The comparison
+within each run is sound; across them, only the ratios are.)
+
 ---
 
 ## Why compaction never ran
