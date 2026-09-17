@@ -523,14 +523,18 @@ func pump(
 			// nothing; a stuck stream retains more with every commit. So the
 			// question the guard already asks every interval answers this one
 			// too: silence plus a growing slot is not idleness.
-			retained, gerr := guard.check(ctx, log)
+			retained, unconfirmed, gerr := guard.check(ctx, log)
 			if gerr != nil {
 				return gerr
 			}
 			if retained >= 0 {
 				h.RecordSlotRetention(retained)
 			}
-			if retained >= stuckSlotBytes {
+			// UNCONFIRMED, not retained. See slotguard.go: retention is what the
+			// slot costs the primary in disk; confirmation is how far behind
+			// this mirror actually is. Using the first gave a mirror that was
+			// 103 bytes behind a "your stream is stuck" warning at 537 MB.
+			if unconfirmed >= stuckSlotBytes {
 				// Deliberately NOT RecordCaughtUp: lag_seconds keeps growing
 				// from the last real progress, so readiness fails once the SLO
 				// is exceeded and this node leaves the read endpoint. Serving
@@ -541,7 +545,8 @@ func pump(
 					log.Warn("the stream is delivering nothing while this mirror's "+
 						"slot keeps growing, so this is NOT an idle source: readiness "+
 						"will fail once the freshness SLO is exceeded",
-						"slot", o.slot, "retained_bytes", retained,
+						"slot", o.slot, "unconfirmed_bytes", unconfirmed,
+						"retained_bytes", retained,
 						"check", "does synchronized_standby_slots name a slot that "+
 							"exists? A missing one makes logical decoding wait forever "+
 							"with no error to any client (docs/15)")
@@ -610,7 +615,7 @@ func pump(
 		_ = conn.QueryRow(ctx, "SELECT pg_current_wal_lsn()::text").Scan(&headLSN)
 		tt.done("head_lsn")
 
-		if retained, err := guard.check(ctx, log); err != nil {
+		if retained, _, err := guard.check(ctx, log); err != nil {
 			return err
 		} else if retained >= 0 {
 			h.RecordSlotRetention(retained)

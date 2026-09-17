@@ -72,21 +72,35 @@ type slotGuard struct {
 // It returns the retained size so a caller can log it even when nothing is
 // wrong, because "how close were we" is the number an operator needs BEFORE the
 // threshold is hit rather than after.
-func (g *slotGuard) check(ctx context.Context, log *slog.Logger) (int64, error) {
+func (g *slotGuard) check(ctx context.Context, log *slog.Logger) (retained, unconfirmed int64, err error) {
 	if maxSlotWAL <= 0 || time.Since(g.last) < slotWALInterval {
-		return -1, nil
+		return -1, -1, nil
 	}
 	g.last = time.Now()
 
-	var retained int64
-	err := g.conn.QueryRow(ctx, `
-		SELECT COALESCE(pg_wal_lsn_diff(pg_current_wal_lsn(), restart_lsn), 0)::bigint
-		  FROM pg_replication_slots WHERE slot_name = $1`, g.slot).Scan(&retained)
+	// TWO distances, and they answer different questions. Conflating them gave
+	// a healthy mirror a "your stream is stuck" warning at 537 MB while it was
+	// 103 bytes behind.
+	//
+	//   restart_lsn       the oldest WAL PostgreSQL must KEEP for this slot.
+	//                     This is the disk the slot is costing the primary, and
+	//                     it is the only right answer for the R7 guard.
+	//   confirmed_flush   how far this consumer says it has PROCESSED. This is
+	//                     how far behind the mirror actually is.
+	//
+	// They diverge because restart_lsn advances lazily — PostgreSQL moves it at
+	// checkpoints and when decoding allows, not every time a consumer confirms.
+	// So a fully caught-up mirror can legitimately still be pinning a segment,
+	// and reading that as lag takes a healthy node out of service.
+	err = g.conn.QueryRow(ctx, `
+		SELECT COALESCE(pg_wal_lsn_diff(pg_current_wal_lsn(), restart_lsn), 0)::bigint,
+		       COALESCE(pg_wal_lsn_diff(pg_current_wal_lsn(), confirmed_flush_lsn), 0)::bigint
+		  FROM pg_replication_slots WHERE slot_name = $1`, g.slot).Scan(&retained, &unconfirmed)
 	if err != nil {
 		// A slot that has vanished is not a reason to tear anything down: the
 		// stream will fail on its own and say so more precisely than this can.
 		if errors.Is(err, pgx.ErrNoRows) {
-			return -1, nil
+			return -1, -1, nil
 		}
 		// Anything else is a guard that is not guarding, and it must SAY so.
 		//
@@ -102,11 +116,11 @@ func (g *slotGuard) check(ctx context.Context, log *slog.Logger) (int64, error) 
 				"protecting the primary; set max_slot_wal_keep_size, which does "+
 				"not depend on this", "slot", g.slot, "err", err)
 		}
-		return -1, nil
+		return -1, -1, nil
 	}
 	g.warned = false
 	if retained < maxSlotWAL {
-		return retained, nil
+		return retained, unconfirmed, nil
 	}
 
 	log.Error("this mirror is too far behind to be safe: dropping its own slot",
@@ -124,7 +138,7 @@ func (g *slotGuard) check(ctx context.Context, log *slog.Logger) (int64, error) 
 	// Returning without dropping would leave the supervisor restarting into the
 	// same slot and the same wedge.
 	g.dropped = true
-	return retained, ErrSlotTooFar
+	return retained, unconfirmed, ErrSlotTooFar
 }
 
 // dropSlot removes the slot once the stream that held it is gone. It is called
@@ -156,12 +170,17 @@ func dropSlot(ctx context.Context, o options, slot string, log *slog.Logger) {
 		"accumulating WAL and needs manual attention", "slot", slot)
 }
 
-// stuckSlotBytes is how much retained WAL turns "the stream gave me nothing"
+// stuckSlotBytes is how much UNCONFIRMED WAL turns "the stream gave me nothing"
 // from idleness into a fault.
 //
-// One WAL segment. A mirror whose source is genuinely quiet sits well under a
-// segment, because restart_lsn follows what it confirms; a mirror whose stream
-// has stopped passes a segment as soon as anything is written and keeps going.
-// The two states are far enough apart that the exact figure does not matter
-// much, which is the only reason a single threshold can serve.
+// It is measured against confirmed_flush_lsn, not restart_lsn, and the first
+// version got that wrong: it used the retained figure and warned that a
+// perfectly healthy mirror's stream was stuck, because restart_lsn was 537 MB
+// back while the mirror was 103 bytes behind. Retention is what the slot costs
+// the primary; confirmation is how far behind the mirror is. Only the second
+// one is a freshness question.
+//
+// One WAL segment, because a caught-up consumer confirms continuously and sits
+// near zero, while a stream that has stopped passes a segment as soon as
+// anything is written and keeps going.
 var stuckSlotBytes = envInt("QS_STUCK_SLOT_BYTES", 16<<20)
