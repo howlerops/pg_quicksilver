@@ -188,6 +188,11 @@ say "a workload on top, for ${SECONDS_PER}s"
 work_t0=$(date +%s.%N)
 END=$(( $(date +%s) + SECONDS_PER ))
 changes=0
+paused=0
+# How far the slot may get ahead before the workload waits for it. 512 MB is
+# large enough that the mirror is genuinely under load and small enough that
+# the disk is never in question.
+PACE_BYTES=${PACE_BYTES:-536870912}
 while [ "$(date +%s)" -lt "$END" ]; do
   lo=$((RANDOM * RANDOM % (ROWS > 100000 ? ROWS - 100000 : 1) + 1))
   psq 5443 "UPDATE m SET amount = amount + 1, ts = now()
@@ -204,8 +209,22 @@ while [ "$(date +%s)" -lt "$END" ]; do
   # free space to 272 KB in under a minute and stopped PostgreSQL.
   #
   # That is a real property of the product, not of this script — see docs/28 —
-  # and the sidecar now bounds its own slot. This guard exists so the HARNESS
-  # stops before the disk does even when that guard is off or set high.
+  # and the sidecar now bounds its own slot.
+  #
+  # PACE, don't just guard. An unpaced workload measures how fast the disk
+  # fills, which is docs/28 and is already known. What has never been measured
+  # is the thing this run exists for: a mirror at twenty-odd million rows,
+  # verified. So the workload waits when the slot gets ahead, which is what a
+  # real source that is not actively trying to break its replica looks like.
+  for _ in $(seq 60); do
+    retained=$(psq 5443 "SELECT COALESCE(pg_wal_lsn_diff(pg_current_wal_lsn(), restart_lsn),0)::bigint
+                         FROM pg_replication_slots WHERE slot_name='lg_slot'" postgres 2>/dev/null)
+    [ -z "$retained" ] && break
+    [ "$retained" -lt "$PACE_BYTES" ] && break
+    paused=$((paused + 1))
+    sleep 1
+  done
+
   free_mb=$(( $(df --output=avail / | tail -1) / 1024 ))
   if [ "$free_mb" -lt "$RESERVE_MB" ]; then
     printf '\n'
@@ -217,6 +236,8 @@ done
 work=$(echo "$(date +%s.%N)-$work_t0"|bc)
 printf '  %s row-changes in %.0fs (%.0f/s into PostgreSQL)\n' \
   "$(printf "%'d" "$changes")" "$work" "$(echo "$changes/$work"|bc -l)"
+printf '  paced: waited %ss for the mirror to catch up (slot kept under %s)\n' \
+  "$paused" "$(numfmt --to=iec "$PACE_BYTES")"
 
 say "drain"
 drain_t0=$(date +%s.%N)
