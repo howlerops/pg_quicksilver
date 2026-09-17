@@ -322,13 +322,9 @@ func (t *Table) FinishCompaction() (int, error) {
 			c.index.len(), len(c.touched), len(c.dupDead), orphan, sample)
 	}
 
-	dead := make([]int, 0, len(deadSet))
-	for p := range deadSet {
-		dead = append(dead, p)
-	}
-	sort.Ints(dead)
+	dead := dvSorted(deadSet)
 	if len(dead) > 0 {
-		if err := writeJSON(t.dvPathGen(newRel, 1), dead); err != nil {
+		if err := writeDV(t.dvPathGen(newRel, 1), dead); err != nil {
 			return 0, err
 		}
 		if t.State.DVGen == nil {

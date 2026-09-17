@@ -62,20 +62,60 @@ def live_files(mirror_dir):
     rewriting every delta on every batch is O(mirror) work per batch, so deltas
     now carry deletion vectors like everything else. A reader that skips a
     delta's vector resurrects every superseded row in it.
+
+    A deletion vector is NAMED BY GENERATION — dv/000001.000000007.dv.parquet —
+    and this looked for dv/000001.dv.json, a name generations made obsolete. So
+    it never found one, which is not an error anywhere: a vector that cannot be
+    found reads as "nothing in this file is dead", and every superseded row in
+    the mirror came back. The numbers this script printed were measured over a
+    view that was quietly wrong.
+
+    That is why the lookup below asks the manifest which generation to read and
+    RAISES when it is not there, rather than falling back to an empty set. The
+    only honest default for "I could not find the deletion vector" is to stop.
     """
     with open(os.path.join(mirror_dir, "state.json")) as f:
         state = json.load(f)
+    gens = state.get("dv_gen") or {}
     files = []
     for sub, key in (("base", "base_files"), ("delta", "delta_files")):
         for n in state.get(key) or []:
             path = os.path.join(mirror_dir, sub, n)
-            dv = os.path.join(mirror_dir, "dv", n.replace(".parquet", "") + ".dv.json")
+            stem = n.replace(".parquet", "")
             dead = set()
-            if os.path.exists(dv):
-                with open(dv) as f:
-                    dead = set(json.load(f))
+            gen = gens.get(stem, 0)
+            if gen:
+                dead = read_dv(mirror_dir, stem, gen)
             files.append((sub, path, dead))
     return files
+
+
+def read_dv(mirror_dir, stem, gen):
+    """One generation of one deletion vector, in whichever encoding it is in.
+
+    Vectors are Parquet now — parsing 13 MB of JSON positions was over a third
+    of the cost of every query against a file with deletes — but a mirror
+    written before that still has .dv.json on disk and both must be read.
+    """
+    base = os.path.join(mirror_dir, "dv", f"{stem}.{gen:09d}.dv")
+    if os.path.exists(base + ".parquet"):
+        import duckdb
+
+        return {
+            r[0]
+            for r in duckdb.connect()
+            .execute(f"SELECT p FROM read_parquet('{base}.parquet')")
+            .fetchall()
+        }
+    if os.path.exists(base + ".json"):
+        with open(base + ".json") as f:
+            return set(json.load(f))
+    raise SystemExit(
+        f"the manifest says {stem} is at deletion-vector generation {gen} and "
+        f"neither {base}.parquet nor {base}.json exists. Measuring anyway would "
+        f"resurrect every row that vector retired and report the result as a "
+        f"correct view."
+    )
 
 
 def build_view(con, mirror_dir):
@@ -87,11 +127,16 @@ def build_view(con, mirror_dir):
         nbase += sub == "base"
         ndelta += sub == "delta"
         if dead:
+            # file_row_number, not row_number() OVER (). A deletion vector holds
+            # PHYSICAL positions in the file, and an unordered window function
+            # over a parallel scan is not obliged to produce them — it produces
+            # whatever order the scan happened to emit, which on one thread
+            # looks exactly right and on eight retires arbitrary rows.
             rows = ",".join(str(i) for i in sorted(dead))
             parts.append(
-                f"SELECT * EXCLUDE (_rn) FROM ("
-                f"  SELECT *, (row_number() OVER ()) - 1 AS _rn FROM read_parquet('{path}')"
-                f") WHERE _rn NOT IN ({rows})"
+                f"SELECT * EXCLUDE (file_row_number) FROM "
+                f"read_parquet('{path}', file_row_number = true) "
+                f"WHERE file_row_number NOT IN ({rows})"
             )
         else:
             parts.append(f"SELECT * FROM read_parquet('{path}')")

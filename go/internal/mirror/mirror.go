@@ -281,7 +281,7 @@ func (t *Table) deadPositions(rel string) (map[int]bool, error) {
 	if gen == 0 {
 		return map[int]bool{}, nil // genuinely nothing deleted in this file yet
 	}
-	return t.readDV(t.dvPathGen(rel, gen), rel)
+	return t.readDV(t.dvPathGenAny(rel, gen), rel)
 }
 
 // deadPositionsLatest reads the newest deletion vector on disk for a file,
@@ -293,25 +293,23 @@ func (t *Table) deadPositions(rel string) (map[int]bool, error) {
 // that moved while the rewrite ran is reconciled against the live index at swap
 // time anyway. An external reader must never do this; see deadPositions.
 func (t *Table) deadPositionsLatest(rel string) (map[int]bool, error) {
-	matches, err := filepath.Glob(filepath.Join(t.Dir, "dv", dvStem(rel)+".*.dv.json"))
-	if err != nil || len(matches) == 0 {
-		return map[int]bool{}, err
+	matches := t.dvGlob(rel)
+	if len(matches) == 0 {
+		return map[int]bool{}, nil
 	}
-	sort.Strings(matches)
 	return t.readDV(matches[len(matches)-1], rel)
 }
 
 func (t *Table) readDV(path, rel string) (map[int]bool, error) {
-	b, err := os.ReadFile(path)
+	if path == "" {
+		return nil, ErrStaleManifest
+	}
+	pos, err := readDVFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, ErrStaleManifest
 		}
 		return nil, err
-	}
-	var pos []int
-	if err := json.Unmarshal(b, &pos); err != nil {
-		return nil, fmt.Errorf("deletion vector %s is unreadable: %w", path, err)
 	}
 	dead := make(map[int]bool, len(pos))
 	for _, p := range pos {
@@ -322,18 +320,72 @@ func (t *Table) readDV(path, rel string) (map[int]bool, error) {
 
 func dvStem(rel string) string { return trimParquet(filepath.Base(rel)) }
 
-// dvPathGen names one generation of a file's deletion vector. Generations are
-// zero-padded so that lexical order is numeric order, which is what lets the
-// compactor find the newest with a glob.
+// dvPathGen names the file a NEW generation of a deletion vector is written to.
+// Generations are zero-padded so that lexical order is numeric order, which is
+// what lets the compactor find the newest with a glob.
 func (t *Table) dvPathGen(rel string, gen int) string {
-	return filepath.Join(t.Dir, "dv", fmt.Sprintf("%s.%09d.dv.json", dvStem(rel), gen))
+	return filepath.Join(t.Dir, "dv", fmt.Sprintf("%s.%09d.dv.parquet", dvStem(rel), gen))
+}
+
+// dvPathGenAny names a generation that already exists, in whichever encoding it
+// was written in — see dv.go. A mirror written before deletion vectors became
+// Parquet still has .dv.json on disk, and failing to find it does not read as
+// an error anywhere: it reads as "nothing in that file is dead", which
+// resurrects every row the vector retired.
+//
+// It returns "" when neither exists, which callers turn into ErrStaleManifest.
+func (t *Table) dvPathGenAny(rel string, gen int) string {
+	for _, ext := range dvExts {
+		p := filepath.Join(t.Dir, "dv", fmt.Sprintf("%s.%09d.dv%s", dvStem(rel), gen, ext))
+		if _, err := os.Stat(p); err == nil {
+			return p
+		}
+	}
+	return ""
+}
+
+// dvGlob matches every generation of one file's deletion vector, in both
+// encodings, in an order where the newest sorts last.
+func (t *Table) dvGlob(rel string) []string {
+	var all []string
+	for _, ext := range dvExts {
+		m, _ := filepath.Glob(filepath.Join(t.Dir, "dv", dvStem(rel)+".*.dv"+ext))
+		all = append(all, m...)
+	}
+	// Sort on the generation number rather than the whole name, because the
+	// extension is part of the name and ".json" sorts after ".parquet" — so a
+	// plain lexical sort would hand back a stale JSON vector as the newest
+	// during the one changeover where both exist.
+	sort.Slice(all, func(i, j int) bool { return dvGenOf(all[i]) < dvGenOf(all[j]) })
+	return all
+}
+
+// dvExts is every encoding a deletion vector may be on disk, newest format
+// first — dvPathGenAny prefers the earlier entry when both exist.
+var dvExts = []string{".parquet", ".json"}
+
+// dvGenOf pulls the generation out of a vector's filename, or -1.
+func dvGenOf(path string) int {
+	base := filepath.Base(path)
+	i := strings.Index(base, ".dv.")
+	if i < 0 {
+		return -1
+	}
+	j := strings.LastIndex(base[:i], ".")
+	if j < 0 {
+		return -1
+	}
+	n, err := strconv.Atoi(base[j+1 : i])
+	if err != nil {
+		return -1
+	}
+	return n
 }
 
 // dropDV removes every generation of a file's deletion vector, for when the
 // data file itself is going away.
 func (t *Table) dropDV(rel string) {
-	matches, _ := filepath.Glob(filepath.Join(t.Dir, "dv", dvStem(rel)+".*.dv.json"))
-	for _, m := range matches {
+	for _, m := range t.dvGlob(rel) {
 		_ = os.Remove(m)
 	}
 	delete(t.State.DVGen, dvStem(rel))
@@ -959,19 +1011,15 @@ func (t *Table) markDead(byFile map[fileID][]int) error {
 		for _, p := range positions {
 			existing[p] = true
 		}
-		merged := make([]int, 0, len(existing))
-		for p := range existing {
-			merged = append(merged, p)
-		}
-		sort.Ints(merged)
+		merged := dvSorted(existing)
 
 		stem := dvStem(rel)
 		gen := t.State.DVGen[stem] + 1
-		// writeJSON, not os.WriteFile: a new generation is still a file another
+		// writeDV, not a plain write: a new generation is still a file another
 		// goroutine may open the instant it appears, and a truncate-then-write
 		// leaves a window where it parses as nothing — which reads as "nothing
 		// is dead" and undoes every delete in the file.
-		if err := writeJSON(t.dvPathGen(rel, gen), merged); err != nil {
+		if err := writeDV(t.dvPathGen(rel, gen), merged); err != nil {
 			return err
 		}
 		if t.State.DVGen == nil {
@@ -979,7 +1027,12 @@ func (t *Table) markDead(byFile map[fileID][]int) error {
 		}
 		t.State.DVGen[stem] = gen
 		if gen > 2 {
-			_ = os.Remove(t.dvPathGen(rel, gen-2))
+			// Both encodings, because the generation being retired here may
+			// predate the format change.
+			for _, ext := range dvExts {
+				_ = os.Remove(filepath.Join(t.Dir, "dv",
+					fmt.Sprintf("%s.%09d.dv%s", stem, gen-2, ext)))
+			}
 		}
 	}
 	return nil

@@ -60,7 +60,7 @@ func TestViewSQLNamesTheManifestAndItsVectors(t *testing.T) {
 	}
 	// The deletion vector is the difference between the view and a glob, so its
 	// absence would be the whole bug rather than a detail.
-	if !strings.Contains(sql, ".dv.json") {
+	if !strings.Contains(sql, ".dv.parquet") {
 		t.Error("the view applies no deletion vector, so it would return the " +
 			"superseded copy of row 7 as well as the current one")
 	}

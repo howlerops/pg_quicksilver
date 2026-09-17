@@ -144,16 +144,14 @@ func (t *Table) branch(rel string, want []string) (string, error) {
 		strings.Join(sel, ", "), sqlString(abs), opts)
 
 	if gen != 0 {
-		dv := t.dvPathGen(rel, gen)
-		if _, err := os.Stat(dv); err != nil {
+		dv := t.dvPathGenAny(rel, gen)
+		if dv == "" {
 			// The manifest names a vector that is gone, so this manifest is
 			// older than the mirror. Answering without it would resurrect every
 			// row it retired.
 			return "", ErrStaleManifest
 		}
-		q += fmt.Sprintf(" WHERE file_row_number NOT IN "+
-			"(SELECT unnest(v) FROM read_json(%s, columns = {'v': 'BIGINT[]'}, "+
-			"format = 'unstructured'))", sqlString(dv))
+		q += " WHERE file_row_number NOT IN " + dvSubquery(dv)
 	}
 	return q, nil
 }
@@ -324,4 +322,19 @@ func schemaOf(path string) (map[string]string, []string, error) {
 		}
 	}
 	return cols, order, nil
+}
+
+// dvSubquery is the SELECT a view uses to read one deletion vector.
+//
+// It has to match the encoding on disk, because a mirror that predates dv.go
+// still has JSON vectors and will until compaction retires the files they
+// describe. The Parquet form is not only faster to parse — 0.6 ms against
+// 95.7 ms for 1.56M positions — it is also a plain column, so the engine reads
+// it as a column rather than unnesting one enormous list value.
+func dvSubquery(path string) string {
+	if strings.HasSuffix(path, ".json") {
+		return fmt.Sprintf("(SELECT unnest(v) FROM read_json(%s, "+
+			"columns = {'v': 'BIGINT[]'}, format = 'unstructured'))", sqlString(path))
+	}
+	return fmt.Sprintf("(SELECT p FROM read_parquet(%s))", sqlString(path))
 }
