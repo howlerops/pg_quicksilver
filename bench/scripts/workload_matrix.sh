@@ -86,6 +86,7 @@ echo "  primary 5443, standby 5444, ${ROWS} rows/shape, ${SECONDS_PER}s workload
 echo "  column-partial deltas: ${QS_PARTIAL_DELTAS:-1} (0 writes every update as a whole row)"
 echo "  elide unchanged large values: ${QS_ELIDE_UNCHANGED:-1}"
 echo "  max changes per tick: ${QS_MAX_TICK_CHANGES:-250000} (0 = unbounded, the old behaviour)"
+echo "  max delta files per merge: ${QS_MAX_MERGE_FILES:-8} (0 = fold every mergeable file at once)"
 echo "  zstd level: ${QS_ZSTD_LEVEL:-1}  (QS_SNAPPY_DELTAS=${QS_SNAPPY_DELTAS:-0} restores Snappy deltas)"
 
 for SHAPE in $SHAPES; do
@@ -112,6 +113,7 @@ for SHAPE in $SHAPES; do
     QS_SNAPPY_DELTAS=${QS_SNAPPY_DELTAS:-0} \
     QS_SLOW_TICK=${QS_SLOW_TICK:-200ms} \
     QS_MAX_TICK_CHANGES=${QS_MAX_TICK_CHANGES:-250000} \
+    QS_MAX_MERGE_FILES=${QS_MAX_MERGE_FILES:-8} \
     QS_HEALTH_ADDR=$HEALTH /tmp/qs-mirror" > $BASE/mx-$SHAPE.log 2>&1 &
   sleep 1
   MPID=$(pgrep -x qs-mirror | head -1)

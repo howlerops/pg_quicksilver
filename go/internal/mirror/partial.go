@@ -254,3 +254,16 @@ func (t *Table) noteDeltaFile(name string, rows int, cols []string) {
 		t.partialCols[deltaID(name)] = cols
 	}
 }
+
+// MaxMergeFiles bounds how many delta files one merge folds together.
+//
+// A merge runs on the apply goroutine and nothing else in that loop runs while
+// it does — measured at merge_during_compaction_ms=5842 on the wide shape,
+// which was the largest remaining stall once the apply batch was capped
+// (docs/26). Folding fewer files per pass costs some write amplification, since
+// data merged early may be merged again later, and buys a proportionally
+// shorter stall.
+//
+// Zero removes the bound and folds every mergeable file at once, which is what
+// this did before.
+var MaxMergeFiles = int(envInt("QS_MAX_MERGE_FILES", 8))

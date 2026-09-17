@@ -1102,12 +1102,35 @@ func (t *Table) mergeGroup(old []string, cols []string) (int, error) {
 	if len(old) < 2 {
 		return 0, nil
 	}
-	// everything not being merged stays exactly where it is, in order
-	var kept []string
+	// Bound the batch, for the same reason the apply tick is bounded: this runs
+	// on the apply goroutine and nothing else in that loop runs while it does.
+	// Measured at merge_during_compaction_ms=5842 on the wide shape, which was
+	// the largest remaining stall once apply was capped (docs/26).
+	//
+	// The OLDEST are taken rather than the newest, so the files that have been
+	// read through most often are the ones consolidated, and so the count
+	// actually falls instead of leaving an un-mergeable prefix behind forever.
+	if MaxMergeFiles > 0 && len(old) > MaxMergeFiles {
+		old = old[:MaxMergeFiles]
+	}
+
+	// Everything not being merged stays exactly where it is, and the merged
+	// file takes the POSITION of the run it replaces rather than going on the
+	// end. Appending was correct only while `old` was always the newest run;
+	// with a bounded batch it is a run from the middle, and moving older
+	// content after newer content would invert "last occurrence wins" for any
+	// key that somehow appears live in two files.
+	kept := make([]string, 0, len(t.State.DeltaFiles))
+	inserted := false
 	for _, d := range t.State.DeltaFiles {
-		if !contains(old, d) {
-			kept = append(kept, d)
+		if contains(old, d) {
+			if !inserted {
+				kept = append(kept, "") // placeholder, filled in below
+				inserted = true
+			}
+			continue
 		}
+		kept = append(kept, d)
 	}
 
 	var rows []map[string]any
@@ -1127,12 +1150,19 @@ func (t *Table) mergeGroup(old []string, cols []string) (int, error) {
 		rows = append(rows, got...)
 	}
 	if len(rows) == 0 {
-		// everything in them was superseded; just drop the files
+		// everything in them was superseded; just drop the files, and the
+		// placeholder with them since no file takes their place
 		for _, d := range old {
 			t.removeDataFile(filepath.Join("delta", d))
 			t.forgetDeltaFile(d)
 		}
-		t.State.DeltaFiles = kept
+		out := kept[:0]
+		for _, d := range kept {
+			if d != "" {
+				out = append(out, d)
+			}
+		}
+		t.State.DeltaFiles = out
 		t.recountDeltaRows()
 		return 0, t.saveState()
 	}
@@ -1163,7 +1193,14 @@ func (t *Table) mergeGroup(old []string, cols []string) (int, error) {
 	for _, d := range old {
 		t.forgetDeltaFile(d)
 	}
-	t.State.DeltaFiles = append(append([]string(nil), kept...), name)
+	merged := append([]string(nil), kept...)
+	for i, d := range merged {
+		if d == "" {
+			merged[i] = name
+			break
+		}
+	}
+	t.State.DeltaFiles = merged
 	t.noteDeltaFile(name, len(rows), cols)
 	t.recountDeltaRows()
 	if err := t.saveState(); err != nil {
