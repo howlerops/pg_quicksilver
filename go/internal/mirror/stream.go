@@ -34,10 +34,21 @@ import (
 // to hand over would make carry-forward's cost depend on the shape of an
 // unrelated compaction.
 type parquetWriter struct {
-	w       *pqarrow.FileWriter
-	schema  *arrow.Schema
-	cols    []string
-	pending []map[string]any
+	w      *pqarrow.FileWriter
+	schema *arrow.Schema
+	cols   []string
+	// tbl is held for one reason: the temporal check has to live where the
+	// write happens. It used to sit in writeParquetCols, which is one of TWO
+	// paths into this writer — the snapshot builds its own writer and appends
+	// directly, so bootstrap never checked at all. A table carrying a BC date
+	// would have been loaded with that column silently NULL, which is the
+	// exact failure docs/23 added the halt to prevent, on the path where an
+	// old date is most likely to live.
+	tbl *Table
+	// pending holds rows in COLUMN ORDER rather than as maps. The apply path
+	// converts once on the way in; the snapshot, whose rows arrive from a scan
+	// already in order, never builds a map at all.
+	pending [][]any
 }
 
 // ZstdLevel is the compression level every Parquet file is written at.
@@ -93,13 +104,46 @@ func (t *Table) newParquetWriter(path string, cols []string, durable bool) (*par
 		f.Close()
 		return nil, err
 	}
-	return &parquetWriter{w: w, schema: schema, cols: cols}, nil
+	return &parquetWriter{w: w, schema: schema, cols: cols, tbl: t}, nil
 }
 
-// Append takes ownership of nothing: rows are copied into Arrow builders at
-// flush time, so the caller may reuse or drop the slice immediately after.
+// Append takes ownership of nothing: rows are flattened to column order on the
+// way in, so the caller may reuse or drop the map immediately after.
 func (pw *parquetWriter) Append(rows []map[string]any) error {
-	pw.pending = append(pw.pending, rows...)
+	if pw.tbl != nil {
+		if err := pw.tbl.checkTemporal(rows, pw.cols); err != nil {
+			return err
+		}
+	}
+	for _, r := range rows {
+		vals := make([]any, len(pw.cols))
+		for i, name := range pw.cols {
+			vals[i] = r[name]
+		}
+		pw.pending = append(pw.pending, vals)
+	}
+	return pw.drain()
+}
+
+// AppendValues takes a row already in column order and TAKES OWNERSHIP of it.
+//
+// This is the snapshot's path. Its rows arrive from a scan as a slice in column
+// order, and the old route turned each one into a map so that the writer could
+// look the values back out by name — one allocation and N inserts per row on
+// the way in, N lookups on the way out, for a table whose whole row is four
+// small columns. Bootstrap is per-row CPU bound (docs/25), and this is the
+// per-row work.
+func (pw *parquetWriter) AppendValues(vals []any) error {
+	if pw.tbl != nil {
+		if err := pw.tbl.checkTemporalValues(vals, pw.cols); err != nil {
+			return err
+		}
+	}
+	pw.pending = append(pw.pending, vals)
+	return pw.drain()
+}
+
+func (pw *parquetWriter) drain() error {
 	for len(pw.pending) >= int(RowGroupRows) {
 		if err := pw.flush(int(RowGroupRows)); err != nil {
 			return err
@@ -114,9 +158,9 @@ func (pw *parquetWriter) flush(n int) error {
 	}
 	bld := array.NewRecordBuilder(memory.DefaultAllocator, pw.schema)
 	defer bld.Release()
-	for _, r := range pw.pending[:n] {
-		for i, name := range pw.cols {
-			appendValue(bld.Field(i), pw.schema.Field(i).Type, r[name])
+	for _, vals := range pw.pending[:n] {
+		for i := range pw.cols {
+			appendValue(bld.Field(i), pw.schema.Field(i).Type, vals[i])
 		}
 	}
 	rec := bld.NewRecord()

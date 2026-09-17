@@ -62,19 +62,23 @@ func (t *Table) Snapshot(ctx context.Context, conn *pgx.Conn, atLSN string) (int
 		return 0, err
 	}
 
+	// Rows go from the scan straight into the writer in COLUMN ORDER. The old
+	// route built a map[string]any per row so the writer could look the values
+	// back out by name — one allocation and N inserts on the way in, N lookups
+	// on the way out, per row, to move a slice to a slice. Bootstrap is per-row
+	// CPU bound (docs/25) and that was the per-row work.
+	//
+	// `ptrs` is built once and reused: it holds the ADDRESSES of the value
+	// slots, and the slots themselves are fresh per row because the writer
+	// keeps them until the row group is flushed.
 	index := map[string]int{}
-	buf := make([]map[string]any, 0, 1024)
-	n := 0
-	flush := func() error {
-		if len(buf) == 0 {
-			return nil
+	keyAt := 0
+	for i, c := range t.Order {
+		if c == t.Key {
+			keyAt = i
 		}
-		if err := w.Append(buf); err != nil {
-			return err
-		}
-		buf = buf[:0]
-		return nil
 	}
+	n := 0
 	for rows.Next() {
 		vals := make([]any, len(t.Order))
 		ptrs := make([]any, len(t.Order))
@@ -85,25 +89,14 @@ func (t *Table) Snapshot(ctx context.Context, conn *pgx.Conn, atLSN string) (int
 			w.Close()
 			return 0, err
 		}
-		m := make(map[string]any, len(t.Order))
-		for i, c := range t.Order {
-			m[c] = vals[i]
-		}
-		index[t.keyOf(m[t.Key]).String()] = n
+		index[t.keyOf(vals[keyAt]).String()] = n
 		n++
-		buf = append(buf, m)
-		if len(buf) == cap(buf) {
-			if err := flush(); err != nil {
-				w.Close()
-				return 0, err
-			}
+		if err := w.AppendValues(vals); err != nil {
+			w.Close()
+			return 0, err
 		}
 	}
 	if err := rows.Err(); err != nil {
-		w.Close()
-		return 0, err
-	}
-	if err := flush(); err != nil {
 		w.Close()
 		return 0, err
 	}

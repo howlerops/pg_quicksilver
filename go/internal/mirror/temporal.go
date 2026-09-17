@@ -274,14 +274,12 @@ func appendTemporal[T ~int32 | ~int64](
 	add(T(n))
 }
 
-// checkTemporal refuses a batch containing a temporal value Arrow cannot hold.
-//
-// It runs before the writer rather than inside it because the writer cannot
-// report which value was the problem, and "which value" is the only part an
-// operator can act on.
-func (t *Table) checkTemporal(rows []map[string]any, cols []string) error {
+// temporalKinds classifies a column list once, and says whether any of it is
+// temporal at all — which for most tables is the whole answer and costs one
+// pass rather than one per row.
+func (t *Table) temporalKinds(cols []string) ([]temporalKind, bool) {
 	if !TemporalTypes {
-		return nil
+		return nil, false
 	}
 	kinds := make([]temporalKind, len(cols))
 	any := false
@@ -291,26 +289,67 @@ func (t *Table) checkTemporal(rows []map[string]any, cols []string) error {
 			any = true
 		}
 	}
+	return kinds, any
+}
+
+// checkOne is the per-value half, shared by both shapes of the check.
+func (t *Table) checkOne(k temporalKind, col string, v any) error {
+	if k == notTemporal || v == nil {
+		return nil
+	}
+	s, ok := v.(string)
+	if !ok {
+		s = fmt.Sprint(v)
+	}
+	if _, ok := parseTemporal(k, s); ok {
+		return nil
+	}
+	reason := unrepresentable(t.Qualified, col, t.Columns[col], s)
+	_ = t.Halt(reason)
+	return fmt.Errorf("%s", reason)
+}
+
+// checkTemporalValues is the column-ordered form, for the snapshot's path.
+//
+// It exists because the check has to cover EVERY way into the writer. It used
+// to be called from writeParquetCols only, and the snapshot does not go through
+// there — so bootstrap, the one path that loads data written before the mirror
+// existed and therefore the one most likely to meet a date from 44 BC, was the
+// path that never looked.
+func (t *Table) checkTemporalValues(vals []any, cols []string) error {
+	kinds, any := t.temporalKinds(cols)
+	if !any {
+		return nil
+	}
+	for i, c := range cols {
+		if i >= len(vals) {
+			break
+		}
+		if err := t.checkOne(kinds[i], c, vals[i]); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// checkTemporal refuses a batch containing a temporal value Arrow cannot hold.
+//
+// It runs before the writer rather than inside it because the writer cannot
+// report which value was the problem, and "which value" is the only part an
+// operator can act on.
+func (t *Table) checkTemporal(rows []map[string]any, cols []string) error {
+	kinds, any := t.temporalKinds(cols)
 	if !any {
 		return nil
 	}
 	for _, r := range rows {
 		for i, c := range cols {
-			if kinds[i] == notTemporal {
-				continue
-			}
 			v, present := r[c]
-			if !present || v == nil {
+			if !present {
 				continue
 			}
-			s, ok := v.(string)
-			if !ok {
-				s = fmt.Sprint(v)
-			}
-			if _, ok := parseTemporal(kinds[i], s); !ok {
-				reason := unrepresentable(t.Qualified, c, t.Columns[c], s)
-				_ = t.Halt(reason)
-				return fmt.Errorf("%s", reason)
+			if err := t.checkOne(kinds[i], c, v); err != nil {
+				return err
 			}
 		}
 	}

@@ -7,6 +7,7 @@ package mirror
 
 import (
 	"fmt"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -204,5 +205,56 @@ func TestTemporalTypesCanBeTurnedOff(t *testing.T) {
 	if arrowType("timestamptz").String() != "utf8" {
 		t.Errorf("with the flag off a timestamptz should be stored as text, got %s",
 			arrowType("timestamptz"))
+	}
+}
+
+// The halt has to cover EVERY way into the writer, and for a while it covered
+// one of two. checkTemporal was called from writeParquetCols; the snapshot
+// builds its own writer and appends to it directly, so bootstrap never looked.
+//
+// That is the worst path to miss. Bootstrap is where data written before this
+// mirror existed arrives, which makes it the one place a date from 44 BC is
+// actually likely — and the column would have loaded silently NULL.
+func TestTheWriterItselfRefusesAnUnrepresentableValue(t *testing.T) {
+	if !TemporalTypes {
+		t.Skip("QS_TEMPORAL_TYPES=0")
+	}
+	cols := map[string]string{"id": "bigint", "at": "timestamptz"}
+	order := []string{"id", "at"}
+	dir := t.TempDir()
+	tbl, err := New(dir, "public", "e", "id", cols, order)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Straight at the writer, the way Snapshot does it — no writeParquetCols
+	// anywhere in the path.
+	w, err := tbl.newParquetWriter(filepath.Join(dir, "direct.parquet"), nil, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = w.AppendValues([]any{"1", "0044-03-15 12:00:00+00 BC"})
+	_ = w.Close()
+	if err == nil {
+		t.Fatal("the writer accepted a BC timestamp appended in column order; " +
+			"bootstrap would load that column as NULL and say nothing")
+	}
+	if h := tbl.Halted(); h == "" {
+		t.Error("the mirror did not halt, so a restart would resume and store it")
+	}
+
+	// And the map-shaped path, for the same reason.
+	tbl2, err := New(t.TempDir(), "public", "e", "id", cols, order)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w2, err := tbl2.newParquetWriter(filepath.Join(t.TempDir(), "m.parquet"), nil, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = w2.Append([]map[string]any{{"id": "1", "at": "294248-01-01 00:00:00+00"}})
+	_ = w2.Close()
+	if err == nil {
+		t.Fatal("the writer accepted a year beyond what an Arrow timestamp holds")
 	}
 }
