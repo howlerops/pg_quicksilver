@@ -187,11 +187,37 @@ single transaction can produce. Before the fix, one delete-and-re-insert wrote
 two copies and two wrote three, which is the mechanism counted out rather than
 described.
 
-`QS_RACE_INVARIANTS=1` asserts, after **every** apply, swap and merge of the racy
+The invariant check asserts, after **every** apply, swap and merge of the racy
 tests, that each key is live in at most one file and that the index names that
 copy. Checked only at the end of a sixty-round run, a duplicate is several merges
 and a base rewrite away from whatever created it — which is precisely the
-distance the first, wrong diagnosis was reasoned across.
+distance the first, wrong diagnosis was reasoned across. It runs on every
+`go test`, having started behind an environment variable and lost it: reading
+only the key column made it cost 0.9s on the racy pair, and a check that has to
+be switched on is a check that rots.
+
+It is itself verified rather than believed. With the fix reverted it reports, on
+the single batch that causes it:
+
+```
+insert, delete, insert
+  after one batch: key 7 is live in 2 places:
+    [delta/000001.parquet#0 delta/000001.parquet#1]
+insert, delete, insert, delete, insert
+  after one batch: key 7 is live in 3 places: [#0 #1 #2]
+```
+
+and the interleavings without a re-insert pass.
+
+Then the rate decides the sample. The racy pair, on the fixed tree, frozen at one
+commit so that no batch could compile something else:
+
+```
+VERIFY DONE: 10000 subtest runs, 0 failing batches
+```
+
+At the pre-fix rate of roughly one in a thousand, ten thousand runs expects about
+ten failures. Zero is a result; one hundred and twenty runs would not have been.
 
 The earlier claim here that the concurrency test "ran 120 times after the fix,
 0 failures" was weaker than it read. At roughly one in a thousand for the path
