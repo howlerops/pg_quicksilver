@@ -80,49 +80,144 @@ silently roll the mirror back to a superseded value, which is *worse* than a
 duplicate because nothing counts wrong.
 
 It is deliberately a fix at the merge rather than at whatever let a key be live
-in two files at once. Those two are different questions, and the second one may
-well have no bug in it at all — the apply path tombstones a superseded copy, and
-the precondition can also arise from a file written before a fix, or a mirror
-restored from a backup. **A merge that cannot express "this row is dead" must
-not create the situation that needs it, however the input arose.**
+in two files at once. **A merge that cannot express "this row is dead" must not
+create the situation that needs it, however the input arose.**
+
+That reasoning stands. The sentence that followed it did not:
+
+> Those two are different questions, and the second one may well have no bug in
+> it at all.
+
+It had one, and the next section is it.
+
+---
+
+## Where the duplicates came from
+
+The merge fix was checked and it worked; the duplicates kept coming, about one
+run in a thousand instead of one in twenty, in the **whole-row** test the merge
+fix said had never failed. So the merge was one source and there was another.
+
+Two things made the second one findable.
+
+The first was admitting the diagnostic was lying. `whereIs` read each file
+through its deletion vector — which drops the dead rows and **renumbers the
+rest** — and printed that live-subset index next to the index's physical one.
+Every capture therefore read as "the index points at a position where the key is
+not", a signal that was this function's own arithmetic. Reading with no vector
+and reporting dead-or-live as a column made both numbers mean the same thing.
+
+The second was an amplified hunt: `-count=25`, sixty batches, every failing
+output kept. One in a thousand needs thousands of runs, and until the rate was
+respected the bug looked like a flake.
+
+What came back was unambiguous:
+
+```
+key 40 appears twice in the mirror
+  index -> delta/000064.parquet#12
+  dead in base/000040.parquet#244: v=u3 n=3
+  LIVE in delta/000064.parquet#5:  v=re n=9
+  LIVE in delta/000064.parquet#12: v=re n=9
+```
+
+Two live copies, one file, **identical values**, index on the later. Identical is
+the tell. Two racing writers produce two *different* rows; one row written twice
+from the same map produces these.
+
+`Apply` collects a batch into `upserts` (key → row) and `order`, and asked
+whether a key was already queued by looking it up in `upserts`:
+
+```go
+if _, seen := upserts[k]; !seen { order = append(order, k) }
+```
+
+A delete removes the key from `upserts` and leaves it in `order`, which is
+correct on its own — `writeUpserts` skips a key with no row. But an insert of the
+same key **later in the same batch** then finds `upserts` empty, reads that as
+"not queued yet", and appends the key to `order` a second time. `writeUpserts`
+walks `order` and writes `upserts[k]` per occurrence, so the delta file gets two
+identical copies and the index, written last, names only the second.
+
+The fix is one line of bookkeeping: membership of `order` is tracked separately
+from `upserts`, because those were never the same question.
+
+This also explains why the merge fix appeared to work. A merge that deduplicates
+its output silently *repairs* a file that arrived carrying a duplicate — so the
+merge fix was both a real fix and a mask for the thing that fed it.
+
+### Three symptoms, one bug
+
+The hunt had been treating these as possibly three defects:
+
+| symptom | what was reported |
+| --- | --- |
+| duplicate row | `key 40 appears twice in the mirror` |
+| stale value | `row 90 column v: mirror=re want=u31` |
+| deleted row present | `row 338 in mirror but deleted at round 51` |
+
+They are all the second copy.
+
+Once a key has an un-indexed live copy, every later write tombstones the copy the
+index names and leaves the other one alone. Update the key and the mirror holds
+both the new value and the orphan, and a scan returns whichever file it reads
+last — **a stale value**. Delete the key and the orphan survives the tombstone
+entirely — **a row that was deleted**. Merge the file the orphan lives in and the
+index is repointed at it, which is why that capture showed an index entry for a
+key that had been deleted and a deletion vector that did not mark it.
+
+The signal was in every capture and I read past it: each one carried `v=re n=9`.
+That is the test's round-9 case, which is the only place a key is deleted and
+re-inserted **inside one batch**.
 
 ## Verification
 
 At a 5% reproduction rate a single green run is exactly what a change that does
-nothing looks like, so the fix is checked two ways.
+nothing looks like, so both fixes are checked deterministically and then at a
+sample size chosen from the rate.
 
-`TestMergeNeverDuplicatesAKey` is **deterministic**: it builds two delta files
-that both hold a live row for the same key and merges them, rather than racing
-for the condition. Confirmed to fail with the dedupe removed and pass with it.
-It also asserts the survivor is the newer value, because a fix that deduplicates
-to the wrong copy passes the count and corrupts the data.
+`TestMergeNeverDuplicatesAKey` builds two delta files that both hold a live row
+for the same key and merges them, rather than racing for the condition. It fails
+with the dedupe removed and passes with it, and it asserts the survivor is the
+newer value — a fix that deduplicates to the wrong copy passes the count and
+corrupts the data.
 
-The concurrency test that found it ran 120 times after the fix:
+`TestDeleteThenReinsertInOneBatchWritesOneRow` covers all five interleavings a
+single transaction can produce. Before the fix, one delete-and-re-insert wrote
+two copies and two wrote three, which is the mechanism counted out rather than
+described.
 
-```
-=== 120 iterations, 0 failures ===
-```
+`QS_RACE_INVARIANTS=1` asserts, after **every** apply, swap and merge of the racy
+tests, that each key is live in at most one file and that the index names that
+copy. Checked only at the end of a sixty-round run, a duplicate is several merges
+and a base rewrite away from whatever created it — which is precisely the
+distance the first, wrong diagnosis was reasoned across.
 
-Before the fix it failed 2 times in 40. At that rate, 120 consecutive clean runs
-happen by chance with probability 0.95^120, or about **0.2%** — which is the
-only reason 120 was the number chosen rather than 10.
-
-```bash
-for i in $(seq 120); do
-  go -C go test ./internal/mirror/ -run "TestCompactionRaces|TestPartialDelta" -count=1 \
-    || echo "FAILED on $i"
-done
-```
+The earlier claim here that the concurrency test "ran 120 times after the fix,
+0 failures" was weaker than it read. At roughly one in a thousand for the path
+that was still broken, 120 runs had about a 90% chance of showing nothing, so a
+clean result was mostly a statement about sample size. The number to quote is the
+one the rate demands.
 
 ## What this cost, as a lesson
 
-The first write-up of this bug published a mechanism that was not the mechanism.
-It was labelled a suspect rather than a diagnosis, which is the only reason it
-did no damage — but it also sat in the repository for an afternoon pointing the
-next reader at the wrong file. The instrumentation that replaced it with the
-answer was four lines and one run.
+Three things, in order of how much they cost.
+
+The first write-up published a mechanism that was not the mechanism, reached by
+reading rather than measuring. It was labelled a suspect, which is the only
+reason it did no damage.
+
+The second was the diagnostic that lied. Four lines of instrumentation replaced
+an afternoon of wrong reasoning — and then the same four lines printed a
+renumbered position for a whole corpus of captures, and the "signal" they created
+sent the next reading in a new wrong direction. **An instrument is only evidence
+once you have checked what it measures.**
+
+The third is the sentence quoted at the top of this section: a fix shipped with a
+stated reason to stop looking. The reason was sound about the merge and wrong
+about the mirror, and it turned a known-incomplete diagnosis into a closed one.
 
 That is the same shape as every entry in this project's tally of measurement
 defects ([docs/27](27-the-pruning-that-already-works.md)): reading produced a
 plausible story, and only measurement produced the true one. The difference here
-is that the plausible story was mine and I had already written it down.
+is that the plausible story was mine and I had already written it down — twice.

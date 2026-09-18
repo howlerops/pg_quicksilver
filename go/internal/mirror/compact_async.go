@@ -348,11 +348,17 @@ func (t *Table) FinishCompaction() (int, error) {
 	}
 
 	// Every patch the rewrite folded in lived in a file it is about to delete,
-	// and its value is now part of the whole row in the new base. No patches
-	// can have been created since (canPatch refuses while a rewrite is in
-	// flight), so this empties the map — but it is written as a filter, because
-	// "it should be empty" is how the last three silent-corruption bugs in this
-	// package were reasoned into existence.
+	// and its value is now part of the whole row in the new base. Patches
+	// written SINCE must survive: they landed in deltas outside the snapshot,
+	// the rewrite never saw them, and the read path puts them back on the row it
+	// folded (partial.go). So this is a filter and not a clear.
+	//
+	// It previously justified itself with "no patches can have been created
+	// since (canPatch refuses while a rewrite is in flight)", which is simply not
+	// true — canPatch has no such check, partial.go says in as many words that
+	// patches ARE created during a rewrite, and the racy test fails outright if
+	// none was. The filter was right; only its reason was wrong, which is the
+	// more dangerous of the two to leave lying around.
 	t.patch.deleteWhere(func(p loc) bool { return c.files[p.File] })
 
 	t.index = c.index // O(1): the rewrite built it
