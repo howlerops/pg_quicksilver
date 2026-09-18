@@ -107,6 +107,26 @@ The mirror weighed 120 MB on disk and the sidecar peaked at 1,854 MB, so
 | 5M | `512Mi` |
 | 20M | `2Gi` |
 
+**Do not size it from `kubectl top` after a restart.** The key index is built
+lazily, on the first change rather than at startup, so a freshly restarted
+sidecar sits at a fraction of its real footprint and the readiness probe passes
+anyway. Measured at 4M rows:
+
+```
+readiness said yes at   0.04s and   25 MB
+the first write took     2.3s and  507 MB     <- 20x
+a second, identical one  0.5s
+```
+
+The Pod is put into service at 25 MB and grows twentyfold on its first write.
+Sizing from the number the probe just blessed is wrong by that factor. Use the
+row count.
+
+The difference between those two writes — about **1.8s** — is what a restart
+actually costs in stall; the raw 2.3s is not that number, because it also
+contains the `UPDATE`, the decode and the apply that every write pays.
+`bench/scripts/restart_cost.sh` measures all three.
+
 It is applied as a request *and* a limit, which puts the sidecar in Guaranteed
 QoS. That matters more than the exact number: a container requesting far less
 than it uses is Burstable, and the Pod it makes an eviction candidate is the one

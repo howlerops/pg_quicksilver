@@ -278,6 +278,14 @@ should not be decided from one shape on one machine:
 - The sidecar itself holds **2.5 GB of RSS** for a 120 MB mirror, 130 bytes per
   live row, which is the key index. Bounded and paid for, but it is the number
   that decides what memory limit a CNPG Pod needs, and it has not been attacked.
+  It is also **invisible immediately after a restart**: the index is built
+  lazily, on the first change, so a restarted sidecar reports ready in 0.04s at
+  25 MB and reaches 507 MB on its first write — twentyfold, at only 4M rows.
+  Measured in [`bench/results/restart_cost_4m.txt`](../bench/results/restart_cost_4m.txt);
+  the stall itself is ~1.8s once an identical second write is subtracted. Whether
+  to build the index eagerly at startup instead is a real trade and is not made
+  here: it would make readiness honest and the memory visible, at the cost of
+  delaying a restarted Pod's return to service by that same time.
 
 The point lookup — 0.3 ms against 176.0 ms before, 49.0 ms after — is a separate
 question this document does not touch. A columnar mirror losing a point lookup

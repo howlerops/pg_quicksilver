@@ -1,0 +1,33 @@
+
+=== infrastructure ===
+
+=== seeding 4000000 rows ===
+  seeded 4000000 rows
+
+=== first start — this one pays for the snapshot ===
+  ready in 12.3s (bootstrap), RSS 85 MB
+  after one change, RSS 492 MB
+
+=== restart ===
+  stopped
+  ready in 0.04s, RSS 25 MB
+
+=== the first change AFTER the restart ===
+  applied in 2.3s, RSS peaked at 507 MB
+  a SECOND, identical write: 0.5s, RSS peaked at 512 MB
+
+=== what this means for a Pod ===
+  readiness said yes at    0.04s and    25 MB
+  the first write took      2.3s and   507 MB
+  a second one took         0.5s
+  so the restart itself cost about 1.8s of stall
+
+  The readiness probe passes BEFORE the index exists, so a restarted Pod is put
+  into service and then stalls on its first write while it builds one. At this
+  size that is 2.293406252s of stall and 482 MB of growth that the probe
+  already said was fine. An operator sizing a memory limit from what RSS looks
+  like just after a restart will size it for 25 MB and get OOM-killed
+  at 482 MB more.
+
+========================================
+PASS

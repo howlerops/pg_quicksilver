@@ -198,15 +198,24 @@ if [ -n "$applied" ] && [ -n "$second" ]; then
     "$(echo "$applied - $second" | bc)"
 fi
 grow=$(( peak/1024 - rss_ready ))
-if [ -n "$applied" ] && [ "$(echo "$applied > 2.0" | bc)" = "1" ] && [ "$grow" -gt 200 ]; then
+stall="n/a"
+factor="?"
+if [ -n "$applied" ] && [ -n "$second" ]; then
+  stall=$(printf '%.1f' "$(echo "$applied - $second" | bc)")
+fi
+[ "$rss_ready" -gt 0 ] && factor=$(printf '%.0f' "$(echo "$peak / 1024 / $rss_ready" | bc -l)")
+if [ "$stall" != "n/a" ] && [ "$(echo "$stall > 0.5" | bc)" = "1" ] && [ "$grow" -gt 200 ]; then
   cat <<TXT
 
   The readiness probe passes BEFORE the index exists, so a restarted Pod is put
-  into service and then stalls on its first write while it builds one. At this
-  size that is ${applied}s of stall and ${grow} MB of growth that the probe
-  already said was fine. An operator sizing a memory limit from what RSS looks
-  like just after a restart will size it for ${rss_ready} MB and get OOM-killed
-  at ${grow} MB more.
+  into service and then stalls on its first write while it builds one. Measured
+  against an identical second write, that stall is ${stall}s — the raw first-
+  write time is not the stall, because it also contains the UPDATE, the decode
+  and the apply that every write pays.
+
+  The memory is the sharper problem: ${grow} MB of growth that the probe already
+  called fine. An operator reading kubectl top after a restart to size
+  sidecarMemory sees ${rss_ready} MB and sizes for it, and is wrong by ${factor}x.
 TXT
 else
   ok "readiness tracks the real cost at this size; re-run with a larger ROWS"
