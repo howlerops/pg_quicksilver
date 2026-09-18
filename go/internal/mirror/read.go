@@ -432,3 +432,15 @@ func (t *Table) readRowsAt(rel string, positions []int, cols []string) (map[int]
 	}
 	return out, nil
 }
+
+// envFloat is envInt's counterpart for a fraction, which cannot be expressed as
+// a positive integer. Zero is a meaningful value here — it means "off" — so
+// unlike envInt this accepts it rather than treating it as absent.
+func envFloat(key string, def float64) float64 {
+	if v := os.Getenv(key); v != "" {
+		if f, err := strconv.ParseFloat(v, 64); err == nil && f >= 0 {
+			return f
+		}
+	}
+	return def
+}

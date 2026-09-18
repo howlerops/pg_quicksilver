@@ -1335,7 +1335,72 @@ func (t *Table) ShouldCompact() bool {
 	if threshold < compactMinRows {
 		threshold = compactMinRows
 	}
-	return t.State.DeltaRows >= threshold
+	if t.State.DeltaRows >= threshold {
+		return true
+	}
+	return t.baseVectorTooExpensive()
+}
+
+// baseVectorTooExpensive is the READ side of the compaction trade, which the
+// churn trigger above does not represent at all.
+//
+// The churn trigger is sized entirely by the cost of the rewrite: compaction is
+// O(table), so triggering proportionally to the table keeps amortised write
+// cost constant. Correct, and one side of a two-sided ledger. The other side is
+// that every query pays for the deletion vector the rewrite has not folded
+// away, and that cost tracks the ABSOLUTE number of dead positions in the BASE
+// file — so holding the ratio constant lets the read penalty grow without bound
+// as the table grows.
+//
+// Measured on a 20.5M-row narrow mirror (bench/scripts/dv_cost_by_shape.py),
+// count(*) against the base file:
+//
+//	dead in the base    count(*)    vs a column scan
+//	               0      2.6 ms                   —   answered from the footer
+//	          20,458     64.1 ms               21.2x
+//	         204,582    112.9 ms               38.0x
+//	       2,045,826    220.3 ms               75.0x
+//
+// The step from NO vector to ANY vector is 24x; the step from 20,458 dead to
+// 2,045,826 — a hundred times more — is only 3.5x. So this is not a dead-row
+// ceiling in any useful sense. What matters is how long the base is allowed to
+// carry a vector at all, and the only thing that removes one is a rewrite.
+//
+// WHY IT IS OFF BY DEFAULT. The same measurement says the penalty is a property
+// of NARROW rows, because the anti-join is per-row while the scan it competes
+// with is per-byte:
+//
+//	shape       bytes/row   column scan   penalty at 1% dead
+//	narrow              6        1.0 ms       13.9 ms  14.5x
+//	wide               27        1.1 ms        7.8 ms   6.9x
+//	jsonb            1692      238.3 ms        2.0 ms  <0.01x
+//
+// On jsonb the vector is a rounding error, so compacting sooner would buy that
+// shape nothing and cost it a full rewrite. Turning this on by default would
+// also change write throughput, which docs/19 measures and this has not — and
+// an unmeasured throughput change is exactly what the 30x collapse in docs/18
+// was. So it ships as a flag with the evidence attached, to be defaulted on
+// when an A/B says what it costs the write path.
+var CompactDeadFraction = envFloat("QS_COMPACT_DEAD_FRACTION", 0)
+
+func (t *Table) baseVectorTooExpensive() bool {
+	if CompactDeadFraction <= 0 || t.State.BaseRows < compactMinRows {
+		return false
+	}
+	dead := 0
+	for _, b := range t.State.BaseFiles {
+		if gen := t.State.DVGen[dvStem(b)]; gen != 0 {
+			d, err := t.readDV(t.dvPathGenAny(filepath.Join("base", b), gen), b)
+			if err != nil {
+				// A vector we cannot read is not a reason to rewrite the table.
+				// The read path will raise ErrStaleManifest and retry, which is
+				// a better answer than a compaction started on a guess.
+				return false
+			}
+			dead += len(d)
+		}
+	}
+	return float64(dead) >= float64(t.State.BaseRows)*CompactDeadFraction
 }
 
 // writeJSON writes atomically: temp file, fsync, rename.
