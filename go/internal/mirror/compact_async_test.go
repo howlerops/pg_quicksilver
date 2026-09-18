@@ -220,6 +220,7 @@ func testCompactionRaces(t *testing.T, partial bool) {
 					// positions are in the same file.
 					t.Errorf("key %s appears twice in the mirror; a compaction "+
 						"swap kept two copies of the same row (docs/31)", k)
+					whereIs(t, tbl, k)
 				}
 				got[k] = r
 				return nil
