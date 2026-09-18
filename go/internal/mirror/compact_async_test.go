@@ -12,6 +12,7 @@ package mirror
 import (
 	"fmt"
 	"math/rand"
+	"path/filepath"
 	"testing"
 
 	"github.com/howlerops/pg_quicksilver/go/internal/changestream"
@@ -246,6 +247,14 @@ func testCompactionRaces(t *testing.T, partial bool) {
 						if wrong < 3 {
 							t.Errorf("row %s column %s: mirror=%v want=%v",
 								k, c, g[c], w[c])
+							// WHERE the stale value lives, not just that it is
+							// stale. The "extra" branch below has carried this
+							// since the torn-vector hunt; the "wrong" branch had
+							// nothing, so the one CI failure it produced said
+							// only that a value was old. Four lines of this is
+							// what turned docs/31 from an afternoon of wrong
+							// reasoning into a one-run answer.
+							whereIs(t, tbl, k)
 						}
 						wrong++
 					}
@@ -294,4 +303,44 @@ func pickKey(rng *rand.Rand, m map[string]map[string]any) string {
 		n--
 	}
 	return ""
+}
+
+// whereIs reports every place a key is live and what the indexes say, which is
+// the difference between "the value is wrong" and a mechanism.
+func whereIs(t *testing.T, tbl *Table, key string) {
+	t.Helper()
+	k := tbl.keyOfString(key)
+	if l, ok := tbl.index.get(k); ok {
+		t.Logf("  index -> %s#%d", l.File.name(), l.Pos)
+	} else {
+		t.Logf("  index has no entry for %s", key)
+	}
+	if tbl.patch != nil {
+		if l, ok := tbl.patch.get(k); ok {
+			t.Logf("  patch -> %s#%d", l.File.name(), l.Pos)
+		}
+	}
+	t.Logf("  manifest: base=%v delta=%v", tbl.State.BaseFiles, tbl.State.DeltaFiles)
+	for _, set := range [][2]any{
+		{"base", tbl.State.BaseFiles}, {"delta", tbl.State.DeltaFiles},
+	} {
+		sub := set[0].(string)
+		for _, f := range set[1].([]string) {
+			rel := filepath.Join(sub, f)
+			dead, err := tbl.deadPositions(rel)
+			if err != nil {
+				continue
+			}
+			rows, err := tbl.readParquet(filepath.Join(tbl.Dir, rel), dead)
+			if err != nil {
+				continue
+			}
+			for i, r := range rows {
+				if fmt.Sprint(r[tbl.Key]) == key {
+					t.Logf("  LIVE in %s#%d: v=%v n=%v (partial=%v)",
+						rel, i, r["v"], r["n"], tbl.State.PartialCols[f] != nil)
+				}
+			}
+		}
+	}
 }
