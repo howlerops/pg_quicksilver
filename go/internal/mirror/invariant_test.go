@@ -19,12 +19,14 @@ package mirror
 //     row is, so an index pointing anywhere else silently tombstones the wrong
 //     row and leaves the real one live.
 //
-// Run under QS_RACE_INVARIANTS=1, because it is O(mirror) per call and the hunt
-// it serves runs the racy tests a thousand times over.
+// It runs unconditionally. It was behind QS_RACE_INVARIANTS while it was slow
+// enough to matter; reading only the key column brought the whole racy pair from
+// 3.9s to 3.4s against 2.5s without it, and a check nobody sets an environment
+// variable for is a check that rots — which is the thing this repository's CI
+// file exists to say.
 
 import (
 	"fmt"
-	"os"
 	"path/filepath"
 	"sort"
 	"testing"
@@ -46,9 +48,6 @@ func (l liveAt) String() string { return fmt.Sprintf("%s#%d", l.rel, l.pos) }
 // mirror is wrong at the end" into "MergeDeltas at round 37 did this".
 func checkInvariants(t *testing.T, tbl *Table, when string) bool {
 	t.Helper()
-	if os.Getenv("QS_RACE_INVARIANTS") == "" {
-		return true
-	}
 
 	live := map[rowKey][]liveAt{}
 	for _, set := range [][2]any{

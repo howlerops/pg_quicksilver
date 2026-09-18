@@ -96,6 +96,13 @@ func TestDeleteThenReinsertInOneBatchWritesOneRow(t *testing.T) {
 				t.Fatal(err)
 			}
 
+			// The same two properties the racy tests assert between steps, on the
+			// one batch that broke them. This is also how the invariant check
+			// itself is verified: with the fix reverted, this line fails on the
+			// three re-insert cases and passes on the other two, which is the
+			// check catching the bug rather than the check being believed.
+			checkInvariants(t, tbl, "after one batch")
+
 			var got []map[string]any
 			if err := tbl.ForEachLive(func(r map[string]any) error {
 				if Render(r["id"]) == "7" {

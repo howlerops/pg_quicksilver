@@ -159,8 +159,8 @@ func testCompactionRaces(t *testing.T, partial bool) {
 				}
 				if len(changes) > 0 {
 					apply(changes)
-					// Under QS_RACE_INVARIANTS, stop at the step that broke the
-					// mirror rather than at the end of the run. See invariant_test.go.
+					// Stop at the step that broke the mirror rather than at the end
+					// of the run. See invariant_test.go.
 					if !checkInvariants(t, tbl, fmt.Sprintf("after apply, round %d", round)) {
 						return
 					}
