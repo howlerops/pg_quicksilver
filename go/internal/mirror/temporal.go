@@ -65,6 +65,12 @@ const (
 	kindTimestamp
 	kindDate
 	kindTime
+	// kindInterval is a DURATION, not an instant, and it is the only kind here
+	// whose value is three independent numbers rather than one. See
+	// interval.go: months, days and microseconds cannot be collapsed, because
+	// a month is 28 to 31 days and a day is 23 to 25 hours across a DST
+	// boundary.
+	kindInterval
 )
 
 // temporalOf classifies a declared PostgreSQL type.
@@ -108,6 +114,11 @@ func temporalArrowType(k temporalKind) arrow.DataType {
 		return arrow.FixedWidthTypes.Date32
 	case kindTime:
 		return arrow.FixedWidthTypes.Time64us
+	case kindInterval:
+		// Deliberately unreachable: temporalOf does not classify interval, so
+		// nothing asks for this. It is named rather than deleted because the
+		// type is the right one and the blocker is elsewhere — see interval.go.
+		return arrow.FixedWidthTypes.MonthDayNanoInterval
 	}
 	return nil
 }
@@ -123,6 +134,8 @@ func temporalSQLType(k temporalKind) string {
 		return "DATE"
 	case kindTime:
 		return "TIME"
+	case kindInterval:
+		return "INTERVAL"
 	}
 	return ""
 }
@@ -301,7 +314,14 @@ func (t *Table) checkOne(k temporalKind, col string, v any) error {
 	if !ok {
 		s = fmt.Sprint(v)
 	}
-	if _, ok := parseTemporal(k, s); ok {
+	// An interval is three numbers, not one, so it validates through its own
+	// parser. Routing it into parseTemporal would refuse every interval and
+	// halt the mirror on the first one.
+	if k == kindInterval {
+		if _, ok := parseInterval(s); ok {
+			return nil
+		}
+	} else if _, ok := parseTemporal(k, s); ok {
 		return nil
 	}
 	reason := unrepresentable(t.Qualified, col, t.Columns[col], s)

@@ -932,6 +932,18 @@ func appendValue(b array.Builder, dt arrow.DataType, v any) {
 		appendTemporal(bb.Append, arrow.Date32(0), kindDate, v, bb.AppendNull)
 	case *array.Time64Builder:
 		appendTemporal(bb.Append, arrow.Time64(0), kindTime, v, bb.AppendNull)
+	case *array.MonthDayNanoIntervalBuilder:
+		// Not appendTemporal: that helper is generic over one integer, and an
+		// interval is three. See interval.go.
+		s, ok := v.(string)
+		if !ok {
+			s = fmt.Sprint(v)
+		}
+		if iv, ok := parseInterval(s); ok {
+			bb.Append(iv)
+		} else {
+			bb.AppendNull()
+		}
 	case *array.Int64Builder:
 		if str, ok := v.(string); ok {
 			if n, err := strconv.ParseInt(strings.TrimSpace(str), 10, 64); err == nil {
