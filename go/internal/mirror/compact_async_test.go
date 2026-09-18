@@ -159,6 +159,11 @@ func testCompactionRaces(t *testing.T, partial bool) {
 				}
 				if len(changes) > 0 {
 					apply(changes)
+					// Under QS_RACE_INVARIANTS, stop at the step that broke the
+					// mirror rather than at the end of the run. See invariant_test.go.
+					if !checkInvariants(t, tbl, fmt.Sprintf("after apply, round %d", round)) {
+						return
+					}
 				}
 				if tbl.patch.len() > 0 && tbl.Compacting() {
 					patchedDuringRewrite = true
@@ -172,6 +177,9 @@ func testCompactionRaces(t *testing.T, partial bool) {
 					}
 					if n > 0 {
 						swapAt = append(swapAt, round)
+						if !checkInvariants(t, tbl, fmt.Sprintf("after swap, round %d", round)) {
+							return
+						}
 					}
 				}
 
@@ -183,6 +191,9 @@ func testCompactionRaces(t *testing.T, partial bool) {
 				if tbl.ShouldMergeDeltas() {
 					if _, err := tbl.MergeDeltas(); err != nil {
 						t.Fatalf("MergeDeltas: %v", err)
+					}
+					if !checkInvariants(t, tbl, fmt.Sprintf("after merge, round %d", round)) {
+						return
 					}
 				}
 			}
@@ -307,8 +318,16 @@ func pickKey(rng *rand.Rand, m map[string]map[string]any) string {
 	return ""
 }
 
-// whereIs reports every place a key is live and what the indexes say, which is
+// whereIs reports every place a key appears and what the indexes say, which is
 // the difference between "the value is wrong" and a mechanism.
+//
+// PHYSICAL positions, deliberately. The first version read each file through
+// readParquet with its deletion vector applied, which drops the dead rows AND
+// RENUMBERS the rest — so it printed a live-subset index while the line above it
+// printed the index's physical one. Every capture in the first corpus therefore
+// looked like "the index points at a position where the key is not", and that
+// apparent signal was this function's own arithmetic. Reading with no vector and
+// reporting `dead` as a column says both things without inventing a third.
 func whereIs(t *testing.T, tbl *Table, key string) {
 	t.Helper()
 	k := tbl.keyOfString(key)
@@ -333,14 +352,18 @@ func whereIs(t *testing.T, tbl *Table, key string) {
 			if err != nil {
 				continue
 			}
-			rows, err := tbl.readParquet(filepath.Join(tbl.Dir, rel), dead)
+			rows, err := tbl.readParquet(filepath.Join(tbl.Dir, rel), nil)
 			if err != nil {
 				continue
 			}
 			for i, r := range rows {
 				if fmt.Sprint(r[tbl.Key]) == key {
-					t.Logf("  LIVE in %s#%d: v=%v n=%v (partial=%v)",
-						rel, i, r["v"], r["n"], tbl.State.PartialCols[f] != nil)
+					state := "LIVE"
+					if dead[i] {
+						state = "dead"
+					}
+					t.Logf("  %s in %s#%d: v=%v n=%v (partial=%v)",
+						state, rel, i, r["v"], r["n"], tbl.State.PartialCols[f] != nil)
 				}
 			}
 		}
