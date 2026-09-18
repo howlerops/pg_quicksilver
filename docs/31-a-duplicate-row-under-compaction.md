@@ -97,7 +97,15 @@ for the condition. Confirmed to fail with the dedupe removed and pass with it.
 It also asserts the survivor is the newer value, because a fix that deduplicates
 to the wrong copy passes the count and corrupts the data.
 
-The concurrency test that found it ran 120 times after the fix.
+The concurrency test that found it ran 120 times after the fix:
+
+```
+=== 120 iterations, 0 failures ===
+```
+
+Before the fix it failed 2 times in 40. At that rate, 120 consecutive clean runs
+happen by chance with probability 0.95^120, or about **0.2%** — which is the
+only reason 120 was the number chosen rather than 10.
 
 ```bash
 for i in $(seq 120); do
