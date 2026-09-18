@@ -18,6 +18,7 @@ PRIMARY=$BASE/primary
 STANDBY=$BASE/standby
 MIRROR=$BASE/e2e-mirror
 GO=/home/user/pg_quicksilver/go
+source "$(dirname "$0")/lib_dropdb.sh"
 HEALTH=127.0.0.1:9199
 DB=app
 FAIL=0
@@ -64,7 +65,7 @@ chown postgres:postgres $PRIMARY/postgresql.auto.conf
 su postgres -c "$PG/pg_ctl -D $PRIMARY -l $BASE/primary.log -w start" >/dev/null || skip "primary would not start"
 psq 5443 "SELECT 1" postgres >/dev/null || skip "primary not reachable"
 
-psq 5443 "DROP DATABASE IF EXISTS $DB" postgres >/dev/null
+qs_drop_database 5443 "$DB"
 psq 5443 "CREATE DATABASE $DB" postgres >/dev/null
 psq 5443 "CREATE TABLE events(id bigint primary key, sku text, amount numeric(12,2), ts timestamptz)" >/dev/null
 psq 5443 "INSERT INTO events SELECT g,'SKU-'||g,(g%997)/7.0,now() FROM generate_series(1,20000) g" >/dev/null

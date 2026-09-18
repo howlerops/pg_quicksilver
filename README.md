@@ -117,6 +117,7 @@ in [docs/04](docs/04-storage-and-query-engine.md).
 | 27 | [The pruning that already works](docs/27-the-pruning-that-already-works.md) | A planned feature, measured before it was built, and retracted — plus the fourth measurement defect of the week and what the four have in common |
 | 28 | [The slot is a loaded gun](docs/28-the-slot-is-a-loaded-gun.md) | The large-scale test took the database down — reproducing a risk the register had named and nobody had implemented. Why a logical slot makes a slow mirror the primary's problem, and the two defences that now exist |
 | 29 | [What a delete costs to read](docs/29-what-a-delete-costs-to-read.md) | `count(*)` was 23x slower for 5x the data, and every query still agreed with PostgreSQL. Ruling out the SQL shape, `file_row_number` and the forced scan, to find a storage format nobody chose and a compaction trigger that only knew half its own trade-off |
+| 30 | [Dropping a database kills the standby](docs/30-dropping-a-database-kills-the-standby.md) | A test script dropped its database and the STANDBY died. Why the configuration this project requires — failover slots plus slot synchronisation — turns an ordinary `DROP DATABASE` into a lost replica, and the two-second ordering that avoids it |
 | — | [ADRs](docs/adr/) | Architecture decision records (template + the decisions still open) |
 
 ## The four architectures under consideration

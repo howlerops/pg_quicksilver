@@ -25,6 +25,7 @@
 #   4. what RSS peaks at while that happens
 set -uo pipefail
 cd "$(dirname "$0")/../.."
+source "$(dirname "$0")/lib_dropdb.sh"
 
 PG=${PG:-/usr/lib/postgresql/17/bin}
 BASE=${BASE:-/var/lib/postgresql/qs17}
@@ -76,8 +77,7 @@ chmod 755 /tmp/qs-mirror /tmp/qs-query
 pkill -x qs-mirror 2>/dev/null; sleep 1
 rm -f "$BASE/rc.log"
 
-psq "DROP DATABASE IF EXISTS $DB" postgres >/dev/null 2>&1
-psq "SELECT pg_drop_replication_slot('$SLOT') FROM pg_replication_slots WHERE slot_name='$SLOT'" postgres >/dev/null 2>&1
+qs_drop_database 5443 "$DB"
 psq "CREATE DATABASE $DB" postgres >/dev/null || skip "could not create $DB"
 rm -rf "$MIRROR"; install -d -o postgres -g postgres "$MIRROR"
 

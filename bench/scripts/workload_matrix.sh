@@ -11,6 +11,7 @@
 #   SHAPES="jsonb churn" bash bench/scripts/workload_matrix.sh
 set -uo pipefail
 cd "$(dirname "$0")/../.."
+source "$(dirname "$0")/lib_dropdb.sh"
 
 PG=/usr/lib/postgresql/17/bin
 BASE=/var/lib/postgresql/qs17
@@ -63,7 +64,7 @@ chown postgres:postgres $PRIMARY/postgresql.auto.conf
 grep -q "^listen_addresses = 'localhost'" $PRIMARY/postgresql.conf \
   || echo "listen_addresses = 'localhost'" >> $PRIMARY/postgresql.conf
 su postgres -c "$PG/pg_ctl -D $PRIMARY -l $BASE/primary.log -w start" >/dev/null || skip "primary would not start"
-psq 5443 "DROP DATABASE IF EXISTS $DB" postgres >/dev/null
+qs_drop_database 5443 "$DB"
 psq 5443 "CREATE DATABASE $DB" postgres >/dev/null
 
 psq 5443 "SELECT pg_drop_replication_slot('mx_standby') FROM pg_replication_slots WHERE slot_name='mx_standby'" postgres >/dev/null

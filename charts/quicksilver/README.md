@@ -131,5 +131,32 @@ entirely the former. `GOGC=25` finished with *more* resident memory than the
 default (2,013 MB) and took 183s, because collecting harder slows the apply loop
 and the changes left in flight are themselves heap.
 
+### Never `DROP DATABASE` on a database a Quicksilver slot follows
+
+It takes the **standby** down — not the primary, the standby.
+
+Quicksilver's slot is a failover slot and the standby synchronises it, because
+that is how a logical slot survives a promotion on PostgreSQL 17 and is the
+whole reason the plugin requires 17. A standby cannot replay a `DROP DATABASE`
+while its synced copy of that database's slot is in use, so its startup process
+dies and the server shuts down:
+
+```
+FATAL:  replication slot "..." is active for PID ...
+CONTEXT:  WAL redo at 0/... for Database/DROP
+LOG:  shutting down due to startup process failure
+```
+
+Drop the slot first and confirm the standby has forgotten it:
+
+```sql
+-- on the standby; only when this returns nothing is the drop safe
+SELECT slot_name, synced FROM pg_replication_slots WHERE database = 'app';
+```
+
+Measured at two seconds. If the standby is already down it restarts cleanly once
+the conflicting slot is gone — the data is intact, it was the replay that was
+stuck. See [docs/30](../../docs/30-dropping-a-database-kills-the-standby.md).
+
 See [`examples/cluster-shadow.yaml`](../../examples/cluster-shadow.yaml) and
 [docs/16](../../docs/16-deploying.md).

@@ -24,6 +24,7 @@
 # result.
 set -uo pipefail
 cd "$(dirname "$0")/../.."
+source "$(dirname "$0")/lib_dropdb.sh"
 
 PG=/usr/lib/postgresql/17/bin
 BASE=/var/lib/postgresql/qs17
@@ -62,8 +63,8 @@ rm -f /tmp/qs-workload-matrix.lock
 psq 5443 "SELECT 1" postgres >/dev/null 2>&1 || \
   su postgres -c "$PG/pg_ctl -D $PRIMARY -l $BASE/primary.log -w start" >/dev/null 2>&1
 psq 5443 "SELECT 1" postgres >/dev/null 2>&1 || skip "primary would not start"
-for d in app tzapp; do psq 5443 "DROP DATABASE IF EXISTS $d" postgres >/dev/null 2>&1; done
-psq 5443 "DROP DATABASE IF EXISTS $DB" postgres >/dev/null 2>&1
+for d in app tzapp; do qs_drop_database 5443 "$d"; done
+qs_drop_database 5443 "$DB"
 rm -rf "$MIRROR"
 psq 5443 "SELECT pg_drop_replication_slot(slot_name) FROM pg_replication_slots WHERE NOT active" postgres >/dev/null 2>&1
 psq 5443 "CHECKPOINT" postgres >/dev/null 2>&1

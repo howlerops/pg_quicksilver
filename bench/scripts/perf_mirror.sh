@@ -15,6 +15,7 @@
 # A section that cannot run exits 2 as INCOMPLETE. It never reports success.
 set -uo pipefail
 cd "$(dirname "$0")/../.."
+source "$(dirname "$0")/lib_dropdb.sh"
 
 PG=/usr/lib/postgresql/17/bin
 BASE=/var/lib/postgresql/qs17
@@ -44,7 +45,7 @@ grep -q "^listen_addresses = 'localhost'" $PRIMARY/postgresql.conf \
   || echo "listen_addresses = 'localhost'" >> $PRIMARY/postgresql.conf
 su postgres -c "$PG/pg_ctl -D $PRIMARY -l $BASE/primary.log -w start" >/dev/null || skip "primary would not start"
 
-psq 5443 "DROP DATABASE IF EXISTS $DB" postgres >/dev/null
+qs_drop_database 5443 "$DB"
 psq 5443 "CREATE DATABASE $DB" postgres >/dev/null
 # A realistically WIDE table. Column count is the single biggest driver of the
 # columnar advantage: a column store reads only the columns a query touches,

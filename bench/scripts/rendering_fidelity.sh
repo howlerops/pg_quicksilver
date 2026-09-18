@@ -26,6 +26,7 @@
 #   QS_PIN_RENDERING=0 bash bench/scripts/rendering_fidelity.sh   # must FAIL
 set -uo pipefail
 cd "$(dirname "$0")/../.."
+source "$(dirname "$0")/lib_dropdb.sh"
 
 PG=/usr/lib/postgresql/17/bin
 BASE=/var/lib/postgresql/qs17
@@ -51,7 +52,7 @@ say "a primary, and a table of instants"
 su postgres -c "$PG/pg_ctl -D $PRIMARY -l $BASE/tz-primary.log -w start" >/dev/null 2>&1
 psq "SELECT 1" postgres >/dev/null 2>&1 || skip "primary would not start"
 psq "SELECT pg_drop_replication_slot(slot_name) FROM pg_replication_slots WHERE NOT active" postgres >/dev/null 2>&1
-psq "DROP DATABASE IF EXISTS $DB" postgres >/dev/null
+qs_drop_database 5443 "$DB"
 psq "CREATE DATABASE $DB" postgres >/dev/null
 psq "CREATE TABLE t(id bigint primary key, at timestamptz, on_day date, note text)" >/dev/null
 # Every row is THE SAME INSTANT, written a hundred times. Whatever the mirror

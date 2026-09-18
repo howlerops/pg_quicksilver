@@ -23,6 +23,7 @@
 # fine.
 set -uo pipefail
 cd "$(dirname "$0")/../.."
+source "$(dirname "$0")/lib_dropdb.sh"
 
 PG=/usr/lib/postgresql/17/bin
 BASE=/var/lib/postgresql/qs17
@@ -58,7 +59,7 @@ psq()  { su postgres -c "$PG/psql -h /tmp -p $1 -U postgres -d ${3:-$DB} -Atc \"
 cleanup() {
   pkill -x qs-mirror 2>/dev/null
   psq 5443 "SELECT pg_drop_replication_slot(slot_name) FROM pg_replication_slots WHERE NOT active" postgres >/dev/null 2>&1
-  psq 5443 "DROP DATABASE IF EXISTS $DB" postgres >/dev/null 2>&1
+  qs_drop_database 5443 "$DB"
   return 0
 }
 trap cleanup EXIT
@@ -67,7 +68,7 @@ say "a primary, a standby and a small table"
 psq 5443 "SELECT 1" postgres >/dev/null 2>&1 || \
   su postgres -c "$PG/pg_ctl -D $PRIMARY -l $BASE/primary.log -w start" >/dev/null 2>&1
 psq 5443 "SELECT 1" postgres >/dev/null 2>&1 || skip "primary would not start"
-psq 5443 "DROP DATABASE IF EXISTS $DB" postgres >/dev/null 2>&1
+qs_drop_database 5443 "$DB"
 psq 5443 "CREATE DATABASE $DB" postgres >/dev/null || skip "could not create $DB"
 psq 5443 "CREATE TABLE m(id bigint primary key, sku text, amount numeric(12,2), ts timestamptz)" >/dev/null
 psq 5443 "INSERT INTO m SELECT g,'SKU-'||(g%1000),(g%997)/7.0,now() FROM generate_series(1,$ROWS) g" >/dev/null
