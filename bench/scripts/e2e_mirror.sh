@@ -24,6 +24,7 @@ MIRROR=$BASE/e2e-mirror
 # CI exists to find, and it found this one on its first real run.
 GO=$(cd "$(dirname "$0")/../../go" && pwd)
 source "$(dirname "$0")/lib_dropdb.sh"
+source "$(dirname "$0")/lib_lsn.sh"
 HEALTH=127.0.0.1:9199
 DB=app
 FAIL=0
@@ -55,6 +56,59 @@ wait_ready() {
   for _ in $(seq ${1:-90}); do
     curl -sf "http://$HEALTH/readyz" >/dev/null 2>&1 && return 0
     sleep 1
+  done
+  return 1
+}
+
+# wait_applied <timeout-seconds> — block until the mirror has applied everything
+# committed so far, rather than sleeping and hoping.
+#
+# Every `qs-verify` in this script used to be preceded by `sleep 8`, which is a
+# fixed timeout against an asynchronous applier. It lost on a CI runner in
+# section 6c and the failure read as a correctness bug:
+#
+#     DIVERGED
+#       rows only in source: 0, only in mirror: 0
+#       differing columns (count of rows):
+#         amount               400
+#
+# Exactly the 400 rows that section's UPDATE had just touched, nothing missing
+# and nothing extra — a mirror that was behind, not wrong. And 6c is the section
+# most likely to lose, because it deletes the persisted index first: the rebuild
+# it forces is the very work that makes eight seconds too short.
+#
+# The marker is written TWICE with the LSN captured between, so there is
+# decodable WAL strictly past the captured position and the applied LSN must
+# cross it rather than stopping exactly on it. `SET amount = amount` writes a new
+# tuple version — real WAL — while changing no value, so the marker cannot alter
+# what qs-verify then compares.
+#
+# Every table is checked, not just the one the marker touched: Apply advances a
+# table's applied LSN for every transaction it sees, including ones that change
+# no row of that table, so one marker settles them all.
+wait_applied() {
+  # max(id) rather than a fixed id: section 4 deletes 1-500 and later sections
+  # insert higher ranges, so any constant is a row that exists for some callers
+  # and not others — and an UPDATE matching no row writes no WAL, which is a
+  # marker that can never be crossed.
+  local touch="UPDATE events SET amount = amount WHERE id = (SELECT max(id) FROM events)"
+  psq 5443 "$touch" >/dev/null 2>&1
+  local mark
+  mark=$(psq 5443 "SELECT pg_current_wal_lsn()::text" postgres)
+  psq 5443 "$touch" >/dev/null 2>&1
+  [ -n "$mark" ] || { sleep 8; return 0; }   # no marker, no better than before
+
+  local deadline=$(( ${1:-60} * 10 )) at behind
+  for _ in $(seq "$deadline"); do
+    behind=0
+    for st in "$MIRROR"/*/state.json; do
+      [ -e "$st" ] || continue
+      at=$(python3 -c "
+import json;print(json.load(open('$st')).get('applied_lsn',''))" 2>/dev/null)
+      if [ -z "$at" ] || ! lsn_ge "$at" "$mark"; then behind=1; break; fi
+    done
+    [ "$behind" -eq 0 ] && return 0
+    sleep 0.1
   done
   return 1
 }
@@ -120,14 +174,14 @@ say "4. live changes reach the mirror"
 psq 5443 "INSERT INTO events SELECT g,'NEW-'||g,(g%31)/3.0,now() FROM generate_series(100001,102000) g" >/dev/null
 psq 5443 "UPDATE events SET amount = amount + 1 WHERE id % 1000 = 0" >/dev/null
 psq 5443 "DELETE FROM events WHERE id BETWEEN 1 AND 500" >/dev/null
-sleep 8
+wait_applied 60 || bad "the mirror never caught up with the live DML"
 /tmp/qs-verify -dsn "postgres://postgres@localhost:5443/$DB" -mirror $MIRROR -table public.events \
   || bad "mirror diverged from the source after live DML"
 
 say "5. DDL crosses as a barrier, not as corruption"
 psq 5443 "ALTER TABLE events ADD COLUMN channel text DEFAULT 'web'" >/dev/null
 psq 5443 "INSERT INTO events VALUES (200001,'POST-DDL',1.00,now(),'mobile')" >/dev/null
-sleep 8
+wait_applied 60 || bad "the mirror never caught up with the post-DDL insert"
 if grep -q "schema evolved at a DDL barrier" $BASE/mirror.log; then
   echo "  barrier observed: $(grep -m1 'schema evolved' $BASE/mirror.log | sed 's/.*change=//')"
 else
@@ -206,7 +260,7 @@ if [ "$after_snapshots" -gt "$before_snapshots" ]; then
 else
   echo "  resumed from applied_lsn $applied_before without a new snapshot"
 fi
-sleep 8
+wait_applied 60 || bad "the mirror never caught up after the restart"
 /tmp/qs-verify -dsn "postgres://postgres@localhost:5443/$DB" -mirror $MIRROR -table public.events \
   || bad "rows committed while the sidecar was down are missing from the mirror"
 
@@ -223,7 +277,7 @@ rm -f $MIRROR/public.events/index/*.idx.json
 start_sidecar $BASE/mirror.log public.events
 wait_ready 90 || { tail -20 $BASE/mirror.log; bad "no readiness after the index was removed"; }
 psq 5443 "UPDATE events SET amount = amount + 100 WHERE id BETWEEN 300001 AND 300400" >/dev/null
-sleep 8
+wait_applied 90 || bad "the mirror never caught up after the index was removed"
 if /tmp/qs-verify -dsn "postgres://postgres@localhost:5443/$DB" -mirror $MIRROR -table public.events; then
   # Say what was actually true. The first run of this printed "0 index file(s)
   # deleted" and called it a pass, which reads as though a cache had been
@@ -299,7 +353,7 @@ start_sidecar $BASE/mirror.log "public.events,public.orders"
 wait_ready 120 || { tail -20 $BASE/mirror.log; bad "no readiness with two tables"; }
 psq 5443 "INSERT INTO orders SELECT g,(g%97)/7.0,now() FROM generate_series(5001,6000) g" >/dev/null
 psq 5443 "UPDATE orders SET total = total + 1 WHERE id % 500 = 0" >/dev/null
-sleep 10
+wait_applied 90 || bad "the mirror never caught up with two tables in one sidecar"
 for tbl in public.events public.orders; do
   if /tmp/qs-verify -dsn "postgres://postgres@localhost:5443/$DB" -mirror $MIRROR -table $tbl; then
     echo "  $tbl matches"
