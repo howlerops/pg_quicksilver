@@ -211,13 +211,14 @@ func testCompactionRaces(t *testing.T, partial bool) {
 			if err := tbl.ForEachLive(func(r map[string]any) error {
 				k := fmt.Sprint(r["id"])
 				if _, dup := got[k]; dup {
-					// KNOWN BUG, see docs/31. This fires in roughly one run in
-					// twenty, only in the partial-delta variant. It is NOT a
-					// flaky test: the test is right and the mirror is wrong,
-					// and a duplicate row makes count(*) and every aggregate
-					// disagree with the source.
+					// KNOWN BUG, see docs/31.
+					// docs/31: a merge used to concatenate the live rows of
+					// several files without deduplicating, so a key live in two
+					// of them landed twice in ONE file — where no deletion
+					// vector can express "this one is dead", because both
+					// positions are in the same file.
 					t.Errorf("key %s appears twice in the mirror; a compaction "+
-						"swap kept two copies of the same row (known bug, docs/31)", k)
+						"swap kept two copies of the same row (docs/31)", k)
 				}
 				got[k] = r
 				return nil

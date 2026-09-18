@@ -1235,6 +1235,45 @@ func (t *Table) mergeGroup(old []string, cols []string) (int, error) {
 		}
 		rows = append(rows, got...)
 	}
+	// DEDUPE. A merge concatenates the live rows of several files, and if a key
+	// is live in two of them both copies land in the merged file — where
+	// nothing can tombstone the older one, because a deletion vector addresses
+	// positions in ONE file and both positions are in this one. The result is a
+	// row the mirror returns twice: count(*) and every aggregate disagree with
+	// the source while each file on disk is individually valid.
+	//
+	// The comment above already names the precondition — "any key that somehow
+	// appears live in two files" — and handles the ORDERING it implies. This is
+	// the other half. It reproduced about once in twenty runs of
+	// TestCompactionRacesPartialRows, and the instrumentation that found it
+	// showed both copies in the same file with the index pointing at the second:
+	//
+	//   index says key 398 lives at delta/000130.parquet pos 2
+	//   LIVE COPY in delta/000130.parquet pos 1
+	//   LIVE COPY in delta/000130.parquet pos 2
+	//
+	// Last occurrence wins, which is what the index below already records and
+	// what the read path assumes. Keeping the last rather than the first is not
+	// arbitrary: files are merged oldest-first, so the later row is the newer
+	// value.
+	//
+	// This is deliberately a fix at the MERGE rather than at whatever let a key
+	// be live in two files. A merge that cannot express "this row is dead"
+	// must not create the situation that needs it, however the input arose.
+	lastAt := make(map[rowKey]int, len(rows))
+	for i, r := range rows {
+		lastAt[t.keyOf(r[t.Key])] = i
+	}
+	if len(lastAt) != len(rows) {
+		deduped := make([]map[string]any, 0, len(lastAt))
+		for i, r := range rows {
+			if lastAt[t.keyOf(r[t.Key])] == i {
+				deduped = append(deduped, r)
+			}
+		}
+		rows = deduped
+	}
+
 	if len(rows) == 0 {
 		// everything in them was superseded; just drop the files, and the
 		// placeholder with them since no file takes their place

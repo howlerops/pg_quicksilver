@@ -1,93 +1,120 @@
 # 31 — A duplicate row under compaction
 
-**This documents an open, unfixed correctness bug.** It is written now, with a
-reproduction and a suspect, rather than after a fix, because the failure mode is
-one that gets dismissed: it appears in about one run in twenty and the word for
-that is usually "flake".
+A merge put the same key in one file twice, and nothing could say which copy was
+dead. Found at about one run in twenty, which is the rate at which a real bug
+gets called a flake:
 
 ```
 --- FAIL: TestCompactionRacesPartialRows/seed3
-    compact_async_test.go:214: key 79 appears twice in the mirror;
-                               a compaction swap kept two copies of the same row
---- FAIL: TestCompactionRacesPartialRows/seed2
-    compact_async_test.go:214: key 91 appears twice in the mirror;
-                               a compaction swap kept two copies of the same row
+    compact_async_test.go: key 79 appears twice in the mirror;
+                           a compaction swap kept two copies of the same row
 ```
 
-Two failures in forty runs of the test binary. Different seeds, different keys.
-A duplicate row is not a cosmetic problem: `count(*)` is wrong, every aggregate
-is wrong, and the mirror disagrees with the source while every file on disk is
+A duplicate row is not cosmetic. `count(*)` is wrong, every aggregate is wrong,
+and the mirror disagrees with the source while every file on disk is
 individually valid.
 
-## What is and is not implicated
+---
 
-It is **specific to column-partial deltas**. `TestCompactionRacesApply`, the
-whole-row variant of the same test, did not fail once in those forty runs;
-`TestCompactionRacesPartialRows` failed twice. Both run the same interleaving of
-apply, background rewrite and `MergeDeltas` — the only difference is that the
-partial variant writes updates that omit a column, so they land as patches.
+## The wrong answer first
 
-It is **not** the read-side compaction trigger added alongside this
-investigation. That was the reason the failure was noticed, so it had to be
-ruled out first: six consecutive runs with the change and six with it stashed,
-all green, and the trigger is off by default and inert in the test.
+This document previously named a suspect, reached by reading rather than by
+measuring: an assumption in `mergeGroup`'s comment that "patches never move
+during a rewrite", which the code's own concurrency can violate. It was
+plausible, it was specific, and it was **wrong**.
 
-## The suspect
+The instrumentation that settled it took four lines — on a duplicate, print
+where both copies live:
 
-The swap reconciles only the keys the apply loop reports as `touched`, and
-patched keys are deliberately excluded. `partial.go` says why, and the reasoning
-is sound as far as it goes:
-
-> Patches ARE created during a background rewrite, and the swap handles them by
-> doing nothing: the rewrite folds in the pre-patch row, the patch it never saw
-> was written to a delta outside its snapshot, and the read path puts the two
-> back together. That is why a patched key is deliberately NOT added to the
-> rewrite's `touched` set — the whole row did not move.
-
-`mergeGroup` carries the same assumption one step further:
-
-```go
-if t.compacting != nil && cols == nil {
-    t.compacting.touched[k] = true
-}
-// A merge moves keys too, and a rewrite in flight has to know. Patches
-// never move during a rewrite (they only exist inside its snapshot,
-// which mergeableDeltas excludes), so this is a whole-row question.
+```
+index says key 398 lives at delta/000130.parquet pos 2
+LIVE COPY in delta/000130.parquet pos 1
+LIVE COPY in delta/000130.parquet pos 2
+LIVE COPY in delta/000131.parquet pos 7 (partial=true)
 ```
 
-**That parenthesis is the thing to check.** Patches created *during* a rewrite
-are by definition outside the rewrite's snapshot, which is precisely what makes
-them mergeable — so "patches never move during a rewrite" is an assumption the
-code's own concurrency is able to violate. If a partial merge relocates or folds
-a patch while a rewrite is in flight, the whole row's identity has changed and
-`touched` was never told, so the swap has no reason to tombstone the copy it
-folded into the new base. The base copy and the delta copy both survive, which
-is exactly the shape of the failure.
+**Both live copies are in the same file.** Not a base file racing a delta, not
+the compaction swap at all, and nothing to do with the rewrite's `touched` set.
+The swap was never implicated; the word "compaction" in the test's name sent the
+reading in the wrong direction and the reading confirmed itself.
 
-This is a suspect, not a diagnosis. It was reached by reading, and the two
-things that would settle it have not been done: instrumenting a failing run to
-print which files the duplicated key's two copies live in and whether it was in
-`touched`, and then a fix with the test run enough times to make 5% mean
-something. Neither is hard; both were out of budget when this was written, and
-shipping a guess at a correctness bug is worse than recording it.
+## What it actually was
 
-## For whoever picks this up
+`mergeGroup` concatenates the live rows of several delta files:
+
+```go
+for _, d := range old {
+    got, err := t.readParquetCols(filepath.Join(t.Dir, rel), dead, cols)
+    rows = append(rows, got...)          // no dedupe
+}
+...
+for i, r := range rows {
+    target.set(k, loc{File: id, Pos: int32(i)})   // last wins, in the INDEX
+}
+```
+
+If a key is live in two of the merged files, both copies land in the merged
+file. The index is then set twice and keeps the later position — which is why
+the dump shows it pointing at pos 2 while pos 1 is still there, live, with
+nothing referring to it.
+
+And nothing *can* refer to it. A deletion vector addresses positions within
+**one** file, and after the merge both positions are in that same file. The
+older copy cannot be tombstoned without tombstoning a position that the newer
+copy might occupy. The merge does not just fail to clean up a mess; it creates
+one that the mirror's only cleanup mechanism cannot express.
+
+The comment immediately above the concatenation already names the precondition:
+
+> …would invert "last occurrence wins" for any key that **somehow appears live
+> in two files**.
+
+The ordering consequence was handled. The duplication consequence was not.
+
+## The fix
+
+Deduplicate during the merge, keeping the last occurrence — which is what the
+index already recorded and what the read path already assumes. Files merge
+oldest-first, so the later row is the newer value; keeping the first would
+silently roll the mirror back to a superseded value, which is *worse* than a
+duplicate because nothing counts wrong.
+
+It is deliberately a fix at the merge rather than at whatever let a key be live
+in two files at once. Those two are different questions, and the second one may
+well have no bug in it at all — the apply path tombstones a superseded copy, and
+the precondition can also arise from a file written before a fix, or a mirror
+restored from a backup. **A merge that cannot express "this row is dead" must
+not create the situation that needs it, however the input arose.**
+
+## Verification
+
+At a 5% reproduction rate a single green run is exactly what a change that does
+nothing looks like, so the fix is checked two ways.
+
+`TestMergeNeverDuplicatesAKey` is **deterministic**: it builds two delta files
+that both hold a live row for the same key and merges them, rather than racing
+for the condition. Confirmed to fail with the dedupe removed and pass with it.
+It also asserts the survivor is the newer value, because a fix that deduplicates
+to the wrong copy passes the count and corrupts the data.
+
+The concurrency test that found it ran 120 times after the fix.
 
 ```bash
-# reproduces in roughly one run in twenty
-for i in $(seq 40); do
-  go -C go test ./internal/mirror/ -run TestCompactionRacesPartialRows -count=1 \
+for i in $(seq 120); do
+  go -C go test ./internal/mirror/ -run "TestCompactionRaces|TestPartialDelta" -count=1 \
     || echo "FAILED on $i"
 done
 ```
 
-Two cautions from this session's other work:
+## What this cost, as a lesson
 
-- **A fix has to be measured against the rate, not against one green run.** At
-  5%, a single passing run is what you would expect from a change that does
-  nothing at all.
-- **CI will go red on this intermittently, and that is correct.** It is not a
-  flaky test. The test is right and the mirror is wrong; see
-  [docs/27](27-the-pruning-that-already-works.md) for this project's running
-  tally of measurements that produced a plausible number instead of an error,
-  and treat "just a flake" as one more entry waiting to happen.
+The first write-up of this bug published a mechanism that was not the mechanism.
+It was labelled a suspect rather than a diagnosis, which is the only reason it
+did no damage — but it also sat in the repository for an afternoon pointing the
+next reader at the wrong file. The instrumentation that replaced it with the
+answer was four lines and one run.
+
+That is the same shape as every entry in this project's tally of measurement
+defects ([docs/27](27-the-pruning-that-already-works.md)): reading produced a
+plausible story, and only measurement produced the true one. The difference here
+is that the plausible story was mine and I had already written it down.
