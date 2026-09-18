@@ -71,7 +71,8 @@ say "infrastructure"
 psq "SELECT 1" postgres >/dev/null 2>&1 || skip "no primary on 5443 — run setup_cluster.sh"
 command -v bc >/dev/null || skip "bc is required"
 go -C go build -o /tmp/qs-mirror ./cmd/qs-mirror || skip "build failed"
-chmod 755 /tmp/qs-mirror
+go -C go build -o /tmp/qs-query  ./cmd/qs-query  || skip "build failed"
+chmod 755 /tmp/qs-mirror /tmp/qs-query
 pkill -x qs-mirror 2>/dev/null; sleep 1
 rm -f "$BASE/rc.log"
 
@@ -120,15 +121,27 @@ say "the first change AFTER the restart"
 # This is the measurement the whole script exists for. If the index is built
 # lazily, the cost of the restart is not in the number above — it is here,
 # behind a probe that has already said the Pod is ready to serve.
-lsn_before=$(psq "SELECT pg_current_wal_lsn()" postgres)
+# WAIT FOR THE LSN, NOT FOR lag_bytes == 0.
+#
+# The first version of this polled until lag_bytes was 0, which is true BEFORE
+# the change has reached the mirror as well as after it has been applied. It
+# polled once, saw the mirror idle because the UPDATE had not been decoded yet,
+# and reported the first write as costing 0.1s and no memory at all. That is
+# the same confusion docs/28 found in the sidecar itself — "the stream gave me
+# nothing" has two causes and only one of them is fine — reproduced here in the
+# thing measuring it.
 t0=$(date +%s.%N)
 psq "UPDATE m SET amount = amount + 1 WHERE id BETWEEN 1 AND 20000" >/dev/null
+target=$(psq "SELECT pg_current_wal_lsn()" postgres)
 peak=0
 applied=""
-for _ in $(seq 1200); do
+for _ in $(seq 3000); do
   r=$(rss "$MPID"); [ -n "$r" ] && [ "$r" -gt "$peak" ] && peak=$r
-  lag=$(curl -s "http://$HEALTH/readyz" 2>/dev/null | grep -o '"lag_bytes":[0-9]*' | cut -d: -f2)
-  if [ "$lag" = "0" ]; then applied=$(echo "$(date +%s.%N)-$t0" | bc); break; fi
+  at=$(/tmp/qs-query -mirror "$MIRROR" -table public.m -lsn 2>/dev/null | tr -d '[:space:]')
+  if [ -n "$at" ]; then
+    reached=$(psq "SELECT pg_wal_lsn_diff('$at','$target') >= 0" postgres 2>/dev/null)
+    if [ "$reached" = "t" ]; then applied=$(echo "$(date +%s.%N)-$t0" | bc); break; fi
+  fi
   sleep 0.1
 done
 [ -n "$applied" ] || bad "the first change never drained"
