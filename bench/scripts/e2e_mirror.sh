@@ -17,7 +17,12 @@ BASE=/var/lib/postgresql/qs17
 PRIMARY=$BASE/primary
 STANDBY=$BASE/standby
 MIRROR=$BASE/e2e-mirror
-GO=/home/user/pg_quicksilver/go
+# The repository, wherever it is. This was hardcoded to one machine's absolute
+# path, which worked everywhere it was ever run by hand and nowhere else: on a
+# CI runner the checkout is under /home/runner/work, so `cd $GO && go build`
+# failed and the whole e2e section reported INCOMPLETE. That is the class of bug
+# CI exists to find, and it found this one on its first real run.
+GO=$(cd "$(dirname "$0")/../../go" && pwd)
 source "$(dirname "$0")/lib_dropdb.sh"
 HEALTH=127.0.0.1:9199
 DB=app

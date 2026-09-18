@@ -28,6 +28,18 @@ CACHE=/tmp/cnpg-clusters-crd.yaml
 say() { printf '\n== %s ==\n' "$*"; }
 bad() { printf 'FAIL: %s\n' "$*"; FAIL=1; }
 
+# A MISSING TOOL IS NOT A FAILING CHART. Without this, a runner that has helm
+# but not kubeconform reported "FAIL manifests (exit 1)" — which reads as a
+# broken chart and is actually a missing binary. exit 2 is the suite's
+# INCOMPLETE, which says the honest thing: this told us nothing.
+for tool in helm kubeconform; do
+  command -v "$tool" >/dev/null 2>&1 || {
+    printf '\nINCOMPLETE — skipped, which is NOT a pass: %s is not installed, so\n' "$tool"
+    printf 'the chart was not validated. Install it rather than reading this as a pass.\n'
+    exit 2
+  }
+done
+
 say "1. Helm renders, and renders valid Kubernetes objects"
 for args in \
   "" \

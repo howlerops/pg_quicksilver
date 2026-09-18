@@ -145,6 +145,20 @@ jobs:
           sudo apt-get install -y -qq postgresql-17
           /usr/lib/postgresql/17/bin/postgres --version
 
+      # The suite runs its own manifests section, so this job needs the chart
+      # tooling too. Without it that section reported "FAIL manifests (exit 1)",
+      # which reads as a broken chart and was a missing binary — the standalone
+      # `manifests` job above passed on the same commit, which is what made the
+      # contradiction visible.
+      - uses: azure/setup-helm@v4
+      - name: install kubeconform
+        run: |
+          ver=0.6.7
+          curl -sSLo /tmp/kc.tar.gz \
+            "https://github.com/yannh/kubeconform/releases/download/v${ver}/kubeconform-linux-amd64.tar.gz"
+          tar -xzf /tmp/kc.tar.gz -C /tmp kubeconform
+          sudo install -m 0755 /tmp/kubeconform /usr/local/bin/kubeconform
+
       - name: python deps
         run: pip install --quiet duckdb psycopg[binary]
 
