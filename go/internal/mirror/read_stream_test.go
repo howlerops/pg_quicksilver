@@ -27,6 +27,15 @@ import (
 )
 
 func TestForEachLiveStreamsRatherThanMaterialising(t *testing.T) {
+	// Not under -race. The detector adds shadow memory and per-allocation
+	// bookkeeping, so the same streaming read measures 113 B/row normally and
+	// 158 under it — over this bound, and nothing about the code changed. CI's
+	// first run failed here, which is the right outcome for a test whose own
+	// comment says a heap threshold is flaky and then uses one anyway: the
+	// bound is sound for a comparable measurement and this is not one.
+	if raceEnabled {
+		t.Skip("heap accounting is not comparable under -race")
+	}
 	tbl := racyTable(t)
 
 	// More rows than one row group, so "streams" and "materialises" are
