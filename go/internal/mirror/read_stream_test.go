@@ -73,6 +73,18 @@ func TestForEachLiveStreamsRatherThanMaterialising(t *testing.T) {
 		if err := read(func(r map[string]any) error {
 			seen++
 			if seen == rows {
+				// GC FIRST. HeapAlloc counts garbage that has not been
+				// collected yet, not live memory, so without this the streaming
+				// reader is charged for rows it already delivered and dropped —
+				// entirely at the mercy of when the collector last ran. On this
+				// machine that read 32.6 MB against 101.9; on a CI runner the
+				// same code read 71.9 against 83.3 and the test failed.
+				//
+				// A collection here frees exactly what the streaming reader is
+				// no longer holding, and cannot free the materialising reader's
+				// slice, which is still referenced. That difference IS the
+				// property under test.
+				runtime.GC()
 				runtime.ReadMemStats(&ms)
 				peak = ms.HeapAlloc
 			}
