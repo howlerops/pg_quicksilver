@@ -26,6 +26,14 @@ HEALTH=127.0.0.1:9199
 DB=app
 SEED=${SEED:-2000000}
 BURST=${BURST:-200000}
+# The knob this script is the A/B for. QS_COMPACT_DEAD_FRACTION makes the mirror
+# rewrite its base once the deletion vector covers this fraction of it, which
+# buys back the read penalty measured in dv_cost_by_shape.py and costs an extra
+# O(table) rewrite on the WRITE path. It ships off (0) precisely because that
+# second half had never been measured, and the drain rate and commit-to-visible
+# percentiles below are the measurement. So it has to be settable from outside,
+# or the harness cannot vary the one thing it is being asked about.
+DEAD_FRACTION=${QS_COMPACT_DEAD_FRACTION:-0}
 FAIL=0
 
 say()  { printf '\n== %s ==\n' "$*"; }
@@ -35,6 +43,9 @@ psq()  { su postgres -c "$PG/psql -h /tmp -p $1 -U postgres -d ${3:-$DB} -Atc \"
 
 cleanup() { [ -n "${MIRROR_PID:-}" ] && kill "$MIRROR_PID" 2>/dev/null; }
 trap cleanup EXIT
+
+printf 'perf_mirror: seed=%s burst=%s compact_dead_fraction=%s\n' \
+  "$SEED" "$BURST" "$DEAD_FRACTION"
 
 say "0. a clean PostgreSQL 17 primary with $SEED rows"
 su postgres -c "$PG/pg_ctl -D $STANDBY stop -m immediate" >/dev/null 2>&1
@@ -98,6 +109,7 @@ su postgres -c "QS_CLUSTER=perf QS_MODE=shadow QS_INGEST=logical \
   QS_PRIMARY_HOST=localhost QS_PRIMARY_PORT=5443 \
   QS_LOCAL_SOCKET_DIR=/tmp QS_LOCAL_PORT=5444 \
   QS_DATABASE=$DB QS_PGUSER=postgres QS_POD_NAME=perf-2 \
+  QS_COMPACT_DEAD_FRACTION=$DEAD_FRACTION \
   QS_HEALTH_ADDR=$HEALTH /tmp/qs-mirror" > $BASE/perf-mirror.log 2>&1 &
 MIRROR_PID=$!
 # the sidecar is launched through su, so the binary's own pid is a child
