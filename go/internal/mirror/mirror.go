@@ -514,6 +514,20 @@ type ApplyStats struct {
 func (t *Table) Apply(txns []changestream.Transaction) (ApplyStats, error) {
 	upserts := map[rowKey]map[string]any{}
 	order := []rowKey{}
+	// queued is membership of `order`, kept SEPARATELY from upserts.
+	//
+	// It used to be answered by looking the key up in upserts, which is wrong the
+	// moment a delete removes it: a later insert of the same key in the same
+	// batch then found upserts empty, read that as "not queued yet", and appended
+	// the key to order a second time. writeUpserts walks order and writes
+	// upserts[k] per occurrence, so the delta file got two identical copies of
+	// the row and the index — written last — named only the second.
+	//
+	// Nothing downstream can repair that: a deletion vector addresses positions
+	// in ONE file and both positions are in this one, so every later delete or
+	// update tombstones the copy the index names and leaves the other live
+	// forever. See apply_order_test.go.
+	queued := map[rowKey]bool{}
 	deletes := map[rowKey]bool{}
 	last := t.State.AppliedLSN
 
@@ -540,7 +554,8 @@ func (t *Table) Apply(txns []changestream.Transaction) (ApplyStats, error) {
 			switch c.Op {
 			case changestream.OpInsert, changestream.OpUpdate:
 				k := t.keyOf(c.Row[t.Key])
-				if _, seen := upserts[k]; !seen {
+				if !queued[k] {
+					queued[k] = true
 					order = append(order, k)
 				}
 				// An earlier change to the same key in this batch is the better
@@ -567,7 +582,8 @@ func (t *Table) Apply(txns []changestream.Transaction) (ApplyStats, error) {
 				if err := t.truncate(); err != nil {
 					return ApplyStats{}, err
 				}
-				upserts, order, deletes = map[rowKey]map[string]any{}, nil, map[rowKey]bool{}
+				upserts, order, queued, deletes = map[rowKey]map[string]any{}, nil,
+					map[rowKey]bool{}, map[rowKey]bool{}
 			}
 		}
 		last = txn.CommitLSN

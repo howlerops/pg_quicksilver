@@ -67,7 +67,15 @@ func checkInvariants(t *testing.T, tbl *Table, when string) bool {
 			}
 			// No vector passed to the reader: positions must come back PHYSICAL,
 			// because that is what the index stores and what a vector addresses.
-			rows, err := tbl.readParquet(filepath.Join(tbl.Dir, rel), nil)
+			//
+			// The KEY COLUMN only. This runs after every apply, swap and merge of
+			// a sixty-round test that the hunt repeats a thousand times, and the
+			// whole-row version was slow enough that one batch of 25 did not
+			// finish in ten minutes — a check that cannot be run often enough to
+			// catch a one-in-a-thousand failure is not a check. The key and the
+			// position are the entire content of both properties being asserted.
+			rows, err := tbl.readParquetCols(filepath.Join(tbl.Dir, rel), nil,
+				[]string{tbl.Key})
 			if err != nil {
 				t.Errorf("%s: read %s: %v", when, rel, err)
 				return false
