@@ -121,26 +121,45 @@ say "the first change AFTER the restart"
 # This is the measurement the whole script exists for. If the index is built
 # lazily, the cost of the restart is not in the number above — it is here,
 # behind a probe that has already said the Pod is ready to serve.
-# WAIT FOR THE LSN, NOT FOR lag_bytes == 0.
+# WAIT FOR THE MARKER, NOT FOR lag_bytes AND NOT FOR pg_current_wal_lsn().
 #
-# The first version of this polled until lag_bytes was 0, which is true BEFORE
-# the change has reached the mirror as well as after it has been applied. It
-# polled once, saw the mirror idle because the UPDATE had not been decoded yet,
-# and reported the first write as costing 0.1s and no memory at all. That is
-# the same confusion docs/28 found in the sidecar itself — "the stream gave me
-# nothing" has two causes and only one of them is fine — reproduced here in the
-# thing measuring it.
+# Two wrong targets were tried before this one, and both produced a confident
+# number rather than an error:
+#
+#   lag_bytes == 0          true BEFORE the change arrives as well as after it
+#                           is applied. Reported a write known to cost 1.8 GB
+#                           as costing 0.1s and nothing. Same idle-vs-stuck
+#                           confusion docs/28 found in the sidecar itself.
+#   pg_current_wal_lsn()    the whole CLUSTER's WAL position, including records
+#                           the logical decoder never emits. The mirror's
+#                           applied LSN may never reach it, so the poll simply
+#                           never fires — which it did not, while RSS peaked at
+#                           510 MB proving the change had in fact been applied.
+#
+# The settle protocol large_scale.sh and the workload matrix already use is the
+# right one: write an idempotent marker, capture the LSN, write the marker
+# AGAIN. The second write guarantees there is decodable WAL past the captured
+# LSN, so the mirror's applied LSN must cross it.
+lsn_ge() {  # is $1 >= $2, as PostgreSQL LSNs
+  python3 -c "
+import sys
+def p(l):
+    a,b = l.split('/'); return (int(a,16) << 32) | int(b,16)
+sys.exit(0 if p('$1') >= p('$2') else 1)" 2>/dev/null
+}
+
 t0=$(date +%s.%N)
 psq "UPDATE m SET amount = amount + 1 WHERE id BETWEEN 1 AND 20000" >/dev/null
-target=$(psq "SELECT pg_current_wal_lsn()" postgres)
+psq "INSERT INTO m VALUES (999999999,'MARK',0,now()) ON CONFLICT (id) DO UPDATE SET ts=now()" >/dev/null
+MARK=$(psq "SELECT pg_current_wal_lsn()::text" postgres)
+psq "INSERT INTO m VALUES (999999999,'MARK',0,now()) ON CONFLICT (id) DO UPDATE SET ts=now()" >/dev/null
 peak=0
 applied=""
 for _ in $(seq 3000); do
   r=$(rss "$MPID"); [ -n "$r" ] && [ "$r" -gt "$peak" ] && peak=$r
   at=$(/tmp/qs-query -mirror "$MIRROR" -table public.m -lsn 2>/dev/null | tr -d '[:space:]')
-  if [ -n "$at" ]; then
-    reached=$(psq "SELECT pg_wal_lsn_diff('$at','$target') >= 0" postgres 2>/dev/null)
-    if [ "$reached" = "t" ]; then applied=$(echo "$(date +%s.%N)-$t0" | bc); break; fi
+  if [ -n "$at" ] && lsn_ge "$at" "$MARK"; then
+    applied=$(echo "$(date +%s.%N)-$t0" | bc); break
   fi
   sleep 0.1
 done
@@ -151,7 +170,7 @@ say "what this means for a Pod"
 printf '  readiness said yes at  %6.2fs and %5s MB\n' "$rdy" "$rss_ready"
 printf '  the first write took   %6.1fs and %5s MB\n' "${applied:-0}" "$((peak/1024))"
 grow=$(( peak/1024 - rss_ready ))
-if [ "$(echo "$applied > 2.0" | bc)" = "1" ] && [ "$grow" -gt 200 ]; then
+if [ -n "$applied" ] && [ "$(echo "$applied > 2.0" | bc)" = "1" ] && [ "$grow" -gt 200 ]; then
   cat <<TXT
 
   The readiness probe passes BEFORE the index exists, so a restarted Pod is put
