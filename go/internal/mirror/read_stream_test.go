@@ -20,6 +20,7 @@ package mirror
 
 import (
 	"fmt"
+	"path/filepath"
 	"runtime"
 	"testing"
 
@@ -27,15 +28,6 @@ import (
 )
 
 func TestForEachLiveStreamsRatherThanMaterialising(t *testing.T) {
-	// Not under -race. The detector adds shadow memory and per-allocation
-	// bookkeeping, so the same streaming read measures 113 B/row normally and
-	// 158 under it — over this bound, and nothing about the code changed. CI's
-	// first run failed here, which is the right outcome for a test whose own
-	// comment says a heap threshold is flaky and then uses one anyway: the
-	// bound is sound for a comparable measurement and this is not one.
-	if raceEnabled {
-		t.Skip("heap accounting is not comparable under -race")
-	}
 	tbl := racyTable(t)
 
 	// More rows than one row group, so "streams" and "materialises" are
@@ -58,41 +50,88 @@ func TestForEachLiveStreamsRatherThanMaterialising(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Heap in use at the point the LAST row is delivered. A reader that has
-	// materialised the file is holding every row it has produced; one that
-	// streams is holding at most a row group.
-	var peak uint64
-	var base uint64
-	runtime.GC()
-	var ms runtime.MemStats
-	runtime.ReadMemStats(&ms)
-	base = ms.HeapAlloc
+	// SELF-CALIBRATING, not an absolute threshold.
+	//
+	// The first version asserted "under 150 bytes per row", which is a number
+	// measured on one machine. It failed under -race (158 B/row, because the
+	// detector adds shadow memory), was patched to skip there, and then failed
+	// again on a GitHub runner under a plain `go test` — a different machine
+	// with different GC timing. Its own comment said a heap threshold is flaky
+	// and it used one anyway; skipping -race treated the symptom.
+	//
+	// So it measures BOTH readers, here, in this process, on whatever machine is
+	// running: the streaming path against a deliberately materialising one. Any
+	// constant would be a property of the machine; the RATIO is a property of
+	// the code, which is what the test is about.
+	measure := func(read func(func(map[string]any) error) error) uint64 {
+		runtime.GC()
+		var ms runtime.MemStats
+		runtime.ReadMemStats(&ms)
+		base := ms.HeapAlloc
+		var peak uint64
+		seen := 0
+		if err := read(func(r map[string]any) error {
+			seen++
+			if seen == rows {
+				runtime.ReadMemStats(&ms)
+				peak = ms.HeapAlloc
+			}
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if seen != rows {
+			t.Fatalf("read %d rows, want %d", seen, rows)
+		}
+		return peak - min(peak, base)
+	}
 
-	seen := 0
-	if err := tbl.ForEachLive(func(r map[string]any) error {
-		seen++
-		if seen == rows {
-			runtime.ReadMemStats(&ms)
-			peak = ms.HeapAlloc
+	streaming := measure(tbl.ForEachLive)
+
+	// The reader as it was before the fix: one file materialised into a slice
+	// of maps before a single row is delivered. Kept here, in the test, because
+	// a comparison needs both halves and the shipped code must only have one.
+	materialising := measure(func(fn func(map[string]any) error) error {
+		// The same file set ForEachLive walks. Reading only BaseFiles found
+		// nothing at all — the test writes one batch, which lands in a DELTA —
+		// and "0 rows" is a comparison against nothing dressed up as a pass.
+		for _, set := range [][2]any{
+			{"base", tbl.State.BaseFiles}, {"delta", tbl.State.DeltaFiles},
+		} {
+			sub := set[0].(string)
+			for _, f := range set[1].([]string) {
+				rel := filepath.Join(sub, f)
+				if tbl.partialColsOf(rel) != nil {
+					continue
+				}
+				dead, err := tbl.deadPositions(rel)
+				if err != nil {
+					return err
+				}
+				all, err := tbl.readParquet(filepath.Join(tbl.Dir, rel), dead)
+				if err != nil {
+					return err
+				}
+				for _, r := range all {
+					if err := fn(r); err != nil {
+						return err
+					}
+				}
+			}
 		}
 		return nil
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if seen != rows {
-		t.Fatalf("read %d rows, want %d", seen, rows)
-	}
+	})
 
-	// A materialised read holds `rows` maps; a streaming one holds a row group.
-	// The bound is generous — several row groups' worth — because the point is
-	// to catch a return to O(file), not to police allocation.
-	held := peak - min(peak, base)
-	perRow := held / uint64(rows)
-	t.Logf("heap in use at the last row: %.1f MB over baseline (%d B/row)",
-		float64(held)/1e6, perRow)
-	if perRow > 150 {
-		t.Errorf("ForEachLive is holding %d bytes per row at the last row, which "+
-			"is the whole file rather than a row group. This is what took "+
-			"qs-verify to 13.3 GB on a 126 MB mirror.", perRow)
+	t.Logf("at the last row: streaming holds %.1f MB, materialising holds %.1f MB",
+		float64(streaming)/1e6, float64(materialising)/1e6)
+
+	// Two-to-one is a wide margin on purpose. Measured at roughly three-to-one
+	// (113 B/row against 373), and the point is to catch a return to O(file),
+	// not to police allocation.
+	if streaming*2 > materialising {
+		t.Errorf("ForEachLive holds %d bytes at the last row against %d for a "+
+			"reader that materialises the whole file — it is not streaming. "+
+			"This is what took qs-verify to 13.3 GB on a 126 MB mirror.",
+			streaming, materialising)
 	}
 }
