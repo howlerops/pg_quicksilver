@@ -166,9 +166,37 @@ done
 [ -n "$applied" ] || bad "the first change never drained"
 printf '  applied in %.1fs, RSS peaked at %s MB\n' "${applied:-0}" "$((peak/1024))"
 
+# THE CONTROL. Without it "the first write took 2.1s" says nothing: it includes
+# the UPDATE running on PostgreSQL, the decode and the apply, and a steady-state
+# write pays all of those too. The second write is identical except that the
+# index now exists, so the DIFFERENCE is what the restart actually cost.
+t1=$(date +%s.%N)
+psq "UPDATE m SET amount = amount + 1 WHERE id BETWEEN 20001 AND 40000" >/dev/null
+psq "INSERT INTO m VALUES (999999999,'MARK',0,now()) ON CONFLICT (id) DO UPDATE SET ts=now()" >/dev/null
+MARK2=$(psq "SELECT pg_current_wal_lsn()::text" postgres)
+psq "INSERT INTO m VALUES (999999999,'MARK',0,now()) ON CONFLICT (id) DO UPDATE SET ts=now()" >/dev/null
+peak2=0
+second=""
+for _ in $(seq 3000); do
+  r=$(rss "$MPID"); [ -n "$r" ] && [ "$r" -gt "$peak2" ] && peak2=$r
+  at=$(/tmp/qs-query -mirror "$MIRROR" -table public.m -lsn 2>/dev/null | tr -d '[:space:]')
+  if [ -n "$at" ] && lsn_ge "$at" "$MARK2"; then
+    second=$(echo "$(date +%s.%N)-$t1" | bc); break
+  fi
+  sleep 0.1
+done
+[ -n "$second" ] || bad "the second change never drained"
+printf '  a SECOND, identical write: %.1fs, RSS peaked at %s MB\n' \
+  "${second:-0}" "$((peak2/1024))"
+
 say "what this means for a Pod"
 printf '  readiness said yes at  %6.2fs and %5s MB\n' "$rdy" "$rss_ready"
 printf '  the first write took   %6.1fs and %5s MB\n' "${applied:-0}" "$((peak/1024))"
+printf '  a second one took      %6.1fs\n' "${second:-0}"
+if [ -n "$applied" ] && [ -n "$second" ]; then
+  printf '  so the restart itself cost about %.1fs of stall\n' \
+    "$(echo "$applied - $second" | bc)"
+fi
 grow=$(( peak/1024 - rss_ready ))
 if [ -n "$applied" ] && [ "$(echo "$applied > 2.0" | bc)" = "1" ] && [ "$grow" -gt 200 ]; then
   cat <<TXT
