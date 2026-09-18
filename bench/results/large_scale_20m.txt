@@ -2,63 +2,63 @@
 === infrastructure ===
 
 === budget ===
-  9.3G free, reserving 2000 MB
+  11G free, reserving 2000 MB
   shape=narrow at 190 B/row, stored twice plus a mirror
-  rows: 20458269
+  rows: 23005205
 
-=== seeding 20458269 rows ===
-  2000000 rows, 9236 MB free     4000000 rows, 8737 MB free     6000000 rows, 8398 MB free     8000000 rows, 8059 MB free     10000000 rows, 7719 MB free     12000000 rows, 7385 MB free     14000000 rows, 7041 MB free     16000000 rows, 6707 MB free     18000000 rows, 6367 MB free     20000000 rows, 6026 MB free     20458269 rows, 5958 MB free   
-  seeded in 30s — 1.7G on disk (89 B/row)
+=== seeding 23005205 rows ===
+  2000000 rows, 9399 MB free     4000000 rows, 8756 MB free     6000000 rows, 8113 MB free     8000000 rows, 7790 MB free     10000000 rows, 7338 MB free     12000000 rows, 7002 MB free     14000000 rows, 6661 MB free     16000000 rows, 6321 MB free     18000000 rows, 5986 MB free     20000000 rows, 5644 MB free     22000000 rows, 5095 MB free     23005205 rows, 5134 MB free   
+  seeded in 35s — 2.0G on disk (89 B/row)
 
 === standby ===
   standby on 5444, in recovery
-  6.8G free after two copies
+  6.0G free after two copies
 
 === bootstrap ===
-  55.3s -> 370168 rows/s -> 32.9 MB/s
-  RSS after bootstrap: 109M
+  62.5s -> 368127 rows/s -> 32.7 MB/s
+  RSS after bootstrap: 129M
 
 === a workload on top, for 60s ===
-  1600080 row-changes in 73s (21797/s into PostgreSQL)
+  1580079 row-changes in 71s (22274/s into PostgreSQL)
   paced: waited 60s for the mirror to catch up (slot kept under 512M)
 
 === drain ===
-  caught up in 1s (1409403 row-changes/s through the mirror)
+  caught up in 1s (1401814 row-changes/s through the mirror)
 
 === what it cost ===
-  source 1.7G / mirror 120M -> 14.5x smaller (20458270 live rows)
+  source 2.0G / mirror 133M -> 14.7x smaller (23005206 live rows)
   files: 1 base + 8 delta
-  RSS: 2.5G (130 bytes per live row)
+  RSS: 2.7G (123 bytes per live row)
   slow ticks: 7
-    total_ms=13491 apply_ms=13489 head_lsn_ms=1
-    total_ms=2648 apply_ms=2646 head_lsn_ms=1
-    total_ms=2595 apply_ms=2594
-  5.9G free
+    total_ms=14862 apply_ms=14860
+    total_ms=2086 apply_ms=2085
+    total_ms=2060 apply_ms=2059
+  4.9G free
 
 === correctness — the only part that is not optional ===
-  MATCH (mirror 20458270 rows (checksum 4636486f65f841ef))
+  MATCH (mirror 23005206 rows (checksum c5869d0f2beb3a0e))
 
 === the read path at this size ===
-  -- quicksilver mirror public.m applied_lsn=2B/EE8E5DF0
-  both sides hold 20,458,270 rows
-  ORDER BY x DESC:  postgres [None, 3, 1]   duckdb [3, 1, None]   DIFFERENT — NULL placement
+  -- quicksilver mirror public.m applied_lsn=1/14289A0
+  both sides hold 23,005,206 rows
+  ORDER BY x DESC:  postgres [None, 3, 1]   duckdb [None, 3, 1]   same
 
   query                            postgres       mirror   speedup  agree
   ---------------------------- ------------ ------------ ---------  -----
-  count(*)                         311.4 ms     269.2 ms     1.16x  yes
-                               (first 326 ms) (first 279 ms)
-  date arithmetic                  497.3 ms     298.7 ms     1.67x  yes
-                               (first 491 ms) (first 310 ms)
-  truncate to the hour            1125.8 ms     220.7 ms     5.10x  yes
-                               (first 1126 ms) (first 220 ms)
-  sum one column                   558.7 ms     232.3 ms     2.41x  yes
-                               (first 559 ms) (first 232 ms)
-  group by sku top 10             3337.2 ms     755.9 ms     4.41x  yes
-                               (first 3342 ms) (first 822 ms)
-  filter + aggregate               603.4 ms     134.6 ms     4.48x  yes
-                               (first 644 ms) (first 135 ms)
-  point lookup by key                0.3 ms      49.0 ms     0.01x  yes
-                               (first 1 ms) (first 45 ms)
+  count(*)                         353.0 ms     294.4 ms     1.20x  yes
+                               (first 363 ms) (first 304 ms)
+  date arithmetic                  563.0 ms     300.7 ms     1.87x  yes
+                               (first 561 ms) (first 348 ms)
+  truncate to the hour            1293.6 ms     231.5 ms     5.59x  yes
+                               (first 1294 ms) (first 268 ms)
+  sum one column                   656.8 ms     222.9 ms     2.95x  yes
+                               (first 657 ms) (first 253 ms)
+  group by sku top 10             3594.2 ms     820.7 ms     4.38x  yes
+                               (first 3952 ms) (first 856 ms)
+  filter + aggregate               690.1 ms     144.3 ms     4.78x  yes
+                               (first 719 ms) (first 144 ms)
+  point lookup by key                0.3 ms      49.6 ms     0.01x  yes
+                               (first 1 ms) (first 61 ms)
 
   all queries agreed
 

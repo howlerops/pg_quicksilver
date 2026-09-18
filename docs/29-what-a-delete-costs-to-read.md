@@ -222,32 +222,36 @@ between compactions is not a mirror anybody needs.
 ## Re-measured end to end
 
 [`bench/results/large_scale_20m.txt`](../bench/results/large_scale_20m.txt),
-20,458,270 rows, one base file and eight deltas, vectors on five of them:
+23,005,206 rows, one base file and eight deltas:
 
 ```
 query                            postgres       mirror   speedup  agree
-count(*)                         311.4 ms     269.2 ms     1.16x  yes
-date arithmetic                  497.3 ms     298.7 ms     1.67x  yes
-truncate to the hour            1125.8 ms     220.7 ms     5.10x  yes
-sum one column                   558.7 ms     232.3 ms     2.41x  yes
-group by sku top 10             3337.2 ms     755.9 ms     4.41x  yes
-filter + aggregate               603.4 ms     134.6 ms     4.48x  yes
-point lookup by key                0.3 ms      49.0 ms     0.01x  yes
+count(*)                         353.0 ms     294.4 ms     1.20x  yes
+date arithmetic                  563.0 ms     300.7 ms     1.87x  yes
+truncate to the hour            1293.6 ms     231.5 ms     5.59x  yes
+sum one column                   656.8 ms     222.9 ms     2.95x  yes
+group by sku top 10             3594.2 ms     820.7 ms     4.38x  yes
+filter + aggregate               690.1 ms     144.3 ms     4.78x  yes
+point lookup by key                0.3 ms      49.6 ms     0.01x  yes
 
-MATCH (mirror 20458270 rows, checksum 4636486f65f841ef)
+MATCH (mirror 23005206 rows, checksum c5869d0f2beb3a0e)
 PASS
 ```
 
 Against the run this document opens with:
 
 ```
-count(*)         422.9 ms  0.72x  ->  269.2 ms  1.16x
-sum one column   743.2 ms  0.85x  ->  232.3 ms  2.41x
+count(*)         422.9 ms  0.72x  ->  294.4 ms  1.20x
+sum one column   743.2 ms  0.85x  ->  222.9 ms  2.95x
 ```
 
-Both results that were slower than PostgreSQL are gone, on comparable data:
-1,509,100 dead positions against 1,563,904, and vectors on five files rather
-than two. The mirror is not being handed an easier problem.
+Both results that were slower than PostgreSQL are gone, on MORE data — 23.0M
+rows against 20.4M. The mirror is not being handed an easier problem.
+
+This run is also on the code with the merge deduplication of
+[docs/31](31-a-duplicate-row-under-compaction.md) in it. That fix touches the
+write path, so the earlier verified result was re-measured rather than left
+standing on code that had a known duplicate-row bug.
 
 **This is also the first twenty-million-row run this project has verified.** The
 two before it reported `FAIL` because `qs-verify` was OOM-killed, which is worse
