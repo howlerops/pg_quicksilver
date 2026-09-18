@@ -18,6 +18,7 @@ package plugin
 
 import (
 	"fmt"
+	"os"
 	"regexp"
 	"strconv"
 	"strings"
@@ -119,13 +120,34 @@ const (
 	DefaultFreshnessSLO = 30 * time.Second
 	DefaultMirrorPath   = "/var/lib/postgresql/data/quicksilver"
 	DefaultDatabase     = "app"
-	DefaultSidecarImage = "ghcr.io/howlerops/pg_quicksilver-mirror:latest"
+	// FallbackSidecarImage is used only when neither the Cluster nor the
+	// plugin's own environment names one. It is :latest, which is the wrong
+	// thing to run beside a database — an image that changes under you is not
+	// a version — so both the chart and any sensible deployment override it.
+	FallbackSidecarImage = "ghcr.io/howlerops/pg_quicksilver-mirror:latest"
 
 	// DefaultSidecarMemory suits a mirror up to roughly three million rows.
 	// Past that it is wrong, and see Config.SidecarMemory for the arithmetic:
 	// budget about 90 bytes of RSS per live row across the mirrored tables.
 	DefaultSidecarMemory = "256Mi"
 )
+
+// DefaultSidecarImage is the mirror image injected when a Cluster does not name
+// one, read from the plugin's own environment so the CHART can pin it.
+//
+// charts/quicksilver/values.yaml has always declared `image.mirror`, and until
+// this existed no template used it: an operator who pinned the mirror version
+// got nothing, and every Cluster was injected with :latest regardless. The
+// chart advertised a version it could not deliver.
+//
+// The plugin is the only thing that knows which image to inject, so the chart
+// tells it once, on its own Deployment, rather than every Cluster repeating it.
+func DefaultSidecarImage() string {
+	if v := strings.TrimSpace(os.Getenv("QS_DEFAULT_SIDECAR_IMAGE")); v != "" {
+		return v
+	}
+	return FallbackSidecarImage
+}
 
 var (
 	// A qualified table name, conservatively: unquoted lowercase identifiers.
@@ -153,7 +175,7 @@ func ParseConfig(clusterName string, params map[string]string) Config {
 	cfg := Config{
 		Mode:         Mode(get("mode", string(ModeShadow))),
 		Ingest:       Ingest(get("ingest", string(IngestLogical))),
-		SidecarImage: get("sidecarImage", DefaultSidecarImage),
+		SidecarImage: get("sidecarImage", DefaultSidecarImage()),
 		SlotName:     get("slotName", defaultObjectName(clusterName)),
 		Publication:  get("publication", defaultObjectName(clusterName)),
 		MirrorPath:   get("mirrorPath", DefaultMirrorPath),

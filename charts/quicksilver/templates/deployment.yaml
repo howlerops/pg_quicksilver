@@ -27,6 +27,14 @@ spec:
             - --server-key=/server/tls.key
             - --client-cert=/client/ca.crt
             - --server-address=:{{ .Values.service.port }}
+          env:
+            # The mirror image the plugin injects into every instance Pod.
+            # values.yaml has always declared image.mirror and nothing consumed
+            # it: an operator who pinned the mirror version got nothing, and
+            # every Cluster was injected with :latest. Told to the plugin once,
+            # here, rather than repeated on every Cluster.
+            - name: QS_DEFAULT_SIDECAR_IMAGE
+              value: {{ .Values.image.mirror | quote }}
           ports:
             - name: grpc
               containerPort: {{ .Values.service.port }}

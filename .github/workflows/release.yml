@@ -1,0 +1,147 @@
+# Publish the two images and the chart, on a tag.
+#
+# Nothing here runs on an ordinary push. A release is the one thing in this
+# repository that is not reversible — an image tag other people pull, a chart
+# version that gets installed — so it happens when somebody writes a tag and not
+# because a branch moved.
+#
+# WHAT GETS PUBLISHED, and why it is three things rather than one:
+#
+#   -plugin   the CNPG-I plugin server. Runs as a Deployment, talks to the
+#             operator, touches no data.
+#   -mirror   the sidecar injected into every instance Pod. Runs as UID 26 and
+#             writes to the data volume; see deploy/Dockerfile for why that
+#             matters.
+#   chart     packaged and pushed as an OCI artifact, so `helm install
+#             oci://ghcr.io/...` works without a chart repository to host.
+#
+# The image tag and the chart version both come from the git tag, so a chart
+# cannot name an image that was never built. That is the failure this is
+# arranged to prevent: charts/quicksilver/values.yaml pins image tags, and a
+# release that updated one without the other would install a mirror from a
+# different build than the plugin it is paired with.
+
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to publish, without the leading v (e.g. 0.2.0)"
+        required: true
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  images:
+    name: build and push images
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: version
+        id: v
+        run: |
+          if [ -n "${{ github.event.inputs.version }}" ]; then
+            v="${{ github.event.inputs.version }}"
+          else
+            v="${GITHUB_REF_NAME#v}"
+          fi
+          # A version that is not what it looks like produces images nobody can
+          # find later, so it is checked rather than trusted.
+          case "$v" in
+            [0-9]*.[0-9]*.[0-9]*) ;;
+            *) echo "::error::version '$v' is not X.Y.Z"; exit 1 ;;
+          esac
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          echo "publishing $v"
+
+      # The chart pins image tags. If it names a version other than the one
+      # being built, the release would ship a chart installing images from a
+      # different build — so it fails here rather than at somebody's helm
+      # install.
+      - name: the chart and the tag must agree
+        run: |
+          v="${{ steps.v.outputs.version }}"
+          cv=$(grep '^version:' charts/quicksilver/Chart.yaml | awk '{print $2}')
+          av=$(grep '^appVersion:' charts/quicksilver/Chart.yaml | awk '{print $2}' | tr -d '"')
+          bad=0
+          [ "$cv" = "$v" ] || { echo "::error::Chart.yaml version is $cv, tag says $v"; bad=1; }
+          [ "$av" = "$v" ] || { echo "::error::Chart.yaml appVersion is $av, tag says $v"; bad=1; }
+          for img in plugin mirror; do
+            pinned=$(grep "  $img:" charts/quicksilver/values.yaml | sed 's/.*://')
+            [ "$pinned" = "$v" ] || {
+              echo "::error::values.yaml pins $img at $pinned, tag says $v"; bad=1; }
+          done
+          exit $bad
+
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: plugin image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/Dockerfile
+          target: plugin
+          push: true
+          build-args: VERSION=${{ steps.v.outputs.version }}
+          tags: |
+            ghcr.io/${{ github.repository }}-plugin:${{ steps.v.outputs.version }}
+            ghcr.io/${{ github.repository }}-plugin:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: mirror image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/Dockerfile
+          target: mirror
+          push: true
+          build-args: VERSION=${{ steps.v.outputs.version }}
+          tags: |
+            ghcr.io/${{ github.repository }}-mirror:${{ steps.v.outputs.version }}
+            ghcr.io/${{ github.repository }}-mirror:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  chart:
+    name: package and push the chart
+    runs-on: ubuntu-latest
+    needs: images
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-helm@v4
+
+      # Same validation the ordinary CI runs. A chart is published once and
+      # installed many times, so it is worth checking twice.
+      - name: install kubeconform
+        run: |
+          ver=0.6.7
+          curl -sSLo /tmp/kc.tar.gz \
+            "https://github.com/yannh/kubeconform/releases/download/v${ver}/kubeconform-linux-amd64.tar.gz"
+          tar -xzf /tmp/kc.tar.gz -C /tmp kubeconform
+          sudo install -m 0755 /tmp/kubeconform /usr/local/bin/kubeconform
+      - name: validate
+        run: bash bench/scripts/validate_manifests.sh
+
+      - name: package and push
+        run: |
+          helm package charts/quicksilver --version "${{ needs.images.outputs.version }}"
+          echo "${{ secrets.GITHUB_TOKEN }}" \
+            | helm registry login ghcr.io -u "${{ github.actor }}" --password-stdin
+          helm push "quicksilver-${{ needs.images.outputs.version }}.tgz" \
+            "oci://ghcr.io/${{ github.repository_owner }}/charts"

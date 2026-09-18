@@ -113,7 +113,36 @@ jobs:
       - name: validate manifests
         run: bash bench/scripts/validate_manifests.sh
 
-  # ---- 4. against a real PostgreSQL 17 --------------------------------------
+  # ---- 4. the images build ---------------------------------------------------
+  # Not pushed — built. A Dockerfile that has stopped building is something to
+  # learn about on the commit that broke it, not from a release workflow at the
+  # moment somebody is trying to cut a version.
+  images:
+    name: images build
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: plugin
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/Dockerfile
+          target: plugin
+          push: false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: mirror
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/Dockerfile
+          target: mirror
+          push: false
+          cache-from: type=gha
+
+  # ---- 5. against a real PostgreSQL 17 --------------------------------------
   # The correctness sections need a primary, a standby and a logical slot, so
   # they need a real cluster rather than a service container: the scripts run
   # pg_ctl and pg_basebackup themselves.
