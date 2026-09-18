@@ -273,6 +273,7 @@ func testCompactionRaces(t *testing.T, partial bool) {
 						}
 						t.Errorf("row %s in mirror but deleted at round %d (swaps at %v) (%s; markedDead=%s)",
 							k, deletedAt[k], swapAt, where, inDV)
+						whereIs(t, tbl, k)
 					}
 					extra++
 				}
