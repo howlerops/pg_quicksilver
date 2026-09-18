@@ -1,0 +1,173 @@
+# Everything this repository knows how to check, on every push.
+#
+# The project's main asset is its measurements, and until this file existed not
+# one of them ran unless somebody remembered to run it. That is how a suite
+# rots: not by failing, but by nobody running the half that takes longest.
+# bench/scripts/suite.sh says exactly that about itself, and then sat behind a
+# person typing it.
+#
+# The tiers mirror suite.sh's, because the split is real: what needs nothing,
+# what needs a chart toolchain, and what needs a running PostgreSQL 17 with a
+# standby. They are separate jobs so that a missing PGDG package cannot be
+# mistaken for a broken mirror.
+#
+# INCOMPLETE IS NOT A PASS. suite.sh exits 2 when a section could not run, and
+# this workflow preserves that distinction rather than flattening it to success
+# — a CI run that reports a skipped section as green is how a benchmark comes to
+# measure nothing.
+
+name: ci
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ---- 1. no database, no cluster -------------------------------------------
+  test:
+    name: unit, race and vet
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go/go.mod
+          cache-dependency-path: go/go.sum
+
+      - name: build
+        run: go -C go build ./...
+
+      - name: vet
+        run: go -C go vet ./...
+
+      - name: test
+        run: go -C go test ./... -count=1
+
+      # The race detector earns its runtime here specifically: the apply
+      # goroutine and the background compactor share a manifest, and the bugs
+      # that come from getting that wrong do not fail a test, they produce a
+      # mirror that answers with a superseded value.
+      - name: race
+        run: go -C go test ./internal/mirror ./cmd/qs-mirror -race -count=1
+
+      # The escape hatches have to keep working or they are not escape hatches.
+      # Each of these flags is the documented recovery from a halt or a
+      # regression, and a recovery path that only runs when someone remembers is
+      # not a recovery path.
+      - name: every feature flag off
+        run: |
+          env QS_TEMPORAL_TYPES=0 QS_PARTIAL_DELTAS=0 QS_ELIDE_UNCHANGED=0 \
+              QS_SNAPPY_DELTAS=1 QS_MAX_TICK_CHANGES=0 QS_MAX_MERGE_FILES=0 \
+              go -C go test ./internal/mirror -count=1
+
+  # ---- 2. the CNPG-I handshake, without Kubernetes --------------------------
+  # A SEPARATE module on purpose: testing the handshake means importing the
+  # CloudNativePG operator, which must not reach a shipping binary's dependency
+  # tree. Hence its own job and its own -C.
+  cnpgi:
+    name: cnpg-i fidelity
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go/fidelity/go.mod
+          cache-dependency-path: go/fidelity/go.sum
+      - name: test
+        run: go -C go/fidelity test ./... -count=1
+
+  # ---- 3. what we would apply to a cluster, without a cluster ---------------
+  manifests:
+    name: chart and manifests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-helm@v4
+
+      - name: install kubeconform
+        run: |
+          ver=0.6.7
+          curl -sSLo /tmp/kc.tar.gz \
+            "https://github.com/yannh/kubeconform/releases/download/v${ver}/kubeconform-linux-amd64.tar.gz"
+          tar -xzf /tmp/kc.tar.gz -C /tmp kubeconform
+          sudo install -m 0755 /tmp/kubeconform /usr/local/bin/kubeconform
+
+      - name: helm lint
+        run: helm lint charts/quicksilver
+
+      # kubeconform against the real Kubernetes schemas, and the example Cluster
+      # against CloudNativePG's published CRD. helm lint checks only that the
+      # templates render; neither of those is what it does.
+      - name: validate manifests
+        run: bash bench/scripts/validate_manifests.sh
+
+  # ---- 4. against a real PostgreSQL 17 --------------------------------------
+  # The correctness sections need a primary, a standby and a logical slot, so
+  # they need a real cluster rather than a service container: the scripts run
+  # pg_ctl and pg_basebackup themselves.
+  #
+  # PostgreSQL 17 is not optional. On 16 a failover loses the logical slot
+  # outright (docs/14, docs/15), which is why the plugin refuses to run
+  # `ingest: logical` below 17 — so testing against whatever the runner ships
+  # would be testing a configuration this project rejects.
+  integration:
+    name: against PostgreSQL 17
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go/go.mod
+          cache-dependency-path: go/go.sum
+
+      - name: install PostgreSQL 17
+        run: |
+          sudo systemctl stop postgresql || true
+          curl -sS https://www.postgresql.org/media/keys/ACCC4CF8.asc \
+            | sudo gpg --dearmor -o /usr/share/keyrings/pgdg.gpg
+          echo "deb [signed-by=/usr/share/keyrings/pgdg.gpg] \
+            http://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" \
+            | sudo tee /etc/apt/sources.list.d/pgdg.list
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq postgresql-17
+          /usr/lib/postgresql/17/bin/postgres --version
+
+      - name: python deps
+        run: pip install --quiet duckdb psycopg[binary]
+
+      # Correctness only. The performance sections are opt-in (FULL=1) because
+      # a shared CI runner cannot produce a number worth publishing — and a
+      # benchmark whose numbers nobody trusts is worse than no benchmark.
+      # `|| rc=$?`, not `rc=$?` on the next line: GitHub runs each step under
+      # `bash -e`, so a failing suite would abort the step before the exit code
+      # could be read and the INCOMPLETE case would never be reported as such.
+      - name: suite
+        run: |
+          rc=0
+          sudo -E bash bench/scripts/suite.sh || rc=$?
+          if [ "$rc" = "2" ]; then
+            echo "::error::the suite reported INCOMPLETE - a section could not run, which is not a pass: it told us nothing."
+          fi
+          exit "$rc"
+
+      - name: logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: suite-logs
+          path: /tmp/qs-suite/
+          if-no-files-found: ignore
+          retention-days: 7

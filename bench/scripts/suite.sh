@@ -69,6 +69,15 @@ run() {
 printf '=== quicksilver suite ===\n'
 printf '  full=%s only=%s logs=%s\n' "$FULL" "${ONLY:-<all>}" "$OUT"
 
+# ---- 0. the cluster everything below assumes ---------------------------------
+#
+# This used not to exist, and its absence was invisible: every database section
+# opened by checking for a primary and calling skip() when there wasn't one, so
+# on a machine that had never had one built by hand the suite reported a column
+# of INCOMPLETEs and exited 2. Honest, and useless. A suite that cannot build
+# its own fixture cannot run anywhere it has not already run.
+run cluster       600 bash bench/scripts/setup_cluster.sh
+
 # ---- 1. no database required -------------------------------------------------
 run unit          900 go -C go test ./... -count=1
 run race          900 go -C go test ./internal/mirror ./cmd/qs-mirror -race -count=1
