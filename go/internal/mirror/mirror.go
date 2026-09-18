@@ -1382,18 +1382,37 @@ const (
 // every live row and writes a new base file, so triggering it on a batch count
 // makes a busy 5M-row mirror rewrite 5M rows every few seconds — which is both
 // the throughput collapse and the memory spike measured in docs/18.
-func (t *Table) ShouldCompact() bool {
+func (t *Table) ShouldCompact() bool { return t.CompactReason() != "" }
+
+// CompactReason is ShouldCompact with the answer attached: "" for no, otherwise
+// which of the two triggers pulled.
+//
+// It exists because an A/B of QS_COMPACT_DEAD_FRACTION measured nothing and did
+// not say so. Six runs across three shapes came back with identical compaction
+// counts in both arms — deletes 5/5, churn 0/0, jsonb 3/3 — and a throughput
+// comparison between two runs of the SAME behaviour reads exactly like a knob
+// that is free. Which trigger fired was not recoverable from any log, so the
+// only thing separating "no cost" from "no effect" was a count somebody thought
+// to take afterwards.
+//
+// In production it answers the same question for an operator staring at a
+// rewrite: a base rewrite is the most expensive thing this process does, and
+// "why now" should not require reading this function.
+func (t *Table) CompactReason() string {
 	if len(t.State.DeltaFiles) == 0 {
-		return false
+		return ""
 	}
 	threshold := t.State.BaseRows / compactChurnRatio
 	if threshold < compactMinRows {
 		threshold = compactMinRows
 	}
 	if t.State.DeltaRows >= threshold {
-		return true
+		return "churn"
 	}
-	return t.baseVectorTooExpensive()
+	if t.baseVectorTooExpensive() {
+		return "dead-fraction"
+	}
+	return ""
 }
 
 // baseVectorTooExpensive is the READ side of the compaction trade, which the
@@ -1431,11 +1450,36 @@ func (t *Table) ShouldCompact() bool {
 //	jsonb            1692      238.3 ms        2.0 ms  <0.01x
 //
 // On jsonb the vector is a rounding error, so compacting sooner would buy that
-// shape nothing and cost it a full rewrite. Turning this on by default would
-// also change write throughput, which docs/19 measures and this has not — and
-// an unmeasured throughput change is exactly what the 30x collapse in docs/18
-// was. So it ships as a flag with the evidence attached, to be defaulted on
-// when an A/B says what it costs the write path.
+// shape nothing and cost it a full rewrite.
+//
+// It used to say the rest was an unmeasured throughput change, to be defaulted
+// on once an A/B said what it costs the write path. That A/B has now run —
+// three shapes, six paired runs on a quiet machine — and the answer is not a
+// cost. It is that this trigger BARELY FIRES:
+//
+//	shape      frac=0            frac=0.01
+//	deletes    6 churn           5 churn + 1 dead-fraction
+//	jsonb      3 churn           3 churn
+//	churn      no compaction     no compaction
+//
+// Same total number of rewrites either way. ShouldCompact tests churn first and
+// returns early, so this only gets a say while DeltaRows is below
+// max(BaseRows/5, 25k) — and any workload that deletes enough to fill a vector
+// is usually also writing enough to clear that bar. Sixty seconds of workload
+// across three shapes moved one rewrite slightly earlier.
+//
+// Which means the throughput numbers that A/B produced — drain rate within
+// 0.5%, CPU per row-change identical — are two runs of the same behaviour, and
+// would have read exactly like a knob that is free. The trigger reason is now
+// logged (CompactReason) precisely so that "costs nothing" and "does nothing"
+// stop looking alike.
+//
+// So it stays off, for a better reason than before, and the honest gap is
+// named: the case it was designed for is a mirror whose base fills with dead
+// rows while its deltas stay small — deletes without accompanying writes — and
+// no shape in bench/scripts/workload_matrix.sh produces that. Defaulting it on
+// would be trading a measured read win for an unmeasured schedule change on a
+// shape nobody has run.
 var CompactDeadFraction = envFloat("QS_COMPACT_DEAD_FRACTION", 0)
 
 func (t *Table) baseVectorTooExpensive() bool {

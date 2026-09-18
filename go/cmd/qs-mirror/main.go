@@ -677,6 +677,7 @@ func pump(
 				// small deltas it is the only candidate for a tail.
 				tt.done("finish_compaction")
 			}
+			reason := t.CompactReason()
 			switch {
 			case t.Compacting() && t.ShouldMergeDeltas():
 				// Merging is allowed DURING a rewrite, over the deltas the
@@ -694,12 +695,17 @@ func pump(
 			case t.Compacting():
 				// a rewrite is in flight and the file count is fine
 
-			case t.ShouldCompact():
+			case reason != "":
 				// Enough of the TABLE has changed to justify rewriting the base.
 				// This runs in the BACKGROUND: doing it inline is what put p99
 				// commit-to-visible at 24.6s against a p50 of 206ms (docs/19).
+				//
+				// `reason` names WHICH trigger pulled — churn or dead-fraction.
+				// Without it, an A/B of the dead-fraction trigger came back with
+				// identical compaction counts in both arms and no way to tell
+				// "the knob costs nothing" from "the knob never fired".
 				if c := t.BeginCompaction(); c != nil {
-					log.Info("compaction started", "table", q,
+					log.Info("compaction started", "table", q, "why", reason,
 						"base_rows", t.State.BaseRows, "delta_rows", t.State.DeltaRows)
 				}
 				tt.done("begin_compaction")

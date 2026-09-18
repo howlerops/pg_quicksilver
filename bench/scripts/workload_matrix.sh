@@ -84,6 +84,7 @@ go -C go build -o /tmp/qs-matrix ./cmd/qs-matrix || skip "build failed"
 go -C go build -o /tmp/qs-verify ./cmd/qs-verify || skip "build failed"
 chmod 755 /tmp/qs-mirror /tmp/qs-matrix /tmp/qs-verify
 echo "  primary 5443, standby 5444, ${ROWS} rows/shape, ${SECONDS_PER}s workload, row_group=${ROW_GROUP:-65536}"
+echo "  compact_dead_fraction=${QS_COMPACT_DEAD_FRACTION:-0}"
 echo "  column-partial deltas: ${QS_PARTIAL_DELTAS:-1} (0 writes every update as a whole row)"
 echo "  elide unchanged large values: ${QS_ELIDE_UNCHANGED:-1}"
 echo "  max changes per tick: ${QS_MAX_TICK_CHANGES:-250000} (0 = unbounded, the old behaviour)"
@@ -115,6 +116,7 @@ for SHAPE in $SHAPES; do
     QS_SLOW_TICK=${QS_SLOW_TICK:-200ms} \
     QS_MAX_TICK_CHANGES=${QS_MAX_TICK_CHANGES:-250000} \
     QS_MAX_MERGE_FILES=${QS_MAX_MERGE_FILES:-8} \
+    QS_COMPACT_DEAD_FRACTION=${QS_COMPACT_DEAD_FRACTION:-0} \
     QS_HEALTH_ADDR=$HEALTH /tmp/qs-mirror" > $BASE/mx-$SHAPE.log 2>&1 &
   sleep 1
   MPID=$(pgrep -x qs-mirror | head -1)
