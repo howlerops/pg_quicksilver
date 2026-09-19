@@ -135,7 +135,17 @@ psq 5443 "SELECT pg_create_physical_replication_slot('e2e_standby', true)" postg
 psq 5443 "ALTER SYSTEM SET synchronized_standby_slots = 'e2e_standby'" postgres >/dev/null
 psq 5443 "SELECT pg_reload_conf()" postgres >/dev/null
 rm -rf $STANDBY
-su postgres -c "$PG/pg_basebackup -D $STANDBY -R -X stream -S e2e_standby \
+# `-c fast`, which every other script in this directory already passes and this
+# one did not. Without it pg_basebackup waits for a SPREAD checkpoint — throttled
+# across checkpoint_timeout * checkpoint_completion_target, so up to ~270s at the
+# defaults — and how long that takes depends entirely on how dirty the primary
+# happens to be when the run starts.
+#
+# On CI it is always fast, because CI builds the primary fresh in the same job.
+# Run locally after a benchmark has been hammering the same cluster, this one
+# line turned a four-minute section into a four-minute WAIT, which reads as a
+# hung test and was twice mistaken for one.
+su postgres -c "$PG/pg_basebackup -D $STANDBY -R -X stream -S e2e_standby -c fast \
   -d 'host=/tmp port=5443 user=postgres dbname=postgres'" || skip "pg_basebackup failed"
 { echo "port = 5444"; echo "sync_replication_slots = on"; echo "hot_standby_feedback = on"; } \
   >> $STANDBY/postgresql.auto.conf
