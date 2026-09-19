@@ -17,8 +17,14 @@
 //	                          place; state.json names the generation that
 //	                          belongs to each file, so a manifest and the
 //	                          vectors it names are one point in time.
-//	  index/000001.idx.json   key -> row position, needed to build a dv
 //	  state.json              applied_lsn + manifest
+//
+// There is no persisted key index. Compaction used to write
+// index/<stem>.idx.json — every key as JSON — and it was measured at 2.7x the
+// size of the Parquet file it indexed and slower to load than rebuilding from
+// it, because the key column is stored compressed and columnar while JSON is
+// text with punctuation. ensureIndex reads the key column back instead. The
+// directory is still removed on upgrade; see dropIndexJSON.
 //
 // Unlike the Python reference, nothing here needs a query engine: verification
 // reads Parquet directly. The writer should not depend on DuckDB.
@@ -192,20 +198,24 @@ func (t *Table) ensureIndex() error {
 	for _, base := range t.State.BaseFiles {
 		rel := filepath.Join("base", base)
 		id := baseID(base)
-		stem := trimParquet(base)
-		raw, err := os.ReadFile(filepath.Join(t.Dir, "index", stem+".idx.json"))
-		if err == nil {
-			var m map[string]int
-			if json.Unmarshal(raw, &m) == nil {
-				for k, pos := range m {
-					t.index.set(t.keyOfString(k), loc{File: id, Pos: int32(pos)})
-				}
-				continue
-			}
-		}
-		// No persisted index: rebuild it from the file. This is not a degraded
-		// path, it is the normal one — the snapshot stopped writing that JSON
-		// because the file already holds everything it said.
+		// ALWAYS from the file. There used to be a persisted index —
+		// index/<stem>.idx.json, every key as JSON, written by both compaction
+		// paths — that was read here in preference to the file.
+		//
+		// It was measured (TestPersistedIndexCost) and it lost on both axes:
+		//
+		//	base/000002.parquet     1,112,975 bytes
+		//	index/000002.idx.json   2,977,786 bytes   2.7x the file it indexes
+		//
+		//	ensureIndex from the persisted JSON   61-71 ms
+		//	ensureIndex from the base file        52-60 ms
+		//
+		// Slower AND larger, consistently, which is what a column store should
+		// do to a text format: Parquet holds the key column compressed and
+		// columnar, while JSON holds every key as text with punctuation and
+		// allocates a map entry per key to parse it. The snapshot path had
+		// already stopped writing one and said as much in this comment; the two
+		// rewrite paths had simply never been revisited.
 		//
 		// ONE COLUMN, not all of them. The key column and the row's position
 		// are the entire content of the index, and this is a column store, so
@@ -395,6 +405,21 @@ func (t *Table) dropDV(rel string) {
 func (t *Table) removeDataFile(rel string) {
 	_ = os.Remove(filepath.Join(t.Dir, rel))
 	t.dropDV(rel)
+	t.dropIndexJSON(filepath.Base(rel))
+}
+
+// dropIndexJSON removes the persisted key index a previous version wrote for a
+// base file, if one is there.
+//
+// Nothing writes these any more — they were 2.7x the size of the Parquet file
+// they indexed and slower to load than rebuilding from it (ensureIndex, and
+// TestPersistedIndexCost). Nothing READS them either, so one left behind is
+// inert; it is removed anyway because a mirror that upgrades into this version
+// would otherwise carry a file larger than its own base file forever, and
+// "harmless" is not a good reason to keep several megabytes per table on a
+// volume sized from a formula that does not know about it.
+func (t *Table) dropIndexJSON(name string) {
+	_ = os.Remove(filepath.Join(t.Dir, "index", trimParquet(filepath.Base(name))+".idx.json"))
 }
 
 func (t *Table) statePath() string { return filepath.Join(t.Dir, "state.json") }
@@ -1104,7 +1129,6 @@ func (t *Table) Compact() (int, error) {
 	t.State.BaseRows = len(rows)
 	t.State.DeltaRows = 0
 
-	index := make(map[string]int, len(rows))
 	t.index = newKeyIndex(len(rows))
 	// Every patch has just been folded into the whole rows above.
 	t.patch = newKeyIndex(0)
@@ -1112,17 +1136,14 @@ func (t *Table) Compact() (int, error) {
 	id := baseID(name)
 	for i, r := range rows {
 		k := t.keyOf(r[t.Key])
-		index[k.String()] = i
 		l := loc{File: id, Pos: int32(i)}
 		if t.elideWorked {
 			l.Hash, _ = largeHash(r, t.Order)
 		}
 		t.index.set(k, l)
 	}
-	stem := strings.TrimSuffix(name, ".parquet")
-	if err := writeJSON(filepath.Join(t.Dir, "index", stem+".idx.json"), index); err != nil {
-		return 0, err
-	}
+	// No index/<stem>.idx.json. See dropIndexJSON.
+	t.dropIndexJSON(name)
 	return len(rows), t.saveState()
 }
 

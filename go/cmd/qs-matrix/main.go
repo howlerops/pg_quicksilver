@@ -218,6 +218,73 @@ var shapes = map[string]*shape{
 			return 400, nil
 		},
 	},
+
+	// A RETENTION SWEEP: the base fills with dead rows while the deltas stay
+	// nearly empty. This shape exists because of a measurement that could not
+	// be made without it (docs/32).
+	//
+	// QS_COMPACT_DEAD_FRACTION adds a compaction trigger for a base carrying a
+	// large deletion vector, and an A/B of it across narrow, churn, jsonb and
+	// deletes found no difference at all — because it never fired. ShouldCompact
+	// tests CHURN first and returns early, so the dead-fraction trigger only
+	// gets a say while DeltaRows is below max(BaseRows/5, 25k), and every one of
+	// those shapes writes as fast as it deletes. `deletes` in particular mixes
+	// inserts 1:1, so its deltas clear that bar in the first second.
+	//
+	// The asymmetry this shape exploits is the whole point of a deletion vector:
+	// a DELETE writes NO delta row. It marks a position dead in the file the row
+	// already lives in. So deletes alone move dead-in-base up and leave
+	// DeltaRows where it was — which is the one state where the second trigger
+	// is the only one that can pull.
+	//
+	// It is BUDGETED rather than run flat out, and that is realism, not a fudge:
+	// at full speed six writers empty a 400k table in under a second, and a
+	// retention sweep that deletes the whole table is not a workload anyone
+	// runs. Each writer sweeps a quarter of its own slice and then trickles one
+	// insert every 50ms — enough WAL to keep the stream and the drain
+	// measurable, far too little to grow the deltas past the churn threshold.
+	"purge": {
+		name:    "purge",
+		create:  `CREATE TABLE m(id bigint primary key, sku text, amount numeric(12,2), ts timestamptz)`,
+		seed:    `INSERT INTO m SELECT g,'SKU-'||(g%100000),(g%997)/7.0,now() FROM generate_series(1,$1::bigint) g`,
+		columns: []string{"id", "sku", "amount", "ts"},
+		note:    "a retention sweep: deletes with almost no accompanying writes",
+		workload: func(ctx context.Context, c *pgxpool.Conn, w, iter, seeded int) (int, error) {
+			const batch = 200
+			// The ACTUAL writer count, read at call time rather than assumed:
+			// the slices must be disjoint or two writers sweep the same ids,
+			// which halves the dead rows this shape exists to produce and would
+			// do it silently. The closure runs after flag.Parse.
+			slice := maxInt(seeded/maxInt(*writers, 1), batch*2)
+			budget := slice / 4 // sweep a quarter of this writer's slice
+
+			if iter*batch < budget {
+				lo := w*slice + iter*batch + 1
+				if _, err := c.Exec(ctx,
+					`DELETE FROM m WHERE id BETWEEN $1 AND $2`, lo, lo+batch-1); err != nil {
+					return 0, err
+				}
+				return batch, nil
+			}
+
+			// Swept out. A trickle keeps the stream alive and the drain
+			// measurable without growing the deltas: at 20 rows/s per writer
+			// over a 20s run this adds a few thousand rows against a churn
+			// threshold of tens of thousands.
+			select {
+			case <-ctx.Done():
+				return 0, ctx.Err()
+			case <-time.After(50 * time.Millisecond):
+			}
+			id := 900_000_000 + w*10_000_000 + iter
+			if _, err := c.Exec(ctx,
+				`INSERT INTO m(id,sku,amount,ts) VALUES ($1,'TRICKLE',1.00,now())
+				 ON CONFLICT (id) DO NOTHING`, id); err != nil {
+				return 0, err
+			}
+			return 1, nil
+		},
+	},
 }
 
 func insertBatch(ctx context.Context, c *pgxpool.Conn, w, iter int,

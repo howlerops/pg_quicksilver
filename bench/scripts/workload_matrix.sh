@@ -21,7 +21,7 @@ HEALTH=127.0.0.1:9199
 DB=app
 ROWS=${ROWS:-400000}
 SECONDS_PER=${SECONDS_PER:-20}
-SHAPES=${SHAPES:-"narrow wide jsonb inline churn deletes"}
+SHAPES=${SHAPES:-"narrow wide jsonb inline churn deletes purge"}
 FAIL=0
 
 # Exactly one matrix at a time. Two concurrent runs share a database, a table
@@ -170,7 +170,13 @@ for SHAPE in $SHAPES; do
   # or more, so the worst tick comes with its cause attached. The wide shape's
   # tail was inferable from the merge log; the narrow shape's was not, and that
   # is exactly why the loop is now instrumented rather than read between.
-  SLOW=$(grep -c "slow tick" $BASE/mx-$SHAPE.log 2>/dev/null || echo 0)
+  # `grep -c` PRINTS the count and then exits 1 when that count is zero, so
+  # `$(grep -c … || echo 0)` returns "0\n0" on a clean run — and `[ "0
+  # 0" -gt 0 ]` is not a false negative, it is a shell error printed into the
+  # middle of the results table. Latent since this line was written; the purge
+  # shape is simply the first one quiet enough to have no slow ticks at all.
+  SLOW=$(grep -c "slow tick" $BASE/mx-$SHAPE.log 2>/dev/null)
+  SLOW=${SLOW:-0}
   if [ "$SLOW" -gt 0 ]; then
     echo "  slow ticks    $SLOW over ${QS_SLOW_TICK:-200ms}; worst:"
     grep "slow tick" $BASE/mx-$SHAPE.log \

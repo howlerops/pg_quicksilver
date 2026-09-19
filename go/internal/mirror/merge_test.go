@@ -168,7 +168,11 @@ func TestIndexRebuildsFromTheBaseFileAlone(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Remove every persisted index, which is the state a snapshot now leaves.
+	// Remove any persisted index. Nothing writes one any more — it was larger
+	// than the file it indexed and slower to load (index_persist_test.go) — so
+	// this glob is expected to come back empty and the removal is kept only so
+	// that a mirror left over from an older build cannot quietly turn this into
+	// a test of the loader instead of a test of the rebuild.
 	idx, _ := filepath.Glob(filepath.Join(tbl.Dir, "index", "*.idx.json"))
 	for _, p := range idx {
 		if err := os.Remove(p); err != nil {

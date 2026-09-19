@@ -223,18 +223,17 @@ func (t *Table) BeginCompaction() *Compaction {
 			return
 		}
 
-		// Persist the index here rather than in the swap: marshalling a map of
-		// every key is O(table) and belongs off the apply goroutine. It is
-		// slightly stale for keys touched during the rewrite, which is safe —
-		// the deletion vector, not the index, decides what is live, and
-		// ensureIndex overlays the deltas on top when rebuilding.
-		persist := make(map[string]int, idx.len())
-		idx.each(func(k rowKey, l loc) { persist[k.String()] = int(l.Pos) })
-		if err := writeJSON(filepath.Join(t.Dir, "index",
-			trimParquet(c.name)+".idx.json"), persist); err != nil {
-			c.err = err
-			return
-		}
+		// The index is NOT persisted. This used to marshal a map of every key to
+		// index/<name>.idx.json so that a later ensureIndex could load it
+		// instead of reading the base file; measured, that file was 2.7x the
+		// size of the Parquet file it indexed and SLOWER to load than rebuilding
+		// from it (TestPersistedIndexCost, docs/32). Writing it also put an
+		// O(table) JSON marshal on this goroutine for nothing.
+		//
+		// It was found by a measurement aimed at something else: on the purge
+		// shape a rewritten mirror came out 2.4x larger on disk than an
+		// un-rewritten one holding 100,000 MORE rows, and the base file had
+		// shrunk exactly as expected. One file accounted for all of it.
 
 		c.index = idx
 		c.dupDead = dup
@@ -258,7 +257,6 @@ func (t *Table) AbortCompaction() {
 	go func() {
 		<-c.done
 		_ = os.Remove(filepath.Join(t.Dir, "base", c.name))
-		_ = os.Remove(filepath.Join(t.Dir, "index", trimParquet(c.name)+".idx.json"))
 	}()
 }
 

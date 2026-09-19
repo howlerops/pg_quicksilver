@@ -286,15 +286,18 @@ if /tmp/qs-verify -dsn "postgres://postgres@localhost:5443/$DB" -mirror $MIRROR 
   # WITHOUT it; a non-zero count means a compaction had written one and that
   # was cleared too.
   if [ "$idx_before" -eq 0 ]; then
-    echo "  no persisted index existed (the snapshot writes none); updates still retired the right rows"
+    echo "  no persisted index existed; updates still retired the right rows"
   else
-    echo "  $idx_before index file(s) from compaction deleted; updates still retired the right rows"
+    echo "  $idx_before index file(s) left by an older build deleted; updates still retired the right rows"
   fi
 else
   bad "with no persisted index the mirror diverged: the rebuild does not agree with the file"
 fi
+# Nothing writes one any more: it measured 2.7x the size of the Parquet file it
+# indexed and was slower to load than rebuilding from it. A fresh one appearing
+# here means a rewrite path started writing them again.
 [ -z "$(ls $MIRROR/public.events/index/*.idx.json 2>/dev/null)" ] \
-  || echo "  (a compaction has since written a fresh index, which is expected)"
+  || bad "a compaction wrote a persisted index again"
 
 say "6d. the PUBLISHED VIEW answers what the source answers"
 # Everything above verifies the mirror through qs-verify, which reads it the way
