@@ -84,6 +84,18 @@ in [docs/04](docs/04-storage-and-query-engine.md).
 
 ---
 
+## Every number, in one place
+
+**[METRICS.md](METRICS.md)** collects every measurement this project rests on —
+ingest, freshness, storage, per-shape behaviour, scale, restart cost, compaction
+policy — each with the script that produced it and its raw output checked in
+under [`bench/results/`](bench/results/). It also states, in its own section,
+what those numbers do **not** say.
+
+Start there if you want the evidence; start below if you want the reasoning.
+
+---
+
 ## Document index
 
 | # | Document | What it covers |

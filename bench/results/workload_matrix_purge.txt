@@ -1,0 +1,55 @@
+# workload_matrix.sh, SHAPES=purge, both arms of QS_COMPACT_DEAD_FRACTION.
+#
+# The purge shape is newer than bench/results/workload_matrix.txt, which is why
+# its numbers live here rather than in that file. It is a retention sweep —
+# deletes with almost no accompanying writes — and it exists because it is the
+# only shape that reaches the dead-fraction compaction trigger (docs/32).
+#
+# Its drain figure is a property of the workload, not a ceiling: the sweep is
+# budgeted, because six writers empty a 400k table in under a second otherwise.
+
+========== ARM: QS_COMPACT_DEAD_FRACTION=0 ==========
+=== shape: purge ===
+  shape=purge  a retention sweep: deletes with almost no accompanying writes
+  seeded 400,000 rows in 0.8s; 34 MB heap+indexes (of which 8 KB TOAST)
+  bootstrap     2.1s -> 187994 rows/s
+  workload      103,150 row-changes in 20.0s (5148/s into PostgreSQL)
+  drained       0.3s -> 5075 row-changes/s through the mirror
+  latency       p50=206ms p90=n/a p99=n/a max=327ms (n=60)
+                (p50 includes the 200ms apply interval; grep the sidecar log for 'slow tick' to attribute the tail)
+  storage       source 34 MB / mirror 3 MB -> 13.7x smaller (301,613 live rows)
+  sidecar       1.4s CPU (14 us/row-change), RSS 97 MB
+  wrote         2 MB to storage (24 B/row-change)
+  files         1 base + 11 delta
+bench/scripts/workload_matrix.sh: line 174: [: 0
+0: integer expression expected
+  slow ticks    none over 200ms
+  correctness   MATCH (mirror 301614 rows (checksum 4a99c53f6cfa4dd))
+
+========================================
+PASS
+
+========== ARM: QS_COMPACT_DEAD_FRACTION=0.01 ==========
+=== shape: purge ===
+  shape=purge  a retention sweep: deletes with almost no accompanying writes
+  seeded 400,000 rows in 0.6s; 34 MB heap+indexes (of which 8 KB TOAST)
+  bootstrap     1.0s -> 388471 rows/s
+  workload      103,152 row-changes in 20.1s (5144/s into PostgreSQL)
+  drained       0.2s -> 5092 row-changes/s through the mirror
+  latency       p50=205ms p90=n/a p99=n/a max=308ms (n=60)
+                (p50 includes the 200ms apply interval; grep the sidecar log for 'slow tick' to attribute the tail)
+  storage       source 34 MB / mirror 6 MB -> 5.7x smaller (301,615 live rows)
+  sidecar       3.2s CPU (31 us/row-change), RSS 80 MB
+  wrote         8 MB to storage (86 B/row-change)
+  files         1 base + 9 delta
+  slow ticks    1 over 200ms; worst:
+                  total_ms=257 apply_ms=254 is_primary_ms=2
+  correctness   MATCH (mirror 301616 rows (checksum e566ccce9f1baf3e))
+
+========================================
+PASS
+
+========== compaction counts (the decisive number) ==========
+frac=0 exit=0 compactions=0 why:
+frac=0.01 exit=0 compactions=1 why:      1 why=dead-fraction 
+PURGE DONE
