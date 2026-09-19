@@ -114,25 +114,33 @@ The mirror weighed 120 MB on disk and the sidecar peaked at 1,854 MB, so
 | 5M | `512Mi` |
 | 20M | `2Gi` |
 
-**Do not size it from `kubectl top` after a restart.** The key index is built
-lazily, on the first change rather than at startup, so a freshly restarted
-sidecar sits at a fraction of its real footprint and the readiness probe passes
-anyway. Measured at 4M rows:
+**`kubectl top` after a restart is now a usable second opinion**, because the
+key index is built *before* `/readyz` passes. RSS at readiness is the RSS the
+Pod will hold. Measured at 4M rows:
+
+```
+readiness said yes at   2.24s and  505 MB
+the first write took     0.6s and  507 MB
+a second, identical one  0.5s
+```
+
+This used to be the opposite advice, and the reason is worth keeping. The index
+was built lazily, inside the first change:
 
 ```
 readiness said yes at   0.04s and   25 MB
 the first write took     2.3s and  507 MB     <- 20x
-a second, identical one  0.5s
 ```
 
-The Pod is put into service at 25 MB and grows twentyfold on its first write.
-Sizing from the number the probe just blessed is wrong by that factor. Use the
-row count.
+So the probe put the Pod into service at a twentieth of its real footprint, and
+then stalled ~1.8s on the first write behind a signal that had already told
+Kubernetes to send traffic. An operator sizing from `kubectl top` at that moment
+was reading a number that was wrong by 20×.
 
-The difference between those two writes — about **1.8s** — is what a restart
-actually costs in stall; the raw 2.3s is not that number, because it also
-contains the `UPDATE`, the decode and the apply that every write pays.
-`bench/scripts/restart_cost.sh` measures all three.
+Readiness now costs seconds rather than milliseconds, which is the trade: budget
+restart time accordingly. A large mirror cannot restart-loop on it — readiness
+failing only holds the Pod out of the endpoint, and `/healthz` keeps answering
+throughout the build. `bench/scripts/restart_cost.sh` measures all of it.
 
 It is applied as a request *and* a limit, which puts the sidecar in Guaranteed
 QoS. That matters more than the exact number: a container requesting far less
