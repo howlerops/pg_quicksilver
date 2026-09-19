@@ -5,8 +5,8 @@
 operatorNamespace: cnpg-system
 
 image:
-  plugin: ghcr.io/howlerops/pg_quicksilver-plugin:0.1.0
-  mirror: ghcr.io/howlerops/pg_quicksilver-mirror:0.1.0
+  plugin: ghcr.io/howlerops/pg_quicksilver-plugin:0.0.1
+  mirror: ghcr.io/howlerops/pg_quicksilver-mirror:0.0.1
   pullPolicy: IfNotPresent
 
 replicaCount: 1

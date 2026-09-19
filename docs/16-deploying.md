@@ -30,8 +30,8 @@ That is what lets [docs/07](07-image-strategy.md) hold: the CNPG PostgreSQL imag
 stays stock upstream and nothing here forks it.
 
 ```
-docker build --target plugin -t ghcr.io/howlerops/pg_quicksilver-plugin:0.1.0 .
-docker build --target mirror -t ghcr.io/howlerops/pg_quicksilver-mirror:0.1.0 .
+docker build --target plugin -t ghcr.io/howlerops/pg_quicksilver-plugin:0.0.1 .
+docker build --target mirror -t ghcr.io/howlerops/pg_quicksilver-mirror:0.0.1 .
 ```
 
 The sidecar image runs as UID 26, the UID the CNPG images use for `postgres`.
