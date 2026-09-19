@@ -29,7 +29,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Version to publish, without the leading v (e.g. 0.2.0)"
+        description: "Version to publish, e.g. 0.2.0 or v0.2.0 (lowercase v)"
         required: true
 
 permissions:
@@ -52,13 +52,22 @@ jobs:
           if [ -n "${{ github.event.inputs.version }}" ]; then
             v="${{ github.event.inputs.version }}"
           else
-            v="${GITHUB_REF_NAME#v}"
+            v="$GITHUB_REF_NAME"
           fi
+          # A leading v is accepted from EITHER path. It used to be stripped
+          # only from the tag, so a dispatch typed as "v0.0.1" — the same string
+          # the tag uses, and the obvious thing to type — failed with
+          # "version 'v0.0.1' is not X.Y.Z". The input's description said "without
+          # the leading v", which is a hint doing a job the code should do, and
+          # it cost a release attempt.
+          v="${v#v}"
           # A version that is not what it looks like produces images nobody can
           # find later, so it is checked rather than trusted.
           case "$v" in
             [0-9]*.[0-9]*.[0-9]*) ;;
-            *) echo "::error::version '$v' is not X.Y.Z"; exit 1 ;;
+            *)
+              echo "::error::version '$v' is not X.Y.Z. Use 0.2.0 or v0.2.0 (lowercase v). An uppercase V is rejected on purpose: a V-prefixed tag would not match this workflow's own v* trigger, so accepting one here would make dispatch and tag disagree."
+              exit 1 ;;
           esac
           echo "version=$v" >> "$GITHUB_OUTPUT"
           echo "publishing $v"
