@@ -5,6 +5,13 @@ validate Clusters, inject the mirror sidecar into instance Pods, and set the
 PostgreSQL parameters the mirror needs.
 
 ```
+helm install quicksilver oci://ghcr.io/howlerops/charts/quicksilver \
+  --version 0.0.1 --namespace cnpg-system
+```
+
+or from a checkout, which is what the tests and the e2e scripts use:
+
+```
 helm install quicksilver charts/quicksilver --namespace cnpg-system
 ```
 

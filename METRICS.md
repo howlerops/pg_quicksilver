@@ -221,7 +221,7 @@ Bugs these caught, each of which produced *plausible* output:
 
 - **`mode: takeover` is not implemented.** The validation gate is tested; the service retarget it gates does not exist.
 - **Serving is verified through DuckDB, not over the wire.** Answering a `SELECT` through PostgreSQL is the `pg_duckdb` path in [docs/12](docs/12-s5-serving-path.md) and is not landed.
-- **No image has ever been pushed.** CI builds both on every commit; `release.yml` has never been triggered.
+- **The published images have never been pulled.** `release.yml` ran once and pushed both images and the chart at `0.0.1`; nothing has installed them. "Builds" and "runs from a registry" are different claims and only the first is checked.
 - **Live reconcile behaviour is unobserved.** The Pod spec the operator builds is real; nothing has watched it *re*-build one, because this sandbox has no kubelet.
 - **Most runs are one machine, 4 vCPU.** Ratios travel; absolute milliseconds do not.
 

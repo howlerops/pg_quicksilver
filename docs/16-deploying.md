@@ -42,8 +42,13 @@ Running it as anyone else produces mirror files the instance cannot read.
 ## Installing the plugin
 
 ```
-helm install quicksilver charts/quicksilver --namespace cnpg-system
+helm install quicksilver oci://ghcr.io/howlerops/charts/quicksilver \
+  --version 0.0.1 --namespace cnpg-system
 ```
+
+The chart is pushed as an OCI artifact, so there is no chart repository to add.
+From a checkout, `helm install quicksilver charts/quicksilver` does the same
+thing against the working tree.
 
 The whole of the plugin's registration is a **Service**. There is no CRD and no
 operator configuration to edit: CloudNativePG lists Services in its own
@@ -228,11 +233,16 @@ other direction.
   Pod spec is now real (above), but nothing has watched the operator *re*-build
   one. The `EVALUATE` bug in docs/17 is exactly the class of thing that reading
   catches and only a cluster confirms.
-- **The images — built on every push, never pushed.** The `images` job in
+- **The images — now published, but never pulled.** The `images` job in
   [`ci.yml`](../.github/workflows/ci.yml) builds both targets from
   `deploy/Dockerfile` on every commit, so a Dockerfile that stops building is
-  caught on the commit that broke it. `release.yml` pushes them on a `v*` tag
-  and has never been triggered: no image of this project exists in any registry.
+  caught on the commit that broke it. `release.yml` has now run to completion
+  once and pushed `pg_quicksilver-plugin:0.0.1`, `pg_quicksilver-mirror:0.0.1`
+  (both also `:latest`) and `oci://ghcr.io/howlerops/charts/quicksilver:0.0.1`.
+  Two things that publish does **not** establish: it was a `workflow_dispatch`
+  on `main`, so the `tags: ["v*"]` path the release notes assume still has zero
+  runs; and nothing has pulled either image, so "builds" and "runs from a
+  registry" remain different claims.
 - **`mode: takeover` — still not implemented.** The validation gate is tested;
   the service retarget it gates does not exist.
 - **Serving — verified through DuckDB, not yet over the wire.** The mirror
