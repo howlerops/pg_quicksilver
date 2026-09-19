@@ -139,6 +139,23 @@ correctness dependency rather than a nicety — and it distinguishes *idle* from
 **not** check freshness; restarting a mirror that is behind discards its progress
 and makes it further behind.
 
+**What readiness costs, and why a restart is not instant.** The sidecar builds
+its key index before `/readyz` passes, so a restarted Pod takes seconds rather
+than milliseconds to return to service, and the RSS you see at that moment is
+the RSS it will hold. Measured at 4M rows: ready at 2.24s holding 505 MB, and
+the first write after that is 0.6s against a steady-state 0.5s.
+
+It used to report ready in 0.04s at 25 MB and then spend ~1.8s building the
+index inside its first write — behind a probe that had already told Kubernetes
+to send traffic, and showing an operator a twentieth of the memory the Pod
+actually needed ([docs/29](29-what-a-delete-costs-to-read.md)). Budget restart
+time accordingly, and size the memory limit from what `/readyz`-time RSS shows,
+because it is now the honest number.
+
+A large mirror cannot restart-loop on this: readiness failing only keeps the Pod
+out of the endpoint, and liveness is a separate `/healthz` that keeps answering
+throughout the build.
+
 ---
 
 ## Verifying the mirror
@@ -190,24 +207,50 @@ manual: delete the mirror directory and let it re-snapshot.
 Stated plainly, because a deployment guide that implies more than was tested is
 worse than no guide.
 
-- **Service discovery.** The plugin has never been found by a real operator
-  through the `cnpg.io/pluginName` label. Everything *after* discovery — the mTLS
-  dial, the metadata and capability handshake, the lifecycle hook against a Pod
-  from CloudNativePG's own builder — is now run for real
-  ([docs/17](17-testing-without-a-cluster.md)), so what is left untested is a
-  label lookup and the operator process itself.
-- **Live reconcile behaviour.** Rollouts, switchovers and the interaction with
-  CNPG's own Pod comparison are reasoned about from the operator's source, not
-  observed. The `EVALUATE` bug in docs/17 is exactly the class of thing that
-  reading catches and only a cluster confirms.
-- **The images.** Written, never built.
-- **`mode: takeover`.** The validation gate is tested; the service retarget it
-  gates is not implemented.
-- **Serving.** The mirror is built, verified and gated, but nothing yet answers
-  a `SELECT` from it over the wire. That is the `pg_duckdb` path in
-  [docs/12](12-s5-serving-path.md), and it needs the 58-line patch landed.
-- **Scale.** Everything above ran against tens of thousands of rows. The
-  key→position index is still a JSON map; it will not survive production volumes.
+Four of these have since been closed and are listed below as what they now are,
+because a list that keeps saying "untested" about things that have been tested
+stops being read — which is the same failure as overstating, arriving from the
+other direction.
 
-First real deployment should therefore be `mode: off` on a throwaway cluster, to
+- **Service discovery — now verified, with a stated substitution.** The real
+  CloudNativePG operator (1.30, the released binary) discovers the plugin from
+  the Service label alone, admits a Cluster naming it through the real admission
+  webhooks, completes the CNPG-I handshake over mTLS, records our capabilities
+  in `.status.pluginStatus`, and calls the lifecycle hook while building the
+  instance Pod — with the sidecar in that Pod as a native sidecar
+  ([`bench/scripts/operator_e2e.sh`](../bench/scripts/operator_e2e.sh)).
+  The substitution: this sandbox does not grant `CAP_SYS_RESOURCE`, so there is
+  no kubelet and Pods stay Pending. The API server, CRDs, operator and webhooks
+  are real; everything up to and including the Pod **spec** the operator builds
+  is real, which is where a plugin lives. What runs inside the Pod is not.
+- **Live reconcile behaviour — still not observed.** Rollouts, switchovers and
+  CNPG's own Pod comparison are reasoned about from the operator's source. The
+  Pod spec is now real (above), but nothing has watched the operator *re*-build
+  one. The `EVALUATE` bug in docs/17 is exactly the class of thing that reading
+  catches and only a cluster confirms.
+- **The images — built on every push, never pushed.** The `images` job in
+  [`ci.yml`](../.github/workflows/ci.yml) builds both targets from
+  `deploy/Dockerfile` on every commit, so a Dockerfile that stops building is
+  caught on the commit that broke it. `release.yml` pushes them on a `v*` tag
+  and has never been triggered: no image of this project exists in any registry.
+- **`mode: takeover` — still not implemented.** The validation gate is tested;
+  the service retarget it gates does not exist.
+- **Serving — verified through DuckDB, not yet over the wire.** The mirror
+  publishes a SELECT that reconstructs itself from the manifest, deletion
+  vectors and column-partial deltas, and that view is checked for both speed and
+  agreement with the source on every matrix run
+  ([docs/20](20-serving-the-mirror.md)). What is still missing is answering a
+  `SELECT` through *PostgreSQL* — the `pg_duckdb` path in
+  [docs/12](12-s5-serving-path.md), which needs the 58-line patch landed.
+- **Scale — verified at 23M rows.** The claim here used to be that everything
+  ran against tens of thousands of rows and that "the key→position index is
+  still a JSON map; it will not survive production volumes". Both halves are
+  now out of date: a full run verified at **23,005,206 rows, MATCH**, and the
+  index is a pointer-free `map[int64]loc` in memory with no persisted JSON at
+  all — the file that used to hold it measured 2.7x the size of the Parquet it
+  indexed and slower to load than rebuilding from it ([docs/32](32-the-knob-that-barely-fires.md)).
+
+First real deployment should still be `mode: off` on a throwaway cluster, to
 confirm the plugin loads and validates at all, then `mode: shadow` on one table.
+What that sequence is now for is the two things above that a cluster is the only
+way to reach: live reconcile behaviour, and a Pod that actually runs.

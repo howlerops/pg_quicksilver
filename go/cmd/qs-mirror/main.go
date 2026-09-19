@@ -453,6 +453,41 @@ func runMirror(ctx context.Context, log *slog.Logger, o options, h *health.Healt
 			return err
 		}
 	}
+	// The key index, BEFORE readiness rather than on the first change.
+	//
+	// Nothing built one until now: Snapshot deliberately does not (it stopped
+	// writing a persisted index, and ensureIndex reads the key column back from
+	// the base file instead), and a resume does not either. So the index was
+	// built lazily, inside the first Apply — which put the whole cost behind a
+	// probe that had already passed. Measured at 4M rows:
+	//
+	//	ready in 0.04s, RSS 25 MB       <- the read endpoint adds this Pod
+	//	first change after restart: 2.3s, RSS peaked at 507 MB
+	//	a second, identical write:  0.5s
+	//
+	// ~1.8s of stall on a Pod Kubernetes had already been told was fine, and a
+	// memory high-water mark an operator sizing a limit at startup never sees.
+	//
+	// Paying for it here makes both honest, and costs a restarted Pod that same
+	// time before it returns to service. That is the right side of the trade for
+	// a sidecar behind a readiness probe: a slow Pod is a scheduling problem, a
+	// Pod that lies is an outage. The cost is logged per table so that an
+	// operator whose restart budget this breaks can see exactly what it was.
+	built := make([]string, 0, len(tables))
+	for q := range tables {
+		built = append(built, q)
+	}
+	sort.Strings(built) // a stable order, so two restarts log comparably
+	for _, q := range built {
+		t0 := time.Now()
+		keys, err := tables[q].BuildIndex()
+		if err != nil {
+			return fmt.Errorf("build index %s: %w", q, err)
+		}
+		log.Info("key index built", "table", q, "keys", keys,
+			"seconds", time.Since(t0).Seconds())
+	}
+
 	h.RecordBootstrapped()
 
 	return pump(ctx, log, o, h, conn, st, tables)

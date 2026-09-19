@@ -1,0 +1,46 @@
+# restart_cost.sh at ROWS=4000000, WITH the eager index build.
+#
+# The `before` is bench/results/restart_cost_4m.txt, same script, same size,
+# taken when the key index was built lazily inside the first Apply:
+#
+#                        lazy (before)      eager (after)
+#   ready                0.04s / 25 MB      2.24s / 505 MB
+#   first write          2.3s  / 507 MB     0.6s  / 507 MB
+#   a second write       0.5s               0.5s
+#   hidden stall         ~1.8s              ~0.0s
+#
+# The first write is now indistinguishable from steady state, and the probe
+# reports the memory the Pod actually needs rather than a twentieth of it.
+# The cost is that a restarted Pod takes 2.24s instead of 0.04s to return to
+# service, and a FIRST start takes 21.7s instead of 12.3s — the same work,
+# moved to where a readiness probe and an operator sizing a memory limit can
+# both see it.
+
+
+=== infrastructure ===
+
+=== seeding 4000000 rows ===
+  seeded 4000000 rows
+
+=== first start — this one pays for the snapshot ===
+  ready in 21.7s (bootstrap), RSS 494 MB
+  after one change, RSS 494 MB
+
+=== restart ===
+  stopped
+  ready in 2.24s, RSS 505 MB
+
+=== the first change AFTER the restart ===
+  applied in 0.6s, RSS peaked at 507 MB
+  a SECOND, identical write: 0.5s, RSS peaked at 510 MB
+
+=== what this means for a Pod ===
+  readiness said yes at    2.24s and   505 MB
+  the first write took      0.6s and   507 MB
+  a second one took         0.5s
+  so the restart itself cost about 0.0s of stall
+  readiness tracks the real cost at this size; re-run with a larger ROWS
+
+========================================
+PASS
+RC exit=0

@@ -187,6 +187,32 @@ func New(root, schema, table, key string, cols map[string]string, order []string
 // ensureIndex builds the key -> location map if it is not loaded. The base
 // file's index is persisted (written by Snapshot and Compact), so only the
 // deltas have to be read back, and those are small by construction.
+// BuildIndex builds the key index now, and reports how many keys it holds.
+//
+// It exists so that readiness can stop lying. The index is built lazily, on the
+// first change — neither Snapshot nor a resume builds one — so a restarted
+// sidecar reported ready with nothing in memory and then paid for the whole
+// index on its first write, behind a probe that had already said yes. Measured
+// at 4M rows (bench/results/restart_cost_4m.txt):
+//
+//	ready in 0.04s, RSS 25 MB          <- Kubernetes routes traffic here
+//	first change after restart: 2.3s, RSS peaked at 507 MB
+//	a second, identical write:  0.5s
+//
+// So ~1.8s of stall and a twentyfold jump in resident memory, both invisible to
+// the probe and to an operator sizing a limit from what RSS looks like at
+// startup. Calling this before readiness moves that cost to where both are
+// visible: the Pod takes longer to return to service and is able to serve when
+// it says it can.
+//
+// Idempotent, and free when the index is already there.
+func (t *Table) BuildIndex() (int, error) {
+	if err := t.ensureIndex(); err != nil {
+		return 0, err
+	}
+	return t.index.len(), nil
+}
+
 func (t *Table) ensureIndex() error {
 	if t.index != nil {
 		return nil

@@ -282,14 +282,40 @@ should not be decided from one shape on one machine:
 - The sidecar itself holds **2.5 GB of RSS** for a 120 MB mirror, 130 bytes per
   live row, which is the key index. Bounded and paid for, but it is the number
   that decides what memory limit a CNPG Pod needs, and it has not been attacked.
-  It is also **invisible immediately after a restart**: the index is built
-  lazily, on the first change, so a restarted sidecar reports ready in 0.04s at
-  25 MB and reaches 507 MB on its first write — twentyfold, at only 4M rows.
+  It was also **invisible immediately after a restart**: the index was built
+  lazily, on the first change, so a restarted sidecar reported ready in 0.04s at
+  25 MB and reached 507 MB on its first write — twentyfold, at only 4M rows.
   Measured in [`bench/results/restart_cost_4m.txt`](../bench/results/restart_cost_4m.txt);
-  the stall itself is ~1.8s once an identical second write is subtracted. Whether
-  to build the index eagerly at startup instead is a real trade and is not made
-  here: it would make readiness honest and the memory visible, at the cost of
-  delaying a restarted Pod's return to service by that same time.
+  the stall itself is ~1.8s once an identical second write is subtracted.
+
+  **That trade has since been made, in favour of an honest probe.** The
+  paragraph above left it open — "it would make readiness honest and the memory
+  visible, at the cost of delaying a restarted Pod's return to service by that
+  same time" — and both halves turned out to be true, at the sizes that matter
+  less than the description implied:
+
+  | | lazy | eager |
+  | --- | --- | --- |
+  | ready | 0.04s / 25 MB | 2.24s / 505 MB |
+  | first write after restart | 2.3s / 507 MB | 0.6s / 507 MB |
+  | a second, identical write | 0.5s | 0.5s |
+  | hidden stall | ~1.8s | ~0.0s |
+
+  Measured in [`bench/results/restart_cost_4m_eager.txt`](../bench/results/restart_cost_4m_eager.txt).
+  The first write is now indistinguishable from steady state. A first start
+  costs 21.7s instead of 12.3s, and a restart 2.24s instead of 0.04s — the same
+  work, moved to where a readiness probe and an operator sizing a memory limit
+  can both see it.
+
+  What decided it is that the two costs are not symmetric. A Pod that takes two
+  seconds longer to return to service is a scheduling cost, paid once per
+  restart, visible in a rollout. A Pod that says it is ready and then stalls is
+  a request that fails, paid by whoever is using the endpoint, and invisible
+  until someone correlates it with a restart that happened seconds earlier.
+  The probes already behave correctly for this: readiness failing keeps the Pod
+  out of the endpoint, which is exactly what should happen while the index is
+  being built, and liveness is a separate `/healthz` that keeps answering
+  throughout — so the build cannot restart-loop a large mirror.
 
 The point lookup — 0.3 ms against 176.0 ms before, 49.0 ms after — is a separate
 question this document does not touch. A columnar mirror losing a point lookup
