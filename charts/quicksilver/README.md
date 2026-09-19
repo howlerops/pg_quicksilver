@@ -6,7 +6,7 @@ PostgreSQL parameters the mirror needs.
 
 ```
 helm install quicksilver oci://ghcr.io/howlerops/charts/quicksilver \
-  --version 0.0.1 --namespace cnpg-system
+  --version 0.0.2 --namespace cnpg-system
 ```
 
 or from a checkout, which is what the tests and the e2e scripts use:
@@ -31,8 +31,8 @@ log says why.
 | Key | Default | Notes |
 |---|---|---|
 | `operatorNamespace` | `cnpg-system` | must match where CNPG runs |
-| `image.plugin` | `ghcr.io/howlerops/pg_quicksilver-plugin:0.0.1` | |
-| `image.mirror` | `ghcr.io/howlerops/pg_quicksilver-mirror:0.0.1` | the sidecar the plugin injects |
+| `image.plugin` | `ghcr.io/howlerops/pg_quicksilver-plugin:0.0.2` | |
+| `image.mirror` | `ghcr.io/howlerops/pg_quicksilver-mirror:0.0.2` | the sidecar the plugin injects |
 | `service.port` | `9090` | also published as the `cnpg.io/pluginPort` annotation |
 | `certManager.enabled` | `true` | issues both halves from a self-signed CA |
 | `certManager.issuerRef` | `{}` | set to reuse an existing Issuer or ClusterIssuer |

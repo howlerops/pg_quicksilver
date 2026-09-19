@@ -30,8 +30,8 @@ That is what lets [docs/07](07-image-strategy.md) hold: the CNPG PostgreSQL imag
 stays stock upstream and nothing here forks it.
 
 ```
-docker build --target plugin -t ghcr.io/howlerops/pg_quicksilver-plugin:0.0.1 .
-docker build --target mirror -t ghcr.io/howlerops/pg_quicksilver-mirror:0.0.1 .
+docker build --target plugin -t ghcr.io/howlerops/pg_quicksilver-plugin:0.0.2 .
+docker build --target mirror -t ghcr.io/howlerops/pg_quicksilver-mirror:0.0.2 .
 ```
 
 The sidecar image runs as UID 26, the UID the CNPG images use for `postgres`.
@@ -43,7 +43,7 @@ Running it as anyone else produces mirror files the instance cannot read.
 
 ```
 helm install quicksilver oci://ghcr.io/howlerops/charts/quicksilver \
-  --version 0.0.1 --namespace cnpg-system
+  --version 0.0.2 --namespace cnpg-system
 ```
 
 The chart is pushed as an OCI artifact, so there is no chart repository to add.
