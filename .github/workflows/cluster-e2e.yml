@@ -157,7 +157,10 @@ jobs:
           kubectl get pods -A -o wide || true
           kubectl -n qs-e2e describe cluster app || true
           kubectl -n cnpg-system logs deploy/quicksilver --tail=100 || true
-          kubectl -n qs-e2e logs -l cnpg.io/cluster=app -c quicksilver-mirror --tail=100 || true
+          # podRole=instance, or this also selects the initdb Job's Pod, which has
+          # no mirror container: "container quicksilver-mirror is not valid for
+          # pod app-1-initdb-xxxxx" is the diagnostic failing, not the plugin.
+          kubectl -n qs-e2e logs -l cnpg.io/podRole=instance -c quicksilver-mirror --tail=100 || true
 
       # A standing cluster is shared and outlives the run, so the test's
       # namespace must not. kind is thrown away and needs no such care.

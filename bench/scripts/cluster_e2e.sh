@@ -138,16 +138,37 @@ YAML
 
 # The real assertion of this whole script: a Pod, running, with our sidecar in
 # it, having pulled our image.
-if ! kubectl -n "$NS" wait --for=condition=Ready pod -l cnpg.io/cluster="$CLUSTER" \
-     --timeout="${TIMEOUT}s" >/dev/null 2>&1; then
-  kubectl -n "$NS" get pods
-  kubectl -n "$NS" describe pods -l cnpg.io/cluster="$CLUSTER" | grep -A 8 "Events:" | tail -20
-  bad "instance Pods never became Ready"
+#
+# INSTANCE Pods, not every Pod the Cluster owns. cnpg.io/cluster also matches
+# the initdb Job's Pod, which has no mirror container in it and never will —
+# asking for one there fails with "container quicksilver-mirror is not valid
+# for pod app-1-initdb-xxxxx", which reads like the injection is broken.
+INSTANCES="cnpg.io/podRole=instance,cnpg.io/cluster=$CLUSTER"
+
+# And a wait that actually waits. `kubectl wait` does NOT wait for a resource to
+# be CREATED: with nothing matching the selector it returns an error
+# immediately, which this read as "the Pods never became Ready" 39 seconds into
+# a 10-minute budget, while CNPG was still running initdb.
+deadline=$(( $(date +%s) + TIMEOUT ))
+ready=0
+while [ "$(date +%s)" -lt "$deadline" ]; do
+  n=$(kubectl -n "$NS" get pods -l "$INSTANCES" --no-headers 2>/dev/null | wc -l)
+  if [ "$n" -ge 1 ] && kubectl -n "$NS" wait --for=condition=Ready pod -l "$INSTANCES" \
+       --timeout=30s >/dev/null 2>&1; then
+    ready=1; break
+  fi
+  sleep 10
+done
+if [ "$ready" = "1" ]; then
+  ok "instance Pods are Ready ($(kubectl -n "$NS" get pods -l "$INSTANCES" --no-headers | wc -l) of them)"
 else
-  ok "instance Pods are Ready"
+  kubectl -n "$NS" get pods
+  kubectl -n "$NS" get cluster "$CLUSTER" -o jsonpath='{.status.phase}: {.status.phaseReason}{"\n"}' 2>/dev/null
+  kubectl -n "$NS" describe pods -l "$INSTANCES" | grep -A 8 "Events:" | tail -20
+  bad "instance Pods never became Ready within ${TIMEOUT}s"
 fi
 
-POD=$(kubectl -n "$NS" get pods -l cnpg.io/cluster="$CLUSTER" -o name | head -1)
+POD=$(kubectl -n "$NS" get pods -l "$INSTANCES" -o name | head -1)
 [ -n "$POD" ] || skip "no instance Pod at all"
 
 img=$(kubectl -n "$NS" get "$POD" -o jsonpath='{.spec.initContainers[?(@.name=="quicksilver-mirror")].image}')
@@ -171,14 +192,14 @@ fi
 say "4. changing sidecarImage ROLLS the instances"
 # go/fidelity proves CNPG's own comparison reports a difference. Only a cluster
 # shows the operator acting on it.
-before=$(kubectl -n "$NS" get pods -l cnpg.io/cluster="$CLUSTER" \
+before=$(kubectl -n "$NS" get pods -l "$INSTANCES" \
   -o jsonpath='{range .items[*]}{.metadata.uid}{" "}{end}')
 kubectl -n "$NS" patch cluster "$CLUSTER" --type merge -p \
   "{\"spec\":{\"plugins\":[{\"name\":\"quicksilver.howlerops.io\",\"parameters\":{\"tables\":\"public.events\",\"freshnessSLO\":\"30s\",\"sidecarImage\":\"$REGISTRY/pg_quicksilver-mirror:latest\"}}]}}" >/dev/null
 
 rolled=0
 for _ in $(seq 60); do
-  after=$(kubectl -n "$NS" get pods -l cnpg.io/cluster="$CLUSTER" \
+  after=$(kubectl -n "$NS" get pods -l "$INSTANCES" \
     -o jsonpath='{range .items[*]}{.metadata.uid}{" "}{end}')
   [ "$after" != "$before" ] && { rolled=1; break; }
   sleep 10
