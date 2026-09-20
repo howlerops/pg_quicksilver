@@ -103,10 +103,34 @@ fi
 
 say "standby"
 psq() { su postgres -c "$PG/psql -h /tmp -p $PRIMARY_PORT -U postgres -d postgres -Atc \"$1\""; }
+
+# Running is not the same as being a standby, and the difference is the whole
+# reason this script could not run twice.
+#
+# e2e_mirror.sh PROMOTES the standby — that is the point of it, and the suite
+# runs it last for exactly that reason. What it leaves behind is a perfectly
+# healthy postmaster on the standby's port that is a PRIMARY on a diverged
+# timeline. `pg_ctl status` says it is up, so the reuse branch took it, and the
+# run then died forty lines later at "standby on 5444 is not in recovery" —
+# which is true, unhelpful, and not something the script tried to fix.
+#
+# So the reuse condition asks the server what it IS, not whether it is there.
+# Anything that is not in recovery falls through to the rebuild below, which is
+# correct for a promoted node anyway: its timeline has diverged from the
+# primary's and only a fresh basebackup can reconcile that.
+standby_in_recovery() {
+  [ "$(su postgres -c "$PG/psql -h /tmp -p $STANDBY_PORT -U postgres -d postgres \
+      -Atc 'SELECT pg_is_in_recovery()'" 2>/dev/null)" = "t" ]
+}
+
 if [ -d "$STANDBY" ] && [ "$FORCE" != "1" ] && \
-   su postgres -c "$PG/pg_ctl -D $STANDBY status" >/dev/null 2>&1; then
-  ok "standby already running on $STANDBY_PORT"
+   su postgres -c "$PG/pg_ctl -D $STANDBY status" >/dev/null 2>&1 && \
+   standby_in_recovery; then
+  ok "standby already running on $STANDBY_PORT, and in recovery"
 else
+  if su postgres -c "$PG/pg_ctl -D $STANDBY status" >/dev/null 2>&1 && ! standby_in_recovery; then
+    ok "the server on $STANDBY_PORT was promoted (e2e does this); rebuilding it as a standby"
+  fi
   # Stop the standby BEFORE dropping its slot: PostgreSQL will not drop an
   # active slot, so with it still streaming the drop silently fails and the
   # rebuild reuses a slot carrying the previous run's restart_lsn.
