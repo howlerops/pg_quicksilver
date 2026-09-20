@@ -27,6 +27,7 @@
 set -uo pipefail
 cd "$(dirname "$0")/../.."
 source "$(dirname "$0")/lib_dropdb.sh"
+source "$(dirname "$0")/lib_syncslots.sh"
 
 PG=/usr/lib/postgresql/17/bin
 BASE=/var/lib/postgresql/qs17
@@ -60,6 +61,13 @@ psq "CREATE TABLE t(id bigint primary key, at timestamptz, on_day date, note tex
 psq "INSERT INTO t SELECT g, '2026-01-15 12:00:00+00'::timestamptz,
        '2026-01-15'::date, 'row '||g FROM generate_series(1,100) g" >/dev/null
 ok "100 rows, all carrying the instant 2026-01-15 12:00:00+00"
+
+# This script does not set synchronized_standby_slots, but four others do and
+# ALTER SYSTEM outlives them. An inherited entry naming a slot that no longer
+# exists stops a FAILOVER slot dead, with no error anywhere — the mirror
+# bootstraps, passes readiness and then never gains a row. That is precisely
+# how this script once reported DIVERGED at 100 rows against a source of 201.
+qs_assert_sync_slots_sane 5443 || skip "the primary is holding logical decoding back (above)"
 
 # The sidecar runs on a REPLICA and stands down on a primary — that is the whole
 # shape of the product — so this needs a standby, exactly as the workload matrix
@@ -145,8 +153,12 @@ except ImportError:
     sys.exit(0)
 root = os.path.join(sys.argv[1], "public.t")
 st = json.load(open(os.path.join(root, "state.json")))
-files = [os.path.join(root, "base", f) for f in st.get("base_files", [])] + \
-        [os.path.join(root, "delta", f) for f in st.get("delta_files", [])]
+# `or []` and not just .get(k, []): state.json writes "delta_files": null when
+# there are none, and .get returns None for a key that is PRESENT and null. The
+# default never fires, the loop raises TypeError, and the check reports "more
+# than one spelling" — a wrong answer about the mirror caused by the checker.
+files = [os.path.join(root, "base", f) for f in (st.get("base_files") or [])] + \
+        [os.path.join(root, "delta", f) for f in (st.get("delta_files") or [])]
 spellings = collections.Counter()
 days = collections.Counter()
 for f in files:

@@ -322,6 +322,58 @@ func clearStaleSyncSlots(ctx context.Context, o options, log *slog.Logger) error
 	return err
 }
 
+// warnStaleSyncSlots says out loud when the PRIMARY is configured to hold
+// logical decoding back for a slot that does not exist.
+//
+// This is the same hazard clearStaleSyncSlots fixes, seen from the other side.
+// That one runs when this node IS the primary and can repair it. From a replica
+// the setting belongs to a server this process does not own, so the only honest
+// thing to do is report it — but reporting it matters more here, because this
+// is the side where the symptom appears.
+//
+// The symptom is nothing. A failover slot whose synchronized_standby_slots
+// names a missing slot never advances: no error reaches the client, the stream
+// stays connected, the snapshot succeeds, /readyz passes, and the mirror simply
+// stops gaining rows. It looks exactly like an idle source. docs/15 documents
+// the mechanism; this project then spent a suite run rediscovering it, because
+// a benchmark script had left the setting behind and nothing said so.
+//
+// Only slots with failover=true are affected, which is why a quick check with
+// an ordinary slot — pg_recvlogical, say — comes back healthy and points the
+// investigation away from the cause.
+func warnStaleSyncSlots(ctx context.Context, conn *pgx.Conn, slot string, log *slog.Logger) {
+	var raw string
+	if err := conn.QueryRow(ctx, "SHOW synchronized_standby_slots").Scan(&raw); err != nil {
+		return // not fatal: this is a diagnostic, not a dependency
+	}
+	if strings.TrimSpace(raw) == "" {
+		return
+	}
+	var missing []string
+	for _, name := range strings.Split(raw, ",") {
+		if name = strings.TrimSpace(name); name == "" {
+			continue
+		}
+		var n int
+		if err := conn.QueryRow(ctx,
+			"SELECT count(*) FROM pg_replication_slots WHERE slot_name=$1", name).Scan(&n); err != nil {
+			return
+		}
+		if n == 0 {
+			missing = append(missing, name)
+		}
+	}
+	if len(missing) == 0 {
+		return
+	}
+	log.Warn("the primary holds logical decoding back for a slot that does not exist; "+
+		"this mirror will connect, pass readiness and then never advance",
+		"synchronized_standby_slots", raw,
+		"missing", missing,
+		"slot", slot,
+		"fix", "on the primary: ALTER SYSTEM SET synchronized_standby_slots = '' (or to slots that exist), then SELECT pg_reload_conf()")
+}
+
 // runMirror owns one connected lifetime: bootstrap or resume, then stream until
 // something breaks. Returning an error is how it asks the supervisor to retry.
 func runMirror(ctx context.Context, log *slog.Logger, o options, h *health.Health) error {
@@ -330,6 +382,10 @@ func runMirror(ctx context.Context, log *slog.Logger, o options, h *health.Healt
 		return fmt.Errorf("connect to primary: %w", err)
 	}
 	defer conn.Close(ctx)
+
+	// Before anything else, because everything after it succeeds either way and
+	// the failure it names is silent.
+	warnStaleSyncSlots(ctx, conn, o.slot, log)
 
 	if err := ddl.Setup(ctx, conn); err != nil {
 		return fmt.Errorf("ddl setup: %w", err)

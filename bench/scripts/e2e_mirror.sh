@@ -25,6 +25,7 @@ MIRROR=$BASE/e2e-mirror
 GO=$(cd "$(dirname "$0")/../../go" && pwd)
 source "$(dirname "$0")/lib_dropdb.sh"
 source "$(dirname "$0")/lib_lsn.sh"
+source "$(dirname "$0")/lib_syncslots.sh"
 HEALTH=127.0.0.1:9199
 DB=app
 FAIL=0
@@ -34,7 +35,16 @@ bad()  { printf 'FAIL: %s\n' "$*"; FAIL=1; }
 skip() { printf '\nINCOMPLETE — section skipped, which is NOT a pass: %s\n' "$*"; exit 2; }
 psq()  { su postgres -c "$PG/psql -h /tmp -p $1 -U postgres -d ${3:-$DB} -Atc \"$2\""; }
 
-cleanup() { pkill -x qs-mirror 2>/dev/null; return 0; }
+cleanup() {
+  pkill -x qs-mirror 2>/dev/null
+  # This script sets synchronized_standby_slots on the primary, and ALTER SYSTEM
+  # outlives the process. Leaving it set pointed every later run at a slot only
+  # this script creates, which stalls a failover slot silently — see
+  # lib_syncslots.sh. Both servers, because e2e promotes the standby.
+  qs_clear_sync_slots 5443
+  qs_clear_sync_slots 5444
+  return 0
+}
 trap cleanup EXIT
 
 # start_sidecar <logfile> <tables> — the sidecar as the plugin launches it.

@@ -44,7 +44,9 @@ bad()  { printf '  FAIL: %s\n' "$*"; FAIL=1; }
 skip() { printf '\nINCOMPLETE — skipped, which is NOT a pass: %s\n' "$*"; exit 2; }
 psq()  { su postgres -c "$PG/psql -h /tmp -p $1 -U postgres -d ${3:-$DB} -Atc \"$2\""; }
 
-cleanup() { pkill -x qs-mirror 2>/dev/null; return 0; }
+# qs_clear_sync_slots: ALTER SYSTEM outlives this run, and a leftover entry
+# stalls the NEXT script's failover slot silently. See lib_syncslots.sh.
+cleanup() { pkill -x qs-mirror 2>/dev/null; qs_clear_sync_slots 5443; return 0; }
 trap cleanup EXIT
 
 # ---- reclaim first, THEN size -----------------------------------------------
