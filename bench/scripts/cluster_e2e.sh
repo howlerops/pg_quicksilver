@@ -258,18 +258,42 @@ kubectl -n "$NS" patch cluster "$CLUSTER" --type merge -p \
   '{"spec":{"plugins":[{"name":"quicksilver.howlerops.io","parameters":{"tables":"public.events","mode":"takeover","acknowledgeOLTPRegression":"true","freshnessSLO":"1s"}}]}}' >/dev/null \
   || bad "the Cluster would not accept mode: takeover with the acknowledgement"
 
-left=0
-for _ in $(seq 60); do
+# "The endpoint emptied" is NOT the assertion, though it was the first one
+# written. Switching to takeover ADDS the readiness probe, which changes the Pod
+# spec, which makes CNPG roll the instances — and -ro empties during any
+# rollout. That check would have reported "mirror freshness gates serving" while
+# observing nothing but Pods restarting.
+#
+# The state below cannot be produced by a rollout. A Pod that is Running, whose
+# POSTGRES container is ready, whose MIRROR container is not, and which is
+# therefore absent from -ro, is the freshness probe doing precisely the job
+# docs/33 describes: PostgreSQL is fine, the mirror is behind, and the node is
+# out of service because of the mirror.
+gated=0
+for _ in $(seq 90); do
   eps=$(kubectl -n "$NS" get endpoints "$CLUSTER-ro" -o jsonpath='{.subsets[*].addresses[*].ip}' 2>/dev/null)
-  n=$(printf '%s' "$eps" | wc -w)
-  if [ "$n" = "0" ]; then left=1; break; fi
+  for pod in $(kubectl -n "$NS" get pods -l "$INSTANCES" -o name 2>/dev/null); do
+    phase=$(kubectl -n "$NS" get "$pod" -o jsonpath='{.status.phase}' 2>/dev/null)
+    pgready=$(kubectl -n "$NS" get "$pod" -o jsonpath='{.status.containerStatuses[?(@.name=="postgres")].ready}' 2>/dev/null)
+    mready=$(kubectl -n "$NS" get "$pod" -o jsonpath='{.status.initContainerStatuses[?(@.name=="quicksilver-mirror")].ready}' 2>/dev/null)
+    ip=$(kubectl -n "$NS" get "$pod" -o jsonpath='{.status.podIP}' 2>/dev/null)
+    if [ "$phase" = "Running" ] && [ "$pgready" = "true" ] && [ "$mready" = "false" ] \
+       && [ -n "$ip" ] && ! printf '%s' "$eps" | tr ' ' '\n' | grep -qx "$ip"; then
+      gated=1
+      printf '  %s: postgres ready, mirror NOT ready, and absent from %s-ro\n' \
+        "${pod#pod/}" "$CLUSTER"
+      break 2
+    fi
+  done
   sleep 10
 done
-if [ "$left" = "1" ]; then
-  ok "the -ro endpoint emptied: mirror freshness gates serving, as docs/33 says"
+if [ "$gated" = "1" ]; then
+  ok "mirror freshness gated the endpoint, with PostgreSQL itself healthy — docs/33"
 else
   kubectl -n "$NS" get endpoints "$CLUSTER-ro" -o wide 2>/dev/null
-  bad "the -ro endpoint never emptied with freshnessSLO=1s; the probe is not gating"
+  kubectl -n "$NS" get pods -l "$INSTANCES" -o jsonpath=\
+'{range .items[*]}{.metadata.name} phase={.status.phase} ip={.status.podIP}{"\n"}{range .status.initContainerStatuses[*]}  init/{.name} ready={.ready}{"\n"}{end}{range .status.containerStatuses[*]}  {.name} ready={.ready}{"\n"}{end}{end}' 2>/dev/null
+  bad "never saw a Pod with PostgreSQL ready, the mirror not ready, and out of -ro"
 fi
 
 fi
