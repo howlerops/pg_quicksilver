@@ -289,3 +289,11 @@ FULL=1 bash bench/scripts/suite.sh      # + the workload matrix and serving
 A section that cannot run exits **2 as INCOMPLETE** and never reports success —
 a benchmark that silently measures nothing is the failure mode this repository
 has hit most often, and the exit code exists to make it loud.
+
+The full suite is green end to end: **14 passed, 0 failed, 0 incomplete**
+([`suite_full.txt`](bench/results/suite_full.txt)). That took three harness
+fixes to reach, all of one shape — state that outlives a run: a leftover
+`synchronized_standby_slots` entry ([docs/34](docs/34-a-setting-that-outlived-its-run.md)),
+a standby `e2e` had promoted and `setup_cluster.sh` then accepted as a standby,
+and container storage filling the disk until PostgreSQL reported it four levels
+down as "primary would not start".

@@ -1,0 +1,29 @@
+# Full suite, FULL=1, all sections green.
+#
+# host: 4 vCPU, 16481980 kB
+# 17.11 (Ubuntu 17.11-1.pgdg24.04+2)
+#
+# This is the first end-to-end green run. Getting here took three harness
+# fixes, all of the same shape — state that outlives a run: a leftover
+# synchronized_standby_slots entry (docs/34), a standby e2e had promoted,
+# and container storage filling the disk.
+
+========================================
+  PASS        cluster (0s)
+  PASS        unit (21s)
+  PASS        race (106s)
+  PASS        vet (0s)
+  PASS        flags_off (18s)
+  PASS        cnpgi (11s)
+  PASS        manifests (2s)
+  PASS        rendering (16s)
+  PASS        serving (7s)
+  PASS        images (129s)
+  PASS        matrix (240s)
+  PASS        bootstrap (33s)
+  PASS        pruning (2s)
+  PASS        e2e (74s)
+
+  14 passed, 0 failed, 0 incomplete
+
+PASS
