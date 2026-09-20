@@ -16,6 +16,12 @@ spec:
         {{- include "quicksilver.selectorLabels" . | nindent 8 }}
     spec:
       serviceAccountName: {{ include "quicksilver.name" . }}
+      {{- with .Values.image.pullSecrets }}
+      # Only pulls the PLUGIN image, in the operator's namespace. The mirror
+      # image is pulled by instance Pods in the CLUSTER's namespace, which this
+      # chart does not install into — see the Cluster's spec.imagePullSecrets.
+      imagePullSecrets: {{- toYaml . | nindent 8 }}
+      {{- end }}
       securityContext:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
       containers:

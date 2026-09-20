@@ -50,6 +50,19 @@ The chart is pushed as an OCI artifact, so there is no chart repository to add.
 From a checkout, `helm install quicksilver charts/quicksilver` does the same
 thing against the working tree.
 
+**That command fails today with a 401**, because GHCR packages inherit the
+repository's visibility and this repository is private. Either make the three
+packages public or supply credentials — and note that the fix has two halves in
+two namespaces, because the plugin image is pulled by this chart's Deployment in
+the operator's namespace while the mirror image is pulled by instance Pods in
+the *Cluster's* namespace. The second half is `spec.imagePullSecrets` on the
+Cluster and no amount of chart configuration reaches it. Both are spelled out in
+[the chart README](../charts/quicksilver/README.md#the-published-packages-are-private-and-that-breaks-the-pull-in-two-places).
+
+It is worth knowing the shape of the failure: the plugin installs and runs
+perfectly, and the mirror turns up as `ImagePullBackOff` on an instance Pod much
+later, looking like a Cluster problem rather than a registry one.
+
 The whole of the plugin's registration is a **Service**. There is no CRD and no
 operator configuration to edit: CloudNativePG lists Services in its own
 namespace and treats any carrying the `cnpg.io/pluginName` label as a plugin
@@ -236,13 +249,16 @@ other direction.
 - **The images — now published, but never pulled.** The `images` job in
   [`ci.yml`](../.github/workflows/ci.yml) builds both targets from
   `deploy/Dockerfile` on every commit, so a Dockerfile that stops building is
-  caught on the commit that broke it. `release.yml` has now run to completion
-  once and pushed `pg_quicksilver-plugin:0.0.1`, `pg_quicksilver-mirror:0.0.1`
-  (both also `:latest`) and `oci://ghcr.io/howlerops/charts/quicksilver:0.0.1`.
-  Two things that publish does **not** establish: it was a `workflow_dispatch`
-  on `main`, so the `tags: ["v*"]` path the release notes assume still has zero
-  runs; and nothing has pulled either image, so "builds" and "runs from a
-  registry" remain different claims.
+  caught on the commit that broke it. `release.yml` has now published twice —
+  `0.0.1` by `workflow_dispatch`, then `0.0.2` from a pushed `v0.0.2` tag, which
+  was the first run of the `tags: ["v*"]` trigger the whole workflow is built
+  around. Both images and the chart are in ghcr at both versions.
+  What publishing does **not** establish is that anything can pull them, and
+  today nothing can: the packages are private, an anonymous pull is 401, and no
+  image of this project has been run from a registry by anything. "Builds",
+  "pushes" and "runs from a registry" are three claims and only the first two
+  are checked. The credentials needed to close the third are in the chart README;
+  the check itself needs a cluster.
 - **`mode: takeover` — still not implemented.** The validation gate is tested;
   the service retarget it gates does not exist.
 - **Serving — verified through DuckDB, not yet over the wire.** The mirror

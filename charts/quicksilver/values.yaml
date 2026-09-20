@@ -8,6 +8,15 @@ image:
   plugin: ghcr.io/howlerops/pg_quicksilver-plugin:0.0.2
   mirror: ghcr.io/howlerops/pg_quicksilver-mirror:0.0.2
   pullPolicy: IfNotPresent
+  # Secrets for pulling the PLUGIN image, in operatorNamespace. Needed while the
+  # ghcr packages are private, which they are by default because the repository
+  # is: an anonymous pull gets 401 before it ever reaches the manifest.
+  #
+  # This covers HALF the problem. The mirror image is pulled by instance Pods in
+  # the Cluster's namespace, which this chart never touches — that half is
+  # spec.imagePullSecrets on the Cluster. See the chart README.
+  pullSecrets: []
+  #  - name: ghcr
 
 replicaCount: 1
 

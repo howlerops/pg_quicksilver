@@ -15,6 +15,75 @@ or from a checkout, which is what the tests and the e2e scripts use:
 helm install quicksilver charts/quicksilver --namespace cnpg-system
 ```
 
+### The published packages are private, and that breaks the pull in two places
+
+GHCR packages inherit the repository's visibility, and this repository is
+private. An anonymous pull is refused before it reaches a manifest:
+
+```
+$ helm pull oci://ghcr.io/howlerops/charts/quicksilver --version 0.0.2
+Error: failed to authorize: failed to fetch anonymous token:
+unexpected status ... 401 Unauthorized
+```
+
+Two images are pulled, **in two different namespaces**, and fixing one does not
+fix the other. This is the part that will cost an afternoon if it is not said
+out loud: the sidecar failure appears as `ImagePullBackOff` on an instance Pod
+long after the plugin installed cleanly, so it does not look related to the
+chart at all.
+
+| image | pulled by | in namespace | fixed by |
+|---|---|---|---|
+| `-plugin` | this chart's Deployment | `operatorNamespace` | `image.pullSecrets` below |
+| `-mirror` | each instance Pod | the **Cluster's** namespace | `spec.imagePullSecrets` on the Cluster |
+
+Either make the packages public, or create the secret in both namespaces.
+
+**Public** — in GitHub, for each of the three packages (`…-plugin`, `…-mirror`,
+`charts/quicksilver`): Package settings → Danger Zone → Change visibility →
+Public. Then nothing below is needed. Note that this publishes the images to
+anyone, while the source stays private.
+
+**Or, a pull secret in each namespace:**
+
+```
+kubectl create secret docker-registry ghcr \
+  --docker-server=ghcr.io --docker-username=<user> --docker-password=<PAT> \
+  --namespace cnpg-system        # for the plugin
+
+kubectl create secret docker-registry ghcr \
+  --docker-server=ghcr.io --docker-username=<user> --docker-password=<PAT> \
+  --namespace <cluster-namespace>   # for the mirror sidecar
+```
+
+```yaml
+# values.yaml — the plugin half
+image:
+  pullSecrets:
+    - name: ghcr
+```
+
+```yaml
+# the Cluster — the sidecar half. CloudNativePG puts these on instance Pods,
+# and the injected sidecar shares that Pod, so this is what the mirror uses.
+spec:
+  imagePullSecrets:
+    - name: ghcr
+  plugins:
+    - name: quicksilver.howlerops.io
+```
+
+`helm pull` and `helm install` from the OCI URL need the same credentials:
+
+```
+helm registry login ghcr.io -u <user> --password-stdin <<< "$PAT"
+```
+
+The plugin does **not** inject `imagePullSecrets` into the Pod it builds, on
+purpose. It cannot know whether a Secret of that name exists in the Cluster's
+namespace, and naming one that does not produces the same `ImagePullBackOff`
+with a more confusing cause. The Cluster declares its own credentials.
+
 The chart installs into the **operator's** namespace, not the Cluster's. That is
 not a preference: CloudNativePG discovers plugins by listing Services in its own
 namespace, so a plugin installed elsewhere is never found and nothing in either
