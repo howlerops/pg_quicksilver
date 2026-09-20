@@ -85,6 +85,23 @@ present in the binary, accepted in the config at the path `containerd config
 default` prints it, and `crictl info` still reports `restrictOOMScoreAdj:
 false`.
 
+**Re-confirmed, and narrowed.** A later attempt reproduced this exactly, and
+two things are worth adding for whoever tries again:
+
+- It is specifically the **CRI pod sandbox**. k3s's own containerd runs a
+  container fine — `ctr run ... alpine echo` prints its output — and `podman
+  run` works throughout. Neither sets `oom_score_adj` to −998; the kubelet's
+  sandbox does. So "containers do not work here" is wrong, and would send the
+  next attempt down the wrong path: containers work, *pod sandboxes* do not.
+- Before reaching that wall there are two others, both fixable and neither the
+  real one. A current kubelet refuses to start at all on this host because it
+  is **cgroup v1** (`kubelet is configured to not run on a host using cgroup
+  v1`), so a retry needs Kubernetes ≤ 1.29 or a cgroup v2 host. And the kubelet
+  then taints the node `disk-pressure` at the default `nodefs.available<10%`,
+  which on a large disk with a small free fraction leaves every Pod Pending for
+  a reason that looks like scheduling. Clearing both gets to a `Ready` node with
+  no taints, a working scheduler — and sandbox creation still failing.
+
 So the control plane runs and the pods do not. What that leaves is enough,
 because **a plugin's whole job happens while the operator builds a pod spec**:
 
@@ -179,3 +196,27 @@ a missing file.
 3. **Put the plugin and the sidecar in the same test as a real PostgreSQL.**
    `e2e_mirror.sh` and `operator_e2e.sh` each cover a half, and nothing yet
    covers the join.
+
+
+---
+
+## Where the rest of it gets checked
+
+Everything above is what a machine without `CAP_SYS_RESOURCE` can establish, and
+it stops exactly at the point where a Pod would start. The three claims on the
+other side of that line —
+
+- a Pod **pulls** the published images from ghcr,
+- a `sidecarImage` change **rolls** the instances,
+- a stale mirror **removes** a replica from the `-ro` endpoints,
+
+— are [`bench/scripts/cluster_e2e.sh`](../bench/scripts/cluster_e2e.sh), which
+asserts all three against any cluster you point `KUBECONFIG` at, and
+[`.github/workflows/cluster-e2e.yml`](../.github/workflows/cluster-e2e.yml),
+which builds one with kind on a GitHub-hosted runner and runs it there. That
+runner has cgroup v2 and a full capability set, so the thing that is impossible
+here is ordinary there.
+
+Its first step prints `CAP_SYS_RESOURCE: present` or `ABSENT` before anything
+else, because when it fails the first question will be whether the host could
+have done it at all.

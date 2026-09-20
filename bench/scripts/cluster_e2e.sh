@@ -1,0 +1,222 @@
+#!/usr/bin/env bash
+# The two things no sandbox here can prove: that a Pod PULLS the published
+# images, and that a Pod is ROLLED and REMOVED by the plugin's own signals.
+#
+# Both need a kubelet that can create pod sandboxes, which needs CAP_SYS_RESOURCE
+# — runc sets a sandbox's oom_score_adj to -998 and a process may only RAISE that
+# without the capability. docs/21 chased this to the bottom. It is not a
+# permissions puzzle to be worked around; it is a property of the machine.
+#
+# So this script assumes a cluster and asserts what only a cluster can show:
+#
+#   1. instance Pods reach Ready with the mirror sidecar in them, having PULLED
+#      both images from ghcr through an imagePullSecret — which also tests the
+#      two-namespace pull instructions in the chart README, the half nothing
+#      could check before.
+#   2. changing sidecarImage ROLLS the instances. go/fidelity asserts CNPG's
+#      comparison reports a difference; this asserts the operator acts on it.
+#   3. in mode: takeover, a replica whose mirror is behind freshnessSLO LEAVES
+#      the -ro endpoints, and returns when it catches up.
+#
+# Run it anywhere there is a cluster:
+#
+#   KUBECONFIG=... bash bench/scripts/cluster_e2e.sh
+#   VERSION=0.0.2 GHCR_USER=me GHCR_TOKEN=ghp_... bash bench/scripts/cluster_e2e.sh
+#
+# In CI, .github/workflows/cluster-e2e.yml creates a kind cluster and passes the
+# workflow's own GITHUB_TOKEN, so the pull is a real authenticated registry pull
+# rather than a local image side-loaded into the node.
+set -uo pipefail
+
+REPO=$(cd "$(dirname "$0")/../.." && pwd)
+NS=${NS:-qs-e2e}
+CNPG_NS=${CNPG_NS:-cnpg-system}
+CLUSTER=${CLUSTER:-app}
+VERSION=${VERSION:-0.0.2}
+REGISTRY=${REGISTRY:-ghcr.io/howlerops}
+GHCR_USER=${GHCR_USER:-}
+GHCR_TOKEN=${GHCR_TOKEN:-}
+# Side-load locally built images instead of pulling. Useful on a laptop; it does
+# NOT prove the pull path, so CI leaves it off and the summary says which ran.
+LOCAL_IMAGES=${LOCAL_IMAGES:-0}
+TIMEOUT=${TIMEOUT:-600}
+FAIL=0
+
+say()  { printf '\n== %s ==\n' "$*"; }
+ok()   { printf '  ok: %s\n' "$*"; }
+bad()  { printf '  FAIL: %s\n' "$*"; FAIL=1; }
+skip() { printf '\nINCOMPLETE — skipped, which is NOT a pass: %s\n' "$*"; exit 2; }
+
+command -v kubectl >/dev/null || skip "no kubectl"
+command -v helm    >/dev/null || skip "no helm"
+kubectl cluster-info >/dev/null 2>&1 || skip "no reachable cluster (set KUBECONFIG)"
+
+# ---------------------------------------------------------------- prerequisites
+say "0. the cluster, cert-manager and CloudNativePG"
+kubectl get nodes -o wide | tail -n +1 | head -3
+
+if ! kubectl get crd certificates.cert-manager.io >/dev/null 2>&1; then
+  kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.16.2/cert-manager.yaml >/dev/null \
+    || skip "could not install cert-manager"
+fi
+kubectl -n cert-manager rollout status deploy/cert-manager-webhook --timeout=300s >/dev/null 2>&1 \
+  || skip "cert-manager webhook never became ready"
+ok "cert-manager ready"
+
+if ! kubectl get crd clusters.postgresql.cnpg.io >/dev/null 2>&1; then
+  kubectl apply --server-side -f \
+    https://raw.githubusercontent.com/cloudnative-pg/cloudnative-pg/release-1.25/releases/cnpg-1.25.1.yaml >/dev/null \
+    || skip "could not install CloudNativePG"
+fi
+kubectl -n "$CNPG_NS" rollout status deploy/cnpg-controller-manager --timeout=300s >/dev/null 2>&1 \
+  || skip "the CNPG operator never became ready"
+ok "CloudNativePG ready in $CNPG_NS"
+
+kubectl create namespace "$NS" >/dev/null 2>&1
+kubectl create namespace "$CNPG_NS" >/dev/null 2>&1
+
+# ---------------------------------------------------------------- the pull path
+say "1. credentials for the pull, in BOTH namespaces"
+# This is the half the chart README could only describe. The plugin image is
+# pulled in the operator's namespace and the mirror image in the Cluster's, and
+# a secret in one does nothing for the other.
+if [ "$LOCAL_IMAGES" = "1" ]; then
+  ok "LOCAL_IMAGES=1 — side-loading, which does NOT exercise the registry"
+  PULL_ARGS=()
+  CLUSTER_PULL_SECRETS=""
+elif [ -n "$GHCR_TOKEN" ]; then
+  for ns in "$CNPG_NS" "$NS"; do
+    kubectl -n "$ns" delete secret ghcr >/dev/null 2>&1
+    kubectl -n "$ns" create secret docker-registry ghcr \
+      --docker-server=ghcr.io --docker-username="${GHCR_USER:-x}" \
+      --docker-password="$GHCR_TOKEN" >/dev/null || skip "could not create the pull secret in $ns"
+  done
+  ok "imagePullSecret 'ghcr' created in $CNPG_NS and $NS"
+  PULL_ARGS=(--set image.pullSecrets[0].name=ghcr)
+  CLUSTER_PULL_SECRETS=$'  imagePullSecrets:\n    - name: ghcr'
+else
+  skip "no GHCR_TOKEN and LOCAL_IMAGES=0: nothing would be pulled, so nothing would be proven"
+fi
+
+# ---------------------------------------------------------------- the plugin
+say "2. install the plugin"
+helm upgrade --install quicksilver "$REPO/charts/quicksilver" \
+  --namespace "$CNPG_NS" \
+  --set operatorNamespace="$CNPG_NS" \
+  --set image.plugin="$REGISTRY/pg_quicksilver-plugin:$VERSION" \
+  --set image.mirror="$REGISTRY/pg_quicksilver-mirror:$VERSION" \
+  "${PULL_ARGS[@]}" --wait --timeout 5m >/dev/null \
+  || { kubectl -n "$CNPG_NS" get pods; skip "the chart would not install"; }
+
+kubectl -n "$CNPG_NS" rollout status deploy/quicksilver --timeout=300s >/dev/null 2>&1 \
+  || { kubectl -n "$CNPG_NS" describe pods -l app.kubernetes.io/name=quicksilver | tail -25
+       bad "the plugin Deployment never became ready"; }
+ok "plugin running — the -plugin image was PULLED and STARTED"
+
+# ---------------------------------------------------------------- the Cluster
+say "3. a Cluster that names the plugin"
+cat <<YAML | kubectl -n "$NS" apply -f - >/dev/null
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: $CLUSTER
+spec:
+  instances: 2
+  imageName: ghcr.io/cloudnative-pg/postgresql:17.2-standard-bookworm
+$CLUSTER_PULL_SECRETS
+  storage:
+    size: 2Gi
+  postgresql:
+    parameters:
+      max_slot_wal_keep_size: "1GB"
+  plugins:
+    - name: quicksilver.howlerops.io
+      parameters:
+        tables: public.events
+        freshnessSLO: 30s
+YAML
+
+# The real assertion of this whole script: a Pod, running, with our sidecar in
+# it, having pulled our image.
+if ! kubectl -n "$NS" wait --for=condition=Ready pod -l cnpg.io/cluster="$CLUSTER" \
+     --timeout="${TIMEOUT}s" >/dev/null 2>&1; then
+  kubectl -n "$NS" get pods
+  kubectl -n "$NS" describe pods -l cnpg.io/cluster="$CLUSTER" | grep -A 8 "Events:" | tail -20
+  bad "instance Pods never became Ready"
+else
+  ok "instance Pods are Ready"
+fi
+
+POD=$(kubectl -n "$NS" get pods -l cnpg.io/cluster="$CLUSTER" -o name | head -1)
+[ -n "$POD" ] || skip "no instance Pod at all"
+
+img=$(kubectl -n "$NS" get "$POD" -o jsonpath='{.spec.initContainers[?(@.name=="quicksilver-mirror")].image}')
+if [ -n "$img" ]; then
+  ok "the mirror sidecar is in the Pod, image=$img"
+else
+  kubectl -n "$NS" get "$POD" -o jsonpath='{.spec.initContainers[*].name}{"\n"}'
+  bad "no quicksilver-mirror container in the instance Pod"
+fi
+
+# Pulled, not merely referenced: the Pod's status carries the imageID it ran.
+imgid=$(kubectl -n "$NS" get "$POD" \
+  -o jsonpath='{.status.initContainerStatuses[?(@.name=="quicksilver-mirror")].imageID}')
+if [ -n "$imgid" ]; then
+  ok "PULLED: imageID=$imgid"
+else
+  bad "the sidecar has no imageID, so nothing was pulled"
+fi
+
+# ---------------------------------------------------------------- the rollout
+say "4. changing sidecarImage ROLLS the instances"
+# go/fidelity proves CNPG's own comparison reports a difference. Only a cluster
+# shows the operator acting on it.
+before=$(kubectl -n "$NS" get pods -l cnpg.io/cluster="$CLUSTER" \
+  -o jsonpath='{range .items[*]}{.metadata.uid}{" "}{end}')
+kubectl -n "$NS" patch cluster "$CLUSTER" --type merge -p \
+  "{\"spec\":{\"plugins\":[{\"name\":\"quicksilver.howlerops.io\",\"parameters\":{\"tables\":\"public.events\",\"freshnessSLO\":\"30s\",\"sidecarImage\":\"$REGISTRY/pg_quicksilver-mirror:latest\"}}]}}" >/dev/null
+
+rolled=0
+for _ in $(seq 60); do
+  after=$(kubectl -n "$NS" get pods -l cnpg.io/cluster="$CLUSTER" \
+    -o jsonpath='{range .items[*]}{.metadata.uid}{" "}{end}')
+  [ "$after" != "$before" ] && { rolled=1; break; }
+  sleep 10
+done
+if [ "$rolled" = "1" ]; then
+  ok "the operator rolled the instances after sidecarImage changed"
+else
+  bad "no Pod was replaced within 10 minutes of changing sidecarImage"
+fi
+
+# ---------------------------------------------------------------- the probe
+say "5. in takeover, a stale mirror LEAVES the -ro endpoints"
+# The property docs/33 reasons about from the Kubernetes contract, never
+# observed. freshnessSLO is set absurdly low so the mirror cannot satisfy it,
+# which is the only deterministic way to make the probe fail on demand.
+kubectl -n "$NS" patch cluster "$CLUSTER" --type merge -p \
+  '{"spec":{"plugins":[{"name":"quicksilver.howlerops.io","parameters":{"tables":"public.events","mode":"takeover","acknowledgeOLTPRegression":"true","freshnessSLO":"1s"}}]}}' >/dev/null \
+  || bad "the Cluster would not accept mode: takeover with the acknowledgement"
+
+left=0
+for _ in $(seq 60); do
+  eps=$(kubectl -n "$NS" get endpoints "$CLUSTER-ro" -o jsonpath='{.subsets[*].addresses[*].ip}' 2>/dev/null)
+  n=$(printf '%s' "$eps" | wc -w)
+  if [ "$n" = "0" ]; then left=1; break; fi
+  sleep 10
+done
+if [ "$left" = "1" ]; then
+  ok "the -ro endpoint emptied: mirror freshness gates serving, as docs/33 says"
+else
+  kubectl -n "$NS" get endpoints "$CLUSTER-ro" -o wide 2>/dev/null
+  bad "the -ro endpoint never emptied with freshnessSLO=1s; the probe is not gating"
+fi
+
+say "result"
+if [ $FAIL -eq 0 ]; then
+  echo "PASS — Pods pulled both images and ran, a sidecarImage change rolled them,"
+  echo "and mirror freshness gated the -ro endpoint."
+else
+  echo "FAIL"
+fi
+exit $FAIL

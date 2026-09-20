@@ -1,0 +1,129 @@
+# The two claims no sandbox in this project has ever been able to make.
+#
+# Everything else runs where the code is developed. These two cannot:
+#
+#   - a Pod PULLING the published images from ghcr. That needs a registry, a
+#     credential, and a kubelet.
+#   - a Pod being ROLLED, and a Pod being REMOVED from a Service because the
+#     mirror's readiness probe failed. That needs a kubelet that can create pod
+#     sandboxes, which needs CAP_SYS_RESOURCE: runc sets a sandbox's
+#     oom_score_adj to -998, and a process may only RAISE it without that
+#     capability. docs/21 has the full diagnosis.
+#
+# A GitHub-hosted runner has both — cgroup v2, full capabilities, and a
+# GITHUB_TOKEN that can read this repository's packages. So the things that are
+# impossible in development are ordinary here, and that is the whole reason this
+# workflow exists.
+#
+# It is NOT on push. It builds a cluster, installs two operators and pulls
+# images; that is minutes of runner time and it is not what an ordinary commit
+# needs. It runs on a release, on demand, and weekly so that the answer does not
+# go stale between releases.
+
+name: cluster-e2e
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Published version to pull, e.g. 0.0.2"
+        required: true
+        default: "0.0.2"
+  workflow_run:
+    workflows: ["release"]
+    types: [completed]
+  schedule:
+    # Sunday 04:00 UTC. A weekly run catches the case this whole workflow is
+    # about: something that works today and quietly stops working later,
+    # because nothing in the ordinary loop touches a registry or a kubelet.
+    - cron: "0 4 * * 0"
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  cluster:
+    name: pull, run, roll and gate, on a real cluster
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      # Prove the host can do what the development sandbox cannot, and say so in
+      # the log. When this workflow fails, the first question will be whether
+      # the runner was capable, and this answers it before anything else runs.
+      - name: the runner can create pod sandboxes
+        run: |
+          echo "cgroup: $(stat -fc %T /sys/fs/cgroup)"
+          awk '/CapBnd/ {print "CapBnd: " $2}' /proc/self/status
+          # bit 24 is CAP_SYS_RESOURCE; on the dev sandbox it is clear and no
+          # pod sandbox can be created at all.
+          python3 - <<'PY'
+          bnd = int(open('/proc/self/status').read().split('CapBnd:')[1].split()[0], 16)
+          print("CAP_SYS_RESOURCE:", "present" if bnd >> 24 & 1 else "ABSENT")
+          PY
+
+      - uses: helm/kind-action@v1
+        with:
+          cluster_name: qs
+          wait: 120s
+
+      - name: the version to pull
+        id: v
+        run: |
+          if [ -n "${{ github.event.inputs.version }}" ]; then
+            v="${{ github.event.inputs.version }}"
+          else
+            # Triggered by a release or the schedule: take the newest chart
+            # version the registry actually holds, rather than guessing.
+            v=$(helm show chart oci://ghcr.io/${{ github.repository_owner }}/charts/quicksilver \
+                  2>/dev/null | awk '/^version:/{print $2}')
+          fi
+          v="${v#v}"
+          [ -n "$v" ] || { echo "::error::could not determine a version to pull"; exit 1; }
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          echo "pulling $v"
+
+      # The pull, on its own, before any cluster is involved. If this fails the
+      # cluster test below would fail for a reason that looks like Kubernetes,
+      # so it is separated out.
+      - name: the published artifacts can be PULLED
+        env:
+          V: ${{ steps.v.outputs.version }}
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login ghcr.io \
+            -u "${{ github.actor }}" --password-stdin
+          helm pull "oci://ghcr.io/${{ github.repository_owner }}/charts/quicksilver" --version "$V"
+          ls -la quicksilver-*.tgz
+
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io \
+            -u "${{ github.actor }}" --password-stdin
+          docker pull "ghcr.io/${{ github.repository }}-plugin:$V"
+          docker pull "ghcr.io/${{ github.repository }}-mirror:$V"
+
+          # Pulled AND runnable. The mirror image ships qs-verify; if the image
+          # is broken this is where it shows, not three steps later.
+          docker run --rm --entrypoint /qs-verify \
+            "ghcr.io/${{ github.repository }}-mirror:$V" -h 2>&1 | head -3 || true
+          docker image inspect "ghcr.io/${{ github.repository }}-mirror:$V" \
+            --format 'mirror runs as {{.Config.User}}'
+          docker image inspect "ghcr.io/${{ github.repository }}-plugin:$V" \
+            --format 'plugin runs as {{.Config.User}}'
+
+      - name: pull, run, roll and gate
+        env:
+          KUBECONFIG: /home/runner/.kube/config
+          VERSION: ${{ steps.v.outputs.version }}
+          REGISTRY: ghcr.io/${{ github.repository_owner }}
+          GHCR_USER: ${{ github.actor }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: bash bench/scripts/cluster_e2e.sh
+
+      - name: what the cluster looked like, if it did not work
+        if: failure()
+        run: |
+          kubectl get pods -A -o wide || true
+          kubectl -n qs-e2e describe cluster app || true
+          kubectl -n cnpg-system logs deploy/quicksilver --tail=100 || true
+          kubectl -n qs-e2e logs -l cnpg.io/cluster=app -c quicksilver-mirror --tail=100 || true

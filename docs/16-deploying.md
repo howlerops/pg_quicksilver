@@ -251,43 +251,31 @@ other direction.
   no kubelet and Pods stay Pending. The API server, CRDs, operator and webhooks
   are real; everything up to and including the Pod **spec** the operator builds
   is real, which is where a plugin lives. What runs inside the Pod is not.
-- **Live reconcile behaviour — the rollout decision is now tested; the rollout
-  itself is not.** `lifecycle.go` carries a long argument that declaring
-  `EVALUATE` is not optional: the evaluated spec is what lands in the pod-spec
-  annotation, `checkPodSpecIsOutdated` compares that annotation against a fresh
-  evaluation, and a plugin that skips `EVALUATE` is absent from *both* sides, so
-  changing `sidecarImage` would never roll anything. That was reasoned entirely
-  from the operator's source. It is now driven through CloudNativePG 1.30's own
-  `specs.ComparePodSpecs`, over Pods built by its own `specs.NewInstance`
-  (`go/fidelity/rollout_test.go`), which answers:
-
-  ```
-  init-containers: container quicksilver-mirror differs in image
-  ```
-
-  with the companion checks that an unchanged Cluster compares *equal* — a plugin
-  that fails this rolls every instance on every reconcile — and that the
-  difference disappears entirely without the hook, which is the failure the
-  comment describes. What is still unobserved is the operator acting on that
-  decision: no Pod has been rolled, because this sandbox has no kubelet
-  ([docs/21](21-against-the-real-operator.md)). The `EVALUATE` bug in docs/17 is
-  the class of thing that reading catches; this closes the half of it that does
-  not need a cluster.
-- **The images — built, published, and now actually run; still never pulled.**
-  The `images` job in [`ci.yml`](../.github/workflows/ci.yml) builds both targets
-  on every commit. `release.yml` has published twice — `0.0.1` by
-  `workflow_dispatch`, then `0.0.2` from a pushed `v0.0.2` tag, which was the
-  first run of the `tags: ["v*"]` trigger the workflow is built around.
-  [`bench/scripts/image_e2e.sh`](../bench/scripts/image_e2e.sh) now *starts* the
-  shipped images rather than the binaries beside them: the mirror image builds a
-  mirror against a live primary and standby, `qs-verify` **from the same image**
-  reports MATCH on identical checksums, the files land owned by `26:26`, and the
-  plugin image serves TLS on its gRPC port.
-  What is still open is narrower than it was, and it is a registry question
-  rather than an image one: **nothing has pulled either image.** The ghcr
-  packages are private, an anonymous pull is 401, and a credentialed pull into a
-  running cluster needs a cluster. So "builds", "pushes", "runs" and "pulls" are
-  four claims and the first three are checked.
+- **Live reconcile behaviour — the decision is tested, the action is not.**
+  `lifecycle.go` argues that declaring `EVALUATE` is not optional, and
+  `go/fidelity/rollout_test.go` now drives CloudNativePG 1.30's own
+  `specs.ComparePodSpecs` over Pods built by its own `specs.NewInstance`, which
+  answers `init-containers: container quicksilver-mirror differs in image` and
+  compares an unchanged Cluster as equal. What no test here can show is the
+  operator *acting* on that: no Pod has been rolled, and no Pod has been removed
+  from a Service by the mirror's readiness probe — the property
+  [docs/33](33-the-probe-that-gated-the-wrong-thing.md) reasons about from the
+  Kubernetes contract. Both are steps 4 and 5 of
+  [`cluster_e2e.sh`](../bench/scripts/cluster_e2e.sh), which needs a cluster and
+  **has not been run yet**.
+- **The images — built, published, run locally; pulled by a Pod only when
+  [`cluster-e2e`](../.github/workflows/cluster-e2e.yml) runs.** CI builds both
+  targets on every commit and `release.yml` has published twice.
+  [`image_e2e.sh`](../bench/scripts/image_e2e.sh) starts the shipped images and
+  `qs-verify` from the same image reports MATCH. What none of that touches is a
+  registry: the ghcr packages are private, an anonymous pull is 401, and a
+  credentialed pull into a Pod needs a kubelet this machine cannot provide
+  ([docs/21](21-against-the-real-operator.md)).
+  `cluster-e2e` is that check — it pulls the chart and both images with a real
+  token, then makes a Cluster pull them through an `imagePullSecret` in each of
+  the two namespaces, which is also the first test of the pull instructions in
+  the chart README. **It has not been run yet**, so this line says what exists,
+  not what passed.
 - **`mode: takeover` — implemented, but never observed working.** It is one
   property: mirror freshness gates the `-ro` endpoint. The service retarget the
   original design called for turned out not to be reachable under a sidecar
