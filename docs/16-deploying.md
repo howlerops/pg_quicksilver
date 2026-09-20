@@ -277,13 +277,18 @@ other direction.
   ([docs/33](33-the-probe-that-gated-the-wrong-thing.md)). The probe's presence
   per mode is unit-tested in both directions; a probe actually *failing* and
   removing a Pod from a Service needs a kubelet and has not happened.
-- **Serving — verified through DuckDB, not yet over the wire.** The mirror
-  publishes a SELECT that reconstructs itself from the manifest, deletion
-  vectors and column-partial deltas, and that view is checked for both speed and
-  agreement with the source on every matrix run
-  ([docs/20](20-serving-the-mirror.md)). What is still missing is answering a
-  `SELECT` through *PostgreSQL* — the `pg_duckdb` path in
-  [docs/12](12-s5-serving-path.md), which needs the 58-line patch landed.
+- **Serving — now answered through PostgreSQL 17.** The mirror publishes a
+  SELECT that reconstructs itself from the manifest, deletion vectors and
+  column-partial deltas, and that view is checked for both speed and agreement
+  with the source on every matrix run ([docs/20](20-serving-the-mirror.md)). It
+  is now also answered *through PostgreSQL*, by an unprivileged role holding
+  neither `pg_read_server_files` nor `pg_write_server_files`, against a mirror
+  built by the production sidecar on a standby
+  ([`bench/scripts/serving_pg17.sh`](../bench/scripts/serving_pg17.sh)) — 196,000
+  rows and an identical checksum, with everything outside the mirror directory
+  denied. The caveat is the dependency: this needs `pg_duckdb` plus the
+  `allowed_directories` patch in [`bench/patches/`](../bench/patches/), which is
+  not upstream and not packaged. Without it the section reports INCOMPLETE.
 - **Scale — verified at 23M rows.** The claim here used to be that everything
   ran against tens of thousands of rows and that "the key→position index is
   still a JSON map; it will not survive production volumes". Both halves are

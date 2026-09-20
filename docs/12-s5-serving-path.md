@@ -1,6 +1,8 @@
 # 12 — S5: the serving path
 
-**Status: ✅ resolved by a 58-line patch, prototyped and verified. Not upstreamed.**
+**Status: ✅ resolved by a 58-line patch, and now answered end to end through
+PostgreSQL 17 by [`bench/scripts/serving_pg17.sh`](../bench/scripts/serving_pg17.sh).
+Not upstreamed.**
 
 [Result 7](11-measured-results.md#result-7--s3-rls-holds-but-ordinary-roles-cannot-reach-the-mirror-at-all)
 left Architecture A blocked from both ends:
@@ -138,3 +140,86 @@ only tested with one entry), and a decision on the temp-directory question above
 Until then, Quicksilver ships a patched `pg_duckdb` in its image
 ([docs/07](07-image-strategy.md)) — which the derived-image strategy already accommodates,
 though it does add a maintenance obligation that a pure upstream dependency would not.
+
+
+---
+
+## Answering a SELECT through PostgreSQL, which needed more than the patch
+
+The patch was prototyped against PostgreSQL **16**, and this plugin requires
+**17** ([docs/15](15-pg17-slot-failover.md)). So the serving path had never run
+on the version it ships for. Rebuilding `pg_duckdb` v1.1.1 + the patch against
+17 works unchanged — the patch applies clean, 58 insertions, and confinement
+behaves identically.
+
+What did not work was the mirror's own published view. `qs-query` emits valid
+**DuckDB**, and through `pg_duckdb` that fails twice:
+
+```
+ERROR:  unrecognized configuration parameter "default_null_order"
+ERROR:  column "id" does not exist
+HINT:   ... you need to use the r['colname'] syntax ...
+```
+
+1. `SET default_null_order` is a DuckDB setting. The preamble that makes the
+   DuckDB view *correct* is the thing that stops the PostgreSQL one existing.
+2. Columns inside `read_parquet` are not PostgreSQL columns. `pg_duckdb` returns
+   one `duckdb."row"`, and the error names a column the mirror definitely has,
+   which sends you to look at the mirror.
+
+`qs-query -engine postgres` emits the bridge instead:
+
+```sql
+CREATE OR REPLACE VIEW events_pq AS
+SELECT (r['id'])::bigint AS "id",
+       (r['amount'])::numeric(12,2) AS "amount",
+       ...
+FROM duckdb.query($qs$
+  <the same DuckDB SELECT, verbatim>
+$qs$) r;
+```
+
+`duckdb.query` runs the DuckDB SQL as-is, so there is no second dialect to keep
+in step with the manifest, deletion vectors and column-partial deltas. The
+projection casts each column to the type the **source** declares, read from the
+catalog — without it `sum(amount)` either fails or quietly changes type. The body
+is `$qs$`-quoted because a mirror path may contain `$$`.
+
+### What the run establishes
+
+On PostgreSQL 17.11, primary + standby, the mirror built by the production
+sidecar on the standby and the view created on the primary and replicated —
+which is the deployed topology, not a convenience:
+
+| | |
+|---|---|
+| an unprivileged role reads the mirror | 196,000 rows, `sum = 9805297.00` |
+| the source heap says | 196,000 rows, `sum = 9805297.00` |
+| `pg_read_server_files` / `pg_write_server_files` | **neither**, only `duckdb_users` |
+| `/etc/passwd`, `pg_hba.conf`, `PG_VERSION`, `..` traversal, HTTP | all denied |
+| widening the confinement from SQL | denied, three ways |
+| the mirror after all of that | still readable |
+
+The mirror carried a deletion vector and column-partial deltas at the time, so
+the view was reconstructing rather than scanning one file.
+
+### The one thing it cannot fix
+
+The DuckDB view sets `default_null_order` and agrees with PostgreSQL on `ORDER
+BY` over a nullable column. This view cannot: `pg_duckdb` exposes no equivalent
+GUC, and `duckdb.query` takes a single SELECT, so there is nowhere to put the
+setting.
+
+Measured rather than assumed, with NULL in exactly three rows so that the top 5
+of an `ORDER BY ... DESC` cannot satisfy both rules:
+
+```
+source ORDER BY note DESC: <NULL>,<NULL>,<NULL>,n-199999,n-199998
+mirror ORDER BY note DESC: <NULL>,<NULL>,<NULL>,n-199999,n-199998
+```
+
+They agree — the sort runs in PostgreSQL over the projected rows, so PostgreSQL's
+null ordering is what applies. That is the planner's choice rather than a
+guarantee anyone made, so `qs-query -engine postgres` still prints the caveat
+and the script still checks it on every run. Write an explicit `NULLS FIRST` /
+`NULLS LAST` on any `ORDER BY` that must agree.

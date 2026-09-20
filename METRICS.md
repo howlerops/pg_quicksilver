@@ -8,7 +8,7 @@ under [`bench/results/`](bench/results/).
 **Read the caveats.** Several of these numbers are unflattering, and the ones
 that are unflattering are the load-bearing ones — a columnar mirror that is
 935× slower at a point lookup is not a footnote, it is the reason
-`mode: takeover` is gated and unimplemented.
+`mode: takeover` is gated behind an explicit acknowledgement.
 
 Where a claim is sensitive to the machine, the machine is stated. Most runs are
 a 4 vCPU / 16 GB host; the hardware line in each results file is authoritative.
@@ -26,8 +26,8 @@ a 4 vCPU / 16 GB host; the hardware line in each results file is authoritative.
 Source: [docs/11](docs/11-measured-results.md), [`perf_mirror_pg17.txt`](bench/results/perf_mirror_pg17.txt).
 
 The two halves are the whole design. A straight `-ro` takeover does not regress
-some traffic — at 935× it takes production down, which is why the serving mode
-that would do it is validated-but-not-implemented.
+some traffic — at 935× it takes production down, which is why `mode: takeover`
+refuses to start without `acknowledgeOLTPRegression: "true"`.
 
 Speedup scales with **column count**, because a column store's win is the
 columns it does not read: 4 columns ≈ 7×, 12 columns ≈ 5.8×, 30 columns ≈ 30×.
@@ -195,6 +195,27 @@ default would be inert almost everywhere and meaningful in one case.
 
 ---
 
+## 8b. Serving through PostgreSQL, as an ordinary role
+
+[`serving_pg17.sh`](bench/scripts/serving_pg17.sh), PostgreSQL 17.11, primary +
+standby, mirror built by the production sidecar on the standby and queried
+there. `pg_duckdb` v1.1.1 + the `allowed_directories` patch, built against 17.
+
+| | |
+| --- | --- |
+| unprivileged role reads the mirror | 196,000 rows, sum **9805297.00** |
+| the source heap says | 196,000 rows, sum **9805297.00** |
+| privileges held | `duckdb_users` only — **not** `pg_read_server_files`, **not** `pg_write_server_files` |
+| `/etc/passwd`, `pg_hba.conf`, `PG_VERSION`, `..` traversal, HTTP | **all denied** |
+| widening the confinement from SQL | **denied**, three ways |
+| `ORDER BY` over a NULLABLE column | agrees with the source |
+
+The mirror carried a deletion vector and column-partial deltas, so the view was
+reconstructing rather than scanning one file. Raw output:
+[`serving_pg17.txt`](bench/results/serving_pg17.txt).
+
+---
+
 ## 9. Correctness, and the things that were wrong
 
 Every performance figure above comes from a run that also verified the mirror
@@ -220,7 +241,7 @@ Bugs these caught, each of which produced *plausible* output:
 ## 10. What these numbers do not say
 
 - **`mode: takeover` is implemented but never observed.** It is one property — mirror freshness gates the `-ro` endpoint — because the service retarget the design called for is not reachable under a sidecar architecture ([docs/33](docs/33-the-probe-that-gated-the-wrong-thing.md)). A probe actually failing and removing a Pod needs a kubelet.
-- **Serving is verified through DuckDB, not over the wire.** Answering a `SELECT` through PostgreSQL is the `pg_duckdb` path in [docs/12](docs/12-s5-serving-path.md) and is not landed.
+- **Serving through PostgreSQL needs an unpackaged patch.** A `SELECT` is now answered through PostgreSQL 17 by an unprivileged role ([docs/12](docs/12-s5-serving-path.md)), but only with `pg_duckdb` plus the `allowed_directories` patch in `bench/patches/`, which is not upstream. Stock `pg_duckdb` cannot do it without also granting `COPY FROM '/etc/passwd'`.
 - **The published images cannot currently be pulled.** `release.yml` published `0.0.1` and `0.0.2`, but the ghcr packages are private (anonymous pull → 401) and nothing has ever run an image of this project from a registry. "Builds", "pushes" and "runs from a registry" are three claims; the first two are checked.
 - **Live reconcile behaviour is unobserved.** The Pod spec the operator builds is real; nothing has watched it *re*-build one, because this sandbox has no kubelet.
 - **Most runs are one machine, 4 vCPU.** Ratios travel; absolute milliseconds do not.

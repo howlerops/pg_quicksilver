@@ -34,6 +34,7 @@ func main() {
 	root := flag.String("mirror", "", "mirror root directory")
 	table := flag.String("table", "", "qualified table name, e.g. public.events")
 	view := flag.String("view", "", "wrap the SELECT in CREATE OR REPLACE VIEW <name>")
+	engine := flag.String("engine", engineDuckDB, "duckdb | postgres (a view readable through pg_duckdb)")
 	dsn := flag.String("dsn", "", "optional source connection, to read the column list from the catalog")
 	lsn := flag.Bool("lsn", false, "print only the applied LSN, for freshness gating")
 	flag.Parse()
@@ -67,6 +68,14 @@ func main() {
 	// The LSN is part of the answer, not decoration: a view of a mirror is only
 	// usable if the reader can decide whether it is fresh enough.
 	fmt.Printf("-- quicksilver mirror %s applied_lsn=%s\n", t.Qualified, t.State.AppliedLSN)
+	if *engine == enginePostgres {
+		if *view == "" {
+			fail("-engine postgres emits a view; pass -view <name>")
+		}
+		fmt.Print(PostgresView(*view, sql, cols, order))
+		fmt.Fprintln(os.Stderr, pgNullOrderNote)
+		return
+	}
 	if *view != "" {
 		// -view emits statements to run, so it emits the engine settings the
 		// view depends on as well. Without -view the caller is embedding the

@@ -98,6 +98,10 @@ run cnpgi         900 go -C go/fidelity test ./... -count=1
 # ---- 3. correctness against a real cluster -----------------------------------
 run manifests     600 bash bench/scripts/validate_manifests.sh
 run rendering    1800 bash bench/scripts/rendering_fidelity.sh
+# Answers a SELECT through PostgreSQL rather than through DuckDB. Reports
+# INCOMPLETE without the patched pg_duckdb, which is not packaged anywhere —
+# see bench/patches/README.md.
+run serving      1800 bash bench/scripts/serving_pg17.sh
 
 # ---- 4. performance, opt-in --------------------------------------------------
 if [ "$FULL" = "1" ]; then

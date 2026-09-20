@@ -1,0 +1,41 @@
+
+== 0. the patched extension, for PostgreSQL 17 ==
+  /usr/lib/postgresql/17/lib/pg_duckdb.so carries duckdb.allowed_directories
+PostgreSQL 17.11 (Ubuntu 17.11-1.pgdg24.04+2)
+
+== 1. primary on 5455, with pg_duckdb preloaded ==
+  seeded 196000 live rows
+
+== 2. standby on 5456 ==
+
+== 3. the production sidecar builds the mirror on the standby ==
+  mirror ready: public.events 
+
+== 4. publish the mirror as a view on the primary; it replicates ==
+
+== 5. an ordinary role, with none of the dangerous privileges ==
+  analyst: duckdb_users=t read_server_files=f write_server_files=f
+
+== 6. the mirror IS readable through PostgreSQL, and AGREES with the source ==
+  source (primary, heap)   : 196000 rows, sum 9805297.00
+  mirror (standby, parquet): 196000 rows, sum 9805297.00
+
+== 7. and NOTHING else is readable ==
+  denied   /etc/passwd
+  denied   pg_hba.conf
+  denied   PG_VERSION
+  denied   path traversal out of dir
+  denied   http exfiltration
+  denied   widen disabled_filesystems
+  denied   widen allowed_directories
+  denied   widen external access
+
+== 8. ORDER BY over a NULLABLE column — measured, not assumed ==
+  source ORDER BY note DESC: <NULL>,<NULL>,<NULL>,n-199999,n-199998
+  mirror ORDER BY note DESC: <NULL>,<NULL>,<NULL>,n-199999,n-199998
+  AGREES — the sort runs in PostgreSQL over the projected rows
+
+== result ==
+PASS — on PostgreSQL 17, an unprivileged role read 196000 rows from the
+mirror THROUGH PostgreSQL, agreeing with the source heap, and reached
+nothing outside /var/lib/postgresql/qs-serve/mirror.
