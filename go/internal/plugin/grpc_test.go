@@ -258,8 +258,17 @@ func TestLifecycleInjectsSidecarAndPatchApplies(t *testing.T) {
 				"node no longer accepts a replication connection", env["QS_PRIMARY_HOST"])
 		}
 	}
-	if sidecar.ReadinessProbe == nil {
-		t.Error("no readiness probe: nothing would remove a stale mirror from the endpoint")
+	// This cluster is in the default mode, shadow, and there must be NO
+	// readiness probe here. A native sidecar's readiness decides the Pod's, so
+	// a probe in shadow would let a lagging mirror pull a healthy PostgreSQL
+	// replica out of -ro. The probe belongs to takeover, and
+	// TestFreshnessGatesTheEndpointOnlyInTakeover covers both sides.
+	if sidecar.ReadinessProbe != nil {
+		t.Errorf("shadow mode wired a readiness probe (%v): the mirror would gate "+
+			"the whole instance Pod", sidecar.ReadinessProbe.HTTPGet)
+	}
+	if sidecar.LivenessProbe == nil {
+		t.Error("no liveness probe: a wedged sidecar would never be restarted")
 	}
 }
 

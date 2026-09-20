@@ -105,7 +105,7 @@ spec:
 | `mode` | `shadow` | `off`, `shadow`, `takeover` |
 | `ingest` | `logical` | `physical` is Phase 3 and refused today |
 | `tables` | — | required; `schema.table`, unquoted lowercase |
-| `freshnessSLO` | `30s` | a mirror behind this leaves the endpoint |
+| `freshnessSLO` | `30s` | in `takeover`, a mirror behind this leaves the endpoint |
 | `database` | `app` | one mirror follows one database |
 | `credentialsSecret` | `<cluster>-superuser` | needs REPLICATION, SELECT, CREATE |
 | `slotName`, `publication` | `quicksilver_<cluster>` | |
@@ -122,9 +122,12 @@ than what this binary's defaults happened to be.
 Validation is where two measured findings are enforced rather than documented:
 
 - **`mode: takeover` without `acknowledgeOLTPRegression: "true"`.** Takeover
-  points `-ro` at the columnar mirror, which measured a **median 935× slowdown**
-  (up to 3,445×) on OLTP-shaped queries ([docs/11](11-measured-results.md)). One
-  word in a YAML file should not be able to do that.
+  serves `-ro` reads from the columnar mirror, which measured a **median 935×
+  slowdown** (up to 3,445×) on OLTP-shaped queries
+  ([docs/11](11-measured-results.md)), and it makes mirror freshness a condition
+  of serving at all — a write burst can empty the read endpoint
+  ([docs/33](33-the-probe-that-gated-the-wrong-thing.md)). One word in a YAML
+  file should not be able to do either.
 - **`ingest: logical` on PostgreSQL < 17.** Before 17 a logical slot does not
   survive a failover and recovery is a full re-snapshot of every mirrored table
   ([docs/15](15-pg17-slot-failover.md)).
@@ -142,7 +145,7 @@ It runs on **every** instance Pod and decides its own role, because promotion is
 not an event anyone tells it about:
 
 - **on a replica** — bootstrap by snapshot at the slot's consistent point, stream
-  `pgoutput`, apply with DDL barriers, gate `/readyz` on freshness;
+  `pgoutput`, apply with DDL barriers, report freshness on `/readyz`;
 - **on the primary** — stand down, and clear any inherited
   `synchronized_standby_slots` entry naming a slot that does not exist here.
   That last one is not tidiness: without it logical decoding on the new primary
@@ -151,11 +154,18 @@ not an event anyone tells it about:
 
 Endpoints on port 9187: `/readyz`, `/healthz`, `/metrics`.
 
-`/readyz` is what actually keeps a stale mirror out of service, so it is a
-correctness dependency rather than a nicety — and it distinguishes *idle* from
-*behind*: an unchanging source is perfectly fresh. Liveness deliberately does
-**not** check freshness; restarting a mirror that is behind discards its progress
-and makes it further behind.
+`/readyz` distinguishes *idle* from *behind*: an unchanging source is perfectly
+fresh. Liveness deliberately does **not** check freshness; restarting a mirror
+that is behind discards its progress and makes it further behind.
+
+**`/readyz` is wired as the Pod's readiness probe only in `mode: takeover`.**
+This is a native sidecar, and Kubernetes uses a restartable init container's
+readiness probe to decide the *Pod's* readiness — so the probe does not gate the
+mirror, it gates PostgreSQL. In `shadow` that is backwards: a mirror nobody is
+querying would pull a healthy replica out of `-ro`, and out of every replica at
+once, since they all fall behind the same writer. It used to be wired in every
+mode; [docs/33](33-the-probe-that-gated-the-wrong-thing.md) is what that was and
+why takeover is the only place it belongs.
 
 **What readiness costs, and why a restart is not instant.** The sidecar builds
 its key index before `/readyz` passes, so a restarted Pod takes seconds rather
@@ -259,8 +269,14 @@ other direction.
   "pushes" and "runs from a registry" are three claims and only the first two
   are checked. The credentials needed to close the third are in the chart README;
   the check itself needs a cluster.
-- **`mode: takeover` — still not implemented.** The validation gate is tested;
-  the service retarget it gates does not exist.
+- **`mode: takeover` — implemented, but never observed working.** It is one
+  property: mirror freshness gates the `-ro` endpoint. The service retarget the
+  original design called for turned out not to be reachable under a sidecar
+  architecture, and `app-ro-row` with it — one PostgreSQL serves both engines on
+  the same Pod, so there is nothing to point elsewhere
+  ([docs/33](33-the-probe-that-gated-the-wrong-thing.md)). The probe's presence
+  per mode is unit-tested in both directions; a probe actually *failing* and
+  removing a Pod from a Service needs a kubelet and has not happened.
 - **Serving — verified through DuckDB, not yet over the wire.** The mirror
   publishes a SELECT that reconstructs itself from the manifest, deletion
   vectors and column-partial deltas, and that view is checked for both speed and

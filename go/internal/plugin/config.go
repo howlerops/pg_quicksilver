@@ -239,10 +239,14 @@ func Validate(cluster *apiv1.Cluster, params map[string]string) []*operator.Vali
 	case ModeTakeover:
 		if !cfg.Acknowledged {
 			add("mode", string(cfg.Mode), fmt.Sprintf(
-				"mode: takeover points the cluster's -ro service at the columnar mirror, "+
+				"mode: takeover serves the cluster's -ro reads from the columnar mirror, "+
 					"which measured a median 935x slowdown (up to 3445x) on OLTP-shaped "+
-					"queries such as indexed point lookups and LIMIT-ordered fetches. "+
-					"Set %s: \"true\" to confirm this cluster's read traffic is analytical.",
+					"queries such as indexed point lookups and LIMIT-ordered fetches. It "+
+					"also makes mirror freshness a condition of serving: a replica whose "+
+					"mirror falls behind freshnessSLO leaves -ro entirely, and replicas "+
+					"fall behind together because they follow the same writer, so a write "+
+					"burst can empty the read endpoint. Set %s: \"true\" to confirm this "+
+					"cluster's read traffic is analytical and can tolerate both.",
 				AcknowledgeParam))
 		}
 	default:

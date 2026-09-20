@@ -219,7 +219,7 @@ Bugs these caught, each of which produced *plausible* output:
 
 ## 10. What these numbers do not say
 
-- **`mode: takeover` is not implemented.** The validation gate is tested; the service retarget it gates does not exist.
+- **`mode: takeover` is implemented but never observed.** It is one property — mirror freshness gates the `-ro` endpoint — because the service retarget the design called for is not reachable under a sidecar architecture ([docs/33](docs/33-the-probe-that-gated-the-wrong-thing.md)). A probe actually failing and removing a Pod needs a kubelet.
 - **Serving is verified through DuckDB, not over the wire.** Answering a `SELECT` through PostgreSQL is the `pg_duckdb` path in [docs/12](docs/12-s5-serving-path.md) and is not landed.
 - **The published images cannot currently be pulled.** `release.yml` published `0.0.1` and `0.0.2`, but the ghcr packages are private (anonymous pull → 401) and nothing has ever run an image of this project from a registry. "Builds", "pushes" and "runs from a registry" are three claims; the first two are checked.
 - **Live reconcile behaviour is unobserved.** The Pod spec the operator builds is real; nothing has watched it *re*-build one, because this sandbox has no kubelet.

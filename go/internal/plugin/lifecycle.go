@@ -171,19 +171,20 @@ func MirrorSidecar(clusterName string, cfg Config) *corev1.Container {
 			{Name: "qs-health", ContainerPort: HealthPort},
 		},
 		// Readiness is the mechanism that keeps a stale mirror out of the
-		// endpoint, so it is a real dependency of correctness, not a nicety.
+		// endpoint, so under takeover it is a real dependency of correctness.
 		// /readyz reports not-ready when the mirror is behind the freshness SLO,
 		// and distinguishes "behind" from "idle" — an idle source is fresh.
-		ReadinessProbe: &corev1.Probe{
-			ProbeHandler: corev1.ProbeHandler{
-				HTTPGet: &corev1.HTTPGetAction{
-					Path: "/readyz",
-					Port: intOrString(HealthPort),
-				},
-			},
-			PeriodSeconds:    5,
-			FailureThreshold: 2,
-		},
+		//
+		// It is wired ONLY in takeover. This is a native sidecar, and for a
+		// restartable init container Kubernetes uses the readiness probe's
+		// result "to determine the ready state of the Pod" — so the probe does
+		// not gate the mirror, it gates the whole instance Pod, PostgreSQL
+		// included. In shadow that is backwards: a mirror nobody is querying
+		// would evict a healthy replica from -ro and -r, and it would do it to
+		// every replica at once, because they all fall behind the same writer.
+		// docs/05 defines shadow as "-ro untouched"; a probe here is the one
+		// thing that would touch it.
+		ReadinessProbe: readinessProbe(cfg),
 		// Liveness deliberately does NOT check freshness. A mirror that is
 		// behind should be taken out of service, not restarted: restarting it
 		// discards in-memory progress and makes it further behind.
@@ -249,6 +250,31 @@ func boolPtr(b bool) *bool { return &b }
 // distinguish "this heap is one big long-lived index" from "this heap is
 // garbage", and here it is almost entirely the former. GOMEMLIMIT can, because
 // it is an absolute ceiling rather than a multiple of the live set.
+// readinessProbe returns the freshness gate, and only in the mode that wants
+// one.
+//
+// Returning nil is not "no probe available" — /readyz is served in every mode
+// and stays the way to ask whether a mirror is fresh, from a dashboard, from
+// qs-verify, or by hand. What nil means is that the answer does not decide
+// whether the instance Pod receives PostgreSQL traffic. Only takeover routes
+// reads through the mirror, so only takeover has a reason to make freshness a
+// condition of serving anything.
+func readinessProbe(cfg Config) *corev1.Probe {
+	if cfg.Mode != ModeTakeover {
+		return nil
+	}
+	return &corev1.Probe{
+		ProbeHandler: corev1.ProbeHandler{
+			HTTPGet: &corev1.HTTPGetAction{
+				Path: "/readyz",
+				Port: intOrString(HealthPort),
+			},
+		},
+		PeriodSeconds:    5,
+		FailureThreshold: 2,
+	}
+}
+
 func sidecarResources(cfg Config) corev1.ResourceRequirements {
 	mem := sidecarMemory(cfg)
 	return corev1.ResourceRequirements{

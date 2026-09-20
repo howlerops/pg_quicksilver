@@ -180,9 +180,17 @@ func (OperatorImpl) SetStatusInCluster(
 	} else {
 		st.MirroringPods = mirroringPods(cluster)
 		if cfg.Mode == ModeTakeover {
+			// This used to say the -ro service "is served by the columnar
+			// mirror", which was never true and cannot become true under this
+			// architecture: the mirror is a sidecar in the instance Pod, so
+			// -ro already selects the same nodes and one PostgreSQL answers
+			// both engines. Nothing is retargeted anywhere. What takeover
+			// actually changes is that mirror freshness now gates the Pod.
 			st.Message = fmt.Sprintf(
-				"the %s-ro service is served by the columnar mirror; OLTP-shaped queries "+
-					"are expected to be far slower than on a hot standby", cluster.Name)
+				"mirror freshness gates the %s-ro endpoint: a replica whose mirror is "+
+					"behind freshnessSLO (%s) is removed from it, PostgreSQL included. "+
+					"OLTP-shaped queries answered from the mirror are far slower than on "+
+					"a hot standby", cluster.Name, cfg.FreshnessSLO)
 		}
 	}
 
