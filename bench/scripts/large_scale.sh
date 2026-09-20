@@ -25,6 +25,7 @@
 set -uo pipefail
 cd "$(dirname "$0")/../.."
 source "$(dirname "$0")/lib_dropdb.sh"
+source "$(dirname "$0")/lib_syncslots.sh"
 
 PG=/usr/lib/postgresql/17/bin
 BASE=/var/lib/postgresql/qs17
