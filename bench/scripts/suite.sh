@@ -102,6 +102,9 @@ run rendering    1800 bash bench/scripts/rendering_fidelity.sh
 # INCOMPLETE without the patched pg_duckdb, which is not packaged anywhere —
 # see bench/patches/README.md.
 run serving      1800 bash bench/scripts/serving_pg17.sh
+# Runs the SHIPPED IMAGES rather than the binaries beside them. INCOMPLETE if no
+# container engine is available.
+run images       2400 bash bench/scripts/image_e2e.sh
 
 # ---- 4. performance, opt-in --------------------------------------------------
 if [ "$FULL" = "1" ]; then

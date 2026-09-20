@@ -256,19 +256,21 @@ other direction.
   Pod spec is now real (above), but nothing has watched the operator *re*-build
   one. The `EVALUATE` bug in docs/17 is exactly the class of thing that reading
   catches and only a cluster confirms.
-- **The images — now published, but never pulled.** The `images` job in
-  [`ci.yml`](../.github/workflows/ci.yml) builds both targets from
-  `deploy/Dockerfile` on every commit, so a Dockerfile that stops building is
-  caught on the commit that broke it. `release.yml` has now published twice —
-  `0.0.1` by `workflow_dispatch`, then `0.0.2` from a pushed `v0.0.2` tag, which
-  was the first run of the `tags: ["v*"]` trigger the whole workflow is built
-  around. Both images and the chart are in ghcr at both versions.
-  What publishing does **not** establish is that anything can pull them, and
-  today nothing can: the packages are private, an anonymous pull is 401, and no
-  image of this project has been run from a registry by anything. "Builds",
-  "pushes" and "runs from a registry" are three claims and only the first two
-  are checked. The credentials needed to close the third are in the chart README;
-  the check itself needs a cluster.
+- **The images — built, published, and now actually run; still never pulled.**
+  The `images` job in [`ci.yml`](../.github/workflows/ci.yml) builds both targets
+  on every commit. `release.yml` has published twice — `0.0.1` by
+  `workflow_dispatch`, then `0.0.2` from a pushed `v0.0.2` tag, which was the
+  first run of the `tags: ["v*"]` trigger the workflow is built around.
+  [`bench/scripts/image_e2e.sh`](../bench/scripts/image_e2e.sh) now *starts* the
+  shipped images rather than the binaries beside them: the mirror image builds a
+  mirror against a live primary and standby, `qs-verify` **from the same image**
+  reports MATCH on identical checksums, the files land owned by `26:26`, and the
+  plugin image serves TLS on its gRPC port.
+  What is still open is narrower than it was, and it is a registry question
+  rather than an image one: **nothing has pulled either image.** The ghcr
+  packages are private, an anonymous pull is 401, and a credentialed pull into a
+  running cluster needs a cluster. So "builds", "pushes", "runs" and "pulls" are
+  four claims and the first three are checked.
 - **`mode: takeover` — implemented, but never observed working.** It is one
   property: mirror freshness gates the `-ro` endpoint. The service retarget the
   original design called for turned out not to be reachable under a sidecar

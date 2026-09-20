@@ -252,6 +252,8 @@ against its source. A fast mirror that disagrees is not a result.
 | the index names that copy | same check, same frequency |
 | CNPG-I handshake | against the real CloudNativePG 1.30 operator |
 | a mirror rebuilt from files alone | e2e deletes every index and re-derives it |
+| the shipped image, not the local binary | `image_e2e.sh` runs it and verifies with `qs-verify` from the same image |
+| an ordinary role reading through PostgreSQL | `serving_pg17.sh`, no `pg_read_server_files` |
 
 Bugs these caught, each of which produced *plausible* output:
 
@@ -266,7 +268,7 @@ Bugs these caught, each of which produced *plausible* output:
 
 - **`mode: takeover` is implemented but never observed.** It is one property — mirror freshness gates the `-ro` endpoint — because the service retarget the design called for is not reachable under a sidecar architecture ([docs/33](docs/33-the-probe-that-gated-the-wrong-thing.md)). A probe actually failing and removing a Pod needs a kubelet.
 - **Serving through PostgreSQL needs an unpackaged patch.** A `SELECT` is now answered through PostgreSQL 17 by an unprivileged role ([docs/12](docs/12-s5-serving-path.md)), but only with `pg_duckdb` plus the `allowed_directories` patch in `bench/patches/`, which is not upstream. Stock `pg_duckdb` cannot do it without also granting `COPY FROM '/etc/passwd'`.
-- **The published images cannot currently be pulled.** `release.yml` published `0.0.1` and `0.0.2`, but the ghcr packages are private (anonymous pull → 401) and nothing has ever run an image of this project from a registry. "Builds", "pushes" and "runs from a registry" are three claims; the first two are checked.
+- **The published images cannot currently be pulled.** The shipped images now run — the mirror image builds a mirror that `qs-verify` from the same image calls MATCH ([`image_e2e.txt`](bench/results/image_e2e.txt)) — but the ghcr packages are private (anonymous pull → 401), so nothing has ever *pulled* one. "Builds", "pushes", "runs" and "pulls" are four claims; the first three are checked.
 - **Live reconcile behaviour is unobserved.** The Pod spec the operator builds is real; nothing has watched it *re*-build one, because this sandbox has no kubelet.
 - **Most runs are one machine, 4 vCPU.** Ratios travel; absolute milliseconds do not.
 

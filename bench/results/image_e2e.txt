@@ -1,0 +1,29 @@
+
+== 0. build both images from deploy/Dockerfile ==
+  built qs-mirror:e2e
+  built qs-plugin:e2e
+  mirror runs as 26:26, plugin runs as 65532:65532
+
+== 1. primary and standby ==
+  seeded 196000 live rows
+
+== 2. run the MIRROR IMAGE as the plugin runs it ==
+  /readyz answered 200 from the container
+  quicksilver_lag_seconds 0.030
+  quicksilver_lag_bytes 0
+  quicksilver_ready 1
+  mirror files owned by 26:26
+
+== 3. verify the mirror with qs-verify FROM THE SAME IMAGE ==
+  applied_lsn=0/5035520
+  mirror 196000 rows (checksum 2774114670d9d9c2)
+  source 196000 rows (checksum 2774114670d9d9c2)
+  MATCH
+
+== 4. run the PLUGIN IMAGE and complete a TLS handshake ==
+  the plugin image is serving TLS on :9393
+
+== result ==
+PASS — the shipped mirror image built a mirror that qs-verify (also from
+the image) calls MATCH, as UID 26, and the plugin image serves TLS.
+This does NOT establish that either image can be pulled from ghcr.
