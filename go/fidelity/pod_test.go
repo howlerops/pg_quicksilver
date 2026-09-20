@@ -41,8 +41,8 @@ func quicksilverCluster() *cnpgv1.Cluster {
 		TypeMeta:   metav1.TypeMeta{APIVersion: "postgresql.cnpg.io/v1", Kind: "Cluster"},
 		ObjectMeta: metav1.ObjectMeta{Name: "app", Namespace: "default"},
 		Spec: cnpgv1.ClusterSpec{
-			Instances: 3,
-			ImageName: "ghcr.io/cloudnative-pg/postgresql:17.2-standard-bookworm",
+			Instances:            3,
+			ImageName:            "ghcr.io/cloudnative-pg/postgresql:17.2-standard-bookworm",
 			StorageConfiguration: cnpgv1.StorageConfiguration{Size: "20Gi"},
 			Plugins: []cnpgv1.PluginConfiguration{{
 				Name: qsplugin.PluginName,

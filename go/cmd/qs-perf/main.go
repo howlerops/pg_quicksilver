@@ -116,10 +116,10 @@ func main() {
 		failed = true
 	}
 	if len(lat) > 0 {
-	sort.Slice(lat, func(i, j int) bool { return lat[i] < lat[j] })
-	fmt.Printf("  n=%d  p50=%.1fms  p90=%.1fms  p95=%.1fms  p99=%.1fms  max=%.1fms\n",
-		len(lat), ms(pct(lat, 50)), ms(pct(lat, 90)), ms(pct(lat, 95)),
-		ms(pct(lat, 99)), ms(lat[len(lat)-1]))
+		sort.Slice(lat, func(i, j int) bool { return lat[i] < lat[j] })
+		fmt.Printf("  n=%d  p50=%.1fms  p90=%.1fms  p95=%.1fms  p99=%.1fms  max=%.1fms\n",
+			len(lat), ms(pct(lat, 50)), ms(pct(lat, 90)), ms(pct(lat, 95)),
+			ms(pct(lat, 99)), ms(lat[len(lat)-1]))
 	}
 
 	// ---- 3. storage ------------------------------------------------------

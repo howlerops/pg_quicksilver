@@ -10,14 +10,16 @@
 // trust, and the failure mode is silent data loss, so the test has to prove
 // three separate things:
 //
-//	1. the slot EXISTS on the new primary after a real promotion;
-//	2. streaming RESUMES from it with no re-snapshot;
-//	3. rows committed on the old primary AFTER the last confirmed LSN still
-//	   arrive. This is the one that matters. A slot that exists but has been
-//	   fast-forwarded to the current LSN is worse than no slot at all: the
-//	   consumer reconnects happily and silently loses everything in between.
+//  1. the slot EXISTS on the new primary after a real promotion;
 //
-//	go run ./cmd/qs-slotsync
+//  2. streaming RESUMES from it with no re-snapshot;
+//
+//  3. rows committed on the old primary AFTER the last confirmed LSN still
+//     arrive. This is the one that matters. A slot that exists but has been
+//     fast-forwarded to the current LSN is worse than no slot at all: the
+//     consumer reconnects happily and silently loses everything in between.
+//
+//     go run ./cmd/qs-slotsync
 package main
 
 import (

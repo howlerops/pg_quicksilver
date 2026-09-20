@@ -37,11 +37,11 @@ import (
 // CA, a server certificate with the Service's DNS names, and a client
 // certificate the operator presents.
 type certSet struct {
-	dir                        string
-	caPEM                      []byte
-	serverCert, serverKey      string // file paths, as the plugin flags take
+	dir                         string
+	caPEM                       []byte
+	serverCert, serverKey       string // file paths, as the plugin flags take
 	clientCertPEM, clientKeyPEM []byte
-	caPool                     *x509.CertPool
+	caPool                      *x509.CertPool
 }
 
 func newCertSet(t *testing.T, serverDNSNames ...string) *certSet {

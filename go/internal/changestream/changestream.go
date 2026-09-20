@@ -136,13 +136,13 @@ func (l *Logical) SlotLagBytes(ctx context.Context) (int64, error) {
 
 // wal2json format-version 2 message.
 type wmsg struct {
-	Action  string  `json:"action"`
-	LSN     string  `json:"lsn"`
-	NextLSN string  `json:"nextlsn"`
-	Schema  string  `json:"schema"`
-	Table   string  `json:"table"`
-	Columns []wcol  `json:"columns"`
-	Ident   []wcol  `json:"identity"`
+	Action  string `json:"action"`
+	LSN     string `json:"lsn"`
+	NextLSN string `json:"nextlsn"`
+	Schema  string `json:"schema"`
+	Table   string `json:"table"`
+	Columns []wcol `json:"columns"`
+	Ident   []wcol `json:"identity"`
 }
 
 type wcol struct {
