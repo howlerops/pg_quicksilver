@@ -251,11 +251,28 @@ other direction.
   no kubelet and Pods stay Pending. The API server, CRDs, operator and webhooks
   are real; everything up to and including the Pod **spec** the operator builds
   is real, which is where a plugin lives. What runs inside the Pod is not.
-- **Live reconcile behaviour — still not observed.** Rollouts, switchovers and
-  CNPG's own Pod comparison are reasoned about from the operator's source. The
-  Pod spec is now real (above), but nothing has watched the operator *re*-build
-  one. The `EVALUATE` bug in docs/17 is exactly the class of thing that reading
-  catches and only a cluster confirms.
+- **Live reconcile behaviour — the rollout decision is now tested; the rollout
+  itself is not.** `lifecycle.go` carries a long argument that declaring
+  `EVALUATE` is not optional: the evaluated spec is what lands in the pod-spec
+  annotation, `checkPodSpecIsOutdated` compares that annotation against a fresh
+  evaluation, and a plugin that skips `EVALUATE` is absent from *both* sides, so
+  changing `sidecarImage` would never roll anything. That was reasoned entirely
+  from the operator's source. It is now driven through CloudNativePG 1.30's own
+  `specs.ComparePodSpecs`, over Pods built by its own `specs.NewInstance`
+  (`go/fidelity/rollout_test.go`), which answers:
+
+  ```
+  init-containers: container quicksilver-mirror differs in image
+  ```
+
+  with the companion checks that an unchanged Cluster compares *equal* — a plugin
+  that fails this rolls every instance on every reconcile — and that the
+  difference disappears entirely without the hook, which is the failure the
+  comment describes. What is still unobserved is the operator acting on that
+  decision: no Pod has been rolled, because this sandbox has no kubelet
+  ([docs/21](21-against-the-real-operator.md)). The `EVALUATE` bug in docs/17 is
+  the class of thing that reading catches; this closes the half of it that does
+  not need a cluster.
 - **The images — built, published, and now actually run; still never pulled.**
   The `images` job in [`ci.yml`](../.github/workflows/ci.yml) builds both targets
   on every commit. `release.yml` has published twice — `0.0.1` by
