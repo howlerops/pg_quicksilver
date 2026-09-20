@@ -123,6 +123,15 @@ metadata:
 spec:
   instances: 2
   imageName: ghcr.io/cloudnative-pg/postgresql:17.2-standard-bookworm
+  # Not optional, and not obvious. The sidecar reads its credentials from
+  # <cluster>-superuser by default (config.go), and CloudNativePG has defaulted
+  # enableSuperuserAccess to FALSE since 1.21 — so that Secret simply does not
+  # exist unless asked for. The sidecar references it through secretKeyRef, and
+  # a container whose secretKeyRef cannot resolve never starts:
+  # CreateContainerConfigError, and a Pod that stays not-Ready with no mention
+  # of the mirror anywhere. examples/cluster-shadow.yaml has always set this;
+  # this test did not.
+  enableSuperuserAccess: true
 $CLUSTER_PULL_SECRETS
   storage:
     size: 2Gi
@@ -165,6 +174,11 @@ else
   kubectl -n "$NS" get pods
   kubectl -n "$NS" get cluster "$CLUSTER" -o jsonpath='{.status.phase}: {.status.phaseReason}{"\n"}' 2>/dev/null
   kubectl -n "$NS" describe pods -l "$INSTANCES" | grep -A 8 "Events:" | tail -20
+  # The reason a container will not start, which is usually the whole answer
+  # and is not in the Events list: CreateContainerConfigError names a missing
+  # Secret, ImagePullBackOff names the registry.
+  kubectl -n "$NS" get pods -l "$INSTANCES" -o jsonpath=\
+'{range .items[*]}{.metadata.name}{"\n"}{range .status.initContainerStatuses[*]}  init/{.name}: {.state.waiting.reason} {.state.waiting.message}{"\n"}{end}{range .status.containerStatuses[*]}  {.name}: {.state.waiting.reason} {.state.waiting.message}{"\n"}{end}{end}' 2>/dev/null
   bad "instance Pods never became Ready within ${TIMEOUT}s"
 fi
 
@@ -190,6 +204,12 @@ fi
 
 # ---------------------------------------------------------------- the rollout
 say "4. changing sidecarImage ROLLS the instances"
+# Sections 4 and 5 both watch instance Pods. If there are none, they cannot
+# report anything except their own timeouts — 20 further minutes of waiting to
+# restate what section 3 already said.
+if [ $FAIL -ne 0 ]; then
+  echo "  skipped: no healthy instance Pods to roll (see above)"
+else
 # go/fidelity proves CNPG's own comparison reports a difference. Only a cluster
 # shows the operator acting on it.
 before=$(kubectl -n "$NS" get pods -l "$INSTANCES" \
@@ -210,8 +230,13 @@ else
   bad "no Pod was replaced within 10 minutes of changing sidecarImage"
 fi
 
+fi
+
 # ---------------------------------------------------------------- the probe
 say "5. in takeover, a stale mirror LEAVES the -ro endpoints"
+if [ $FAIL -ne 0 ]; then
+  echo "  skipped: no healthy instance Pods to remove from an endpoint (see above)"
+else
 # The property docs/33 reasons about from the Kubernetes contract, never
 # observed. freshnessSLO is set absurdly low so the mirror cannot satisfy it,
 # which is the only deterministic way to make the probe fail on demand.
@@ -231,6 +256,8 @@ if [ "$left" = "1" ]; then
 else
   kubectl -n "$NS" get endpoints "$CLUSTER-ro" -o wide 2>/dev/null
   bad "the -ro endpoint never emptied with freshnessSLO=1s; the probe is not gating"
+fi
+
 fi
 
 say "result"
