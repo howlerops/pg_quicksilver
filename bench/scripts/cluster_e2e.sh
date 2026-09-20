@@ -135,6 +135,20 @@ spec:
 $CLUSTER_PULL_SECRETS
   storage:
     size: 2Gi
+  # The mirror is told to follow public.events. Nothing else here creates it,
+  # and a mirror pointed at a table that does not exist cannot snapshot, so it
+  # never reaches ready and the Pod never reaches Ready — the same symptom as
+  # the missing Secret, from a different cause. postInitApplicationSQL runs in
+  # the application database once initdb finishes, before the sidecar has
+  # anything to ask for.
+  #
+  # A single-column primary key because the plugin refuses anything else, and
+  # that refusal is tested in go/internal/plugin.
+  bootstrap:
+    initdb:
+      postInitApplicationSQL:
+        - CREATE TABLE IF NOT EXISTS public.events (id bigint PRIMARY KEY, sku text, amount numeric(12,2), ts timestamptz DEFAULT now())
+        - INSERT INTO public.events SELECT g, 'SKU-'||g, (g%997)/7.0, now() FROM generate_series(1,1000) g ON CONFLICT DO NOTHING
   postgresql:
     parameters:
       max_slot_wal_keep_size: "1GB"
