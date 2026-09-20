@@ -158,16 +158,27 @@ func main() {
 func supervise(ctx context.Context, log *slog.Logger, o options, h *health.Health) {
 	backoff := time.Second
 	wasPrimary := false
+	// The local socket is not there yet for the first seconds of a Pod's life:
+	// this is a native sidecar, so it starts BEFORE PostgreSQL. Logging that at
+	// WARN on every 5-second tick produced a hundred identical lines in eight
+	// minutes on the first real cluster run, and buried the one line that
+	// mattered. Say it once, then again only when the answer changes.
+	var lastRoleErr string
 
 	for ctx.Err() == nil {
 		primary, err := isPrimary(ctx, o)
 		switch {
 		case err != nil:
-			log.Warn("cannot determine local role", "err", err)
+			if msg := err.Error(); msg != lastRoleErr {
+				log.Warn("cannot determine local role; waiting for the local PostgreSQL",
+					"err", err)
+				lastRoleErr = msg
+			}
 			sleep(ctx, 5*time.Second)
 			continue
 
 		case primary:
+			lastRoleErr = ""
 			if !wasPrimary {
 				log.Info("this node is the primary — standing down; the mirror is built on replicas")
 				// A node that just became the primary carries the standby
