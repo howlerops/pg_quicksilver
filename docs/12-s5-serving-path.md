@@ -193,8 +193,8 @@ which is the deployed topology, not a convenience:
 
 | | |
 |---|---|
-| an unprivileged role reads the mirror | 196,000 rows, `sum = 9805297.00` |
-| the source heap says | 196,000 rows, `sum = 9805297.00` |
+| an unprivileged role reads the mirror | 2,940,000 rows, `sum = 147079460.00` |
+| the source heap says | 2,940,000 rows, `sum = 147079460.00` |
 | `pg_read_server_files` / `pg_write_server_files` | **neither**, only `duckdb_users` |
 | `/etc/passwd`, `pg_hba.conf`, `PG_VERSION`, `..` traversal, HTTP | all denied |
 | widening the confinement from SQL | denied, three ways |
@@ -202,6 +202,36 @@ which is the deployed topology, not a convenience:
 
 The mirror carried a deletion vector and column-partial deltas at the time, so
 the view was reconstructing rather than scanning one file.
+
+### And it is faster
+
+Correctness was the question S5 asked. Speed is the one that decides whether the
+answer is worth having, and it had never been measured through PostgreSQL at
+all. Both columns below are the same PostgreSQL on the same node, seconds apart,
+minimum of three runs, every answer compared:
+
+| query | heap | mirror | |
+|---|---:|---:|---:|
+| `count(*)` | 52.4 ms | 14.5 ms | **3.61×** |
+| sum one column | 90.2 ms | 26.1 ms | **3.46×** |
+| filter + aggregate | 96.3 ms | 24.4 ms | **3.94×** |
+| group by sku | 120.3 ms | 23.8 ms | **5.07×** |
+| truncate to the hour | 784.3 ms | 202.3 ms | **3.88×** |
+| **point lookup by key** | **1.5 ms** | **19.1 ms** | **0.08×** |
+
+Comparing on one node is deliberate. [docs/11](11-measured-results.md) compared a
+mirror on one machine against PostgreSQL on another and had to argue the two were
+comparable; here it is the same server, the same page cache and the same query
+text, so there is nothing to argue about.
+
+These are lower than the 5.8×–30× measured against DuckDB directly. Two honest
+reasons: the table has five columns, and a column store's win is the columns it
+does not read; and `pg_duckdb` is now in the path, which the direct comparison
+did not pay for.
+
+The last row is the trade, unchanged: 12.8× slower on a point lookup, through
+the same connection that would serve it. That is what `mode: takeover` is gated
+on ([docs/33](33-the-probe-that-gated-the-wrong-thing.md)).
 
 ### The one thing it cannot fix
 

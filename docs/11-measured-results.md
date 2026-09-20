@@ -335,6 +335,29 @@ layer.** It needs to own the columnar access path — as a table access method, 
 wrapper, or an upstream `pg_duckdb` patch (W3). That is a real scope increase over what
 docs/04 assumed, and it should be costed before phase 1 rather than discovered inside it.
 
+> **Resolved, by the third option.** The `pg_duckdb` patch (W3) turned out to be 58 lines:
+> a `duckdb.allowed_directories` GUC that confines an unprivileged backend instead of
+> disabling its filesystem outright ([docs/12](12-s5-serving-path.md)). No table access
+> method, no FDW, no fork.
+>
+> Measured end to end on PostgreSQL 17, 2.94M live rows, heap and mirror as the same query
+> on the same node, by a role holding **neither** `pg_read_server_files` nor
+> `pg_write_server_files` ([`serving_pg17.txt`](../bench/results/serving_pg17.txt)):
+>
+> | query | heap | mirror | |
+> |---|---:|---:|---:|
+> | `count(*)` | 52.4 ms | 14.5 ms | **3.61×** |
+> | sum one column | 90.2 ms | 26.1 ms | **3.46×** |
+> | filter + aggregate | 96.3 ms | 24.4 ms | **3.94×** |
+> | group by sku | 120.3 ms | 23.8 ms | **5.07×** |
+> | truncate to the hour | 784.3 ms | 202.3 ms | **3.88×** |
+> | **point lookup by key** | **1.5 ms** | **19.1 ms** | **0.08×** |
+>
+> So the two halves above are answered separately rather than jointly: Result 6's regression
+> was the *heap* path, which nothing here uses, and Result 7's privilege wall is gone. The
+> safe path is now the fast path. The last row is unchanged and is why `mode: takeover` is
+> gated — 12.8× slower on a point lookup, through the same connection that would serve it.
+
 W3 is the cheapest credible route and should be scoped first: if upstream accepts a
 directory-confined file-access GUC, Architecture A's serving path reopens with no fork.
 

@@ -203,12 +203,36 @@ there. `pg_duckdb` v1.1.1 + the `allowed_directories` patch, built against 17.
 
 | | |
 | --- | --- |
-| unprivileged role reads the mirror | 196,000 rows, sum **9805297.00** |
-| the source heap says | 196,000 rows, sum **9805297.00** |
+| unprivileged role reads the mirror | 2,940,000 rows, sum **147079460.00** |
+| the source heap says | 2,940,000 rows, sum **147079460.00** |
 | privileges held | `duckdb_users` only — **not** `pg_read_server_files`, **not** `pg_write_server_files` |
 | `/etc/passwd`, `pg_hba.conf`, `PG_VERSION`, `..` traversal, HTTP | **all denied** |
 | widening the confinement from SQL | **denied**, three ways |
 | `ORDER BY` over a NULLABLE column | agrees with the source |
+
+**And it is faster**, which is the half that was never measured. Both columns are
+the same PostgreSQL on the same node — the heap column an ordinary query, the
+mirror column through `pg_duckdb` to Parquet — minimum of three runs, every
+answer compared:
+
+| query | heap | mirror | |
+| --- | ---: | ---: | ---: |
+| count(*) | 52.4 ms | 14.5 ms | **3.61×** |
+| sum one column | 90.2 ms | 26.1 ms | **3.46×** |
+| filter + aggregate | 96.3 ms | 24.4 ms | **3.94×** |
+| group by sku | 120.3 ms | 23.8 ms | **5.07×** |
+| truncate to the hour | 784.3 ms | 202.3 ms | **3.88×** |
+| **point lookup by key** | **1.5 ms** | **19.1 ms** | **0.08×** |
+
+This closes [docs/11](docs/11-measured-results.md) Results 6 and 7, which
+together had blocked the serving path: the 1.27× regression was `pg_duckdb` over
+the *heap*, which nothing here uses, and the privilege wall on the Parquet path
+is gone. The safe path is now the fast path.
+
+The speedups are lower than the 5.8×–30× measured against DuckDB directly,
+because this is a 5-column table and the win scales with the columns a query
+does *not* read — and because `pg_duckdb` is in the path. The point lookup is the
+same trade as everywhere else in this file.
 
 The mirror carried a deletion vector and column-partial deltas, so the view was
 reconstructing rather than scanning one file. Raw output:

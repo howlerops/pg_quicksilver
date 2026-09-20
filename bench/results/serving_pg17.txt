@@ -1,10 +1,12 @@
 
 == 0. the patched extension, for PostgreSQL 17 ==
+host: 4 vCPU, 16481980 kB
+rows: 3000000
   /usr/lib/postgresql/17/lib/pg_duckdb.so carries duckdb.allowed_directories
 PostgreSQL 17.11 (Ubuntu 17.11-1.pgdg24.04+2)
 
 == 1. primary on 5455, with pg_duckdb preloaded ==
-  seeded 196000 live rows
+  seeded 2940000 live rows
 
 == 2. standby on 5456 ==
 
@@ -17,8 +19,8 @@ PostgreSQL 17.11 (Ubuntu 17.11-1.pgdg24.04+2)
   analyst: duckdb_users=t read_server_files=f write_server_files=f
 
 == 6. the mirror IS readable through PostgreSQL, and AGREES with the source ==
-  source (primary, heap)   : 196000 rows, sum 9805297.00
-  mirror (standby, parquet): 196000 rows, sum 9805297.00
+  source (primary, heap)   : 2940000 rows, sum 147079460.00
+  mirror (standby, parquet): 2940000 rows, sum 147079460.00
 
 == 7. and NOTHING else is readable ==
   denied   /etc/passwd
@@ -31,11 +33,24 @@ PostgreSQL 17.11 (Ubuntu 17.11-1.pgdg24.04+2)
   denied   widen external access
 
 == 8. ORDER BY over a NULLABLE column — measured, not assumed ==
-  source ORDER BY note DESC: <NULL>,<NULL>,<NULL>,n-199999,n-199998
-  mirror ORDER BY note DESC: <NULL>,<NULL>,<NULL>,n-199999,n-199998
+  source ORDER BY note DESC: <NULL>,<NULL>,<NULL>,n-999999,n-999998
+  mirror ORDER BY note DESC: <NULL>,<NULL>,<NULL>,n-999999,n-999998
   AGREES — the sort runs in PostgreSQL over the projected rows
 
+== 9. query performance: the heap and the mirror, on the SAME node ==
+  query                                      heap       mirror     ratio agree
+  count(*)                               52.402 ms     14.500 ms     3.61x yes
+  sum one column                         90.168 ms     26.078 ms     3.46x yes
+  filter + aggregate                     96.320 ms     24.432 ms     3.94x yes
+  group by sku, top 1                   120.320 ms     23.750 ms     5.07x yes
+  truncate to the hour                  784.322 ms    202.265 ms     3.88x yes
+  point lookup by key (OLTP)              1.491 ms     19.074 ms     0.08x yes
+
+  Both columns are the same PostgreSQL on the same node: the heap column
+  is an ordinary query, the mirror column goes through pg_duckdb to
+  Parquet. A ratio above 1 means the mirror won.
+
 == result ==
-PASS — on PostgreSQL 17, an unprivileged role read 196000 rows from the
+PASS — on PostgreSQL 17, an unprivileged role read 2940000 rows from the
 mirror THROUGH PostgreSQL, agreeing with the source heap, and reached
 nothing outside /var/lib/postgresql/qs-serve/mirror.

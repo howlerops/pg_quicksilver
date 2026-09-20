@@ -37,6 +37,10 @@ MIRROR=$BASE/mirror
 PPORT=5455
 SPORT=5456
 DB=app
+# 200k is enough to prove correctness and far too small to say anything about
+# speed: at that size everything is in shared_buffers and every query is a
+# rounding error. Section 9 is skipped below 1M for exactly that reason.
+ROWS=${ROWS:-200000}
 GO=$(cd "$(dirname "$0")/../../go" && pwd)
 HEALTH=127.0.0.1:9201
 FAIL=0
@@ -57,6 +61,9 @@ trap cleanup EXIT
 
 # ---------------------------------------------------------------- preconditions
 say "0. the patched extension, for PostgreSQL 17"
+# Section 9 is a timing comparison, so the machine is part of the result.
+printf 'host: %s vCPU, %s\n' "$(nproc)" "$(awk '/MemTotal/{print $2, $3}' /proc/meminfo)"
+printf 'rows: %s\n' "$ROWS"
 LIBDIR=$($PG/pg_config --pkglibdir 2>/dev/null) || skip "no PostgreSQL 17 pg_config"
 [ -f "$LIBDIR/pg_duckdb.so" ] || skip "no pg_duckdb.so in $LIBDIR — see bench/patches/README.md"
 
@@ -119,7 +126,7 @@ psq $PPORT "INSERT INTO events
               SELECT g, 'SKU-'||(g%997), (g%10000)/100.0,
                      CASE WHEN g <= 3 THEN NULL ELSE 'n-'||lpad(g::text,6,'0') END,
                      now() - (g||' seconds')::interval
-              FROM generate_series(1,200000) g" >/dev/null
+              FROM generate_series(1,$ROWS) g" >/dev/null
 
 # Deletes and updates before the mirror is built, so the mirror carries a
 # deletion vector and column-partial deltas and the published view has to
@@ -264,6 +271,78 @@ else
   # Deliberately not a FAIL. The rows are correct; only their order under an
   # unqualified ORDER BY differs, and qs-query prints this caveat when it emits
   # the view. Failing here would be claiming a guarantee that was never made.
+fi
+
+# ---------------------------------------------------------------- performance
+say "9. query performance: the heap and the mirror, on the SAME node"
+if [ "$ROWS" -lt 1000000 ]; then
+  echo "  skipped at $ROWS rows — everything fits in shared_buffers and the"
+  echo "  numbers would be noise. Re-run with ROWS=3000000 to measure."
+else
+  # Both sides run on the STANDBY, as the same query, against the same page
+  # cache, seconds apart. docs/11 compared a mirror on one box with PostgreSQL
+  # on another and had to argue the machines were comparable; here there is
+  # nothing to argue about.
+  #
+  # Minimum of three, not the mean: the thing being measured is how fast the
+  # engine CAN answer, and a mean over three runs on a shared box measures the
+  # noise as much as the query.
+  timed() {
+    local port=$1 user=$2 sql=$3 best=999999 t
+    for _ in 1 2 3; do
+      t=$(su postgres -c "$PG/psql -h /tmp -p $port -U $user -d $DB -q -c '\\timing on' -c \"$sql\" 2>&1" \
+          | sed -n 's/^Time: \([0-9.]*\) ms.*/\1/p' | tail -1)
+      [ -n "$t" ] || { echo "ERR"; return; }
+      awk -v a="$t" -v b="$best" 'BEGIN{exit !(a<b)}' && best=$t
+    done
+    echo "$best"
+  }
+
+  printf '  %-34s %12s %12s %9s %s\n' query heap mirror ratio agree
+  perf_row() {
+    local label=$1 heap_sql=$2 mir_sql=$3
+    local h m hv mv ratio agree
+    h=$(timed $SPORT postgres "$heap_sql")
+    m=$(timed $SPORT analyst  "$mir_sql")
+    # A fast wrong answer is not a result, so every timed query is also
+    # compared. This is the check that caught the jsonb shape in docs/32.
+    hv=$(psq $SPORT "$heap_sql")
+    mv=$(psq $SPORT "$mir_sql" analyst)
+    if [ "$hv" = "$mv" ]; then agree="yes"; else agree="NO ($hv vs $mv)"; FAIL=1; fi
+    if [ "$h" = "ERR" ] || [ "$m" = "ERR" ]; then
+      ratio="-"
+    else
+      ratio=$(awk -v h="$h" -v m="$m" 'BEGIN{ if (m>0) printf "%.2fx", h/m; else print "-" }')
+    fi
+    printf '  %-34s %10s ms %10s ms %9s %s\n' "$label" "$h" "$m" "$ratio" "$agree"
+  }
+
+  perf_row "count(*)" \
+    "SELECT count(*) FROM events" \
+    "SELECT count(*) FROM events_pq"
+  perf_row "sum one column" \
+    "SELECT sum(amount)::text FROM events" \
+    "SELECT sum(amount)::text FROM events_pq"
+  perf_row "filter + aggregate" \
+    "SELECT sum(amount)::text FROM events WHERE amount > 50" \
+    "SELECT sum(amount)::text FROM events_pq WHERE amount > 50"
+  perf_row "group by sku, top 1" \
+    "SELECT sku FROM events GROUP BY sku ORDER BY count(*) DESC, sku LIMIT 1" \
+    "SELECT sku FROM events_pq GROUP BY sku ORDER BY count(*) DESC, sku LIMIT 1"
+  perf_row "truncate to the hour" \
+    "SELECT count(DISTINCT date_trunc('hour', ts))::text FROM events" \
+    "SELECT count(DISTINCT date_trunc('hour', ts))::text FROM events_pq"
+
+  # The unflattering one, and the reason mode: takeover is gated. Leaving it out
+  # would make this table a sales document.
+  perf_row "point lookup by key (OLTP)" \
+    "SELECT sku FROM events WHERE id = 123457" \
+    "SELECT sku FROM events_pq WHERE id = 123457"
+
+  echo
+  echo "  Both columns are the same PostgreSQL on the same node: the heap column"
+  echo "  is an ordinary query, the mirror column goes through pg_duckdb to"
+  echo "  Parquet. A ratio above 1 means the mirror won."
 fi
 
 say "result"
