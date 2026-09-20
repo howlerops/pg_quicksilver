@@ -69,6 +69,30 @@ run() {
 printf '=== quicksilver suite ===\n'
 printf '  full=%s only=%s logs=%s\n' "$FULL" "${ONLY:-<all>}" "$OUT"
 
+# Free disk, checked here because of how it presents otherwise.
+#
+# A full run writes several GB: WAL on the primary, a basebackup per standby,
+# a mirror per shape, and two container images. When it runs out, PostgreSQL
+# does not say "disk full" to the script — it fails to complete crash recovery
+# and the next section reports "primary would not start". Every later section
+# then skips for the same reason, and the run ends with a column of failures
+# whose common cause is named nowhere.
+#
+# That happened, and it cost a run: matrix FAILED, bootstrap and e2e went
+# INCOMPLETE, and the actual message was four levels down in the primary's log:
+#
+#   FATAL: could not write to file "pg_wal/xlogtemp.25255": No space left on device
+NEED_GB=${NEED_GB:-6}
+avail_gb=$(df -BG --output=avail / 2>/dev/null | tail -1 | tr -dc '0-9')
+if [ -n "$avail_gb" ] && [ "$avail_gb" -lt "$NEED_GB" ]; then
+  printf '\nINCOMPLETE — %sG free on /, and a full run needs about %sG.\n' "$avail_gb" "$NEED_GB"
+  printf 'PostgreSQL reports this as "primary would not start", several sections later\n'
+  printf 'and with the cause only in its own log, so it is checked here instead.\n'
+  printf 'Reclaim with: podman system prune -af, and FORCE=1 bench/scripts/setup_cluster.sh\n'
+  exit 2
+fi
+printf '  %sG free on /\n' "$avail_gb"
+
 # ---- 0. the cluster everything below assumes ---------------------------------
 #
 # This used not to exist, and its absence was invisible: every database section
