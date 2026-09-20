@@ -64,7 +64,38 @@ jobs:
           print("CAP_SYS_RESOURCE:", "present" if bnd >> 24 & 1 else "ABSENT")
           PY
 
+      # Two ways to get a cluster, and the choice is a real one.
+      #
+      # kind, by default: free, ephemeral, and rebuilt per run — so a green run
+      # says the whole path works from nothing, which is what you want to know
+      # after a release.
+      #
+      # A standing cluster, when the KUBECONFIG secret is set: any managed
+      # Kubernetes (Civo, DigitalOcean, Linode, GKE — a single small node is
+      # enough). Use it when the question is what happens OVER TIME — a mirror
+      # that has been streaming for a week, a rollout watched across versions,
+      # a slot that has been pinning WAL since Tuesday. kind is destroyed before
+      # any of that can be observed.
+      #
+      # Set it with:  gh secret set KUBECONFIG < ~/.kube/config
+      - name: use the standing cluster, if one is configured
+        id: kube
+        env:
+          KUBECONFIG_SECRET: ${{ secrets.KUBECONFIG }}
+        run: |
+          if [ -n "$KUBECONFIG_SECRET" ]; then
+            mkdir -p "$HOME/.kube"
+            printf '%s' "$KUBECONFIG_SECRET" > "$HOME/.kube/config"
+            chmod 600 "$HOME/.kube/config"
+            echo "standing=true" >> "$GITHUB_OUTPUT"
+            echo "using the cluster from the KUBECONFIG secret"
+          else
+            echo "standing=false" >> "$GITHUB_OUTPUT"
+            echo "no KUBECONFIG secret; a kind cluster will be created"
+          fi
+
       - uses: helm/kind-action@v1
+        if: steps.kube.outputs.standing != 'true'
         with:
           cluster_name: qs
           wait: 120s
@@ -127,3 +158,11 @@ jobs:
           kubectl -n qs-e2e describe cluster app || true
           kubectl -n cnpg-system logs deploy/quicksilver --tail=100 || true
           kubectl -n qs-e2e logs -l cnpg.io/cluster=app -c quicksilver-mirror --tail=100 || true
+
+      # A standing cluster is shared and outlives the run, so the test's
+      # namespace must not. kind is thrown away and needs no such care.
+      - name: leave the standing cluster as it was found
+        if: always() && steps.kube.outputs.standing == 'true'
+        env:
+          KUBECONFIG: /home/runner/.kube/config
+        run: kubectl delete namespace qs-e2e --ignore-not-found --wait=false
