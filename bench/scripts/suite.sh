@@ -156,6 +156,11 @@ if [ "$FULL" = "1" ]; then
   run bootstrap  2400 env SHAPES="narrow" ROWS=400000 bash bench/scripts/bootstrap_profile.sh
   run pruning     900 python3 bench/scripts/pruning_check.py \
                      --mirror /var/lib/postgresql/qs17/mx-narrow
+  # The claim the project rests on, re-measured rather than quoted. docs/36 is
+  # drawn from the file this writes, so a regression in the serving path shows
+  # up as a changed chart rather than as a document that has quietly stopped
+  # being true.
+  run projection 5400 bash bench/scripts/projection_benefit.sh
 fi
 
 # ---- 5. destructive, last ----------------------------------------------------

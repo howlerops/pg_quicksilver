@@ -357,6 +357,14 @@ docs/04 assumed, and it should be costed before phase 1 rather than discovered i
 > was the *heap* path, which nothing here uses, and Result 7's privilege wall is gone. The
 > safe path is now the fast path. The last row is unchanged and is why `mode: takeover` is
 > gated — 12.8× slower on a point lookup, through the same connection that would serve it.
+>
+> **These ratios are the weak end of the range, not the middle of it.** They were
+> measured on a FIVE-column table, and a column store's advantage is bytes it does
+> not read — five columns leave almost nothing to skip. On a twenty-column fact
+> table the same queries reach 11.19× and 12.69×, and the size of the win turns out
+> to be a function of how many columns the query touches (2.00× when it reads all
+> of them). [docs/36](36-does-the-projection-pay.md) measures that curve at three
+> scales; treat these numbers as the floor it starts from.
 
 W3 is the cheapest credible route and should be scoped first: if upstream accepts a
 directory-confined file-access GUC, Architecture A's serving path reopens with no fork.

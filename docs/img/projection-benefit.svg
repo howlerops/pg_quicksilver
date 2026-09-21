@@ -1,0 +1,95 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 940 480" width="940" height="480" font-family="system-ui,-apple-system,Segoe UI,sans-serif" role="img" aria-label="Mirror speedup against PostgreSQL, by columns touched and table size">
+<style>
+    :root{--surface:#fcfcfb;--ink:#0b0b0b;--ink2:#52514e;--muted:#898781;
+          --grid:#e1e0d9;--axis:#c3c2b7;--s1:#2a78d6;--s2:#eb6834;--s3:#1baf7a;}
+    @media (prefers-color-scheme:dark){
+      :root{--surface:#1a1a19;--ink:#ffffff;--ink2:#c3c2b7;--muted:#898781;
+            --grid:#2c2c2a;--axis:#383835;--s1:#3987e5;--s2:#d95926;--s3:#199e70;}
+    }
+    .ttl{fill:var(--ink);font-size:15px;font-weight:600}
+    .sub{fill:var(--ink2);font-size:11.5px}
+    .ax{fill:var(--muted);font-size:10.5px;font-variant-numeric:tabular-nums}
+    .lbl{font-size:11px;font-weight:600;font-variant-numeric:tabular-nums}
+    .par{fill:var(--ink2);font-size:10.5px;font-weight:600}
+    .pnl{fill:var(--ink);font-size:12px;font-weight:600}
+    </style>
+<rect width="940" height="480" fill="var(--surface)"/>
+<text class="ttl" x="20" y="26">The projection pays in proportion to what it lets you skip</text>
+<text class="sub" x="20" y="45">Speedup vs the same query on the PostgreSQL heap, same node, same page cache. Above 1&#215; the mirror wins. Best of 3.</text>
+<line x1="62" y1="388.0" x2="610" y2="388.0" stroke="var(--grid)" stroke-width="1"/>
+<line x1="706" y1="388.0" x2="898" y2="388.0" stroke="var(--grid)" stroke-width="1"/>
+<text class="ax" x="54" y="391.5" text-anchor="end">0.03x</text>
+<line x1="62" y1="352.0" x2="610" y2="352.0" stroke="var(--grid)" stroke-width="1"/>
+<line x1="706" y1="352.0" x2="898" y2="352.0" stroke="var(--grid)" stroke-width="1"/>
+<text class="ax" x="54" y="355.5" text-anchor="end">0.06x</text>
+<line x1="62" y1="318.0" x2="610" y2="318.0" stroke="var(--grid)" stroke-width="1"/>
+<line x1="706" y1="318.0" x2="898" y2="318.0" stroke="var(--grid)" stroke-width="1"/>
+<text class="ax" x="54" y="321.5" text-anchor="end">0.12x</text>
+<line x1="62" y1="284.0" x2="610" y2="284.0" stroke="var(--grid)" stroke-width="1"/>
+<line x1="706" y1="284.0" x2="898" y2="284.0" stroke="var(--grid)" stroke-width="1"/>
+<text class="ax" x="54" y="287.5" text-anchor="end">0.25x</text>
+<line x1="62" y1="250.0" x2="610" y2="250.0" stroke="var(--grid)" stroke-width="1"/>
+<line x1="706" y1="250.0" x2="898" y2="250.0" stroke="var(--grid)" stroke-width="1"/>
+<text class="ax" x="54" y="253.5" text-anchor="end">0.50x</text>
+<line x1="62" y1="216.0" x2="610" y2="216.0" stroke="var(--axis)" stroke-width="2" stroke-dasharray="5 4"/>
+<line x1="706" y1="216.0" x2="898" y2="216.0" stroke="var(--axis)" stroke-width="2" stroke-dasharray="5 4"/>
+<text class="ax" x="54" y="219.5" text-anchor="end">1x</text>
+<line x1="62" y1="182.0" x2="610" y2="182.0" stroke="var(--grid)" stroke-width="1"/>
+<line x1="706" y1="182.0" x2="898" y2="182.0" stroke="var(--grid)" stroke-width="1"/>
+<text class="ax" x="54" y="185.5" text-anchor="end">2x</text>
+<line x1="62" y1="148.0" x2="610" y2="148.0" stroke="var(--grid)" stroke-width="1"/>
+<line x1="706" y1="148.0" x2="898" y2="148.0" stroke="var(--grid)" stroke-width="1"/>
+<text class="ax" x="54" y="151.5" text-anchor="end">4x</text>
+<line x1="62" y1="114.0" x2="610" y2="114.0" stroke="var(--grid)" stroke-width="1"/>
+<line x1="706" y1="114.0" x2="898" y2="114.0" stroke="var(--grid)" stroke-width="1"/>
+<text class="ax" x="54" y="117.5" text-anchor="end">8x</text>
+<line x1="62" y1="80.0" x2="610" y2="80.0" stroke="var(--grid)" stroke-width="1"/>
+<line x1="706" y1="80.0" x2="898" y2="80.0" stroke="var(--grid)" stroke-width="1"/>
+<text class="ax" x="54" y="83.5" text-anchor="end">16x</text>
+<text class="par" x="606" y="231.0" text-anchor="end">parity</text>
+<text class="pnl" x="62" y="66">Analytical scans</text>
+<text class="ax" x="62.0" y="406" text-anchor="middle">0</text>
+<text class="ax" x="187.7" y="406" text-anchor="middle">1</text>
+<text class="ax" x="239.8" y="406" text-anchor="middle">2</text>
+<text class="ax" x="343.1" y="406" text-anchor="middle">5</text>
+<text class="ax" x="459.6" y="406" text-anchor="middle">10</text>
+<text class="ax" x="610.0" y="406" text-anchor="middle">19</text>
+<text class="ax" x="336" y="426" text-anchor="middle" style="fill:var(--ink2)">columns the query touches (of 19)</text>
+<polyline fill="none" stroke="var(--s1)" stroke-width="2" stroke-linejoin="round" points="62.0,220.1 187.7,183.7 239.8,195.5 343.1,181.8 459.6,183.7 610.0,212.2"/>
+<circle cx="62.0" cy="220.1" r="5" fill="var(--s1)" stroke="var(--surface)" stroke-width="2"/>
+<circle cx="187.7" cy="183.7" r="5" fill="var(--s1)" stroke="var(--surface)" stroke-width="2"/>
+<circle cx="239.8" cy="195.5" r="5" fill="var(--s1)" stroke="var(--surface)" stroke-width="2"/>
+<circle cx="343.1" cy="181.8" r="5" fill="var(--s1)" stroke="var(--surface)" stroke-width="2"/>
+<circle cx="459.6" cy="183.7" r="5" fill="var(--s1)" stroke="var(--surface)" stroke-width="2"/>
+<circle cx="610.0" cy="212.2" r="5" fill="var(--s1)" stroke="var(--surface)" stroke-width="2"/>
+<text class="lbl" x="198.7" y="174.7" text-anchor="start" fill="var(--s1)">0.49M rows &#183; 1.9&#215;</text>
+<polyline fill="none" stroke="var(--s2)" stroke-width="2" stroke-linejoin="round" points="62.0,158.3 187.7,123.3 239.8,129.8 343.1,136.7 459.6,154.5 610.0,182.5"/>
+<circle cx="62.0" cy="158.3" r="5" fill="var(--s2)" stroke="var(--surface)" stroke-width="2"/>
+<circle cx="187.7" cy="123.3" r="5" fill="var(--s2)" stroke="var(--surface)" stroke-width="2"/>
+<circle cx="239.8" cy="129.8" r="5" fill="var(--s2)" stroke="var(--surface)" stroke-width="2"/>
+<circle cx="343.1" cy="136.7" r="5" fill="var(--s2)" stroke="var(--surface)" stroke-width="2"/>
+<circle cx="459.6" cy="154.5" r="5" fill="var(--s2)" stroke="var(--surface)" stroke-width="2"/>
+<circle cx="610.0" cy="182.5" r="5" fill="var(--s2)" stroke="var(--surface)" stroke-width="2"/>
+<text class="lbl" x="198.7" y="144.3" text-anchor="start" fill="var(--s2)">1.96M rows &#183; 6.6&#215;</text>
+<polyline fill="none" stroke="var(--s3)" stroke-width="2" stroke-linejoin="round" points="62.0,117.2 187.7,97.5 239.8,106.3 343.1,123.4 459.6,145.6 610.0,182.0"/>
+<circle cx="62.0" cy="117.2" r="5" fill="var(--s3)" stroke="var(--surface)" stroke-width="2"/>
+<circle cx="187.7" cy="97.5" r="5" fill="var(--s3)" stroke="var(--surface)" stroke-width="2"/>
+<circle cx="239.8" cy="106.3" r="5" fill="var(--s3)" stroke="var(--surface)" stroke-width="2"/>
+<circle cx="343.1" cy="123.4" r="5" fill="var(--s3)" stroke="var(--surface)" stroke-width="2"/>
+<circle cx="459.6" cy="145.6" r="5" fill="var(--s3)" stroke="var(--surface)" stroke-width="2"/>
+<circle cx="610.0" cy="182.0" r="5" fill="var(--s3)" stroke="var(--surface)" stroke-width="2"/>
+<text class="lbl" x="198.7" y="88.5" text-anchor="start" fill="var(--s3)">5.88M rows &#183; 11.2&#215;</text>
+<text class="pnl" x="706" y="66">Point lookup</text>
+<rect x="718.0" y="216.0" width="40.0" height="123.9" fill="var(--s1)" rx="4"/>
+<text class="lbl" x="738.0" y="354.9" text-anchor="middle" fill="var(--s1)">0.08&#215;</text>
+<text class="ax" x="738.0" y="406" text-anchor="middle">0.5M</text>
+<rect x="782.0" y="216.0" width="40.0" height="130.4" fill="var(--s2)" rx="4"/>
+<text class="lbl" x="802.0" y="361.4" text-anchor="middle" fill="var(--s2)">0.07&#215;</text>
+<text class="ax" x="802.0" y="406" text-anchor="middle">2.0M</text>
+<rect x="846.0" y="216.0" width="40.0" height="138.0" fill="var(--s3)" rx="4"/>
+<text class="lbl" x="866.0" y="369.0" text-anchor="middle" fill="var(--s3)">0.06&#215;</text>
+<text class="ax" x="866.0" y="406" text-anchor="middle">5.9M</text>
+<text class="ax" x="802" y="426" text-anchor="middle" style="fill:var(--ink2)">live rows</text>
+<text class="sub" x="20" y="452">Left: fewer columns read &#8594; more the mirror skips &#8594; bigger win, and every line rises with size as the heap stops fitting in RAM.</text>
+<text class="sub" x="20" y="469">Right: the same mirror is ~16&#215; SLOWER for a single-row probe, and gets worse with scale. That is why mode: takeover is gated.</text>
+</svg>
