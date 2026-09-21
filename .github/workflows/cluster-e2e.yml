@@ -138,8 +138,24 @@ jobs:
         run: |
           docker build --target plugin -t localhost/qs/pg_quicksilver-plugin:dev -f deploy/Dockerfile .
           docker build --target mirror -t localhost/qs/pg_quicksilver-mirror:dev -f deploy/Dockerfile .
+
+          # A SECOND tag on the same image, for the roll. Section 4 proves the
+          # operator replaces Pods when sidecarImage changes, so it needs a
+          # reference that differs from the running one AND that the kubelet can
+          # obtain. Pulling, it used :latest from ghcr; side-loaded, nothing had
+          # ever put :latest on the node, so the Pods went to ImagePullBackOff
+          # and the section timed out reporting that no Pod was replaced.
+          #
+          # Not :latest deliberately: Kubernetes defaults that tag's
+          # imagePullPolicy to Always, which ignores the node's copy and tries
+          # the registry anyway.
+          docker tag localhost/qs/pg_quicksilver-mirror:dev \
+                     localhost/qs/pg_quicksilver-mirror:dev-rolled
+
           kind load docker-image --name qs \
-            localhost/qs/pg_quicksilver-plugin:dev localhost/qs/pg_quicksilver-mirror:dev
+            localhost/qs/pg_quicksilver-plugin:dev \
+            localhost/qs/pg_quicksilver-mirror:dev \
+            localhost/qs/pg_quicksilver-mirror:dev-rolled
           docker image inspect localhost/qs/pg_quicksilver-mirror:dev \
             --format 'mirror runs as {{.Config.User}}'
 
@@ -181,6 +197,9 @@ jobs:
           VERSION: ${{ github.event.inputs.images == 'source' && 'dev' || steps.v.outputs.version }}
           REGISTRY: ${{ github.event.inputs.images == 'source' && 'localhost/qs' || format('ghcr.io/{0}', github.repository_owner) }}
           LOCAL_IMAGES: ${{ github.event.inputs.images == 'source' && '1' || '0' }}
+          # Empty in published mode, where the script's own default (:latest on
+          # ghcr) is right and reachable.
+          ROLL_IMAGE: ${{ github.event.inputs.images == 'source' && 'localhost/qs/pg_quicksilver-mirror:dev-rolled' || '' }}
           GHCR_USER: ${{ github.actor }}
           GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: bash bench/scripts/cluster_e2e.sh

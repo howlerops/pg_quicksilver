@@ -39,6 +39,14 @@ GHCR_TOKEN=${GHCR_TOKEN:-}
 # Side-load locally built images instead of pulling. Useful on a laptop; it does
 # NOT prove the pull path, so CI leaves it off and the summary says which ran.
 LOCAL_IMAGES=${LOCAL_IMAGES:-0}
+# The image section 4 rolls TO. It has to be a different reference from the one
+# the Pods are already running — that difference is the whole stimulus — and it
+# has to be an image the kubelet can actually obtain, or the Pods go to
+# ImagePullBackOff and the section reports "no Pod was replaced" after ten
+# minutes of waiting for something that could never happen. That is exactly what
+# it did: :latest exists on ghcr, so the published path was fine, and nothing
+# had ever loaded :latest onto a kind node.
+ROLL_IMAGE=${ROLL_IMAGE:-$REGISTRY/pg_quicksilver-mirror:latest}
 TIMEOUT=${TIMEOUT:-600}
 FAIL=0
 
@@ -82,6 +90,15 @@ say "1. credentials for the pull, in BOTH namespaces"
 # a secret in one does nothing for the other.
 if [ "$LOCAL_IMAGES" = "1" ]; then
   ok "LOCAL_IMAGES=1 — side-loading, which does NOT exercise the registry"
+  # Checked HERE, seventeen minutes before section 4 would need it. Nothing
+  # side-loads :latest, so the default roll target cannot be pulled in this
+  # mode, and the failure it produces — "no Pod was replaced within 10 minutes"
+  # — reads like the operator ignoring a spec change rather than a tag that was
+  # never on the node.
+  if [ "$ROLL_IMAGE" = "$REGISTRY/pg_quicksilver-mirror:latest" ]; then
+    skip "LOCAL_IMAGES=1 and ROLL_IMAGE is still the default :latest, which is not loaded onto the node. Load a second tag and pass ROLL_IMAGE=<that tag>."
+  fi
+  ok "section 4 will roll to $ROLL_IMAGE"
   PULL_ARGS=()
   CLUSTER_PULL_SECRETS=""
 elif [ -n "$GHCR_TOKEN" ]; then
@@ -229,7 +246,8 @@ else
 before=$(kubectl -n "$NS" get pods -l "$INSTANCES" \
   -o jsonpath='{range .items[*]}{.metadata.uid}{" "}{end}')
 kubectl -n "$NS" patch cluster "$CLUSTER" --type merge -p \
-  "{\"spec\":{\"plugins\":[{\"name\":\"quicksilver.howlerops.io\",\"parameters\":{\"tables\":\"public.events\",\"freshnessSLO\":\"30s\",\"sidecarImage\":\"$REGISTRY/pg_quicksilver-mirror:latest\"}}]}}" >/dev/null
+  "{\"spec\":{\"plugins\":[{\"name\":\"quicksilver.howlerops.io\",\"parameters\":{\"tables\":\"public.events\",\"freshnessSLO\":\"30s\",\"sidecarImage\":\"$ROLL_IMAGE\"}}]}}" >/dev/null
+echo "  patched sidecarImage to $ROLL_IMAGE"
 
 rolled=0
 for _ in $(seq 60); do
@@ -241,7 +259,12 @@ done
 if [ "$rolled" = "1" ]; then
   ok "the operator rolled the instances after sidecarImage changed"
 else
-  bad "no Pod was replaced within 10 minutes of changing sidecarImage"
+  # "No Pod was replaced" has two very different causes — the operator did not
+  # act, or it acted and the replacement cannot start — and this said neither.
+  # The replacement's waiting reason tells them apart in one line.
+  kubectl -n "$NS" get pods -l "$INSTANCES" -o jsonpath=\
+'{range .items[*]}{.metadata.name}{" "}{.status.phase}{"\n"}{range .status.initContainerStatuses[*]}    init/{.name} {.image} {.state.waiting.reason} {.state.waiting.message}{"\n"}{end}{end}' 2>/dev/null
+  bad "no Pod was replaced within 10 minutes of changing sidecarImage to $ROLL_IMAGE"
 fi
 
 fi

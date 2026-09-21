@@ -98,11 +98,37 @@ rather than the product:
 | 2 | no `<cluster>-superuser` Secret | the test |
 | 3 | `public.events` never created | the test |
 | 4 | **port 9187** | **the product** |
+| 5 | rolling to a tag nothing had loaded | the test |
 
 That ratio is the honest shape of first-contact testing: most of what breaks is
 the harness learning what the environment actually requires. It is also why the
 sequence was worth running — three harness bugs are cheap, and the fourth
 finding is one that would have met the first person who ever installed this.
+
+Run 5 is where 9188 was confirmed, and it is worth quoting because it is the
+first time any of this has been seen rather than argued:
+
+```
+Port: 9188/TCP (qs-health)
+instance-manager  address=":9187"        ← bound, no collision
+postgres:  "database system is ready to accept connections"
+mirror:    "this node is the primary — standing down"
+```
+
+The same run then failed in section 4, on the harness again. It rolls the
+instances by patching `sidecarImage` to `:latest`, which exists on ghcr and was
+never loaded onto a kind node — so in `images: source` the replacement Pods went
+to `ImagePullBackOff` and the section reported *"no Pod was replaced within 10
+minutes"*. True, and misleading: the operator had acted, and the Pod it created
+could not start.
+
+Two fixes, and the second is the interesting one. The roll target is now
+`ROLL_IMAGE`, a second tag loaded beside the first — deliberately not `:latest`,
+because Kubernetes defaults that tag's `imagePullPolicy` to `Always` and would
+go to the registry even with the image on the node. And the check for it runs in
+the **preconditions**, seventeen minutes before section 4 needs it, because a
+misconfiguration that announces itself as a ten-minute timeout is a
+misconfiguration that gets diagnosed as something else.
 
 A second, smaller thing the same run exposed: the sidecar logged one identical
 WARN every five seconds while waiting for a PostgreSQL that could not start —
