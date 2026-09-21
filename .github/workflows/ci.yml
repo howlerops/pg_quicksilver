@@ -243,6 +243,13 @@ jobs:
   # the Parquet is right and proves nothing about whether an ordinary role can
   # reach it from the database they already have a connection to. This is the
   # only place that question is asked.
+  #
+  # The section itself takes about 20 SECONDS after an hour of building, which
+  # looks wrong and is not: it loads 200k rows on purpose, because at that size
+  # everything is in shared_buffers and any timing would be noise. It still
+  # builds a primary, a standby, a mirror and a view, reads it back as an
+  # unprivileged role, and proves eight things are denied. serving_pg17.sh's
+  # own section 9 skips the performance comparison below 1M rows and says so.
   serving:
     name: serving through PostgreSQL 17
     runs-on: ubuntu-latest
