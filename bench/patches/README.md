@@ -43,5 +43,27 @@ the mirror too. Both orderings were measured; see the commit history.
 the directory denied (including path traversal and HTTP), confinement not widenable.
 No measurable query-performance cost.
 
+**How to build it.** The recipe lives in the `serving` job of
+[`.github/workflows/ci.yml`](../../.github/workflows/ci.yml), because a recipe that only
+exists in prose is a recipe nobody can check:
+
+```sh
+git clone --depth 1 --branch v1.1.1 --recurse-submodules --shallow-submodules \
+  https://github.com/duckdb/pg_duckdb /tmp/pg_duckdb
+cd /tmp/pg_duckdb
+git apply /path/to/pg_duckdb-allowed-directories.patch
+PG_CONFIG=/usr/lib/postgresql/17/bin/pg_config make -j"$(nproc)"
+sudo PG_CONFIG=/usr/lib/postgresql/17/bin/pg_config make install
+```
+
+It compiles DuckDB (v1.4.3, the bundled submodule) as well, so it is about an hour the
+first time. CI caches the result on this patch's hash: change the patch and it rebuilds,
+change anything else and it does not.
+
+`bench/scripts/serving_pg17.sh` checks for the **GUC**, not the file — `grep -a
+duckdb.allowed_directories` over `pg_duckdb.so`. A stock build would pass a file check and
+then fail much later as "permission denied" on the mirror, which reads exactly like the bug
+this patch exists to fix.
+
 **Status:** prototype, not upstreamed. Intended as the basis for an upstream PR — see
 [docs/12](../../docs/12-s5-serving-path.md) for what would need adding first.

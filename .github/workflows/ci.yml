@@ -15,6 +15,12 @@
 # this workflow preserves that distinction rather than flattening it to success
 # — a CI run that reports a skipped section as green is how a benchmark comes to
 # measure nothing.
+#
+# That rule is also what produced the `serving` job below. The serving section
+# needs a pg_duckdb that is not packaged anywhere — v1.1.1 plus this
+# repository's confinement patch — so for weeks it reported INCOMPLETE and took
+# the whole run down with it. There were two ways out: stop asking, or build the
+# thing. It builds the thing.
 
 name: ci
 
@@ -197,10 +203,20 @@ jobs:
       # `|| rc=$?`, not `rc=$?` on the next line: GitHub runs each step under
       # `bash -e`, so a failing suite would abort the step before the exit code
       # could be read and the INCOMPLETE case would never be reported as such.
+      #
+      # SKIP=serving, and the `serving` job below is the whole reason that is
+      # allowed. Building the patched pg_duckdb takes about an hour on a cold
+      # cache; making this ten-minute job wait for it would mean nobody sees a
+      # unit-test failure until the extension has finished compiling. The
+      # section is not dropped, it is moved, and suite.sh prints and counts
+      # what SKIP removed so this run cannot be mistaken for a whole one.
+      # `sudo -E env SKIP=…`, not a step-level env: — -E asks sudo to preserve
+      # the environment and sudoers decides whether it may. env(1) sets the
+      # variable in the child itself, which nothing can decline.
       - name: suite
         run: |
           rc=0
-          sudo -E bash bench/scripts/suite.sh || rc=$?
+          sudo -E env SKIP=serving bash bench/scripts/suite.sh || rc=$?
           if [ "$rc" = "2" ]; then
             echo "::error::the suite reported INCOMPLETE - a section could not run, which is not a pass: it told us nothing."
           fi
@@ -211,6 +227,128 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: suite-logs
+          path: /tmp/qs-suite/
+          if-no-files-found: ignore
+          retention-days: 7
+
+  # ---- 6. answering a SELECT through PostgreSQL 17 --------------------------
+  # Its own job because of its own dependency: pg_duckdb v1.1.1 plus
+  # bench/patches/pg_duckdb-allowed-directories.patch, which is not packaged
+  # anywhere and has to be compiled — DuckDB included. That is roughly an hour
+  # the first time and nothing at all afterwards, because the built extension is
+  # cached on the patch's own hash: change the patch and it rebuilds, touch
+  # anything else and it does not.
+  #
+  # Every other section queries the mirror with DuckDB directly, which proves
+  # the Parquet is right and proves nothing about whether an ordinary role can
+  # reach it from the database they already have a connection to. This is the
+  # only place that question is asked.
+  serving:
+    name: serving through PostgreSQL 17
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go/go.mod
+          cache-dependency-path: go/go.sum
+
+      - name: install PostgreSQL 17 and its headers
+        run: |
+          sudo systemctl stop postgresql || true
+          curl -sS https://www.postgresql.org/media/keys/ACCC4CF8.asc \
+            | sudo gpg --dearmor -o /usr/share/keyrings/pgdg.gpg
+          echo "deb [signed-by=/usr/share/keyrings/pgdg.gpg] \
+            http://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" \
+            | sudo tee /etc/apt/sources.list.d/pgdg.list
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq postgresql-17 postgresql-server-dev-17
+          /usr/lib/postgresql/17/bin/postgres --version
+
+      # Keyed on the patch, the upstream tag and the PostgreSQL major, because
+      # those are the only three things that change what comes out. The cached
+      # object is ~130MB (pg_duckdb.so and the libduckdb.so it links against),
+      # and it is read on every push, so GitHub's least-recently-used eviction
+      # leaves it alone.
+      - name: the patched extension, if it has been built before
+        id: ext
+        uses: actions/cache@v4
+        with:
+          path: /tmp/pgduck-stage
+          key: pgduck-v1.1.1-pg17-${{ runner.os }}-${{ hashFiles('bench/patches/pg_duckdb-allowed-directories.patch') }}
+
+      - name: build pg_duckdb v1.1.1 with the confinement patch
+        if: steps.ext.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+
+          # DuckDB's build tree is several GB and the runner ships tens of GB of
+          # toolchains this job never touches. Reclaimed before rather than
+          # diagnosed after: out of disk here presents as a linker error.
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+                      /usr/local/share/boost || true
+          df -h / | tail -1
+
+          # From pg_duckdb's own Dockerfile, minus the packages that are only
+          # there to build PostgreSQL itself (we use the pgdg server-dev), and
+          # minus libtinfo5, which does not exist on noble.
+          sudo apt-get install -y -qq build-essential cmake ninja-build git \
+            pkg-config ccache libssl-dev liblz4-dev libcurl4-openssl-dev zlib1g-dev
+
+          # v1.1.1 is 7b0db3737a1ab2dfb182b742322426e3c4b500af. The submodule is
+          # DuckDB v1.4.3 and is shallow: the Makefile passes
+          # OVERRIDE_GIT_DESCRIBE, so DuckDB does not need the history.
+          git clone --depth 1 --branch v1.1.1 \
+            --recurse-submodules --shallow-submodules \
+            https://github.com/duckdb/pg_duckdb /tmp/pg_duckdb
+          cd /tmp/pg_duckdb
+          git apply --verbose \
+            "$GITHUB_WORKSPACE/bench/patches/pg_duckdb-allowed-directories.patch"
+
+          export PG_CONFIG=/usr/lib/postgresql/17/bin/pg_config
+          make -j"$(nproc)"
+
+          # `install: install-duckdb` puts libduckdb.so in place with a plain
+          # install(1), which does not create its directory — under DESTDIR that
+          # directory does not exist yet, and PGXS's installdirs has not run.
+          mkdir -p "/tmp/pgduck-stage$($PG_CONFIG --pkglibdir)" \
+                   "/tmp/pgduck-stage$($PG_CONFIG --sharedir)/extension"
+          make install DESTDIR=/tmp/pgduck-stage
+
+          # The build tree is the several GB; the suite checks for free disk
+          # before it will run, and it is right to.
+          cd /
+          rm -rf /tmp/pg_duckdb
+          find /tmp/pgduck-stage -type f -printf '  %10s  %p\n'
+
+      - name: install it, and check it is the patched build
+        run: |
+          set -euo pipefail
+          sudo cp -a /tmp/pgduck-stage/. /
+          lib=$(/usr/lib/postgresql/17/bin/pg_config --pkglibdir)
+          # grep -a on the binary, not `strings | grep -q`: under pipefail that
+          # pipeline reports failure on success, because grep -q exits at the
+          # first match and strings dies of SIGPIPE. serving_pg17.sh has the
+          # same check and the same comment, for the same reason.
+          grep -qa duckdb.allowed_directories "$lib/pg_duckdb.so" \
+            || { echo "::error::the built pg_duckdb has no duckdb.allowed_directories - the patch did not take"; exit 1; }
+          echo "$lib/pg_duckdb.so carries duckdb.allowed_directories"
+
+      - name: serving
+        run: |
+          rc=0
+          sudo -E env ONLY=serving bash bench/scripts/suite.sh || rc=$?
+          if [ "$rc" = "2" ]; then
+            echo "::error::serving reported INCOMPLETE - it could not run, which is not a pass. This job exists to make it runnable, so an INCOMPLETE here means the extension build or install is wrong, not that the dependency is missing."
+          fi
+          exit "$rc"
+
+      - name: logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: serving-logs
           path: /tmp/qs-suite/
           if-no-files-found: ignore
           retention-days: 7

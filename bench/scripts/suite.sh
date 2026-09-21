@@ -24,15 +24,24 @@
 #   bash bench/scripts/suite.sh              # correctness, ~15 minutes
 #   FULL=1 bash bench/scripts/suite.sh       # + the workload matrix and serving
 #   ONLY="e2e rendering" bash bench/scripts/suite.sh
+#   SKIP="serving" bash bench/scripts/suite.sh
+#
+# SKIP is NOT a fourth outcome and it is not a quiet way to get green. It names
+# sections this caller runs SOMEWHERE ELSE — CI builds a patched pg_duckdb in a
+# job of its own, which takes an hour on a cold cache and has no business
+# blocking the ten-minute one. A skipped section is printed, counted, and named
+# again in the summary, so a run that skipped something cannot be read as a run
+# that covered it.
 set -uo pipefail
 cd "$(dirname "$0")/../.."
 
 FULL=${FULL:-0}
 ONLY=${ONLY:-}
+SKIP=${SKIP:-}
 OUT=${OUT:-/tmp/qs-suite}
 mkdir -p "$OUT"
 
-PASSED=0; FAILED=0; INCOMPLETE=0
+PASSED=0; FAILED=0; INCOMPLETE=0; SKIPPED=0
 declare -a RESULTS
 
 # run <name> <timeout-seconds> <command...>
@@ -43,6 +52,16 @@ declare -a RESULTS
 run() {
   local name=$1 limit=$2; shift 2
   if [ -n "$ONLY" ] && ! printf '%s\n' $ONLY | grep -qx "$name"; then
+    return 0
+  fi
+  # Loud, and counted. ONLY narrows the run and says so in the header; SKIP
+  # removes one section from an otherwise whole run, which is the case where a
+  # reader could mistake the result for full coverage.
+  if [ -n "$SKIP" ] && printf '%s\n' $SKIP | grep -qx "$name"; then
+    SKIPPED=$((SKIPPED+1))
+    RESULTS+=("SKIPPED     $name — excluded by SKIP; it must run somewhere else")
+    printf '\n########  %-22s  ########\n' "$name"
+    printf 'SKIPPED  %s — excluded by SKIP. Not run here, and not covered here.\n' "$name"
     return 0
   fi
   local log="$OUT/$name.txt"
@@ -146,7 +165,11 @@ run e2e          1800 bash bench/scripts/e2e_mirror.sh
 
 printf '\n========================================\n'
 for r in "${RESULTS[@]}"; do printf '  %s\n' "$r"; done
-printf '\n  %d passed, %d failed, %d incomplete\n' "$PASSED" "$FAILED" "$INCOMPLETE"
+printf '\n  %d passed, %d failed, %d incomplete, %d skipped\n' \
+  "$PASSED" "$FAILED" "$INCOMPLETE" "$SKIPPED"
+if [ "$SKIPPED" -gt 0 ]; then
+  printf '  skipped by SKIP="%s" — this run does NOT cover them\n' "$SKIP"
+fi
 
 if [ "$FAILED" -gt 0 ]; then
   printf '\nFAIL\n'; exit 1
@@ -156,5 +179,11 @@ if [ "$INCOMPLETE" -gt 0 ]; then
   # that as success is the failure mode this whole suite is arranged against.
   printf '\nINCOMPLETE — %d section(s) could not run, which is NOT a pass\n' "$INCOMPLETE"
   exit 2
+fi
+if [ "$SKIPPED" -gt 0 ]; then
+  # Still a pass — nothing ran and disagreed — but the word on its own would
+  # claim more than the run did.
+  printf '\nPASS, with %d section(s) skipped by SKIP and NOT covered here\n' "$SKIPPED"
+  exit 0
 fi
 printf '\nPASS\n'
