@@ -208,7 +208,26 @@ func MirrorSidecar(clusterName string, cfg Config) *corev1.Container {
 }
 
 // HealthPort is where the sidecar serves /readyz, /healthz and /metrics.
-const HealthPort = 9187
+//
+// NOT 9187, which is what this used to be. Every container in a Pod shares one
+// network namespace, and CloudNativePG's instance manager serves its own
+// metrics on :9187. The mirror is a NATIVE sidecar, so it starts first, binds
+// the port, and then the instance manager cannot:
+//
+//	{"level":"error","msg":"Error while running the web server",
+//	 "address":":9187","error":"listen tcp :9187: bind: address already in use"}
+//	Error: unretryable: listen tcp :9187: bind: address already in use
+//
+// It calls that unretryable and exits, so PostgreSQL never starts and the Pod
+// crash-loops. In shadow mode. On every instance. The plugin whose entire
+// premise is that it does not disturb the database was stopping it from
+// booting.
+//
+// Nothing here could have caught it: the sidecar's port only collides inside a
+// real CNPG instance Pod, and until bench/scripts/cluster_e2e.sh there was
+// never one. 9188 is adjacent, free in CNPG's layout (5432, 8000, 8010, 9187),
+// and deliberately not another round number someone else has claimed.
+const HealthPort = 9188
 
 func boolPtr(b bool) *bool { return &b }
 

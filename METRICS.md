@@ -262,6 +262,7 @@ Bugs these caught, each of which produced *plausible* output:
 - **A table added to an existing slot never snapshotted** — 1,010 rows against a source of 6,000, no error.
 - **A persisted index 2.7× the size of the Parquet it indexed**, and slower to load than rebuilding from it.
 - **An A/B that compared a configuration with itself** and looked like a free knob.
+- **The sidecar bound the port CloudNativePG needs** ([docs/35](docs/35-the-port-that-stopped-postgresql.md)) — `:9187`, the instance manager's metrics port, in a shared network namespace. As a native sidecar it started first, so PostgreSQL could not bind, called it `unretryable` and exited: the instance Pod crash-looped in `shadow` mode, on every instance. Only visible inside a real CNPG Pod.
 - **A benchmark setting that outlived its run** ([docs/34](docs/34-a-setting-that-outlived-its-run.md)) — `synchronized_standby_slots` left pointing at a slot that no longer existed, which stops a *failover* logical slot dead with no error to any client. The mirror bootstrapped, passed readiness and never gained a row. An ordinary slot on the same server was unaffected, which is what made it look like a sidecar bug.
 
 ---

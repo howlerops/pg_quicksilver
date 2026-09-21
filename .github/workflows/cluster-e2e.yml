@@ -29,6 +29,12 @@ on:
         description: "Published version to pull, e.g. 0.0.2"
         required: true
         default: "0.0.2"
+      images:
+        description: "published = test the release; source = build this checkout and load it into kind"
+        required: false
+        default: "published"
+        type: choice
+        options: [published, source]
   workflow_run:
     workflows: ["release"]
     types: [completed]
@@ -116,10 +122,33 @@ jobs:
           echo "version=$v" >> "$GITHUB_OUTPUT"
           echo "pulling $v"
 
+      # Build this checkout instead of pulling the release.
+      #
+      # Without this the job could only ever test the PUBLISHED images, so a fix
+      # to the sidecar was untestable until it had been released — which is how
+      # a log-noise fix sat in main through a whole run that still showed the
+      # old behaviour, and how the 9187 port collision would have needed a
+      # release to verify. Iterating on a product bug through a release cycle is
+      # not iterating.
+      #
+      # `published` stays the default because verifying the release is this
+      # workflow's other job.
+      - name: build this checkout and load it into kind
+        if: github.event.inputs.images == 'source'
+        run: |
+          docker build --target plugin -t localhost/qs/pg_quicksilver-plugin:dev -f deploy/Dockerfile .
+          docker build --target mirror -t localhost/qs/pg_quicksilver-mirror:dev -f deploy/Dockerfile .
+          kind load docker-image --name qs \
+            localhost/qs/pg_quicksilver-plugin:dev localhost/qs/pg_quicksilver-mirror:dev
+          docker image inspect localhost/qs/pg_quicksilver-mirror:dev \
+            --format 'mirror runs as {{.Config.User}}'
+
       # The pull, on its own, before any cluster is involved. If this fails the
       # cluster test below would fail for a reason that looks like Kubernetes,
-      # so it is separated out.
+      # so it is separated out. Skipped when testing source, where there may be
+      # no published build of what is being tested.
       - name: the published artifacts can be PULLED
+        if: github.event.inputs.images != 'source'
         env:
           V: ${{ steps.v.outputs.version }}
         run: |
@@ -145,8 +174,13 @@ jobs:
       - name: pull, run, roll and gate
         env:
           KUBECONFIG: /home/runner/.kube/config
-          VERSION: ${{ steps.v.outputs.version }}
-          REGISTRY: ghcr.io/${{ github.repository_owner }}
+          # In source mode the images are already on the node, so there is
+          # nothing to pull and no secret to pull it with: LOCAL_IMAGES=1 makes
+          # the script say so in its own output rather than quietly proving
+          # something weaker than it claims.
+          VERSION: ${{ github.event.inputs.images == 'source' && 'dev' || steps.v.outputs.version }}
+          REGISTRY: ${{ github.event.inputs.images == 'source' && 'localhost/qs' || format('ghcr.io/{0}', github.repository_owner) }}
+          LOCAL_IMAGES: ${{ github.event.inputs.images == 'source' && '1' || '0' }}
           GHCR_USER: ${{ github.actor }}
           GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: bash bench/scripts/cluster_e2e.sh

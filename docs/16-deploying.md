@@ -152,7 +152,14 @@ not an event anyone tells it about:
   waits indefinitely, with a warning in the log and **no error to any client**
   ([docs/15](15-pg17-slot-failover.md)).
 
-Endpoints on port 9187: `/readyz`, `/healthz`, `/metrics`.
+Endpoints on port **9188**: `/readyz`, `/healthz`, `/metrics`.
+
+Not 9187, which is where CloudNativePG's instance manager serves its own
+metrics. Containers in a Pod share one network namespace, and the mirror is a
+native sidecar, so it starts first and binds the port — then the instance
+manager cannot, calls it `unretryable`, and exits. PostgreSQL never starts and
+the instance Pod crash-loops, in `shadow` mode, on every instance
+([docs/35](35-the-port-that-stopped-postgresql.md)).
 
 `/readyz` distinguishes *idle* from *behind*: an unchanging source is perfectly
 fresh. Liveness deliberately does **not** check freshness; restarting a mirror

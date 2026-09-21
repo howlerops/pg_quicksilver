@@ -41,5 +41,7 @@ FROM gcr.io/distroless/static-debian12 AS mirror
 COPY --from=build /out/qs-mirror /qs-mirror
 COPY --from=build /out/qs-verify /qs-verify
 USER 26:26
-EXPOSE 9187
+# 9188, not 9187: CNPG's instance manager binds 9187 in the same network
+# namespace, and the sidecar starting first would stop PostgreSQL booting.
+EXPOSE 9188
 ENTRYPOINT ["/qs-mirror"]

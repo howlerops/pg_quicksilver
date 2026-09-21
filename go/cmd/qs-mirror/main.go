@@ -72,7 +72,7 @@ func loadOptions() options {
 		password:    env("QS_PGPASSWORD", ""),
 		podName:     env("QS_POD_NAME", ""),
 		localSocket: env("QS_LOCAL_SOCKET_DIR", "/controller/run"),
-		healthAddr:  env("QS_HEALTH_ADDR", ":9187"),
+		healthAddr:  env("QS_HEALTH_ADDR", ":9188"), // NOT 9187: CNPG's instance manager owns that
 	}
 	for _, t := range strings.Split(env("QS_TABLES", ""), ",") {
 		if t = strings.TrimSpace(t); t != "" {
