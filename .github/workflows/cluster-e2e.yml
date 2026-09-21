@@ -15,10 +15,17 @@
 # impossible in development are ordinary here, and that is the whole reason this
 # workflow exists.
 #
-# It is NOT on push. It builds a cluster, installs two operators and pulls
-# images; that is minutes of runner time and it is not what an ordinary commit
-# needs. It runs on a release, on demand, and weekly so that the answer does not
-# go stale between releases.
+# It runs on a release, weekly so the answer does not go stale between releases,
+# on demand — and on a push that touches the cluster harness or the code that
+# decides what goes into an instance Pod. Not on every push: it builds a
+# cluster, installs two operators and pulls images, which is twenty-five minutes
+# an ordinary commit does not need.
+#
+# The trigger decides WHICH IMAGES, and the distinction matters more than it
+# looks. A push is asking whether THIS COMMIT works, so it builds the checkout
+# and side-loads it. A release or the schedule is asking whether the SHIPPED
+# ARTIFACTS work, so it pulls them. Getting that backwards produces a green run
+# about the wrong thing.
 
 name: cluster-e2e
 
@@ -35,6 +42,21 @@ on:
         default: "published"
         type: choice
         options: [published, source]
+  # A change to the cluster harness, or to the code that decides what goes INTO
+  # an instance Pod, should run the cluster harness. Five of the six findings
+  # so far came from these exact files, and every one of them needed somebody to
+  # remember to click Run workflow — which is how the 9187 collision sat in a
+  # release, and how a fix for it then waited on a human between every attempt.
+  #
+  # Narrow on purpose: this is twenty-five minutes of runner time and an
+  # ordinary commit does not need it.
+  push:
+    paths:
+      - "bench/scripts/cluster_e2e.sh"
+      - ".github/workflows/cluster-e2e.yml"
+      - "go/internal/plugin/**"
+      - "charts/quicksilver/**"
+      - "deploy/Dockerfile"
   workflow_run:
     workflows: ["release"]
     types: [completed]
@@ -69,6 +91,30 @@ jobs:
           bnd = int(open('/proc/self/status').read().split('CapBnd:')[1].split()[0], 16)
           print("CAP_SYS_RESOURCE:", "present" if bnd >> 24 & 1 else "ABSENT")
           PY
+
+      # WHICH IMAGES, decided once and printed.
+      #
+      # This used to be read straight off github.event.inputs.images, which is
+      # empty for every trigger except workflow_dispatch — so adding the push
+      # trigger above would have made a push quietly test the PUBLISHED release
+      # instead of the commit that triggered it. Green, and about the wrong
+      # artifact, which is the worst outcome available here.
+      #
+      # push  -> source:    the question a push asks is "does THIS work".
+      # else  -> published: a release, the schedule, or an explicit dispatch is
+      #                     asking whether the shipped artifacts work.
+      - name: which images are under test
+        id: mode
+        run: |
+          if [ -n "${{ github.event.inputs.images }}" ]; then
+            m="${{ github.event.inputs.images }}"
+          elif [ "${{ github.event_name }}" = "push" ]; then
+            m="source"
+          else
+            m="published"
+          fi
+          echo "images=$m" >> "$GITHUB_OUTPUT"
+          echo "event=${{ github.event_name }} -> images=$m"
 
       # Two ways to get a cluster, and the choice is a real one.
       #
@@ -106,8 +152,13 @@ jobs:
           cluster_name: qs
           wait: 120s
 
+      # Skipped in source mode, where there is no version to pull and this step
+      # would `exit 1` for failing to find one. It asks the registry what the
+      # newest published chart is, which is a question only the published path
+      # has.
       - name: the version to pull
         id: v
+        if: steps.mode.outputs.images != 'source'
         run: |
           if [ -n "${{ github.event.inputs.version }}" ]; then
             v="${{ github.event.inputs.version }}"
@@ -134,7 +185,7 @@ jobs:
       # `published` stays the default because verifying the release is this
       # workflow's other job.
       - name: build this checkout and load it into kind
-        if: github.event.inputs.images == 'source'
+        if: steps.mode.outputs.images == 'source'
         run: |
           docker build --target plugin -t localhost/qs/pg_quicksilver-plugin:dev -f deploy/Dockerfile .
           docker build --target mirror -t localhost/qs/pg_quicksilver-mirror:dev -f deploy/Dockerfile .
@@ -164,7 +215,7 @@ jobs:
       # so it is separated out. Skipped when testing source, where there may be
       # no published build of what is being tested.
       - name: the published artifacts can be PULLED
-        if: github.event.inputs.images != 'source'
+        if: steps.mode.outputs.images != 'source'
         env:
           V: ${{ steps.v.outputs.version }}
         run: |
@@ -194,12 +245,12 @@ jobs:
           # nothing to pull and no secret to pull it with: LOCAL_IMAGES=1 makes
           # the script say so in its own output rather than quietly proving
           # something weaker than it claims.
-          VERSION: ${{ github.event.inputs.images == 'source' && 'dev' || steps.v.outputs.version }}
-          REGISTRY: ${{ github.event.inputs.images == 'source' && 'localhost/qs' || format('ghcr.io/{0}', github.repository_owner) }}
-          LOCAL_IMAGES: ${{ github.event.inputs.images == 'source' && '1' || '0' }}
+          VERSION: ${{ steps.mode.outputs.images == 'source' && 'dev' || steps.v.outputs.version }}
+          REGISTRY: ${{ steps.mode.outputs.images == 'source' && 'localhost/qs' || format('ghcr.io/{0}', github.repository_owner) }}
+          LOCAL_IMAGES: ${{ steps.mode.outputs.images == 'source' && '1' || '0' }}
           # Empty in published mode, where the script's own default (:latest on
           # ghcr) is right and reachable.
-          ROLL_IMAGE: ${{ github.event.inputs.images == 'source' && 'localhost/qs/pg_quicksilver-mirror:dev-rolled' || '' }}
+          ROLL_IMAGE: ${{ steps.mode.outputs.images == 'source' && 'localhost/qs/pg_quicksilver-mirror:dev-rolled' || '' }}
           GHCR_USER: ${{ github.actor }}
           GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: bash bench/scripts/cluster_e2e.sh
