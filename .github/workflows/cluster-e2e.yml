@@ -72,13 +72,20 @@ permissions:
 
 # ONE cluster at a time, repo-wide, and the newest commit wins.
 #
-# The push trigger above made it easy to have several of these in flight at
+# The push trigger above makes it easy to have several of these in flight at
 # once — a branch push and a fast-forward of main are two commits seconds apart,
 # and each starts a twenty-five minute job that builds a kind cluster and two
-# operators. Three were running when two more were queued, and GitHub failed
-# both new jobs in four seconds without ever assigning a runner: no steps, no
-# logs, a conclusion of "failure" that had nothing to do with the code. That
-# reads exactly like a broken workflow and is not one.
+# operators. Bounding that is worth doing on its own merits.
+#
+# CORRECTION, recorded because the commit that added this block got it wrong.
+# It blamed the pile-up for two jobs that failed in four seconds without a
+# runner. That was a plausible reading and it was not the cause: with this group
+# in place the very next two runs failed identically, and so did every job of
+# every OTHER workflow — six CI jobs, three to four seconds each, no steps, no
+# runner. A run sixteen minutes earlier had completed normally on the same
+# workflow file. The fault was account-wide runner allocation, nothing to do
+# with concurrency or with the code. This block stays because it is right; the
+# reason first given for it was not.
 #
 # Deliberately NOT keyed on github.ref. Keying per ref is the usual choice and
 # would not have helped here, because the pile-up was the same tree arriving on
