@@ -70,6 +70,25 @@ permissions:
   contents: read
   packages: read
 
+# ONE cluster at a time, repo-wide, and the newest commit wins.
+#
+# The push trigger above made it easy to have several of these in flight at
+# once — a branch push and a fast-forward of main are two commits seconds apart,
+# and each starts a twenty-five minute job that builds a kind cluster and two
+# operators. Three were running when two more were queued, and GitHub failed
+# both new jobs in four seconds without ever assigning a runner: no steps, no
+# logs, a conclusion of "failure" that had nothing to do with the code. That
+# reads exactly like a broken workflow and is not one.
+#
+# Deliberately NOT keyed on github.ref. Keying per ref is the usual choice and
+# would not have helped here, because the pile-up was the same tree arriving on
+# two refs. A single group bounds the cost at one cluster, and cancelling the
+# older run is right for a test whose whole question is "does the current commit
+# work".
+concurrency:
+  group: cluster-e2e
+  cancel-in-progress: true
+
 jobs:
   cluster:
     name: pull, run, roll and gate, on a real cluster
