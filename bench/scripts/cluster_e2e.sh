@@ -189,18 +189,28 @@ INSTANCES="cnpg.io/podRole=instance,cnpg.io/cluster=$CLUSTER"
 # be CREATED: with nothing matching the selector it returns an error
 # immediately, which this read as "the Pods never became Ready" 39 seconds into
 # a 10-minute budget, while CNPG was still running initdb.
+#
+# ALL of them, not "at least one". This used to accept n>=1, and on a
+# two-instance Cluster it passed the moment app-1 was Ready — while CNPG was
+# still creating app-2. Everything below then raced the cluster into existence,
+# and section 4 mistook that second Pod's FIRST appearance for a rollout. A
+# check that starts before the fixture is finished is not measuring the fixture.
+WANT=$(kubectl -n "$NS" get cluster "$CLUSTER" -o jsonpath='{.spec.instances}' 2>/dev/null)
+WANT=${WANT:-1}
 deadline=$(( $(date +%s) + TIMEOUT ))
 ready=0
 while [ "$(date +%s)" -lt "$deadline" ]; do
   n=$(kubectl -n "$NS" get pods -l "$INSTANCES" --no-headers 2>/dev/null | wc -l)
-  if [ "$n" -ge 1 ] && kubectl -n "$NS" wait --for=condition=Ready pod -l "$INSTANCES" \
-       --timeout=30s >/dev/null 2>&1; then
+  rdy=$(kubectl -n "$NS" get cluster "$CLUSTER" -o jsonpath='{.status.readyInstances}' 2>/dev/null)
+  if [ "$n" -ge "$WANT" ] && [ "${rdy:-0}" -ge "$WANT" ] 2>/dev/null \
+     && kubectl -n "$NS" wait --for=condition=Ready pod -l "$INSTANCES" \
+          --timeout=30s >/dev/null 2>&1; then
     ready=1; break
   fi
   sleep 10
 done
 if [ "$ready" = "1" ]; then
-  ok "instance Pods are Ready ($(kubectl -n "$NS" get pods -l "$INSTANCES" --no-headers | wc -l) of them)"
+  ok "all $WANT instance Pods are Ready"
 else
   kubectl -n "$NS" get pods
   kubectl -n "$NS" get cluster "$CLUSTER" -o jsonpath='{.status.phase}: {.status.phaseReason}{"\n"}' 2>/dev/null
@@ -243,17 +253,42 @@ if [ $FAIL -ne 0 ]; then
 else
 # go/fidelity proves CNPG's own comparison reports a difference. Only a cluster
 # shows the operator acting on it.
-before=$(kubectl -n "$NS" get pods -l "$INSTANCES" \
-  -o jsonpath='{range .items[*]}{.metadata.uid}{" "}{end}')
+#
+# PER INSTANCE NAME, not the set of uids. Comparing the whole set answers "did
+# anything about the Pod list change", and a SECOND INSTANCE BEING CREATED
+# changes it exactly like a replacement does. That is what happened: section 3
+# passed with one of two Pods Ready, CNPG created app-2 in the ordinary course
+# of reaching two instances, the uid set changed, and this reported a rollout it
+# had not seen. app-1 was still the original Pod, still running the original
+# image, which is what gave it away afterwards.
+#
+# The property is: a Pod that existed BEFORE, under the same instance name, now
+# has a different uid. A new name appearing proves nothing, and neither does a
+# name going away.
+uid_of() { # <instance-name>
+  kubectl -n "$NS" get pod "$1" -o jsonpath='{.metadata.uid}' 2>/dev/null
+}
+names=$(kubectl -n "$NS" get pods -l "$INSTANCES" -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}')
+declare -A before_uid
+for n in $names; do before_uid[$n]=$(uid_of "$n"); done
+echo "  before: $(for n in $names; do printf '%s=%s ' "$n" "${before_uid[$n]:0:8}"; done)"
+
 kubectl -n "$NS" patch cluster "$CLUSTER" --type merge -p \
   "{\"spec\":{\"plugins\":[{\"name\":\"quicksilver.howlerops.io\",\"parameters\":{\"tables\":\"public.events\",\"freshnessSLO\":\"30s\",\"sidecarImage\":\"$ROLL_IMAGE\"}}]}}" >/dev/null
 echo "  patched sidecarImage to $ROLL_IMAGE"
 
 rolled=0
 for _ in $(seq 60); do
-  after=$(kubectl -n "$NS" get pods -l "$INSTANCES" \
-    -o jsonpath='{range .items[*]}{.metadata.uid}{" "}{end}')
-  [ "$after" != "$before" ] && { rolled=1; break; }
+  for n in $names; do
+    now=$(uid_of "$n")
+    # Replaced, not merely absent: a uid that is gone could be a Pod being
+    # deleted for any reason, and one that came back different is the thing
+    # being claimed.
+    if [ -n "$now" ] && [ "$now" != "${before_uid[$n]}" ]; then
+      echo "  $n replaced: ${before_uid[$n]:0:8} -> ${now:0:8}"
+      rolled=1; break 2
+    fi
+  done
   sleep 10
 done
 if [ "$rolled" = "1" ]; then
@@ -280,6 +315,38 @@ else
 kubectl -n "$NS" patch cluster "$CLUSTER" --type merge -p \
   '{"spec":{"plugins":[{"name":"quicksilver.howlerops.io","parameters":{"tables":"public.events","mode":"takeover","acknowledgeOLTPRegression":"true","freshnessSLO":"1s"}}]}}' >/dev/null \
   || bad "the Cluster would not accept mode: takeover with the acknowledgement"
+
+# FIRST: did the Pods actually pick takeover up?
+#
+# Patching the Cluster changes the SPEC. Whether that reaches a running Pod is a
+# separate question, and conflating the two cost seventeen minutes of waiting
+# and a failure message that pointed at the probe. The Cluster read
+# `mode: takeover, freshnessSLO: 1s` at generation 3 while both Pods were still
+# running QS_MODE=shadow, QS_FRESHNESS_SLO=30s and no readiness probe at all —
+# and a container with no readiness probe reports ready=true unconditionally, so
+# the state below could never occur no matter how long it was waited for.
+#
+# This asserts the precondition separately, so "the roll never happened" and
+# "the probe never fired" stop looking like the same failure.
+took=0
+for _ in $(seq 60); do
+  stale=0
+  for pod in $(kubectl -n "$NS" get pods -l "$INSTANCES" -o name 2>/dev/null); do
+    m=$(kubectl -n "$NS" get "$pod" -o jsonpath=\
+'{.spec.initContainers[?(@.name=="quicksilver-mirror")].env[?(@.name=="QS_MODE")].value}' 2>/dev/null)
+    [ "$m" = "takeover" ] || stale=1
+  done
+  [ "$stale" = "0" ] && { took=1; break; }
+  sleep 10
+done
+if [ "$took" = "1" ]; then
+  ok "every instance Pod now runs QS_MODE=takeover"
+else
+  kubectl -n "$NS" get pods -l "$INSTANCES" -o jsonpath=\
+'{range .items[*]}{.metadata.name}{" mode="}{.spec.initContainers[?(@.name=="quicksilver-mirror")].env[?(@.name=="QS_MODE")].value}{" slo="}{.spec.initContainers[?(@.name=="quicksilver-mirror")].env[?(@.name=="QS_FRESHNESS_SLO")].value}{" probe="}{.spec.initContainers[?(@.name=="quicksilver-mirror")].readinessProbe.httpGet.path}{"\n"}{end}' 2>/dev/null
+  echo "  cluster spec says: $(kubectl -n "$NS" get cluster "$CLUSTER" -o jsonpath='{.spec.plugins[0].parameters.mode}/{.spec.plugins[0].parameters.freshnessSLO}')"
+  bad "the Cluster is on mode: takeover but the Pods never picked it up, so the readiness probe was never added and nothing below can be observed"
+fi
 
 # "The endpoint emptied" is NOT the assertion, though it was the first one
 # written. Switching to takeover ADDS the readiness probe, which changes the Pod
