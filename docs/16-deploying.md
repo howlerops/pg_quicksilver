@@ -13,6 +13,16 @@ handshake over real mutual TLS, and against instance Pods built by
 CloudNativePG's own `specs.NewInstance`. What remains unverified is listed at
 the bottom, and it is now a short list.
 
+> **CloudNativePG 1.26 or newer is required**, and below it the failure is
+> silent rather than loud. 1.25 computes an instance Pod's expected spec without
+> consulting plugins, so the sidecar is missing from both sides of the
+> comparison that decides whether to roll a Pod — and `mode`, `freshnessSLO`,
+> `sidecarImage` and `tables` therefore never reach a running instance. A Pod
+> created fresh still gets the parameters it was created with, so this looks
+> like it works until the first time you change your mind.
+> [docs/37](37-the-operator-that-could-not-roll.md) has the function and the
+> diff.
+
 ---
 
 ## The two images

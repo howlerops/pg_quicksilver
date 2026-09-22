@@ -71,14 +71,43 @@ kubectl -n cert-manager rollout status deploy/cert-manager-webhook --timeout=300
   || skip "cert-manager webhook never became ready"
 ok "cert-manager ready"
 
+# CloudNativePG 1.26 is a FLOOR, not a preference, and this is where it was
+# found. On 1.25.1 section 4 could never pass, for a structural reason:
+#
+#   1.25  specs.PodWithExistingStorage() builds the target Pod with no plugin
+#         client at all, and writes that UN-PATCHED spec into the
+#         cnpg.io/podSpec annotation. The sidecar is therefore absent from BOTH
+#         sides of checkPodSpecIsOutdated's comparison, so no plugin parameter
+#         — sidecarImage, mode, freshnessSLO, tables — can ever produce a diff,
+#         and running instances are never rolled for one.
+#
+#   1.26+ specs.NewInstance() calls the lifecycle hook with
+#         OperationVerbEvaluate before the annotation is written, so the
+#         sidecar is on both sides and a change rolls the Pods.
+#
+# go/fidelity builds against the version in its go.mod (1.30) and its rollout
+# test passes there, which is exactly how this hid: the unit test proved a
+# property of an operator this script did not install.
+CNPG_VERSION=${CNPG_VERSION:-1.26.0}
 if ! kubectl get crd clusters.postgresql.cnpg.io >/dev/null 2>&1; then
   kubectl apply --server-side -f \
-    https://raw.githubusercontent.com/cloudnative-pg/cloudnative-pg/release-1.25/releases/cnpg-1.25.1.yaml >/dev/null \
-    || skip "could not install CloudNativePG"
+    "https://raw.githubusercontent.com/cloudnative-pg/cloudnative-pg/release-${CNPG_VERSION%.*}/releases/cnpg-${CNPG_VERSION}.yaml" >/dev/null \
+    || skip "could not install CloudNativePG $CNPG_VERSION"
 fi
 kubectl -n "$CNPG_NS" rollout status deploy/cnpg-controller-manager --timeout=300s >/dev/null 2>&1 \
   || skip "the CNPG operator never became ready"
-ok "CloudNativePG ready in $CNPG_NS"
+
+# Assert the floor against what is RUNNING, not against what was asked for: a
+# standing cluster may already have an older operator, in which case the install
+# above was skipped entirely by the CRD check.
+opimg=$(kubectl -n "$CNPG_NS" get deploy cnpg-controller-manager \
+  -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null)
+opver=${opimg##*:}
+case "${opver#v}" in
+  1.25.*|1.24.*|1.23.*|1.22.*|1.21.*|1.2[0-5])
+    skip "CloudNativePG $opver is below the 1.26 floor: it builds the target Pod without the plugin, so a plugin parameter change can never roll an instance and sections 4 and 5 cannot pass. See docs/37." ;;
+esac
+ok "CloudNativePG ready in $CNPG_NS (operator $opver, floor is 1.26)"
 
 kubectl create namespace "$NS" >/dev/null 2>&1
 kubectl create namespace "$CNPG_NS" >/dev/null 2>&1

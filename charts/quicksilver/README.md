@@ -91,7 +91,15 @@ log says why.
 
 ## Requirements
 
-- CloudNativePG with CNPG-I support
+- **CloudNativePG 1.26 or newer.** This is a hard floor, and below it the
+  failure is silent: 1.25 builds an instance Pod's expected spec without
+  consulting plugins, so the injected sidecar is absent from both sides of the
+  comparison that decides whether to replace a Pod. Changing `mode`,
+  `freshnessSLO`, `sidecarImage` or `tables` on a running Cluster then has **no
+  effect at all** until a Pod is recreated for some unrelated reason. A fresh
+  Cluster still gets the parameters it was created with, which is what makes
+  this easy to miss. [docs/37](../../docs/37-the-operator-that-could-not-roll.md)
+  has the mechanism.
 - cert-manager, unless you set `certManager.enabled=false` and supply the mTLS
   Secrets yourself
 
