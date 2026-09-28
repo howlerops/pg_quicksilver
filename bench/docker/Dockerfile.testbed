@@ -1,0 +1,106 @@
+# Everything the suite needs, in one image, so a fresh machine needs only Docker.
+#
+# This exists because GitHub Actions stopped allocating runners for this account
+# and the verification had nowhere to run. It is not a CI replacement in spirit
+# — it is the same commands CI ran, in an image, so any session with a working
+# Docker can produce the same evidence.
+#
+# THE EXPENSIVE LAYER IS DELIBERATE. pg_duckdb v1.1.1 plus this repository's
+# confinement patch is not packaged anywhere, and building it compiles DuckDB
+# too: about an hour on four cores, once. It is its own stage so Docker caches
+# it, and so `--target base` skips it entirely for the sections that do not need
+# it.
+#
+#   docker build -f bench/docker/Dockerfile.testbed --target base    -t qs-testbed:base .
+#   docker build -f bench/docker/Dockerfile.testbed --target testbed -t qs-testbed .
+#
+# bench/docker/testbed.sh does both and then runs the suite; read that first.
+
+# ---------------------------------------------------------------- base
+FROM ubuntu:24.04 AS base
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV LANG=C.UTF-8
+
+RUN apt-get update -qq && apt-get install -y -qq --no-install-recommends \
+      ca-certificates curl gnupg lsb-release git sudo procps \
+      build-essential pkg-config \
+      python3 python3-pip python3-venv \
+      jq bc \
+ && rm -rf /var/lib/apt/lists/*
+
+# PostgreSQL 17 from PGDG. Not the distribution's default: on 16 a failover
+# loses the logical slot outright (docs/14, docs/15), which is why the plugin
+# refuses `ingest: logical` below 17 — testing on whatever the base image
+# happens to ship would be testing a configuration this project rejects.
+RUN curl -sS https://www.postgresql.org/media/keys/ACCC4CF8.asc \
+      | gpg --dearmor -o /usr/share/keyrings/pgdg.gpg \
+ && echo "deb [signed-by=/usr/share/keyrings/pgdg.gpg] http://apt.postgresql.org/pub/repos/apt noble-pgdg main" \
+      > /etc/apt/sources.list.d/pgdg.list \
+ && apt-get update -qq \
+ && apt-get install -y -qq --no-install-recommends postgresql-17 postgresql-server-dev-17 \
+ && rm -rf /var/lib/apt/lists/*
+ENV PATH=/usr/lib/postgresql/17/bin:$PATH
+
+# Go, matching go/go.mod's toolchain.
+ARG GO_VERSION=1.27.1
+RUN arch=$(dpkg --print-architecture) \
+ && curl -sSL "https://go.dev/dl/go${GO_VERSION}.linux-${arch}.tar.gz" -o /tmp/go.tgz \
+ && tar -C /usr/local -xzf /tmp/go.tgz && rm /tmp/go.tgz
+ENV PATH=/usr/local/go/bin:/root/go/bin:$PATH
+
+# helm and kubeconform, for the manifests and rendering sections. These validate
+# the chart against real Kubernetes schemas without needing a cluster.
+RUN curl -sSL https://get.helm.sh/helm-v3.16.3-linux-$(dpkg --print-architecture).tar.gz \
+      | tar -xz -C /tmp \
+ && install -m 0755 /tmp/linux-*/helm /usr/local/bin/helm \
+ && curl -sSLo /tmp/kc.tgz https://github.com/yannh/kubeconform/releases/download/v0.6.7/kubeconform-linux-$(dpkg --print-architecture).tar.gz \
+ && tar -xzf /tmp/kc.tgz -C /tmp kubeconform \
+ && install -m 0755 /tmp/kubeconform /usr/local/bin/kubeconform
+
+RUN pip3 install --break-system-packages --quiet duckdb "psycopg[binary]"
+
+# The suite runs PostgreSQL as the postgres user and writes under
+# /var/lib/postgresql. The pgdg packages create the user; this just makes sure
+# the tree it wants exists and is writable.
+RUN mkdir -p /var/lib/postgresql && chown -R postgres:postgres /var/lib/postgresql
+
+WORKDIR /repo
+
+# ---------------------------------------------------------------- pg_duckdb
+# v1.1.1 is 7b0db3737a1ab2dfb182b742322426e3c4b500af. The submodule is DuckDB
+# v1.4.3 and is cloned shallow: the Makefile passes OVERRIDE_GIT_DESCRIBE, so
+# DuckDB does not need the history.
+FROM base AS pgduckdb
+
+RUN apt-get update -qq && apt-get install -y -qq --no-install-recommends \
+      cmake ninja-build ccache libssl-dev liblz4-dev libcurl4-openssl-dev zlib1g-dev \
+ && rm -rf /var/lib/apt/lists/*
+
+COPY bench/patches/pg_duckdb-allowed-directories.patch /tmp/qs.patch
+
+RUN git clone --depth 1 --branch v1.1.1 --recurse-submodules --shallow-submodules \
+      https://github.com/duckdb/pg_duckdb /tmp/pg_duckdb \
+ && cd /tmp/pg_duckdb \
+ && git apply --verbose /tmp/qs.patch \
+ && PG_CONFIG=/usr/lib/postgresql/17/bin/pg_config make -j"$(nproc)" \
+ # `install: install-duckdb` puts libduckdb.so in place with a plain install(1),
+ # which does not create its directory; under DESTDIR that directory does not
+ # exist yet because PGXS's installdirs has not run.
+ && mkdir -p "/out$(pg_config --pkglibdir)" "/out$(pg_config --sharedir)/extension" \
+ && PG_CONFIG=/usr/lib/postgresql/17/bin/pg_config make install DESTDIR=/out \
+ && rm -rf /tmp/pg_duckdb
+
+# ---------------------------------------------------------------- testbed
+FROM base AS testbed
+
+COPY --from=pgduckdb /out/ /
+
+# The GUC, not the file. A stock pg_duckdb would pass a file check and then fail
+# much later as "permission denied" on the mirror, which reads exactly like the
+# bug the patch exists to fix. grep -a on the binary, never `strings | grep -q`:
+# under pipefail that pipeline reports failure on success.
+RUN grep -qa duckdb.allowed_directories "$(pg_config --pkglibdir)/pg_duckdb.so" \
+ && echo "pg_duckdb carries duckdb.allowed_directories"
+
+CMD ["/bin/bash"]
