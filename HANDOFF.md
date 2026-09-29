@@ -10,7 +10,7 @@ kubelet, and there is a script that answers it.
 ## TL;DR
 
 ```sh
-# The one thing that still needs doing. ~25 min. Needs Docker + full capabilities.
+# The cluster path. Green as of 29 Sep 2026; run it to re-verify. ~25 min.
 bash bench/docker/cluster_kind.sh
 
 # Everything else, reproducible in a container. ~20 min.
@@ -20,8 +20,9 @@ bash bench/docker/testbed.sh
 bash bench/docker/testbed.sh --serving
 ```
 
-If `cluster_kind.sh` prints `PASS`, the last two unverified claims in this
-project are verified and nothing is outstanding.
+Both paths are green. `cluster-e2e` also runs in GitHub Actions again, and
+when it does, prefer it — `bench/docker/` exists to survive CI being
+unavailable, not to replace it.
 
 ---
 
@@ -112,20 +113,40 @@ The last CI run before the outage was **green on all six jobs**.
 
 ## What is NOT proven
 
-Two claims, both in `bench/scripts/cluster_e2e.sh`, both needing a kubelet:
+**Nothing, as of cluster-e2e run 18 (29 Sep 2026, `731e00a`).** The two claims
+that stood open for the life of this project — a Pod being ROLLED by a plugin
+parameter change, and a Pod LEAVING the `-ro` Service because the mirror's
+readiness probe failed — both passed on a real cluster:
 
-- **Section 4 — a Pod is ROLLED when a plugin parameter changes.**
-- **Section 5 — a Pod LEAVES the `-ro` Service when the mirror's readiness
-  probe fails** (the property [docs/33](docs/33-the-probe-that-gated-the-wrong-thing.md)
-  reasons about and nothing has ever observed).
+```
+== 4. changing sidecarImage ROLLS the instances ==
+  before: app-1=9b1d55b0 app-2=69d4df4b
+  app-2 replaced: 69d4df4b -> 44e32435
+  ok: the operator rolled the instances after sidecarImage changed
+== 5. in takeover, a stale mirror LEAVES the -ro endpoints ==
+  ok: every instance Pod now runs QS_MODE=takeover
+  app-1: postgres ready, mirror NOT ready, and absent from app-ro
+  ok: mirror freshness gated the endpoint, with PostgreSQL itself healthy
+```
 
-Section 4 has never passed honestly. It once *reported* a pass while observing a
-second instance being created for the first time — see
-[docs/37](docs/37-the-operator-that-could-not-roll.md) and the commit
-`fix(ci): section 4 passed without seeing a rollout`. The check now tracks Pod
-uid per instance name, which is the property it always meant.
+Section 5 is the property [docs/33](docs/33-the-probe-that-gated-the-wrong-thing.md)
+reasoned about from the Kubernetes contract and nothing had ever observed:
+PostgreSQL healthy, the mirror behind, and the node out of service *because of
+the mirror*.
 
-Section 5 has never been reached.
+Section 4 is worth reading closely, because it once reported a pass while
+observing a second instance being created for the first time — see
+[docs/37](docs/37-the-operator-that-could-not-roll.md). It now tracks Pod uid
+per instance name, and `app-2 replaced: 69d4df4b -> 44e32435` is a named
+instance whose uid changed, which a new Pod appearing cannot fake.
+
+The run also exercised the CloudNativePG floor in situ:
+`CloudNativePG ready in cnpg-system (operator 1.26.0, floor is 1.26)`.
+
+**Still outside what any of this shows:** the images here are side-loaded, so
+the registry PULL path is covered by the release workflow rather than by this
+run, and cold-cache query performance is not measured anywhere (see
+[docs/36](docs/36-does-the-projection-pay.md)'s own caveats).
 
 ---
 

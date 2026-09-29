@@ -268,18 +268,33 @@ other direction.
   no kubelet and Pods stay Pending. The API server, CRDs, operator and webhooks
   are real; everything up to and including the Pod **spec** the operator builds
   is real, which is where a plugin lives. What runs inside the Pod is not.
-- **Live reconcile behaviour — the decision is tested, the action is not.**
+- **Live reconcile behaviour — now verified, on a real cluster.**
   `lifecycle.go` argues that declaring `EVALUATE` is not optional, and
-  `go/fidelity/rollout_test.go` now drives CloudNativePG 1.30's own
+  `go/fidelity/rollout_test.go` drives CloudNativePG's own
   `specs.ComparePodSpecs` over Pods built by its own `specs.NewInstance`, which
   answers `init-containers: container quicksilver-mirror differs in image` and
-  compares an unchanged Cluster as equal. What no test here can show is the
-  operator *acting* on that: no Pod has been rolled, and no Pod has been removed
-  from a Service by the mirror's readiness probe — the property
-  [docs/33](33-the-probe-that-gated-the-wrong-thing.md) reasons about from the
-  Kubernetes contract. Both are steps 4 and 5 of
-  [`cluster_e2e.sh`](../bench/scripts/cluster_e2e.sh), which needs a cluster and
-  **has not been run yet**.
+  compares an unchanged Cluster as equal. The operator *acting* on that was the
+  last thing outstanding, and [`cluster_e2e.sh`](../bench/scripts/cluster_e2e.sh)
+  sections 4 and 5 now show both:
+
+  ```
+  app-2 replaced: 69d4df4b -> 44e32435
+  ok: the operator rolled the instances after sidecarImage changed
+
+  ok: every instance Pod now runs QS_MODE=takeover
+  app-1: postgres ready, mirror NOT ready, and absent from app-ro
+  ok: mirror freshness gated the endpoint, with PostgreSQL itself healthy
+  ```
+
+  The second is the property [docs/33](33-the-probe-that-gated-the-wrong-thing.md)
+  reasons about from the Kubernetes contract: PostgreSQL healthy, the mirror
+  behind, the node out of service because of the mirror. Two cautions that the
+  history earns. Section 4 once reported a pass while watching a second instance
+  be created for the first time, so it now compares uid **per instance name** —
+  `app-2 replaced: … -> …` is a named Pod that was replaced, which a new Pod
+  appearing cannot fake ([docs/37](37-the-operator-that-could-not-roll.md)). And
+  none of it works below **CloudNativePG 1.26**, which the harness now asserts
+  against the running operator rather than the requested one.
 - **The images — built, published, run locally; pulled by a Pod only when
   [`cluster-e2e`](../.github/workflows/cluster-e2e.yml) runs.** CI builds both
   targets on every commit and `release.yml` has published twice.
@@ -291,16 +306,28 @@ other direction.
   `cluster-e2e` is that check — it pulls the chart and both images with a real
   token, then makes a Cluster pull them through an `imagePullSecret` in each of
   the two namespaces, which is also the first test of the pull instructions in
-  the chart README. **It has not been run yet**, so this line says what exists,
-  not what passed.
-- **`mode: takeover` — implemented, but never observed working.** It is one
-  property: mirror freshness gates the `-ro` endpoint. The service retarget the
-  original design called for turned out not to be reachable under a sidecar
-  architecture, and `app-ro-row` with it — one PostgreSQL serves both engines on
-  the same Pod, so there is nothing to point elsewhere
+  the chart README. **Still open, and precisely this much:** cluster-e2e now
+  passes, but the runs that pass it use `images: source`, which side-loads into
+  the node and says so in its own output (`LOCAL_IMAGES=1 — side-loading, which
+  does NOT exercise the registry`). The registry half runs in `published` mode,
+  which the release workflow triggers automatically on a tag. So a Pod pulling
+  *these* images works; a Pod pulling them *from ghcr* is verified at the next
+  release and not before.
+- **`mode: takeover` — now observed working.** It is one property: mirror
+  freshness gates the `-ro` endpoint. The service retarget the original design
+  called for turned out not to be reachable under a sidecar architecture, and
+  `app-ro-row` with it — one PostgreSQL serves both engines on the same Pod, so
+  there is nothing to point elsewhere
   ([docs/33](33-the-probe-that-gated-the-wrong-thing.md)). The probe's presence
-  per mode is unit-tested in both directions; a probe actually *failing* and
-  removing a Pod from a Service needs a kubelet and has not happened.
+  per mode is unit-tested in both directions, and a probe actually *failing* and
+  removing a Pod from a Service has now happened on a real cluster:
+
+  ```
+  app-1: postgres ready, mirror NOT ready, and absent from app-ro
+  ```
+
+  PostgreSQL healthy, the mirror behind, the node out of service because of the
+  mirror — which is the whole of what the mode claims.
 - **Serving — now answered through PostgreSQL 17.** The mirror publishes a
   SELECT that reconstructs itself from the manifest, deletion vectors and
   column-partial deltas, and that view is checked for both speed and agreement
