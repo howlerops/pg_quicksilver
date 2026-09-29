@@ -148,6 +148,12 @@ the registry PULL path is covered by the release workflow rather than by this
 run, and cold-cache query performance is not measured anywhere (see
 [docs/36](docs/36-does-the-projection-pay.md)'s own caveats).
 
+The registry half is one tag away and nothing else — see **Cutting a release**
+below. What *is* established about the registry without a cluster: all three
+ghcr packages answer an **anonymous** pull (`helm pull` of the chart returns a
+digest, both image repositories return a tag list), so no credential is in the
+path at all. What is not established is a kubelet doing it.
+
 ---
 
 ## Two traps that will cost you an hour each
@@ -268,6 +274,41 @@ docs/                   numbered, roughly chronological; 30+ are post-mortems
 Start with [docs/36](docs/36-does-the-projection-pay.md) for what the project is
 worth, and [docs/37](docs/37-the-operator-that-could-not-roll.md) for the most
 recent finding.
+
+---
+
+## Cutting a release
+
+`0.0.3` is committed and validated but **not published**: everything in the
+tree says 0.0.3, and no `v0.0.3` tag exists on the remote. The tag is the one
+step nothing here can do — the sandbox this was written in has an egress proxy
+that allows branch pushes and refuses `refs/tags/*` with a bare HTTP 403 on the
+`git-receive-pack` POST (the ref negotiation succeeds, so `git push --dry-run`
+reports `* [new tag] v0.0.3` and tells you nothing). One command, from a
+checkout that can reach github:
+
+```sh
+git fetch origin main
+git tag -a v0.0.3 origin/main -m "0.0.3: the mirror no longer takes 9187 from the instance manager"
+git push origin v0.0.3
+```
+
+What that sets off, in order, and what each step is worth watching for:
+
+1. **`release`** — refuses unless `Chart.yaml` version, `appVersion` and both
+   image pins in `values.yaml` all equal the tag. That guard was replayed
+   verbatim against this tree and passes; both image targets were also built
+   locally at `VERSION=0.0.3` and the string is in the binary. It then pushes
+   `-plugin`, `-mirror` and the chart to ghcr.
+2. **`cluster-e2e`**, automatically, in **`published`** mode — the run that
+   closes the last gap below. It resolves the version with `helm show chart`
+   against the registry, which returns the newest chart there; verified live.
+3. Nothing else. `helm install --version 0.0.3` then works anonymously, because
+   the packages are public.
+
+`release` also takes a `workflow_dispatch` with a `version` input if the tag is
+inconvenient — it publishes the same three artifacts, and `cluster-e2e` still
+follows it. It does not create the git tag.
 
 ---
 
