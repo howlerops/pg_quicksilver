@@ -317,7 +317,10 @@ other direction.
   assumed.
   `cluster-e2e` is that check — it pulls the chart and both images, then makes a
   Cluster pull them, which is also the first test of the install instructions in
-  the chart README. **Still open, and precisely this much:** cluster-e2e now
+  the chart README — in `published` mode it now installs the chart from
+  `oci://`, not from the checkout, so the packaged chart is under test rather
+  than standing in for itself. **Still open, and precisely this much:**
+  cluster-e2e now
   passes, but the runs that pass it use `images: source`, which side-loads into
   the node and says so in its own output (`LOCAL_IMAGES=1 — side-loading, which
   does NOT exercise the registry`). The registry half runs in `published` mode,

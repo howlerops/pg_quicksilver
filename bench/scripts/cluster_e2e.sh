@@ -47,6 +47,26 @@ LOCAL_IMAGES=${LOCAL_IMAGES:-0}
 # it did: :latest exists on ghcr, so the published path was fine, and nothing
 # had ever loaded :latest onto a kind node.
 ROLL_IMAGE=${ROLL_IMAGE:-$REGISTRY/pg_quicksilver-mirror:latest}
+# WHICH CHART, and it is not the same question as which images.
+#
+# In published mode this run stands in for somebody following the README, and
+# what the README tells them to run is `helm install oci://...`. Installing the
+# CHECKOUT's chart there would let a broken published chart pass a run whose
+# entire purpose is to catch that — the chart is packaged by a separate job,
+# after the images, and it is the piece with no other test.
+#
+# In source mode there is nothing published to install, so the checkout is the
+# only answer and also the right one: the question a push asks is whether THIS
+# tree works.
+CHART=${CHART:-}
+if [ -z "$CHART" ]; then
+  if [ "$LOCAL_IMAGES" = "1" ]; then CHART="$REPO/charts/quicksilver"
+  else CHART="oci://$REGISTRY/charts/quicksilver"; fi
+fi
+case "$CHART" in
+  oci://*) CHART_VERSION_ARGS=(--version "$VERSION") ;;
+  *)       CHART_VERSION_ARGS=() ;;
+esac
 TIMEOUT=${TIMEOUT:-600}
 FAIL=0
 
@@ -138,6 +158,15 @@ elif [ -n "$GHCR_TOKEN" ]; then
       --docker-password="$GHCR_TOKEN" >/dev/null || skip "could not create the pull secret in $ns"
   done
   ok "imagePullSecret 'ghcr' created in $CNPG_NS and $NS"
+  # The Pods' credential is not helm's. Section 2 may install the chart from
+  # oci://, which helm pulls with its own registry config, and a token that
+  # works for the kubelet says nothing about that.
+  case "$CHART" in
+    oci://*) printf '%s' "$GHCR_TOKEN" \
+               | helm registry login ghcr.io -u "${GHCR_USER:-x}" --password-stdin >/dev/null 2>&1 \
+               && ok "helm logged in to ghcr.io for the chart pull" \
+               || echo "  note: helm registry login failed; the chart is public, so trying anonymously" ;;
+  esac
   PULL_ARGS=(--set image.pullSecrets[0].name=ghcr)
   CLUSTER_PULL_SECRETS=$'  imagePullSecrets:\n    - name: ghcr'
 else
@@ -146,13 +175,22 @@ fi
 
 # ---------------------------------------------------------------- the plugin
 say "2. install the plugin"
-helm upgrade --install quicksilver "$REPO/charts/quicksilver" \
+echo "  chart: $CHART${CHART_VERSION_ARGS[*]:+ ${CHART_VERSION_ARGS[*]}}"
+helm upgrade --install quicksilver "$CHART" "${CHART_VERSION_ARGS[@]}" \
   --namespace "$CNPG_NS" \
   --set operatorNamespace="$CNPG_NS" \
   --set image.plugin="$REGISTRY/pg_quicksilver-plugin:$VERSION" \
   --set image.mirror="$REGISTRY/pg_quicksilver-mirror:$VERSION" \
   "${PULL_ARGS[@]}" --wait --timeout 5m >/dev/null \
-  || { kubectl -n "$CNPG_NS" get pods; skip "the chart would not install"; }
+  || { kubectl -n "$CNPG_NS" get pods
+       # Which outcome this is depends on whose chart it was. A checkout that
+       # will not install is a broken harness — INCOMPLETE, nothing was tested.
+       # A PUBLISHED chart that will not install is the defect this run exists
+       # to find, and calling it "could not run" would hide it.
+       case "$CHART" in
+         oci://*) bad "the published chart $CHART $VERSION would not install"; exit 1 ;;
+         *)       skip "the chart would not install" ;;
+       esac; }
 
 kubectl -n "$CNPG_NS" rollout status deploy/quicksilver --timeout=300s >/dev/null 2>&1 \
   || { kubectl -n "$CNPG_NS" describe pods -l app.kubernetes.io/name=quicksilver | tail -25
