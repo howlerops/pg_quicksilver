@@ -27,13 +27,38 @@ project are verified and nothing is outstanding.
 
 ## Why this exists
 
-GitHub Actions stopped allocating runners for this account on **22 Sep 2026** and
-has not recovered. Every job of every workflow fails in 3–4 seconds with no
-steps, no logs and no runner assigned — including the Sunday cron, which fired
-on its own on 27 Sep against an untouched commit and failed identically. That
-rules out an incident, the workflow files, and the code. It is an account-level
-setting; the likely candidates are an Actions spending limit or Actions being
-disabled for the repository, and neither is visible from a session.
+GitHub Actions stopped allocating runners for this account on **22 Sep 2026**.
+Every job of every workflow fails in 3–4 seconds with no steps, no logs and no
+runner assigned — including the Sunday cron, which fired on its own on 27 Sep
+against an untouched commit and failed identically.
+
+GitHub says why, and it is worth knowing **where** it says it, because the
+failure carries no job log at all:
+
+```
+The job was not started because recent account payments have failed or your
+spending limit needs to be increased. Please check the 'Billing & plans'
+section in your settings
+```
+
+That is a **check-run annotation**, not a job log. The jobs never start, so
+there is nothing in the logs API — `GET /actions/runs/<id>/jobs` returns jobs
+with an empty `runner_name` and no steps, and the log endpoint 404s. The reason
+lives here instead, and on a public repository it needs no credential:
+
+```sh
+curl -s https://api.github.com/repos/OWNER/REPO/commits/<sha>/check-runs \
+  | jq -r '.check_runs[].output.annotations_url' | head -1 | xargs curl -s \
+  | jq -r '.[].message'
+```
+
+Worth doing FIRST next time. Six days were spent inferring the cause from
+timing and trigger types when one request would have quoted it.
+
+Note the repository is **public**, where standard GitHub-hosted runners are
+free and unmetered — so this is not minutes exhaustion. A failed payment or a
+breached spending limit on the *account* suspends Actions regardless of a
+repository's visibility.
 
 So the verification needed somewhere else to run. `bench/docker/` is that: the
 same commands CI ran, in Docker.
