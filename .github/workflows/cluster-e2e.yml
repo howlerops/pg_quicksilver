@@ -83,9 +83,14 @@ permissions:
 # in place the very next two runs failed identically, and so did every job of
 # every OTHER workflow — six CI jobs, three to four seconds each, no steps, no
 # runner. A run sixteen minutes earlier had completed normally on the same
-# workflow file. The fault was account-wide runner allocation, nothing to do
-# with concurrency or with the code. This block stays because it is right; the
-# reason first given for it was not.
+# workflow file. The fault was account-wide, nothing to do with concurrency or
+# with the code. This block stays because it is right; the reason first given
+# for it was not.
+#
+# The account-wide fault has since been named, by GitHub, in a CHECK-RUN
+# ANNOTATION rather than a job log — which is why six days went into inferring
+# it. There is no job log to read when the job never starts. See HANDOFF.md for
+# the one-line curl that reads it.
 #
 # Deliberately NOT keyed on github.ref. Keying per ref is the usual choice and
 # would not have helped here, because the pile-up was the same tree arriving on

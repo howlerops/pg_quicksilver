@@ -27,8 +27,13 @@ project are verified and nothing is outstanding.
 
 ## Why this exists
 
+> **Resolved 29 Sep 2026.** Actions allocates runners again. The rest of this
+> section is kept because the diagnostic below is the part worth reusing, not
+> because the outage is still live — and if Actions works for you, prefer it
+> over `bench/docker/`, which exists only to survive it not working.
+
 GitHub Actions stopped allocating runners for this account on **22 Sep 2026**.
-Every job of every workflow fails in 3–4 seconds with no steps, no logs and no
+Every job of every workflow failed in 3–4 seconds with no steps, no logs and no
 runner assigned — including the Sunday cron, which fired on its own on 27 Sep
 against an untouched commit and failed identically.
 
