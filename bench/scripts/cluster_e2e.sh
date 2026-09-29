@@ -21,7 +21,7 @@
 # Run it anywhere there is a cluster:
 #
 #   KUBECONFIG=... bash bench/scripts/cluster_e2e.sh
-#   VERSION=0.0.2 GHCR_USER=me GHCR_TOKEN=ghp_... bash bench/scripts/cluster_e2e.sh
+#   VERSION=0.0.3 GHCR_USER=me GHCR_TOKEN=ghp_... bash bench/scripts/cluster_e2e.sh
 #
 # In CI, .github/workflows/cluster-e2e.yml creates a kind cluster and passes the
 # workflow's own GITHUB_TOKEN, so the pull is a real authenticated registry pull
@@ -32,7 +32,12 @@ REPO=$(cd "$(dirname "$0")/../.." && pwd)
 NS=${NS:-qs-e2e}
 CNPG_NS=${CNPG_NS:-cnpg-system}
 CLUSTER=${CLUSTER:-app}
-VERSION=${VERSION:-0.0.2}
+# The default is the version a run with no VERSION should be testing, which is
+# the newest good one. It was 0.0.2 — the build whose sidecar takes :9187 and
+# stops PostgreSQL starting — so a hand-run in published mode tested the broken
+# release and, worse, would have been RIGHT to fail. CI always passes VERSION,
+# so nothing caught it.
+VERSION=${VERSION:-0.0.3}
 REGISTRY=${REGISTRY:-ghcr.io/howlerops}
 GHCR_USER=${GHCR_USER:-}
 GHCR_TOKEN=${GHCR_TOKEN:-}

@@ -33,9 +33,11 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Published version to pull, e.g. 0.0.2"
+        description: "Published version to pull, e.g. 0.0.3"
         required: true
-        default: "0.0.2"
+        # Clicking "Run workflow" and changing nothing should test the newest good
+        # release. This defaulted to 0.0.2, which is the one that does not start.
+        default: "0.0.3"
       images:
         description: "published = test the release; source = build this checkout and load it into kind"
         required: false
