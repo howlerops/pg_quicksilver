@@ -58,6 +58,13 @@ ROLL_IMAGE=${ROLL_IMAGE:-$REGISTRY/pg_quicksilver-mirror:latest}
 # In source mode there is nothing published to install, so the checkout is the
 # only answer and also the right one: the question a push asks is whether THIS
 # tree works.
+#
+# This is not hypothetical. Rendering the PUBLISHED 0.0.2 chart with the exact
+# flags below shows it ignores `image.pullSecrets` entirely — that value did not
+# exist in 0.0.2's templates, it was added later. So published mode was passing
+# PULL_ARGS the chart under test would have dropped on the floor, and the
+# checkout's chart honoured them, so the run looked like it had proved the
+# credential path. It had proved the checkout's.
 CHART=${CHART:-}
 if [ -z "$CHART" ]; then
   if [ "$LOCAL_IMAGES" = "1" ]; then CHART="$REPO/charts/quicksilver"
