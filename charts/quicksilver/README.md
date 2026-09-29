@@ -6,7 +6,7 @@ PostgreSQL parameters the mirror needs.
 
 ```
 helm install quicksilver oci://ghcr.io/howlerops/charts/quicksilver \
-  --version 0.0.2 --namespace cnpg-system
+  --version 0.0.3 --namespace cnpg-system
 ```
 
 or from a checkout, which is what the tests and the e2e scripts use:
@@ -15,16 +15,30 @@ or from a checkout, which is what the tests and the e2e scripts use:
 helm install quicksilver charts/quicksilver --namespace cnpg-system
 ```
 
-### The published packages are private, and that breaks the pull in two places
+**Do not install `0.0.2`.** In `0.0.2` the injected mirror sidecar binds
+`:9187`, the port CloudNativePG's instance manager needs. It is a native
+sidecar, so it starts first, wins the port, and the instance manager exits
+`unretryable` — PostgreSQL never starts, on every instance, in the default
+`shadow` mode. Fixed in `0.0.3` (`../../docs/35-the-port-that-stopped-postgresql.md`).
 
-GHCR packages inherit the repository's visibility, and this repository is
-private. An anonymous pull is refused before it reaches a manifest:
+### The published packages are public; no credential is needed
+
+Checked against the registry rather than assumed — all three packages
+(`…-plugin`, `…-mirror`, `charts/quicksilver`) answer an **anonymous** pull:
 
 ```
 $ helm pull oci://ghcr.io/howlerops/charts/quicksilver --version 0.0.2
-Error: failed to authorize: failed to fetch anonymous token:
-unexpected status ... 401 Unauthorized
+Pulled: ghcr.io/howlerops/charts/quicksilver:0.0.2
+Digest: sha256:794dc9ed…
 ```
+
+An earlier version of this section said the opposite, because the repository
+was private then and GHCR packages inherit a repository's visibility at
+creation. They do not follow it afterwards — the visibility is per package —
+so the claim outlived the fact. The rest of this section is what to do if you
+fork this into a private repository, or set a package back to private.
+
+### If your registry IS private
 
 Two images are pulled, **in two different namespaces**, and fixing one does not
 fix the other. This is the part that will cost an afternoon if it is not said
@@ -37,14 +51,9 @@ chart at all.
 | `-plugin` | this chart's Deployment | `operatorNamespace` | `image.pullSecrets` below |
 | `-mirror` | each instance Pod | the **Cluster's** namespace | `spec.imagePullSecrets` on the Cluster |
 
-Either make the packages public, or create the secret in both namespaces.
-
-**Public** — in GitHub, for each of the three packages (`…-plugin`, `…-mirror`,
-`charts/quicksilver`): Package settings → Danger Zone → Change visibility →
-Public. Then nothing below is needed. Note that this publishes the images to
-anyone, while the source stays private.
-
-**Or, a pull secret in each namespace:**
+Either make the packages public — in GitHub, per package: Package settings →
+Danger Zone → Change visibility → Public — or create the secret in **both**
+namespaces:
 
 ```
 kubectl create secret docker-registry ghcr \
@@ -73,7 +82,7 @@ spec:
     - name: quicksilver.howlerops.io
 ```
 
-`helm pull` and `helm install` from the OCI URL need the same credentials:
+`helm pull` and `helm install` from the OCI URL then need the same credentials:
 
 ```
 helm registry login ghcr.io -u <user> --password-stdin <<< "$PAT"

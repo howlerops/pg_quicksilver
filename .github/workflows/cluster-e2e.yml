@@ -106,6 +106,13 @@ jobs:
     name: pull, run, roll and gate, on a real cluster
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    # workflow_run fires on `completed`, which includes FAILED. Without this a
+    # release that failed to publish would start a published-mode run anyway,
+    # which resolves "the newest chart the registry holds" — the PREVIOUS
+    # version — and tests it again. That run would be about the wrong artifact:
+    # green would mean the old release still works, red would look like the new
+    # one is broken. Neither is the question. Every other trigger is unaffected.
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
     steps:
       - uses: actions/checkout@v4
 

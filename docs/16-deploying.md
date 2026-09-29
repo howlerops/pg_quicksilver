@@ -53,23 +53,33 @@ Running it as anyone else produces mirror files the instance cannot read.
 
 ```
 helm install quicksilver oci://ghcr.io/howlerops/charts/quicksilver \
-  --version 0.0.2 --namespace cnpg-system
+  --version 0.0.3 --namespace cnpg-system
 ```
 
 The chart is pushed as an OCI artifact, so there is no chart repository to add.
 From a checkout, `helm install quicksilver charts/quicksilver` does the same
 thing against the working tree.
 
-**That command fails today with a 401**, because GHCR packages inherit the
-repository's visibility and this repository is private. Either make the three
-packages public or supply credentials — and note that the fix has two halves in
-two namespaces, because the plugin image is pulled by this chart's Deployment in
-the operator's namespace while the mirror image is pulled by instance Pods in
-the *Cluster's* namespace. The second half is `spec.imagePullSecrets` on the
-Cluster and no amount of chart configuration reaches it. Both are spelled out in
-[the chart README](../charts/quicksilver/README.md#the-published-packages-are-private-and-that-breaks-the-pull-in-two-places).
+**Do not install `0.0.2`**: its mirror sidecar binds `:9187` and stops
+PostgreSQL from starting at all ([docs/35](35-the-port-that-stopped-postgresql.md)).
+`0.0.3` is the first version that runs.
 
-It is worth knowing the shape of the failure: the plugin installs and runs
+**That command needs no credential.** Checked against the registry rather than
+assumed — an anonymous `helm pull` of the chart returns a digest, and both
+image repositories answer an anonymous tag listing. An earlier version of this
+paragraph said it fails with a 401, which was true while the repository was
+private: GHCR packages inherit a repository's visibility when they are created
+and do not follow it afterwards, so the claim outlived the fact.
+
+If you fork this into a private repository, the credential problem has **two
+halves in two namespaces**: the plugin image is pulled by this chart's
+Deployment in the operator's namespace, while the mirror image is pulled by
+instance Pods in the *Cluster's* namespace. The second half is
+`spec.imagePullSecrets` on the Cluster and no amount of chart configuration
+reaches it. Both are spelled out in
+[the chart README](../charts/quicksilver/README.md#if-your-registry-is-private).
+
+It is worth knowing the shape of that failure: the plugin installs and runs
 perfectly, and the mirror turns up as `ImagePullBackOff` on an instance Pod much
 later, looking like a Cluster problem rather than a registry one.
 
@@ -300,12 +310,13 @@ other direction.
   targets on every commit and `release.yml` has published twice.
   [`image_e2e.sh`](../bench/scripts/image_e2e.sh) starts the shipped images and
   `qs-verify` from the same image reports MATCH. What none of that touches is a
-  registry: the ghcr packages are private, an anonymous pull is 401, and a
-  credentialed pull into a Pod needs a kubelet this machine cannot provide
-  ([docs/21](21-against-the-real-operator.md)).
-  `cluster-e2e` is that check — it pulls the chart and both images with a real
-  token, then makes a Cluster pull them through an `imagePullSecret` in each of
-  the two namespaces, which is also the first test of the pull instructions in
+  registry: a pull into a Pod needs a kubelet this machine cannot provide
+  ([docs/21](21-against-the-real-operator.md)). The packages themselves are
+  public — an anonymous `helm pull` of the chart returns a digest and both image
+  repositories answer an anonymous tag listing, checked against ghcr rather than
+  assumed.
+  `cluster-e2e` is that check — it pulls the chart and both images, then makes a
+  Cluster pull them, which is also the first test of the install instructions in
   the chart README. **Still open, and precisely this much:** cluster-e2e now
   passes, but the runs that pass it use `images: source`, which side-loads into
   the node and says so in its own output (`LOCAL_IMAGES=1 — side-loading, which
