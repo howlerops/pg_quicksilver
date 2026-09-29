@@ -113,7 +113,11 @@ The last CI run before the outage was **green on all six jobs**.
 
 ## What is NOT proven
 
-**Nothing, as of cluster-e2e run 18 (29 Sep 2026, `731e00a`).** The two claims
+**Nothing, as of cluster-e2e run 24 (29 Sep 2026, `d23905e`), which repeated
+run 18's result on a later tree** — `app-2 replaced: c4c75a9a -> 0426e9df`,
+`app-1: postgres ready, mirror NOT ready, and absent from app-ro`, operator
+1.26.0, PASS. Run 18's output is kept below because it is the one that first
+closed these. The two claims
 that stood open for the life of this project — a Pod being ROLLED by a plugin
 parameter change, and a Pod LEAVING the `-ro` Service because the mirror's
 readiness probe failed — both passed on a real cluster:
