@@ -19,7 +19,7 @@ helm install quicksilver charts/quicksilver --namespace cnpg-system
 `:9187`, the port CloudNativePG's instance manager needs. It is a native
 sidecar, so it starts first, wins the port, and the instance manager exits
 `unretryable` — PostgreSQL never starts, on every instance, in the default
-`shadow` mode. Fixed in `0.0.3` (`../../docs/35-the-port-that-stopped-postgresql.md`).
+`shadow` mode. Fixed in `0.0.3` ([docs/35](https://github.com/howlerops/pg_quicksilver/blob/main/docs/35-the-port-that-stopped-postgresql.md)).
 
 ### The published packages are public; no credential is needed
 
@@ -107,7 +107,7 @@ log says why.
   `freshnessSLO`, `sidecarImage` or `tables` on a running Cluster then has **no
   effect at all** until a Pod is recreated for some unrelated reason. A fresh
   Cluster still gets the parameters it was created with, which is what makes
-  this easy to miss. [docs/37](../../docs/37-the-operator-that-could-not-roll.md)
+  this easy to miss. [docs/37](https://github.com/howlerops/pg_quicksilver/blob/main/docs/37-the-operator-that-could-not-roll.md)
   has the mechanism.
 - cert-manager, unless you set `certManager.enabled=false` and supply the mTLS
   Secrets yourself
@@ -155,10 +155,10 @@ re-snapshotting, and it is a loaded gun pointed at the database being mirrored:
 **a mirror that cannot keep up makes the PRIMARY run out of disk.**
 
 This is not theoretical. It was registered as risk R7 in
-[docs/09](../../docs/09-risks-and-open-questions.md) and then reproduced exactly
+[docs/09](https://github.com/howlerops/pg_quicksilver/blob/main/docs/09-risks-and-open-questions.md) and then reproduced exactly
 at scale — a 60-second workload of 11.7 million row-changes against a mirror
 draining at roughly half that rate took 6.6 GB of free space to 272 KB and
-stopped PostgreSQL. See [docs/28](../../docs/28-the-slot-is-a-loaded-gun.md).
+stopped PostgreSQL. See [docs/28](https://github.com/howlerops/pg_quicksilver/blob/main/docs/28-the-slot-is-a-loaded-gun.md).
 
 `max_slot_wal_keep_size` makes PostgreSQL invalidate the slot instead. The
 mirror then rebuilds from a fresh snapshot, which is the documented lifecycle
@@ -277,7 +277,7 @@ SELECT slot_name, synced FROM pg_replication_slots WHERE database = 'app';
 
 Measured at two seconds. If the standby is already down it restarts cleanly once
 the conflicting slot is gone — the data is intact, it was the replay that was
-stuck. See [docs/30](../../docs/30-dropping-a-database-kills-the-standby.md).
+stuck. See [docs/30](https://github.com/howlerops/pg_quicksilver/blob/main/docs/30-dropping-a-database-kills-the-standby.md).
 
-See [`examples/cluster-shadow.yaml`](../../examples/cluster-shadow.yaml) and
-[docs/16](../../docs/16-deploying.md).
+See [`examples/cluster-shadow.yaml`](https://github.com/howlerops/pg_quicksilver/blob/main/examples/cluster-shadow.yaml) and
+[docs/16](https://github.com/howlerops/pg_quicksilver/blob/main/docs/16-deploying.md).
