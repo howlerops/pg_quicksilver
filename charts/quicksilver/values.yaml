@@ -5,8 +5,8 @@
 operatorNamespace: cnpg-system
 
 image:
-  plugin: ghcr.io/howlerops/pg_quicksilver-plugin:0.0.2
-  mirror: ghcr.io/howlerops/pg_quicksilver-mirror:0.0.2
+  plugin: ghcr.io/howlerops/pg_quicksilver-plugin:0.0.3
+  mirror: ghcr.io/howlerops/pg_quicksilver-mirror:0.0.3
   pullPolicy: IfNotPresent
   # Secrets for pulling the PLUGIN image, in operatorNamespace. Needed while the
   # ghcr packages are private, which they are by default because the repository

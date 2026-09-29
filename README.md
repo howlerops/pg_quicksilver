@@ -94,8 +94,15 @@ store. The primary sees one ordinary replication stream.
 ## Getting started
 
 ```sh
-helm install quicksilver oci://ghcr.io/howlerops/charts/quicksilver -n cnpg-system
+helm install quicksilver oci://ghcr.io/howlerops/charts/quicksilver \
+  --version 0.0.3 -n cnpg-system
 ```
+
+> **Pin the version, and do not install `0.0.2`.** In `0.0.2` the mirror sidecar binds
+> `:9187`, which is the port CloudNativePG's instance manager needs. The sidecar is a
+> native sidecar, so it starts first, wins the port, and the instance manager exits
+> `unretryable` — **PostgreSQL never starts**, in the default `shadow` mode, on every
+> instance. Fixed in `0.0.3` ([docs/35](docs/35-the-port-that-stopped-postgresql.md)).
 
 Then add the plugin to a `Cluster` — [docs/16](docs/16-deploying.md) has the spec, the two
 images, what the plugin refuses, and what is not yet verified.

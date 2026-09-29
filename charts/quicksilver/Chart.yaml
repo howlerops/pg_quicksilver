@@ -2,8 +2,8 @@ apiVersion: v2
 name: quicksilver
 description: CNPG-I plugin that replaces read replicas with a columnar mirror built from the WAL
 type: application
-version: 0.0.2
-appVersion: "0.0.2"
+version: 0.0.3
+appVersion: "0.0.3"
 home: https://github.com/howlerops/pg_quicksilver
 sources:
   - https://github.com/howlerops/pg_quicksilver
