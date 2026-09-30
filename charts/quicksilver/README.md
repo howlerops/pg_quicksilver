@@ -27,9 +27,9 @@ Checked against the registry rather than assumed — all three packages
 (`…-plugin`, `…-mirror`, `charts/quicksilver`) answer an **anonymous** pull:
 
 ```
-$ helm pull oci://ghcr.io/howlerops/charts/quicksilver --version 0.0.2
-Pulled: ghcr.io/howlerops/charts/quicksilver:0.0.2
-Digest: sha256:794dc9ed…
+$ helm pull oci://ghcr.io/howlerops/charts/quicksilver --version 0.0.3
+Pulled: ghcr.io/howlerops/charts/quicksilver:0.0.3
+Digest: sha256:86996e8b…
 ```
 
 An earlier version of this section said the opposite, because the repository

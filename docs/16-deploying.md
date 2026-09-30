@@ -305,9 +305,9 @@ other direction.
   appearing cannot fake ([docs/37](37-the-operator-that-could-not-roll.md)). And
   none of it works below **CloudNativePG 1.26**, which the harness now asserts
   against the running operator rather than the requested one.
-- **The images — built, published, run locally; pulled by a Pod only when
-  [`cluster-e2e`](../.github/workflows/cluster-e2e.yml) runs.** CI builds both
-  targets on every commit and `release.yml` has published twice.
+- **The images — built, published, run locally, and pulled from ghcr by a Pod
+  in [`cluster-e2e`](../.github/workflows/cluster-e2e.yml) run 32.** CI builds
+  both targets on every commit and `release.yml` has published three times.
   [`image_e2e.sh`](../bench/scripts/image_e2e.sh) starts the shipped images and
   `qs-verify` from the same image reports MATCH. What none of that touches is a
   registry: a pull into a Pod needs a kubelet this machine cannot provide
@@ -319,14 +319,14 @@ other direction.
   Cluster pull them, which is also the first test of the install instructions in
   the chart README — in `published` mode it now installs the chart from
   `oci://`, not from the checkout, so the packaged chart is under test rather
-  than standing in for itself. **Still open, and precisely this much:**
-  cluster-e2e now
-  passes, but the runs that pass it use `images: source`, which side-loads into
-  the node and says so in its own output (`LOCAL_IMAGES=1 — side-loading, which
-  does NOT exercise the registry`). The registry half runs in `published` mode,
-  which the release workflow triggers automatically on a tag. So a Pod pulling
-  *these* images works; a Pod pulling them *from ghcr* is verified at the next
-  release and not before.
+  than standing in for itself. **Closed at 0.0.3.** Earlier
+  passing runs used `images: source`, which side-loads into the node and says so
+  in its own output (`LOCAL_IMAGES=1 — side-loading, which does NOT exercise the
+  registry`). Run 32 was the first in `published` mode, fired by the `v0.0.3`
+  release: `chart: oci://ghcr.io/howlerops/charts/quicksilver --version 0.0.3`,
+  `PULLED: imageID=…-mirror@sha256:9b5a206d…` (the digest ghcr serves for
+  0.0.3), a named instance replaced, PASS. A Pod pulling these images *from
+  ghcr* works.
 - **`mode: takeover` — now observed working.** It is one property: mirror
   freshness gates the `-ro` endpoint. The service retarget the original design
   called for turned out not to be reachable under a sidecar architecture, and

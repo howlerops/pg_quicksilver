@@ -103,11 +103,6 @@ helm install quicksilver oci://ghcr.io/howlerops/charts/quicksilver \
 > native sidecar, so it starts first, wins the port, and the instance manager exits
 > `unretryable` — **PostgreSQL never starts**, in the default `shadow` mode, on every
 > instance. Fixed in `0.0.3` ([docs/35](docs/35-the-port-that-stopped-postgresql.md)).
->
-> **`:latest` is that same build** until `0.0.3` is published — checked, not assumed:
-> `latest` and `0.0.2` resolve to one digest on both images
-> (`sha256:33019fd5…` plugin, `sha256:8ce69cdf…` mirror). An unpinned chart install
-> resolves to the newest chart, which is also `0.0.2`. Pin the version.
 
 Then add the plugin to a `Cluster` — [docs/16](docs/16-deploying.md) has the spec, the two
 images, what the plugin refuses, and what is not yet verified.

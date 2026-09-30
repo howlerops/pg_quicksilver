@@ -147,16 +147,29 @@ instance whose uid changed, which a new Pod appearing cannot fake.
 The run also exercised the CloudNativePG floor in situ:
 `CloudNativePG ready in cnpg-system (operator 1.26.0, floor is 1.26)`.
 
-**Still outside what any of this shows:** the images here are side-loaded, so
-the registry PULL path is covered by the release workflow rather than by this
-run, and cold-cache query performance is not measured anywhere (see
-[docs/36](docs/36-does-the-projection-pay.md)'s own caveats).
+**The registry PULL path, closed by cluster-e2e run 32** (30 Sep 2026, fired
+by `workflow_run` off release run 4 for `v0.0.3`, tree `47dc53e`). Runs 18 and
+24 side-loaded their images; run 32 pulled the published ones, and a kubelet
+did it:
 
-The registry half is one tag away and nothing else — see **Cutting a release**
-below. What *is* established about the registry without a cluster: all three
-ghcr packages answer an **anonymous** pull (`helm pull` of the chart returns a
-digest, both image repositories return a tag list), so no credential is in the
-path at all. What is not established is a kubelet doing it.
+```
+event=workflow_run -> images=published
+pulling 0.0.3
+  chart: oci://ghcr.io/howlerops/charts/quicksilver --version 0.0.3
+  ok: plugin running — the -plugin image was PULLED and STARTED
+  ok: PULLED: imageID=ghcr.io/howlerops/pg_quicksilver-mirror@sha256:9b5a206d…
+  app-2 replaced: 0675140f -> 6e7884a7
+  app-1: postgres ready, mirror NOT ready, and absent from app-ro
+PASS
+```
+
+That digest is the one ghcr serves for both `-mirror:0.0.3` and `:latest`. The
+run pulled with an `imagePullSecret`; that no credential is *needed* is
+established separately — all three packages answer an **anonymous** pull.
+
+**Still outside what any of this shows:** cold-cache query performance is not
+measured anywhere (see [docs/36](docs/36-does-the-projection-pay.md)'s own
+caveats).
 
 ---
 
@@ -283,13 +296,20 @@ recent finding.
 
 ## Cutting a release
 
-`0.0.3` is committed and validated but **not published**: everything in the
-tree says 0.0.3, and no `v0.0.3` tag exists on the remote. The tag is the one
-step nothing here can do — the sandbox this was written in has an egress proxy
-that allows branch pushes and refuses `refs/tags/*` with a bare HTTP 403 on the
-`git-receive-pack` POST (the ref negotiation succeeds, so `git push --dry-run`
-reports `* [new tag] v0.0.3` and tells you nothing). One command, from a
-checkout that can reach github:
+**`0.0.3` is published** (30 Sep 2026): `v0.0.3` on `47dc53e`, release run 4
+green, cluster-e2e run 32 PASS in published mode. `:latest` on both images and
+an unpinned `helm install` now resolve to 0.0.3.
+
+**`0.0.2` is left published, deliberately.** Deleting a ghcr version is
+irreversible and breaks anyone who pinned it; nothing resolves to it by default
+any more, and every README warns about it by name. That is the owner's call and
+it was made.
+
+The sandbox that prepared this release has an egress proxy that allows branch
+pushes and refuses `refs/tags/*` with a bare HTTP 403 on the `git-receive-pack`
+POST (the ref negotiation succeeds, so `git push --dry-run` reports
+`* [new tag]` and tells you nothing). Tags go from a checkout that can reach
+github. For the record, 0.0.3 was:
 
 ```sh
 git fetch origin main
@@ -305,7 +325,7 @@ What that sets off, in order, and what each step is worth watching for:
    locally at `VERSION=0.0.3` and the string is in the binary. It then pushes
    `-plugin`, `-mirror` and the chart to ghcr.
 2. **`cluster-e2e`**, automatically, in **`published`** mode — the run that
-   closes the last gap below. It resolves the version with `helm show chart`
+   closed the registry gap above (run 32 for 0.0.3). It resolves the version with `helm show chart`
    against the registry, which returns the newest chart there; verified live.
 3. Nothing else. `helm install --version 0.0.3` then works anonymously, because
    the packages are public.
