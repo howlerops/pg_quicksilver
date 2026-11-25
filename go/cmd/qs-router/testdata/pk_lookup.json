@@ -1,0 +1,20 @@
+[
+  {
+    "Plan": {
+      "Node Type": "Index Scan",
+      "Parallel Aware": false,
+      "Async Capable": false,
+      "Scan Direction": "Forward",
+      "Index Name": "orders_pkey",
+      "Relation Name": "orders",
+      "Schema": "public",
+      "Alias": "orders",
+      "Startup Cost": 0.42,
+      "Total Cost": 8.44,
+      "Plan Rows": 1,
+      "Plan Width": 40,
+      "Output": ["id", "customer_id", "status", "amount", "created_at", "note"],
+      "Index Cond": "(orders.id = 4242)"
+    }
+  }
+]

@@ -1,0 +1,65 @@
+[
+  {
+    "Plan": {
+      "Node Type": "Aggregate",
+      "Strategy": "Plain",
+      "Partial Mode": "Simple",
+      "Parallel Aware": false,
+      "Async Capable": false,
+      "Startup Cost": 78.47,
+      "Total Cost": 78.48,
+      "Plan Rows": 1,
+      "Plan Width": 8,
+      "Output": ["count(*)"],
+      "Plans": [
+        {
+          "Node Type": "Merge Join",
+          "Parent Relationship": "Outer",
+          "Parallel Aware": false,
+          "Async Capable": false,
+          "Join Type": "Inner",
+          "Startup Cost": 2.24,
+          "Total Cost": 75.97,
+          "Plan Rows": 1000,
+          "Plan Width": 0,
+          "Inner Unique": true,
+          "Merge Cond": "(o.id = a.id)",
+          "Plans": [
+            {
+              "Node Type": "Index Only Scan",
+              "Parent Relationship": "Outer",
+              "Parallel Aware": false,
+              "Async Capable": false,
+              "Scan Direction": "Forward",
+              "Index Name": "orders_pkey",
+              "Relation Name": "orders",
+              "Schema": "public",
+              "Alias": "o",
+              "Startup Cost": 0.42,
+              "Total Cost": 25980.42,
+              "Plan Rows": 1000000,
+              "Plan Width": 8,
+              "Output": ["o.id"]
+            },
+            {
+              "Node Type": "Index Only Scan",
+              "Parent Relationship": "Inner",
+              "Parallel Aware": false,
+              "Async Capable": false,
+              "Scan Direction": "Forward",
+              "Index Name": "audit_log_pkey",
+              "Relation Name": "audit_log",
+              "Schema": "public",
+              "Alias": "a",
+              "Startup Cost": 0.28,
+              "Total Cost": 35.27,
+              "Plan Rows": 1000,
+              "Plan Width": 8,
+              "Output": ["a.id"]
+            }
+          ]
+        }
+      ]
+    }
+  }
+]
