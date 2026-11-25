@@ -68,7 +68,11 @@ type Transaction struct {
 	CommitLSN string
 	// NextLSN is what to confirm through to actually consume this transaction.
 	NextLSN string
+	// Changes holds the transaction when it is small. A large one is on disk
+	// (spool.go) and Changes is nil: read either kind with Each, count either
+	// with Len, and never range over Changes to learn what a transaction did.
 	Changes []Change
+	spool   *Spool
 }
 
 // Stream is the interface phase 3 swaps out, not the callers.

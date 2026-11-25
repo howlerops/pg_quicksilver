@@ -27,6 +27,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/howlerops/pg_quicksilver/go/internal/changestream"
+	"github.com/howlerops/pg_quicksilver/go/internal/mirror"
 )
 
 // slowTick is the threshold for saying something. 200 ms is the interval
@@ -89,13 +90,19 @@ func envInt(key string, def int64) int64 {
 // built around: half a transaction in the mirror is a state the source never
 // had. So a single transaction larger than the cap is applied whole and
 // overruns, which is correct — the alternative is not applying it at all.
+//
+// What it no longer does is overrun in MEMORY. A transaction past the spool
+// threshold is on disk (changestream/spool.go), counted here by Len(), and
+// Table.Apply lands it in chunks of mirror.ApplyChunkChanges while keeping it
+// invisible until the last one is written. The tick is still long; the heap
+// is not.
 func capBatch(txns []changestream.Transaction) []changestream.Transaction {
 	if maxTickChanges <= 0 || len(txns) <= 1 {
 		return txns
 	}
 	n := 0
 	for i, t := range txns {
-		n += len(t.Changes)
+		n += t.Len()
 		if n >= maxTickChanges {
 			return txns[:i+1]
 		}
@@ -190,10 +197,43 @@ var maxPendingChanges = int(envInt("QS_MAX_PENDING_CHANGES", 4*int64(maxTickChan
 //
 //	maxPendingChanges + 2 x maxStreamBufferedChanges (+ one transaction)
 //
+// where "one transaction" used to mean all of it and now means what init()
+// below says: a large one waits on disk and counts here by its length only.
+//
 // — the queue just under its cap, one full buffer taken on top, and the buffer
 // refilled behind it. A quarter of the queue (one tick's worth at the
 // defaults) keeps that at 1.5x maxPendingChanges without leaving a tick short
 // of work.
 var maxStreamBufferedChanges = int(envInt("QS_MAX_STREAM_BUFFERED_CHANGES", int64(maxPendingChanges)/4))
 
-func init() { changestream.DefaultMaxBufferedChanges = maxStreamBufferedChanges }
+// The three knobs that bound what ONE transaction costs in memory, whatever its
+// size (the two above bound many small ones):
+//
+//	QS_SPOOL_THRESHOLD_CHANGES  a transaction that arrives whole is held in
+//	QS_SPOOL_THRESHOLD_BYTES    memory until it crosses either, then spooled to
+//	                            <mirror>/.spool; one the server streams in
+//	                            progress is spooled from its first change
+//	QS_APPLY_CHUNK_CHANGES      how many changes of a larger transaction Apply
+//	                            holds at once
+//	QS_STREAM_IN_PROGRESS=off   proto_version 1, for PostgreSQL 13 and older
+//
+// The worst case in memory becomes
+//
+//	(maxPendingChanges + 2 x maxStreamBufferedChanges) small changes queued
+//	+ min(QS_SPOOL_THRESHOLD_CHANGES rows, QS_SPOOL_THRESHOLD_BYTES) assembling
+//	+ QS_APPLY_CHUNK_CHANGES rows being applied
+//	+ 1 bit per row of each file the transaction supersedes rows in
+//
+// with no term in the size of the largest transaction.
+func init() {
+	changestream.DefaultMaxBufferedChanges = maxStreamBufferedChanges
+	changestream.SpoolThresholdChanges = int(envInt("QS_SPOOL_THRESHOLD_CHANGES",
+		int64(changestream.SpoolThresholdChanges)))
+	changestream.SpoolThresholdBytes = int(envInt("QS_SPOOL_THRESHOLD_BYTES",
+		int64(changestream.SpoolThresholdBytes)))
+	mirror.ApplyChunkChanges = int(envInt("QS_APPLY_CHUNK_CHANGES",
+		int64(mirror.ApplyChunkChanges)))
+	if v := os.Getenv("QS_STREAM_IN_PROGRESS"); v == "off" || v == "0" || v == "false" {
+		changestream.DefaultInProgress = false
+	}
+}

@@ -22,6 +22,7 @@ import (
 	_ "net/http/pprof"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"sort"
 	"strings"
 	"syscall"
@@ -122,6 +123,7 @@ func (o options) localDSN() string {
 func main() {
 	log := slog.New(slog.NewTextHandler(os.Stdout, nil))
 	o := loadOptions()
+	changestream.SpoolDir = filepath.Join(o.mirrorPath, ".spool")
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
@@ -659,7 +661,7 @@ func pump(
 		// the slot guard already bounds how much WAL that may be.
 		queued := 0
 		for _, t := range pending {
-			queued += len(t.Changes)
+			queued += t.Len()
 		}
 		if queued < maxPendingChanges {
 			fresh, err := st.Transactions(ctx)
@@ -823,13 +825,10 @@ func pump(
 		// list, which drops the new column while row counts still match.
 		cut := -1
 		for i, t := range txns {
-			for _, c := range t.Changes {
-				if c.Qualified() == ddl.LogTable {
-					cut = i
-					break
-				}
-			}
-			if cut >= 0 {
+			// Touches, not a walk over t.Changes: a spooled transaction has
+			// none in memory, and a DDL inside one is still a barrier.
+			if t.Touches(ddl.LogTable) {
+				cut = i
 				break
 			}
 		}
