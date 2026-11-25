@@ -352,6 +352,9 @@ func TestChunkedApplyCrashLeavesPreviousMirror(t *testing.T) {
 		t.Fatal(err)
 	}
 	withChunk(t, 100)
+	// Files the replay retires are kept for a grace period by the publisher;
+	// this test is about what is left once nothing is owed to a reader.
+	re.publisher().grace = 0
 	if _, err := re.Apply([]changestream.Transaction{asTxn(t, true, "0/30", ops)}); err != nil {
 		t.Fatal(err)
 	}
