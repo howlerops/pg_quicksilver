@@ -1,0 +1,18 @@
+{
+ "engine": "pg",
+ "state": "A",
+ "mode": "cold",
+ "queries": {
+  "sum_amount": {
+   "sql": "SELECT sum(amount) FROM orders",
+   "ok": true,
+   "ms": [
+    1273.761535000176
+   ],
+   "best_ms": 1273.761535000176,
+   "median_ms": 1273.761535000176,
+   "rows": 1
+  }
+ },
+ "at": "2026-11-25T00:46:28.887988"
+}

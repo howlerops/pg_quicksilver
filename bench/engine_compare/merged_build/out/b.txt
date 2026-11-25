@@ -1,0 +1,14 @@
+state before kill: {"applied_lsn":"0/B98EFA0","base_files":["000009.parquet"],"delta_files":["000010.parquet","000011.parquet","000012.parquet","000013.parquet","000014.parquet","000015.parquet","000016.parquet","000017.parquet","000018.parquet","000019.parquet","000021.parquet","000022.parquet","000023.parquet","0000
+killed -9 at 18:55:56
+qs_e2e_pod_a active=false confirmed=0/B98EFA1 temp=false
+{"txns": 200, "inserts": 100000, "updates": 87096, "deletes": 43513, "seconds": 12.42, "rows_now": 272021}
+state after kill: {"applied_lsn":"0/B98EFA0","base_files":["000009.parquet"],"delta_files":["000010.parquet","000011.parquet","000012.parquet","000013.parquet","000014.parquet","000015.parquet","000016.parquet","000017.parquet","000018.parquet","000019.parquet","000021.parquet","000022.parquet","000023.parquet","0000
+--- restart 18:56:04
+started a pid 28320
+READY
+applied
+applied_lsn=0/E9E5598
+mirror 272021 rows (checksum e8f12a7f70246864)
+source 272021 rows (checksum e8f12a7f70246864)
+MATCH
+qs_e2e_pod_a active=true confirmed=0/E9E5599 temp=false

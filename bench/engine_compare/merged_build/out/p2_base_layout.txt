@@ -1,0 +1,2 @@
+mirror_old/public.orders/base/000001.parquet row_groups 153 MB 830 groups overlapping June-2025 on created_at: 8 rows/group 38528 65536
+mirror_new/public.orders/base/000022.parquet row_groups 153 MB 837 groups overlapping June-2025 on created_at: 28 rows/group 38528 65536

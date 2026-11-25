@@ -1,0 +1,12 @@
+== versions
+postgres (PostgreSQL) 17.12 (Ubuntu 17.12-1.pgdg24.04+1)
+v22.23.5
+0.23.4
+  "version": "2.0.0-r.1",
+python 3.13.18 duckdb 2.0.1 psycopg 3.3.9
+quicksilver commit c5421c57d541c1b0f52b87529843c2334f737589
+0
+go version go1.27.1 linux/amd64
+6.18.44-fc-v880
+CPU(s):                                  4
+Model name:                              Intel(R) Xeon(R) Processor @ 2.10GHz

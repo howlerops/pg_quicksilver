@@ -1,0 +1,6 @@
+Traceback (most recent call last):
+  File "<stdin>", line 5, in <module>
+_duckdb.IOException: IO Error: No files found that match the pattern "/tmp/qsb/mirror/public.orders/delta/000002.parquet"
+
+LINE 5: ...", "status", "amount", "created_at", "payload", "note" FROM read_parquet('/tmp/qsb/mirror/public.orders/delta/000002...
+                                                                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

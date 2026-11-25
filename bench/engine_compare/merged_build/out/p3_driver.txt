@@ -1,0 +1,13 @@
+server stopped
+server stopped
+unmounted /tmp/qsb
+=== setup_cluster.sh
+  primary answers on 5443
+  standby answers on 5444 and is in recovery
+  wal_level = logical
+  PostgreSQL 17.12 (Ubuntu 17.12-1.pgdg24.04+1)
+
+READY — primary 5443, standby 5444
+=== e2e_mirror.sh  19:57:39
+e2e_mirror.sh exit=0 at 19:59:04
+P3_DONE

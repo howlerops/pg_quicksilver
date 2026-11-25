@@ -1,0 +1,18 @@
+{
+ "engine": "pg",
+ "state": "A",
+ "mode": "cold",
+ "queries": {
+  "count_by_status": {
+   "sql": "SELECT status, count(*) FROM orders GROUP BY status ORDER BY status",
+   "ok": true,
+   "ms": [
+    1299.0612530002181
+   ],
+   "best_ms": 1299.0612530002181,
+   "median_ms": 1299.0612530002181,
+   "rows": 6
+  }
+ },
+ "at": "2026-11-25T00:48:29.400351"
+}

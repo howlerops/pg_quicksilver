@@ -1,0 +1,19 @@
+{
+ "engine": "qs",
+ "state": "B",
+ "mode": "cold",
+ "queries": {
+  "pk_lookup": {
+   "sql": "SELECT * FROM orders WHERE id = '001022db-a952-4fd7-955c-8f459a6dd91d'",
+   "ok": true,
+   "ms": [
+    413.03922299994156
+   ],
+   "best_ms": 413.03922299994156,
+   "median_ms": 413.03922299994156,
+   "rows": 1
+  }
+ },
+ "at": "2026-11-25T00:56:49.495898",
+ "qs_viewgen_plus_create_view_s": 0.0538761800003158
+}

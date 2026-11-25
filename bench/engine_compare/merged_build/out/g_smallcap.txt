@@ -1,0 +1,10 @@
+--- [smallcap] sidecar stopped; writing the backlog at 19:14:39; env: QS_MAX_TICK_CHANGES=50000
+backlog: 3207600 row changes in 72 txns, 920 MB of WAL; rows now 178200
+started a pid 18792
+drained after 68.205253850 s
+applied_lsn=0/FB73C068
+mirror 178200 rows (checksum 606fa91fc2393d13)
+source 178200 rows (checksum 606fa91fc2393d13)
+MATCH
+[smallcap] RSS samples=358 VmHWM=1059 MB  final_RSS=205 MB
+RSS MB over time: [16, 825, 851, 913, 895, 894, 938, 940, 919, 1039, 902, 964, 914, 909, 309]

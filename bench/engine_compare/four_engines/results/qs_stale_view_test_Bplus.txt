@@ -1,0 +1,2 @@
+state-B view SQL after 5 further applied transactions (no merge/compaction yet): no error
+ equals state-B answer: True | equals current Postgres answer: False

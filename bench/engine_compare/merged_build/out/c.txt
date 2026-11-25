@@ -1,0 +1,46 @@
+started b pid 28576
+b READY
+--- slots with both running
+qs_e2e_pod_a active=true confirmed=0/E9E5599 temp=false
+qs_e2e_pod_b active=true confirmed=0/E9E5F78 temp=false
+{"txns": 60, "inserts": 30000, "updates": 24479, "deletes": 12239, "seconds": 2.75, "rows_now": 289782}
+both applied
+--- verify a (both running)
+applied_lsn=0/FD715B0
+mirror 289782 rows (checksum 70e2af6d3e018885)
+source 289782 rows (checksum 70e2af6d3e018885)
+MATCH
+--- verify b (both running)
+applied_lsn=0/FD715B0
+mirror 289782 rows (checksum 70e2af6d3e018885)
+source 289782 rows (checksum 70e2af6d3e018885)
+MATCH
+--- stop a (SIGTERM)
+qs_e2e_pod_a active=false confirmed=0/FD715B1 temp=false
+qs_e2e_pod_b active=true confirmed=0/FD715B1 temp=false
+{"txns": 60, "inserts": 30000, "updates": 23812, "deletes": 11885, "seconds": 2.62, "rows_now": 307897}
+b applied
+--- verify b (a stopped, workload ran meanwhile)
+applied_lsn=0/111EB658
+mirror 307897 rows (checksum dad99f54bbe54c2b)
+source 307897 rows (checksum dad99f54bbe54c2b)
+MATCH
+--- restart a
+started a pid 28805
+a READY
+a applied
+--- verify a (after restart)
+applied_lsn=0/111EC238
+mirror 307897 rows (checksum dad99f54bbe54c2b)
+source 307897 rows (checksum dad99f54bbe54c2b)
+MATCH
+--- verify b
+applied_lsn=0/111EC238
+mirror 307897 rows (checksum dad99f54bbe54c2b)
+source 307897 rows (checksum dad99f54bbe54c2b)
+MATCH
+qs_e2e_pod_a active=true confirmed=0/111EC239 temp=false
+qs_e2e_pod_b active=true confirmed=0/111EC239 temp=false
+--- b stopped
+qs_e2e_pod_a active=true confirmed=0/111EC239 temp=false
+qs_e2e_pod_b active=false confirmed=0/111EC239 temp=false

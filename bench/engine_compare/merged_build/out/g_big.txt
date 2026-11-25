@@ -1,0 +1,10 @@
+--- [big] sidecar stopped; writing the backlog at 19:11:36; env: 
+backlog: 6415200 row changes in 144 txns, 1879 MB of WAL; rows now 178200
+started a pid 13207
+drained after 113.146717556 s
+applied_lsn=0/C156F278
+mirror 178200 rows (checksum ef3f1af56f7acefd)
+source 178200 rows (checksum ef3f1af56f7acefd)
+MATCH
+[big] RSS samples=574 VmHWM=2125 MB  final_RSS=1231 MB
+RSS MB over time: [13, 1043, 1666, 1940, 1967, 1892, 2097, 1991, 2011, 2011, 2102, 2058, 1998, 1962]

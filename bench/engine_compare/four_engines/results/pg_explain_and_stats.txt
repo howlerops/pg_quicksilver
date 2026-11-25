@@ -1,0 +1,53 @@
+ relname | last_autovacuum | last_autoanalyze | n_dead_tup | n_live_tup 
+---------+-----------------+------------------+------------+------------
+ orders  |                 |                  |     515305 |   10001058
+(1 row)
+
+      slot_name      | active | retained 
+---------------------+--------+----------
+ mason_dev_bench_app | f      | 29 MB
+ qs_bench            | f      | 29 MB
+(2 rows)
+
+                                                                      QUERY PLAN                                                                      
+------------------------------------------------------------------------------------------------------------------------------------------------------
+ Finalize Aggregate  (cost=157668.94..157668.95 rows=1 width=8) (actual rows=1 loops=1)
+   Buffers: shared hit=6576291 read=321473
+   ->  Gather  (cost=157668.73..157668.94 rows=2 width=8) (actual rows=3 loops=1)
+         Workers Planned: 2
+         Workers Launched: 2
+         Buffers: shared hit=6576291 read=321473
+         ->  Partial Aggregate  (cost=156668.73..156668.74 rows=1 width=8) (actual rows=1 loops=3)
+               Buffers: shared hit=6576291 read=321473
+               ->  Parallel Index Only Scan using orders_created on orders  (cost=0.43..145696.77 rows=4388783 width=0) (actual rows=3333333 loops=3)
+                     Heap Fetches: 8768261
+                     Buffers: shared hit=6576291 read=321473
+ Planning:
+   Buffers: shared hit=75 read=1
+ Planning Time: 0.176 ms
+ JIT:
+   Functions: 8
+   Options: Inlining false, Optimization false, Expressions true, Deforming true
+ Execution Time: 1515.771 ms
+(18 rows)
+
+                                                        QUERY PLAN                                                        
+--------------------------------------------------------------------------------------------------------------------------
+ GroupAggregate  (cost=1922973.45..2212633.15 rows=10533080 width=48) (actual rows=75 loops=1)
+   Group Key: (date_trunc('month'::text, o.created_at)), (date_trunc('year'::text, c.created_at))
+   ->  Sort  (cost=1922973.45..1949306.15 rows=10533080 width=22) (actual rows=10000000 loops=1)
+         Sort Key: (date_trunc('month'::text, o.created_at)), (date_trunc('year'::text, c.created_at))
+         Sort Method: external merge  Disk: 322744kB
+         ->  Hash Join  (cost=17423.00..567850.77 rows=10533080 width=22) (actual rows=10000000 loops=1)
+               Hash Cond: (o.customer_id = c.id)
+               ->  Seq Scan on orders o  (cost=0.00..470112.80 rows=10533080 width=30) (actual rows=10000000 loops=1)
+               ->  Hash  (cost=11173.00..11173.00 rows=500000 width=24) (actual rows=500000 loops=1)
+                     Buckets: 524288  Batches: 1  Memory Usage: 31440kB
+                     ->  Seq Scan on customers c  (cost=0.00..11173.00 rows=500000 width=24) (actual rows=500000 loops=1)
+ Planning Time: 0.655 ms
+ JIT:
+   Functions: 16
+   Options: Inlining true, Optimization true, Expressions true, Deforming true
+ Execution Time: 10141.945 ms
+(16 rows)
+

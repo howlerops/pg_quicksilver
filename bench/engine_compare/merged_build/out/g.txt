@@ -1,0 +1,22 @@
+--- recover from f: remove the NaN row, drop slot, remove mirror, fresh snapshot
+DELETE 101
+started a pid 30476
+READY
+applied_lsn=0/19E16E30
+mirror 198000 rows (checksum 1c50e1cad7693d8a)
+source 198000 rows (checksum 1c50e1cad7693d8a)
+MATCH
+idle RSS before burst: VmHWM: 154952 kB  VmRSS: 116348 kB  
+--- sidecar stopped; writing the backlog at 19:01:18
+DELETE 19800
+backlog: 798 MB of WAL, 64 txns x ~49.5k row updates + 1 delete txn; rows now 178200
+--- start sidecar at 19:01:37
+started a pid 30766
+drained after 51.423809525 s
+applied_lsn=0/4BC25F28
+mirror 178200 rows (checksum d1e7a586fa89a38e)
+source 178200 rows (checksum d1e7a586fa89a38e)
+MATCH
+RSS samples=282 peak_VmRSS_sampled=2229 MB  VmHWM=2229 MB  final_RSS=834 MB
+RSS MB over time: [21, 1058, 1472, 1949, 2138, 2151, 2116, 2122, 2199, 2101, 2148, 1908, 1223]
+6.3M

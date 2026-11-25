@@ -1,0 +1,18 @@
+{
+ "engine": "native",
+ "state": "B",
+ "mode": "cold",
+ "queries": {
+  "sum_amount": {
+   "sql": "SELECT sum(amount) FROM orders",
+   "ok": true,
+   "ms": [
+    40.55235800024093
+   ],
+   "best_ms": 40.55235800024093,
+   "median_ms": 40.55235800024093,
+   "rows": 1
+  }
+ },
+ "at": "2026-11-25T01:19:19.349810"
+}

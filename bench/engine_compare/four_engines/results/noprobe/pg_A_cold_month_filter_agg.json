@@ -1,0 +1,18 @@
+{
+ "engine": "pg",
+ "state": "A",
+ "mode": "cold",
+ "queries": {
+  "month_filter_agg": {
+   "sql": "SELECT count(*), sum(amount) FROM orders WHERE created_at >= timestamptz '2025-06-01 00:00:00+00' AND created_at < timestamptz '2025-07-01 00:00:00+00'",
+   "ok": true,
+   "ms": [
+    163.0324089996975
+   ],
+   "best_ms": 163.0324089996975,
+   "median_ms": 163.0324089996975,
+   "rows": 1
+  }
+ },
+ "at": "2026-11-25T00:46:32.673556"
+}

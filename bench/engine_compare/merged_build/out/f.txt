@@ -1,0 +1,59 @@
+--- before
+readyz -> HTTP 200 body: {"ready":true,"reason":"lag 0.1s within SLO 15.0s","applied_lsn":"0/19D7EAC8","head_lsn":"0/19D7EAF8","lag_bytes":48,"lag_seconds":0.111559413,"compaction_backlog":1,"diverged":false,"bootstrapped":true,"verified_seconds_ago":0,"slot_retained_bytes":67833552}
+healthz -> HTTP 200 body: {"alive":true}
+--- insert NaN at 19:00:10
+INSERT 0 1
+INSERT 0 100
+--- 3 s later
+readyz -> HTTP 503 body: {"ready":false,"reason":"mirror diverged from source — verification failed","applied_lsn":"0/19D7EAC8","head_lsn":"0/19D7EAF8","lag_bytes":48,"lag_seconds":3.169518027,"compaction_backlog":1,"diverged":true,"bootstrapped":true,"verified_seconds_ago":1.94200336,"slot_retained_bytes":67833552}
+healthz -> HTTP 200 body: {"alive":true}
+--- 23 s later
+readyz -> HTTP 503 body: {"ready":false,"reason":"mirror diverged from source — verification failed","applied_lsn":"0/19D7EAC8","head_lsn":"0/19D7EAF8","lag_bytes":48,"lag_seconds":23.191394114,"compaction_backlog":1,"diverged":true,"bootstrapped":true,"verified_seconds_ago":7.898490756,"slot_retained_bytes":67833552}
+healthz -> HTTP 200 body: {"alive":true}
+--- sidecar alive? yes
+--- new log lines (first 6 + count)
+time=2026-11-25T19:00:10.357Z level=ERROR msg="mirror stopped" err="apply: halting public.items: column \"amount\" (numeric(12,2)) holds \"NaN\", which the mirror's column type decimal(12, 2) cannot store exactly. Storing NULL or a rounded value instead would be silently wrong" retry_in=1s
+time=2026-11-25T19:00:11.380Z level=ERROR msg="mirror stopped" err="public.items is halted and will not resume without an operator: halting public.items: column \"amount\" (numeric(12,2)) holds \"NaN\", which the mirror's column type decimal(12, 2) cannot store exactly. Storing NULL or a rounded value instead would be silently wrong" retry_in=2s
+time=2026-11-25T19:00:13.402Z level=ERROR msg="mirror stopped" err="public.items is halted and will not resume without an operator: halting public.items: column \"amount\" (numeric(12,2)) holds \"NaN\", which the mirror's column type decimal(12, 2) cannot store exactly. Storing NULL or a rounded value instead would be silently wrong" retry_in=4s
+time=2026-11-25T19:00:17.422Z level=ERROR msg="mirror stopped" err="public.items is halted and will not resume without an operator: halting public.items: column \"amount\" (numeric(12,2)) holds \"NaN\", which the mirror's column type decimal(12, 2) cannot store exactly. Storing NULL or a rounded value instead would be silently wrong" retry_in=8s
+time=2026-11-25T19:00:25.446Z level=ERROR msg="mirror stopped" err="public.items is halted and will not resume without an operator: halting public.items: column \"amount\" (numeric(12,2)) holds \"NaN\", which the mirror's column type decimal(12, 2) cannot store exactly. Storing NULL or a rounded value instead would be silently wrong" retry_in=16s
+new log lines total: 5
+--- metrics (halt/ready/verif related)
+quicksilver_lag_seconds 23.218
+quicksilver_lag_bytes 48
+quicksilver_ready 0
+quicksilver_diverged 1
+--- mirror dir
+base
+delta
+dv
+index
+state.json
+state: {"applied_lsn":"0/19D7EAC8","base_files":["000048.parquet"],"delta_files":null,"seq":49,"base_rows":198000,"delta_rows":0,"halted":"haltingpublic.items:column\"amount\"(numeric(12,2))holds\"NaN\",whichthemirror'scolumntypedecimal(12,2)cannotstoreexactly.StoringNULLoraroundedvalueinsteadwouldbesilentlywrong"}
+--- qs-verify while halted
+applied_lsn=0/19D7EAC8
+mirror 198000 rows (checksum 1c50e1cad7693d8a)
+source 198101 rows (checksum 9553b92a82970bcb)
+DIVERGED
+  rows only in source: 101, only in mirror: 0
+  missing from mirror: id=7522a0fb-6c9e-4634-ab4b-28212134f92a
+  missing from mirror: id=6d8feecd-7bd7-4ddb-ae58-8f9119533cac
+  missing from mirror: id=cee02ce1-3530-4bf7-b92c-a00b279ba02e
+--- view from qs-query while halted
+  File "/tmp/claude-0/-home-user-pg-quicksilver/58894071-fd3a-5a32-94ab-41a0530826ff/scratchpad/e2e/scripts/viewcheck.py", line 5, in <module>
+    sql=subprocess.run([f"{E}/bin/qs-query","-mirror",root,"-table","public.items"],capture_output=True,text=True,check=True).stdout
+        ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.13/subprocess.py", line 578, in run
+    raise CalledProcessError(retcode, process.args,
+                             output=stdout, stderr=stderr)
+subprocess.CalledProcessError: Command '['/tmp/claude-0/-home-user-pg-quicksilver/58894071-fd3a-5a32-94ab-41a0530826ff/scratchpad/e2e/bin/qs-query', '-mirror', '/tmp/claude-0/-home-user-pg-quicksilver/58894071-fd3a-5a32-94ab-41a0530826ff/scratchpad/e2e/mirror_a', '-table', 'public.items']' returned non-zero exit status 2.
+qs_e2e_pod_a active=false confirmed=0/19D7EAC9 temp=false
+--- restart sidecar without fixing anything
+started a pid 30338
+readyz -> HTTP 503 body: {"ready":false,"reason":"still bootstrapping — no complete copy of the source yet","applied_lsn":"","head_lsn":"","lag_bytes":0,"lag_seconds":7.997429127,"compaction_backlog":0,"diverged":true,"bootstrapped":false,"verified_seconds_ago":0.913789757,"slot_retained_bytes":0}
+healthz -> HTTP 200 body: {"alive":true}
+time=2026-11-25T19:00:40.085Z level=INFO msg="quicksilver mirror starting" cluster=e2e pod=pod-a mode=shadow ingest=logical tables=[public.items] slo=15s slot=qs_e2e_pod_a configured_slot=qs_e2e
+time=2026-11-25T19:00:40.103Z level=ERROR msg="mirror stopped" err="public.items is halted and will not resume without an operator: halting public.items: column \"amount\" (numeric(12,2)) holds \"NaN\", which the mirror's column type decimal(12, 2) cannot store exactly. Storing NULL or a rounded value instead would be silently wrong" retry_in=1s
+time=2026-11-25T19:00:41.120Z level=ERROR msg="mirror stopped" err="public.items is halted and will not resume without an operator: halting public.items: column \"amount\" (numeric(12,2)) holds \"NaN\", which the mirror's column type decimal(12, 2) cannot store exactly. Storing NULL or a rounded value instead would be silently wrong" retry_in=2s
+time=2026-11-25T19:00:43.143Z level=ERROR msg="mirror stopped" err="public.items is halted and will not resume without an operator: halting public.items: column \"amount\" (numeric(12,2)) holds \"NaN\", which the mirror's column type decimal(12, 2) cannot store exactly. Storing NULL or a rounded value instead would be silently wrong" retry_in=4s
+time=2026-11-25T19:00:47.168Z level=ERROR msg="mirror stopped" err="public.items is halted and will not resume without an operator: halting public.items: column \"amount\" (numeric(12,2)) holds \"NaN\", which the mirror's column type decimal(12, 2) cannot store exactly. Storing NULL or a rounded value instead would be silently wrong" retry_in=8s

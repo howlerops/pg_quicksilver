@@ -1,0 +1,92 @@
+{
+ "engine": "native",
+ "state": "B",
+ "mode": "warm",
+ "queries": {
+  "count_by_status": {
+   "sql": "SELECT status, count(*) FROM orders GROUP BY status ORDER BY status",
+   "ok": true,
+   "ms": [
+    16.875918999630812,
+    17.926851000083843,
+    20.746388999668852,
+    17.46443999991243,
+    16.43174299988459
+   ],
+   "best_ms": 16.43174299988459,
+   "median_ms": 17.46443999991243,
+   "rows": 7
+  },
+  "revenue_by_month_join": {
+   "sql": "SELECT date_trunc('month', o.created_at) AS month, date_trunc('year', c.created_at) AS signup_year, sum(o.amount) AS revenue FROM orders o JOIN customers c ON c.id = o.customer_id GROUP BY 1, 2 ORDER BY 1, 2",
+   "ok": true,
+   "ms": [
+    866.4788689998204,
+    894.8771659997874,
+    855.2918899999895,
+    885.8640380003635,
+    900.4658829999244
+   ],
+   "best_ms": 855.2918899999895,
+   "median_ms": 885.8640380003635,
+   "rows": 75
+  },
+  "pk_lookup": {
+   "sql": "SELECT * FROM orders WHERE id = '001022db-a952-4fd7-955c-8f459a6dd91d'",
+   "ok": true,
+   "ms": [
+    18.225110999992467,
+    13.162378999822977,
+    13.232728999810206,
+    17.36851400028172,
+    16.965734000223165
+   ],
+   "best_ms": 13.162378999822977,
+   "median_ms": 16.965734000223165,
+   "rows": 1
+  },
+  "count_star": {
+   "sql": "SELECT count(*) FROM orders",
+   "ok": true,
+   "ms": [
+    1.6091600000436301,
+    1.5858280003158143,
+    1.6073690003395313,
+    2.176641000005475,
+    1.6549090000808064
+   ],
+   "best_ms": 1.5858280003158143,
+   "median_ms": 1.6091600000436301,
+   "rows": 1
+  },
+  "sum_amount": {
+   "sql": "SELECT sum(amount) FROM orders",
+   "ok": true,
+   "ms": [
+    6.720078999933321,
+    6.863714999781223,
+    6.840956999894843,
+    6.367105000208539,
+    5.611191000298277
+   ],
+   "best_ms": 5.611191000298277,
+   "median_ms": 6.720078999933321,
+   "rows": 1
+  },
+  "month_filter_agg": {
+   "sql": "SELECT count(*), sum(amount) FROM orders WHERE created_at >= timestamptz '2025-06-01 00:00:00+00' AND created_at < timestamptz '2025-07-01 00:00:00+00'",
+   "ok": true,
+   "ms": [
+    1.6817969999465276,
+    1.6316199998982484,
+    1.6292569998768158,
+    2.9918019999968237,
+    2.118919000167807
+   ],
+   "best_ms": 1.6292569998768158,
+   "median_ms": 1.6817969999465276,
+   "rows": 1
+  }
+ },
+ "at": "2026-11-25T01:19:40.902398"
+}

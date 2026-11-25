@@ -1,0 +1,24 @@
+{
+  "applied_lsn": "1/CD875EA0",
+  "base_files": [
+    "000001.parquet"
+  ],
+  "delta_files": [
+    "000002.parquet",
+    "000003.parquet",
+    "000004.parquet",
+    "000005.parquet"
+  ],
+  "seq": 5,
+  "base_rows": 10000000,
+  "delta_rows": 700000,
+  "file_rows": {
+    "000002.parquet": 220500,
+    "000003.parquet": 220500,
+    "000004.parquet": 220500,
+    "000005.parquet": 38500
+  },
+  "dv_gen": {
+    "000001": 4
+  }
+}

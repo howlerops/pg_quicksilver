@@ -1,0 +1,1 @@
+error: mirror is halted and must not be served: halting public.items: column "amount" (numeric(12,2)) holds "NaN", which the mirror's column type decimal(12, 2) cannot store exactly. Storing NULL or a rounded value instead would be silently wrong

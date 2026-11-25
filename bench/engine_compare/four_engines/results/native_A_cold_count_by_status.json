@@ -1,0 +1,18 @@
+{
+ "engine": "native",
+ "state": "A",
+ "mode": "cold",
+ "queries": {
+  "count_by_status": {
+   "sql": "SELECT status, count(*) FROM orders GROUP BY status ORDER BY status",
+   "ok": true,
+   "ms": [
+    35.93540000019857
+   ],
+   "best_ms": 35.93540000019857,
+   "median_ms": 35.93540000019857,
+   "rows": 6
+  }
+ },
+ "at": "2026-11-25T00:46:37.132334"
+}

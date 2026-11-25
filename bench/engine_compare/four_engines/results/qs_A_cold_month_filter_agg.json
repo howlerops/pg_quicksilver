@@ -1,0 +1,19 @@
+{
+ "engine": "qs",
+ "state": "A",
+ "mode": "cold",
+ "queries": {
+  "month_filter_agg": {
+   "sql": "SELECT count(*), sum(amount) FROM orders WHERE created_at >= timestamptz '2025-06-01 00:00:00+00' AND created_at < timestamptz '2025-07-01 00:00:00+00'",
+   "ok": true,
+   "ms": [
+    21.769249999579188
+   ],
+   "best_ms": 21.769249999579188,
+   "median_ms": 21.769249999579188,
+   "rows": 1
+  }
+ },
+ "at": "2026-11-25T00:46:36.839774",
+ "qs_viewgen_plus_create_view_s": 0.059010614000271744
+}

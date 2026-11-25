@@ -1,0 +1,85 @@
+=== 19:37:03 new sidecar, quiet since 19:30:55: readyz
+{"ready":true,"reason":"lag 0.2s within SLO 15.0s","applied_lsn":"3/AA7DD818","head_lsn":"3/AB95E610","lag_bytes":18353656,"lag_seconds":0.188951162,"compaction_backlog":4,"diverged":false,"bootstrapped":true,"verified_seconds_ago":0,"slot_retained_bytes":3617287888}
+ HTTP 200
+{ "sidecar_start": 1795634912.7371356, "caught_up": 1795634940.1765409, "start_to_visible_s": 27.4394052028656, "first_apply_after_start_s": 18.76087522506714, "last_commit_to_visible_s": 141.8082287311554, "applied_lsn": "3/AA7DD818"}
+peak RSS drain+idle rewrite (new): 2972 MB
+=== 19:37:03 qs B warm, new, AFTER the idle rewrite (PG still at state B)
+qs B warm count_by_status {'ok': True, 'best_ms': 40.4, 'median_ms': 43.35}
+qs B warm revenue_by_month_join {'ok': True, 'best_ms': 3872.08, 'median_ms': 4179.65}
+qs B warm pk_lookup {'ok': True, 'best_ms': 650.44, 'median_ms': 664.83}
+qs B warm count_star {'ok': True, 'best_ms': 6.27, 'median_ms': 7.71}
+qs B warm sum_amount {'ok': True, 'best_ms': 88.29, 'median_ms': 92.19}
+qs B warm month_filter_agg {'ok': True, 'best_ms': 41.48, 'median_ms': 42.87}
+=== 19:37:35 qs-verify, new, state B
+applied_lsn=3/AA7DD818
+mirror 10000000 rows (checksum 3788173acb8aabd6)
+source 10000000 rows (checksum 3788173acb8aabd6)
+MATCH
+real	2m4.404s
+applied_lsn=3/AA7DD818
+mirror 500000 rows (checksum c60c39fa8277dae7)
+source 500000 rows (checksum c60c39fa8277dae7)
+MATCH
+real	0m3.556s
+=== 19:39:46 drain, old build
+{'sidecar_start': 1795635586.9058983, 'caught_up': 1795635622.7569506, 'start_to_visible_s': 35.85105228424072, 'first_apply_after_start_s': 26.869290828704834, 'last_commit_to_visible_s': 824.3886384963989, 'applied_lsn': '3/AA7DD818'}
+peak RSS drain (old): 4855 MB
+=== 19:40:22 qs B warm, old
+qs B warm count_by_status {'ok': True, 'best_ms': 267.92, 'median_ms': 326.95}
+qs B warm revenue_by_month_join {'ok': True, 'best_ms': 3850.32, 'median_ms': 4752.57}
+qs B warm pk_lookup {'ok': True, 'best_ms': 614.42, 'median_ms': 707.19}
+qs B warm count_star {'ok': True, 'best_ms': 724.05, 'median_ms': 807.18}
+qs B warm sum_amount {'ok': True, 'best_ms': 271.26, 'median_ms': 280.04}
+qs B warm month_filter_agg {'ok': True, 'best_ms': 77.39, 'median_ms': 83.94}
+=== 19:41:06 live lag, old
+{'engine': 'qs', 'rows_per_txn': 5000, 'commit_to_visible_ms': [132.83308900008706, 123.13956599973608, 128.24953500057745, 136.1586740003986, 319.5000389996494], 'median_ms': 132.83308900008706, 'best_ms': 123.13956599973608}
+{'engine': 'qs', 'rows_per_txn': 5000, 'commit_to_visible_ms': [242.62067499967088, 157.61591000045883, 167.2957420005332, 156.3459890003287, 275.541007999891], 'median_ms': 167.2957420005332, 'best_ms': 156.3459890003287}
+time=2026-11-25T19:39:47.235Z level=INFO msg="quicksilver mirror starting" cluster=bench pod=bench-1 mode=shadow ingest=logical tables="[public.orders public.customers]" slo=15s
+time=2026-11-25T19:39:47.314Z level=INFO msg="resuming from the existing slot" slot=qs_bench
+time=2026-11-25T19:39:49.214Z level=INFO msg="key index built" table=public.customers keys=500000 seconds=1.8980590149999998
+time=2026-11-25T19:40:09.481Z level=INFO msg="key index built" table=public.orders keys=10000000 seconds=20.265867416
+=== 19:41:49 live lag, new
+ready_after_s 15.914771619
+{'engine': 'qs', 'rows_per_txn': 5000, 'commit_to_visible_ms': [144.6149579996927, 305.50181600028736, 124.07634400005918, 300.7172489997174, 202.02545099982672], 'median_ms': 202.02545099982672, 'best_ms': 124.07634400005918}
+{'engine': 'qs', 'rows_per_txn': 5000, 'commit_to_visible_ms': [213.59583799949178, 179.0242289998787, 207.47615700020106, 253.4307420000914, 192.58606299990788], 'median_ms': 207.47615700020106, 'best_ms': 179.0242289998787}
+time=2026-11-25T19:41:50.172Z level=INFO msg="quicksilver mirror starting" cluster=bench pod=bench-1 mode=shadow ingest=logical tables="[public.orders public.customers]" slo=15s slot=qs_bench_bench_1 configured_slot=qs_b
+time=2026-11-25T19:41:50.230Z level=INFO msg="resuming from the existing slot" slot=qs_bench_bench_1 confirmed=3/AA7DD819
+time=2026-11-25T19:41:51.129Z level=INFO msg="key index built" table=public.customers keys=500000 seconds=0.895830624
+time=2026-11-25T19:42:05.761Z level=INFO msg="key index built" table=public.orders keys=10000000 seconds=14.631929919
+=== 19:42:43 second workload round: re-stage picks from the current table
+{'lsn_start': '3/BD1DD1F8', 't_start': 1795635880.9444094, 'lsn_before_last_txn': '4/8B248610', 't_last_commit': 1795635936.3910067, 'lsn_end': '4/8B7FDAA8', 'totals': {'status_updates': 500000, 'payload_updates': 100000, 'deletes': 100000, 'inserts': 100000}, 'workload_s': 55.44659733772278, 'wal_bytes': 3462531248, 'marker_insert_id': '005d2a2d-af35-4bd2-8bec-4edb5e605282'}
+=== 19:45:36 pg B2
+pg B2 warm count_by_status {'ok': True, 'best_ms': 1504.83, 'median_ms': 1608.18}
+pg B2 warm revenue_by_month_join {'ok': True, 'best_ms': 13912.01, 'median_ms': 14226.56}
+pg B2 warm pk_lookup {'ok': True, 'best_ms': 0.19, 'median_ms': 0.29}
+pg B2 warm count_star {'ok': True, 'best_ms': 770.49, 'median_ms': 809.96}
+pg B2 warm sum_amount {'ok': True, 'best_ms': 1040.0, 'median_ms': 1059.03}
+pg B2 warm month_filter_agg {'ok': True, 'best_ms': 130.26, 'median_ms': 141.47}
+=== 19:47:29 drain round 2, new build (QS_COMPACT_IDLE_SECONDS=120 so the timed queries do not overlap the rewrite)
+{'sidecar_start': 1795636049.3722215, 'caught_up': 1795636072.8946104, 'start_to_visible_s': 23.52238893508911, 'first_apply_after_start_s': 13.988527059555054, 'last_commit_to_visible_s': 136.50360369682312, 'applied_lsn': '4/8B7FDA78'}
+=== 19:47:52 qs B2 warm, new, immediately after the drain (before any rewrite)
+qs B2 warm count_by_status {'ok': True, 'best_ms': 305.2, 'median_ms': 319.96}
+qs B2 warm revenue_by_month_join {'ok': True, 'best_ms': 3296.49, 'median_ms': 3466.43}
+qs B2 warm pk_lookup {'ok': True, 'best_ms': 543.71, 'median_ms': 590.66}
+qs B2 warm count_star {'ok': True, 'best_ms': 640.57, 'median_ms': 727.22}
+qs B2 warm sum_amount {'ok': True, 'best_ms': 258.91, 'median_ms': 288.79}
+qs B2 warm month_filter_agg {'ok': True, 'best_ms': 136.16, 'median_ms': 145.51}
+0
+=== 19:48:28 waiting for the idle rewrite
+time=2026-11-25T19:49:52.857Z level=INFO msg="compaction started" table=public.orders why=idle base_rows=10000000 delta_rows=755000
+time=2026-11-25T19:51:10.999Z level=INFO msg=compacted table=public.orders rows=10000000 seconds=77.600625549
+=== 19:51:11 qs B2 warm, new, after the idle rewrite
+qs B2 warm count_by_status {'ok': True, 'best_ms': 49.91, 'median_ms': 55.76}
+qs B2 warm revenue_by_month_join {'ok': True, 'best_ms': 3355.7, 'median_ms': 3675.75}
+qs B2 warm pk_lookup {'ok': True, 'best_ms': 542.52, 'median_ms': 567.72}
+qs B2 warm count_star {'ok': True, 'best_ms': 4.11, 'median_ms': 4.31}
+qs B2 warm sum_amount {'ok': True, 'best_ms': 89.01, 'median_ms': 108.98}
+qs B2 warm month_filter_agg {'ok': True, 'best_ms': 57.27, 'median_ms': 63.67}
+peak RSS drain2+rewrite (new): 3040 MB
+=== 19:51:39 qs-verify, new, state B2
+applied_lsn=4/8B7FDA78
+mirror 10000000 rows (checksum 1c57b0614cdfd818)
+source 10000000 rows (checksum 1c57b0614cdfd818)
+MATCH
+real	1m45.719s
+=== 19:53:28 P2B_DONE

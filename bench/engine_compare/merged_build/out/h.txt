@@ -1,0 +1,13 @@
+pod=a.b sidecar=qs_e2e_a_b_78ef5a1d lib=qs_e2e_a_b_78ef5a1d SAME
+pod=Pod_X sidecar=qs_e2e_pod_x_a1899001 lib=qs_e2e_pod_x_a1899001 SAME
+pod=cluster-with-a-very-long-name-that-goes-past-the-limit-of-sixty-three-bytes-7 sidecar=qs_e2e_cluster_with_a_very_long_name_that_goes_past_th_ef8f4d09 lib=qs_e2e_cluster_with_a_very_long_name_that_goes_past_th_ef8f4d09 SAME
+qs_e2e_a_b_78ef5a1d active=false confirmed=0/FBF09798 temp=false
+qs_e2e_cluster_with_a_very_long_name_that_goes_past_th_ef8f4d09 active=false confirmed=0/FBF0E958 temp=false
+qs_e2e_pod_a active=false confirmed=0/FB73C069 temp=false
+qs_e2e_pod_x_a1899001 active=false confirmed=0/FBF0C0B8 temp=false
+server stopped
+server stopped
+16
+17
+qsidle
+qsverify

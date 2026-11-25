@@ -1,0 +1,8 @@
+{
+ "sidecar_start": 1795568101.1011276,
+ "caught_up": 1795568118.976262,
+ "start_to_visible_s": 17.875134468078613,
+ "first_apply_after_start_s": 10.434884548187256,
+ "last_commit_to_visible_s": 274.5621426105499,
+ "applied_lsn": "1/CD875EA0"
+}

@@ -1,0 +1,129 @@
+{
+  "ready": true,
+  "failed": [],
+  "waiting": [],
+  "timedOut": false,
+  "tables": [
+    {
+      "table": "public.customers",
+      "copy": {
+        "phase": "done",
+        "rowsCopied": 500000,
+        "updatedAt": "2026-11-25T00:42:53.139Z"
+      },
+      "error": null,
+      "kept": {
+        "by": "replication",
+        "slot": "mason_dev_bench_app",
+        "state": "streamed",
+        "why": null,
+        "position": "1/D6DACBB8",
+        "lastCommit": null,
+        "notRunning": null,
+        "syncedAt": "2026-11-25T01:25:08.807Z",
+        "promisedSeconds": 120,
+        "lateWhy": "the stream has not had everything the database wrote since then (the Stream section says its lag)"
+      },
+      "sync": {
+        "state": "synced",
+        "syncedAt": "2026-11-25T01:24:51.132Z",
+        "syncSeconds": null,
+        "syncedBy": "stream",
+        "ageSeconds": 18.2,
+        "asOf": "2026-11-25T01:25:08.807Z",
+        "promisedSeconds": 120,
+        "behindBySeconds": 0,
+        "behindWhy": null
+      }
+    },
+    {
+      "table": "public.orders",
+      "copy": {
+        "phase": "done",
+        "rowsCopied": 10000000,
+        "updatedAt": "2026-11-25T00:43:09.151Z"
+      },
+      "error": null,
+      "kept": {
+        "by": "replication",
+        "slot": "mason_dev_bench_app",
+        "state": "streamed",
+        "why": null,
+        "position": "1/D6DACBB8",
+        "lastCommit": null,
+        "notRunning": null,
+        "syncedAt": "2026-11-25T01:25:08.807Z",
+        "promisedSeconds": 120,
+        "lateWhy": "the stream has not had everything the database wrote since then (the Stream section says its lag)"
+      },
+      "sync": {
+        "state": "synced",
+        "syncedAt": "2026-11-25T01:24:51.132Z",
+        "syncSeconds": null,
+        "syncedBy": "stream",
+        "ageSeconds": 18.2,
+        "asOf": "2026-11-25T01:25:08.807Z",
+        "promisedSeconds": 120,
+        "behindBySeconds": 0,
+        "behindWhy": null
+      }
+    }
+  ],
+  "stream": {
+    "slot": "mason_dev_bench_app",
+    "slotWal": {
+      "walHeldBytes": 56,
+      "walStatus": "reserved",
+      "safeWalSizeBytes": null,
+      "at": "2026-11-25T01:25:09.302Z"
+    },
+    "publication": "mason_dev_bench_app",
+    "running": true,
+    "failure": null,
+    "position": "1/D6DACBB8",
+    "applied": "1/D6DACB60",
+    "database": {
+      "lsn": "1/D6DACBB8",
+      "at": "2026-11-25T01:25:09.301Z"
+    },
+    "lag": {
+      "bytes": 0,
+      "seconds": null
+    },
+    "lastBatch": null,
+    "tables": [
+      {
+        "table": "public.orders",
+        "state": "streamed",
+        "why": null,
+        "applied": {
+          "inserts": 0,
+          "updates": 0,
+          "deletes": 0,
+          "truncates": 0
+        }
+      },
+      {
+        "table": "public.customers",
+        "state": "streamed",
+        "why": null,
+        "applied": {
+          "inserts": 0,
+          "updates": 0,
+          "deletes": 0,
+          "truncates": 0
+        }
+      }
+    ]
+  },
+  "next": [
+    {
+      "command": "mason user add <name>",
+      "what": "a user for your BI tool or psql: it prints the password and the URL to paste"
+    },
+    {
+      "command": "mason status",
+      "what": "each synced table, and the statements the Postgres API answered slowly or refused"
+    }
+  ]
+}

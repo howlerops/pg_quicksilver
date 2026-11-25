@@ -1,0 +1,18 @@
+{
+ "engine": "mason",
+ "state": "B",
+ "mode": "cold",
+ "queries": {
+  "revenue_by_month_join": {
+   "sql": "SELECT date_trunc('month', o.created_at) AS month, date_trunc('year', c.created_at) AS signup_year, sum(o.amount) AS revenue FROM orders o JOIN customers c ON c.id = o.customer_id GROUP BY 1, 2 ORDER BY 1, 2",
+   "ok": true,
+   "ms": [
+    484.36118500012526
+   ],
+   "best_ms": 484.36118500012526,
+   "median_ms": 484.36118500012526,
+   "rows": 75
+  }
+ },
+ "at": "2026-11-25T01:01:04.674428"
+}

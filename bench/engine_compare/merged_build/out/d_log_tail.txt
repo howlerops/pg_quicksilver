@@ -1,0 +1,5 @@
+30:time=2026-11-25T18:57:12.567Z level=INFO msg="compaction started" table=public.items why=churn base_rows=307897 delta_rows=153994
+31:time=2026-11-25T18:57:12.567Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=1660 apply_ms=1659
+32:time=2026-11-25T18:57:17.971Z level=INFO msg="quicksilver mirror starting" cluster=e2e pod=pod-a mode=shadow ingest=logical tables=[public.items] slo=15s slot=qs_e2e_pod_a configured_slot=qs_e2e
+33:time=2026-11-25T18:57:17.996Z level=INFO msg="resuming from the existing slot" slot=qs_e2e_pod_a confirmed=0/15BC5C99
+34:time=2026-11-25T18:57:18.087Z level=INFO msg="key index built" table=public.items keys=20000 seconds=0.090430919

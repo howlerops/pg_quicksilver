@@ -1,0 +1,13 @@
+started a pid 28122
+READY
+applied_lsn=0/8D12468
+mirror 200000 rows (checksum 80f20b1759614652)
+source 200000 rows (checksum 80f20b1759614652)
+MATCH
+{"txns": 60, "inserts": 30000, "updates": 28970, "deletes": 14466, "seconds": 2.58, "rows_now": 215534}
+applied
+applied_lsn=0/A527C28
+mirror 215534 rows (checksum b0a3d124a987dc7c)
+source 215534 rows (checksum b0a3d124a987dc7c)
+MATCH
+qs_e2e_pod_a active=true confirmed=0/A527C29 temp=false

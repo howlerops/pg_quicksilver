@@ -1,0 +1,6 @@
+time=2026-11-25T00:40:07.708Z level=INFO msg="quicksilver mirror starting" cluster=bench pod=bench-1 mode=shadow ingest=logical tables="[public.orders public.customers]" slo=15s
+time=2026-11-25T00:40:07.738Z level=INFO msg="new replication slot; bootstrapping by snapshot" at=0/EF66AA78
+time=2026-11-25T00:41:01.162Z level=INFO msg="snapshot complete" table=public.orders rows=10000000 seconds=53.42320995
+time=2026-11-25T00:41:02.522Z level=INFO msg="snapshot complete" table=public.customers rows=500000 seconds=1.360531011
+time=2026-11-25T00:41:02.864Z level=INFO msg="key index built" table=public.customers keys=500000 seconds=0.340729662
+time=2026-11-25T00:41:10.987Z level=INFO msg="key index built" table=public.orders keys=10000000 seconds=8.12334248

@@ -1,0 +1,20 @@
+churn burst at 18:57:07.925238770
+UPDATE 153994
+compaction started seen at 18:57:12.574977966; compacted-so-far=0
+TRUNCATE TABLE
+TRUNCATE committed at 18:57:12.681632537; compacted-so-far=0
+INSERT 0 20000
+applied
+applied_lsn=0/15BC5C98
+mirror 20000 rows (checksum dfcd74fd29cebe76)
+source 20000 rows (checksum dfcd74fd29cebe76)
+MATCH
+--- restart
+started a pid 29276
+READY
+{"txns": 10, "inserts": 2000, "updates": 1945, "deletes": 976, "seconds": 0.11, "rows_now": 21024}
+applied
+applied_lsn=0/15D2CF48
+mirror 21024 rows (checksum 7367c131a25695f9)
+source 21024 rows (checksum 7367c131a25695f9)
+MATCH

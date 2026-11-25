@@ -1,0 +1,6 @@
+2:time=2026-11-25T19:57:53.612Z level=INFO msg="new replication slot; bootstrapping by snapshot" at=0/5035310
+13:time=2026-11-25T19:58:07.783Z level=INFO msg="new replication slot; bootstrapping by snapshot" at=0/539C6F0
+17:time=2026-11-25T19:58:37.110Z level=INFO msg="resuming from the existing slot" slot=qs_e2e_e2e_2 confirmed=0/53BD3F1
+20:time=2026-11-25T19:58:40.795Z level=INFO msg="resuming from the existing slot" slot=qs_e2e_e2e_2 confirmed=0/53D3B01
+23:time=2026-11-25T19:58:47.289Z level=WARN msg="not resuming this table from the slot; re-snapshotting it" table=public.orders why="the table was added to a slot that already exists and has never bee
+25:time=2026-11-25T19:58:47.311Z level=INFO msg="resuming from the existing slot" slot=qs_e2e_e2e_2 confirmed=0/53EF519
