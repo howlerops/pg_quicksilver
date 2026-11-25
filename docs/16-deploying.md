@@ -128,7 +128,7 @@ spec:
 | `freshnessSLO` | `30s` | in `takeover`, a mirror behind this leaves the endpoint |
 | `database` | `app` | one mirror follows one database |
 | `credentialsSecret` | `<cluster>-superuser` | needs REPLICATION, SELECT, CREATE |
-| `slotName`, `publication` | `quicksilver_<cluster>` | |
+| `slotName`, `publication` | `quicksilver_<cluster>` | `slotName` is a prefix: each Pod's slot is `<slotName>_<pod>` |
 | `mirrorPath` | `/var/lib/postgresql/data/quicksilver` | beside PGDATA, same PVC |
 | `sidecarImage` | `…-mirror:latest` | |
 | `acknowledgeOLTPRegression` | `false` | required for `mode: takeover` |
@@ -164,6 +164,13 @@ mirror that mirrors nothing, silently), single-instance clusters, a pinned
 It runs on **every** instance Pod and decides its own role, because promotion is
 not an event anyone tells it about:
 
+- **on a replica** — take a replication slot of its **own**, named
+  `<slotName>_<pod name>` (lower-cased, anything outside `[a-z0-9_]` becomes
+  `_`, cut to 63 bytes with a hash if it has to be). A slot is one cursor, and
+  two sidecars sharing one meant the second silently missed every row written
+  while the first held it. On a restart the slot's `confirmed_flush_lsn` is
+  compared with each table's `applied_lsn`; a table the slot has got ahead of is
+  re-snapshotted, with a `WARN` saying why, instead of resumed with a hole in it;
 - **on a replica** — bootstrap by snapshot at the slot's consistent point, stream
   `pgoutput`, apply with DDL barriers, report freshness on `/readyz`;
 - **on the primary** — stand down, and clear any inherited
@@ -366,3 +373,26 @@ First real deployment should still be `mode: off` on a throwaway cluster, to
 confirm the plugin loads and validates at all, then `mode: shadow` on one table.
 What that sequence is now for is the two things above that a cluster is the only
 way to reach: live reconcile behaviour, and a Pod that actually runs.
+- **Orphaned per-Pod slots — NOT handled, and this one can take the primary
+  down.** Each mirroring Pod owns a slot named after itself. Nothing removes
+  that slot when the Pod goes away for good: a scale-down, a replica that is
+  deleted and comes back under a new name, a Cluster that drops the plugin. The
+  slot stays on the primary, inactive, pinning every WAL segment since its last
+  confirmation, and the sidecar's own slot guard cannot help because the sidecar
+  that would run it no longer exists. There is no reconciler. Until there is:
+
+  - set `max_slot_wal_keep_size`, so PostgreSQL bounds what any slot can pin;
+  - after removing an instance, drop its slot by hand —
+
+    ```sql
+    SELECT slot_name, active, pg_size_pretty(pg_wal_lsn_diff(pg_current_wal_lsn(), restart_lsn))
+      FROM pg_replication_slots WHERE slot_name LIKE 'quicksilver\_%';
+    SELECT pg_drop_replication_slot('quicksilver_<cluster>_<pod>');
+    ```
+
+  The same applies **once, on upgrade**: a release before per-Pod slots used the
+  bare `slotName` as the slot. The new sidecars never touch it, so it is orphaned
+  the moment they start, and each of them re-snapshots into its own new slot.
+  Drop `quicksilver_<cluster>` by hand after upgrading. The re-snapshot path
+  also needs one spare replication slot for a moment (a `TEMPORARY` one, to get
+  a snapshot consistent with an LSN); the plugin's headroom covers it.

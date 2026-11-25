@@ -77,6 +77,9 @@ type Config struct {
 	Tables       []string
 	FreshnessSLO time.Duration
 	SidecarImage string
+	// SlotName is a PREFIX, not a slot. Every instance Pod gets the same
+	// value, and a logical slot is one cursor: the sidecar appends its own Pod
+	// name (cmd/qs-mirror/slotname.go) so that no two of them share one.
 	SlotName     string
 	Publication  string
 	MirrorPath   string

@@ -120,6 +120,10 @@ func MirrorSidecar(clusterName string, cfg Config) *corev1.Container {
 			{Name: "QS_MODE", Value: string(cfg.Mode)},
 			{Name: "QS_INGEST", Value: string(cfg.Ingest)},
 			{Name: "QS_TABLES", Value: strings.Join(cfg.Tables, ",")},
+			// The same on every Pod, so it is not the slot: the sidecar derives
+			// its own from this and QS_POD_NAME below. Both are load-bearing —
+			// without the Pod name two sidecars share one slot and the second
+			// silently misses rows. TestSidecarGetsWhatASlotPerPodNeeds.
 			{Name: "QS_SLOT", Value: cfg.SlotName},
 			{Name: "QS_PUBLICATION", Value: cfg.Publication},
 			{Name: "QS_MIRROR_PATH", Value: cfg.MirrorPath},

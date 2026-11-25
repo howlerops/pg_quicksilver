@@ -143,7 +143,15 @@ func (g *slotGuard) check(ctx context.Context, log *slog.Logger) (retained, unco
 
 // dropSlot removes the slot once the stream that held it is gone. It is called
 // on the way out, from the supervisor's side of the failure.
-func dropSlot(ctx context.Context, o options, slot string, log *slog.Logger) {
+//
+// It takes no slot name, on purpose. It terminates whatever backend holds the
+// slot before dropping it, and that is only safe for a slot no other sidecar
+// can be attached to — which is true of this Pod's derived slot and of nothing
+// else. Given a name, it could be handed the shared prefix and kill another
+// Pod's stream; so the only slot it can reach is o.slot, which loadOptions
+// derives from the Pod's name (slotname.go).
+func dropSlot(ctx context.Context, o options, log *slog.Logger) {
+	slot := o.slot
 	conn, err := pgx.Connect(ctx, o.primaryDSN())
 	if err != nil {
 		log.Error("could not connect to drop the runaway slot; the primary is "+

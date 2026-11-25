@@ -142,10 +142,12 @@ func setDefault(m map[string]string, k, v string) {
 // gate (internal/health), which is what actually removes a stale node from the
 // endpoint.
 type Status struct {
-	Mode          string   `json:"mode"`
-	Ingest        string   `json:"ingest"`
-	Tables        []string `json:"tables,omitempty"`
-	FreshnessSLO  string   `json:"freshnessSLO"`
+	Mode         string   `json:"mode"`
+	Ingest       string   `json:"ingest"`
+	Tables       []string `json:"tables,omitempty"`
+	FreshnessSLO string   `json:"freshnessSLO"`
+	// Slot is the configured name. Each mirroring Pod's actual slot is this
+	// plus its own Pod name: <slot>_<pod>, sanitised.
 	Slot          string   `json:"slot"`
 	Publication   string   `json:"publication"`
 	MajorVersion  int      `json:"postgresMajorVersion,omitempty"`

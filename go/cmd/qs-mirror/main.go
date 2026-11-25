@@ -27,6 +27,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/jackc/pglogrepl"
 	"github.com/jackc/pgx/v5"
 
 	"github.com/howlerops/pg_quicksilver/go/internal/changestream"
@@ -41,7 +42,8 @@ type options struct {
 	mode         string
 	ingest       string
 	tables       []string
-	slot         string
+	slot         string // this Pod's own slot; see slotname.go
+	slotBase     string // the configured name it was derived from
 	publication  string
 	mirrorPath   string
 	freshnessSLO time.Duration
@@ -84,6 +86,9 @@ func loadOptions() options {
 		d = 30 * time.Second
 	}
 	o.freshnessSLO = d
+	// QS_SLOT is the same on every Pod; the slot must not be.
+	o.slotBase = o.slot
+	o.slot = podSlotName(o.slotBase, o.podName)
 	return o
 }
 
@@ -138,7 +143,13 @@ func main() {
 	}
 	log.Info("quicksilver mirror starting",
 		"cluster", o.cluster, "pod", o.podName, "mode", o.mode,
-		"ingest", o.ingest, "tables", o.tables, "slo", o.freshnessSLO)
+		"ingest", o.ingest, "tables", o.tables, "slo", o.freshnessSLO,
+		"slot", o.slot, "configured_slot", o.slotBase)
+	if o.podName == "" {
+		log.Warn("QS_POD_NAME is not set, so the replication slot is not unique to "+
+			"this sidecar; a second sidecar given the same QS_SLOT would share one "+
+			"cursor with it and silently miss rows", "slot", o.slot)
+	}
 
 	if o.mode == "off" {
 		log.Info("mode: off — not building a mirror; idling so the Pod stays healthy")
@@ -208,7 +219,7 @@ func supervise(ctx context.Context, log *slog.Logger, o options, h *health.Healt
 		// or the next start resumes the same runaway slot and the primary keeps
 		// filling up.
 		if errors.Is(err, ErrSlotTooFar) {
-			dropSlot(ctx, o, o.slot, log)
+			dropSlot(ctx, o, log)
 		}
 		log.Error("mirror stopped", "err", err, "retry_in", backoff)
 		sleep(ctx, backoff)
@@ -475,47 +486,36 @@ func runMirror(ctx context.Context, log *slog.Logger, o options, h *health.Healt
 			return err
 		}
 	} else {
-		// A table can join a slot the others are already using — QS_TABLES
-		// gained an entry, or the `tables:` pattern started matching one.
-		// snapshot.go has listed that as a case needing a snapshot since it was
-		// written; the decision here was made per-SLOT rather than per-TABLE,
-		// so it never got one.
+		// The slot existing proves nothing about THIS mirror. Each table is
+		// compared with the slot's confirmed position and resumes only if it has
+		// reached it; see resume.go for the comparison and for why the snapshot
+		// of the ones that have not is taken the way it is.
 		//
-		// What that produced was the shape this project keeps finding. The new
-		// table received every change from the moment it was added and nothing
-		// before it: 1,010 rows against a source of 6,000, no error, no warning,
-		// and a mirror that answers questions. The end-to-end suite found it the
-		// first time it ran two tables through one sidecar.
+		// The same path serves a table that joined a slot the others were
+		// already using — QS_TABLES gained an entry, or the `tables:` pattern
+		// started matching one. That decision used to be per-SLOT, and what it
+		// produced was the shape this project keeps finding: 1,010 rows against a
+		// source of 6,000, no error, no warning, and a mirror that answers
+		// questions.
 		//
-		// The snapshot is taken at the CURRENT LSN while the stream resumes from
-		// the slot's older position, so this depends on the per-table LSN floor
-		// in Table.Apply to discard the replayed prefix. Without that floor this
-		// would write pre-snapshot values over post-snapshot ones.
-		var fresh []string
+		// The stream resumes from the slot's older position either way, so a
+		// re-snapshotted table depends on the per-table LSN floor in Table.Apply
+		// to discard the replayed prefix.
+		confirmed, err := slotConfirmedLSN(ctx, conn, o.slot)
+		if err != nil {
+			return fmt.Errorf("cannot compare the mirror with its slot, so will not resume: %w", err)
+		}
+		applied := make(map[string]string, len(tables))
 		for q, t := range tables {
-			if t.State.AppliedLSN == "" {
-				fresh = append(fresh, q)
+			applied[q] = t.State.AppliedLSN
+		}
+		if plan := planResume(applied, confirmed); len(plan) > 0 {
+			if err := resnapshotTables(ctx, log, o, conn, tables, plan); err != nil {
+				return err
 			}
 		}
-		if len(fresh) > 0 {
-			sort.Strings(fresh)
-			at, err := currentLSN(ctx, conn)
-			if err != nil {
-				return fmt.Errorf("current lsn for a newly added table: %w", err)
-			}
-			log.Info("tables added to an existing slot; snapshotting just those",
-				"tables", fresh, "at", at)
-			for _, q := range fresh {
-				t0 := time.Now()
-				n, err := tables[q].Snapshot(ctx, conn, at)
-				if err != nil {
-					return fmt.Errorf("snapshot %s: %w", q, err)
-				}
-				log.Info("snapshot complete", "table", q, "rows", n,
-					"seconds", time.Since(t0).Seconds())
-			}
-		}
-		log.Info("resuming from the existing slot", "slot", o.slot)
+		log.Info("resuming from the existing slot", "slot", o.slot,
+			"confirmed", pglogrepl.LSN(confirmed))
 		if err := st.Start(ctx, 0); err != nil {
 			return err
 		}
