@@ -1,0 +1,35 @@
+[
+  {
+    "Plan": {
+      "Node Type": "Aggregate",
+      "Strategy": "Plain",
+      "Partial Mode": "Simple",
+      "Parallel Aware": false,
+      "Async Capable": false,
+      "Startup Cost": 5.86,
+      "Total Cost": 5.87,
+      "Plan Rows": 1,
+      "Plan Width": 8,
+      "Output": ["count(*)"],
+      "Plans": [
+        {
+          "Node Type": "Index Only Scan",
+          "Parent Relationship": "Outer",
+          "Parallel Aware": false,
+          "Async Capable": false,
+          "Scan Direction": "Forward",
+          "Index Name": "orders_customer_idx",
+          "Relation Name": "orders",
+          "Schema": "public",
+          "Alias": "orders",
+          "Startup Cost": 0.42,
+          "Total Cost": 5.68,
+          "Plan Rows": 72,
+          "Plan Width": 0,
+          "Output": ["customer_id"],
+          "Index Cond": "(orders.customer_id = 5)"
+        }
+      ]
+    }
+  }
+]

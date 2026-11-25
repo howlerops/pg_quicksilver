@@ -1,0 +1,121 @@
+[
+  {
+    "Plan": {
+      "Node Type": "Aggregate",
+      "Strategy": "Sorted",
+      "Partial Mode": "Finalize",
+      "Parallel Aware": false,
+      "Async Capable": false,
+      "Startup Cost": 18165.33,
+      "Total Cost": 18166.38,
+      "Plan Rows": 4,
+      "Plan Width": 37,
+      "Output": ["c.region", "sum(o.amount)"],
+      "Group Key": ["c.region"],
+      "Plans": [
+        {
+          "Node Type": "Gather Merge",
+          "Parent Relationship": "Outer",
+          "Parallel Aware": false,
+          "Async Capable": false,
+          "Startup Cost": 18165.33,
+          "Total Cost": 18166.27,
+          "Plan Rows": 8,
+          "Plan Width": 37,
+          "Output": ["c.region", "(PARTIAL sum(o.amount))"],
+          "Workers Planned": 2,
+          "Plans": [
+            {
+              "Node Type": "Sort",
+              "Parent Relationship": "Outer",
+              "Parallel Aware": false,
+              "Async Capable": false,
+              "Startup Cost": 17165.31,
+              "Total Cost": 17165.32,
+              "Plan Rows": 4,
+              "Plan Width": 37,
+              "Output": ["c.region", "(PARTIAL sum(o.amount))"],
+              "Sort Key": ["c.region"],
+              "Plans": [
+                {
+                  "Node Type": "Aggregate",
+                  "Strategy": "Hashed",
+                  "Partial Mode": "Partial",
+                  "Parent Relationship": "Outer",
+                  "Parallel Aware": false,
+                  "Async Capable": false,
+                  "Startup Cost": 17165.22,
+                  "Total Cost": 17165.27,
+                  "Plan Rows": 4,
+                  "Plan Width": 37,
+                  "Output": ["c.region", "PARTIAL sum(o.amount)"],
+                  "Group Key": ["c.region"],
+                  "Planned Partitions": 0,
+                  "Plans": [
+                    {
+                      "Node Type": "Hash Join",
+                      "Parent Relationship": "Outer",
+                      "Parallel Aware": false,
+                      "Async Capable": false,
+                      "Join Type": "Inner",
+                      "Startup Cost": 289.00,
+                      "Total Cost": 15081.88,
+                      "Plan Rows": 416667,
+                      "Plan Width": 11,
+                      "Output": ["c.region", "o.amount"],
+                      "Inner Unique": true,
+                      "Hash Cond": "(o.customer_id = c.id)",
+                      "Plans": [
+                        {
+                          "Node Type": "Seq Scan",
+                          "Parent Relationship": "Outer",
+                          "Parallel Aware": true,
+                          "Async Capable": false,
+                          "Relation Name": "orders",
+                          "Schema": "public",
+                          "Alias": "o",
+                          "Startup Cost": 0.00,
+                          "Total Cost": 13698.67,
+                          "Plan Rows": 416667,
+                          "Plan Width": 10,
+                          "Output": ["o.id", "o.customer_id", "o.status", "o.amount", "o.created_at", "o.note"]
+                        },
+                        {
+                          "Node Type": "Hash",
+                          "Parent Relationship": "Inner",
+                          "Parallel Aware": false,
+                          "Async Capable": false,
+                          "Startup Cost": 164.00,
+                          "Total Cost": 164.00,
+                          "Plan Rows": 10000,
+                          "Plan Width": 9,
+                          "Output": ["c.region", "c.id"],
+                          "Plans": [
+                            {
+                              "Node Type": "Seq Scan",
+                              "Parent Relationship": "Outer",
+                              "Parallel Aware": false,
+                              "Async Capable": false,
+                              "Relation Name": "customers",
+                              "Schema": "public",
+                              "Alias": "c",
+                              "Startup Cost": 0.00,
+                              "Total Cost": 164.00,
+                              "Plan Rows": 10000,
+                              "Plan Width": 9,
+                              "Output": ["c.region", "c.id"]
+                            }
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  }
+]

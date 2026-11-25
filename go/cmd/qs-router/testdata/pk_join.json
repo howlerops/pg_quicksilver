@@ -1,0 +1,52 @@
+[
+  {
+    "Plan": {
+      "Node Type": "Nested Loop",
+      "Parallel Aware": false,
+      "Async Capable": false,
+      "Join Type": "Inner",
+      "Startup Cost": 0.71,
+      "Total Cost": 16.75,
+      "Plan Rows": 1,
+      "Plan Width": 17,
+      "Output": ["o.id", "c.name"],
+      "Inner Unique": true,
+      "Plans": [
+        {
+          "Node Type": "Index Scan",
+          "Parent Relationship": "Outer",
+          "Parallel Aware": false,
+          "Async Capable": false,
+          "Scan Direction": "Forward",
+          "Index Name": "orders_pkey",
+          "Relation Name": "orders",
+          "Schema": "public",
+          "Alias": "o",
+          "Startup Cost": 0.42,
+          "Total Cost": 8.44,
+          "Plan Rows": 1,
+          "Plan Width": 12,
+          "Output": ["o.id", "o.customer_id", "o.status", "o.amount", "o.created_at", "o.note"],
+          "Index Cond": "(o.id = 42)"
+        },
+        {
+          "Node Type": "Index Scan",
+          "Parent Relationship": "Inner",
+          "Parallel Aware": false,
+          "Async Capable": false,
+          "Scan Direction": "Forward",
+          "Index Name": "customers_pkey",
+          "Relation Name": "customers",
+          "Schema": "public",
+          "Alias": "c",
+          "Startup Cost": 0.29,
+          "Total Cost": 8.30,
+          "Plan Rows": 1,
+          "Plan Width": 13,
+          "Output": ["c.id", "c.name", "c.region"],
+          "Index Cond": "(c.id = o.customer_id)"
+        }
+      ]
+    }
+  }
+]

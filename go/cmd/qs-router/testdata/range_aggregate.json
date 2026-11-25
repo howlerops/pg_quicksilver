@@ -1,0 +1,63 @@
+[
+  {
+    "Plan": {
+      "Node Type": "Aggregate",
+      "Strategy": "Plain",
+      "Partial Mode": "Finalize",
+      "Parallel Aware": false,
+      "Async Capable": false,
+      "Startup Cost": 17325.53,
+      "Total Cost": 17325.54,
+      "Plan Rows": 1,
+      "Plan Width": 32,
+      "Output": ["sum(amount)"],
+      "Plans": [
+        {
+          "Node Type": "Gather",
+          "Parent Relationship": "Outer",
+          "Parallel Aware": false,
+          "Async Capable": false,
+          "Startup Cost": 17325.31,
+          "Total Cost": 17325.52,
+          "Plan Rows": 2,
+          "Plan Width": 32,
+          "Output": ["(PARTIAL sum(amount))"],
+          "Workers Planned": 2,
+          "Single Copy": false,
+          "Plans": [
+            {
+              "Node Type": "Aggregate",
+              "Strategy": "Plain",
+              "Partial Mode": "Partial",
+              "Parent Relationship": "Outer",
+              "Parallel Aware": false,
+              "Async Capable": false,
+              "Startup Cost": 16325.31,
+              "Total Cost": 16325.32,
+              "Plan Rows": 1,
+              "Plan Width": 32,
+              "Output": ["PARTIAL sum(amount)"],
+              "Plans": [
+                {
+                  "Node Type": "Seq Scan",
+                  "Parent Relationship": "Outer",
+                  "Parallel Aware": true,
+                  "Async Capable": false,
+                  "Relation Name": "orders",
+                  "Schema": "public",
+                  "Alias": "orders",
+                  "Startup Cost": 0.00,
+                  "Total Cost": 15782.00,
+                  "Plan Rows": 217322,
+                  "Plan Width": 6,
+                  "Output": ["id", "customer_id", "status", "amount", "created_at", "note"],
+                  "Filter": "((orders.created_at >= '2024-01-03 00:00:00+00'::timestamp with time zone) AND (orders.created_at < '2024-01-09 00:00:00+00'::timestamp with time zone))"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  }
+]
