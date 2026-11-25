@@ -260,7 +260,100 @@ There the mirror stops and says so. The halt is written to `state.json` on
 purpose — a halt that lives only in a running process is undone by the next
 restart, which re-reads the catalog, sees the new schema as though it had always
 been there, and serves the corruption it stopped for. Recovery is deliberately
-manual: delete the mirror directory and let it re-snapshot.
+manual; see the next section.
+
+---
+
+## A halted table
+
+A table halts when the mirror cannot represent the source faithfully: an
+unsupported schema change (above), a value the column type cannot store exactly
+(`NaN` or `Infinity` in a `numeric`, more digits than the mirror's decimal
+holds), a timestamp or date out of range. The halt is durable and it belongs to
+**that table only**.
+
+What the sidecar does:
+
+- The halted table is out of service. Its changes are **discarded** while it is
+  halted (it comes back by snapshot, never by replay), and it is skipped by
+  apply, compaction and index build. `qs-query` and anything else that asks for
+  its view is refused: `mirror is halted and must not be served: …`.
+- Every other table keeps mirroring from the same slot. The stream is still
+  confirmed, so the slot advances past the halted table's changes and pins no
+  WAL on its account.
+- Errors that are not about the table — I/O failure, a full disk, a cancelled
+  context, a lost connection — still stop the process and retry with backoff, as
+  before. Only an error the mirror itself recorded as a halt takes a table out.
+- If **every** table is halted there is nothing to stream: the sidecar stops
+  mirroring and drops its slot, as a halt always used to.
+
+What you see (`/readyz` on the sidecar's health port, 9188):
+
+```
+HTTP 503
+1 table is halted and not mirrored: public.orders (halting public.orders: column
+"amount" (numeric(12,2)) holds "NaN", which the mirror's column type decimal(12, 2)
+cannot store exactly. Storing NULL or a rounded va…). The other tables are still
+mirrored; this Pod is unready because QS_SERVE_WITH_HALTED_TABLES is not set. To
+rebuild a halted table, create a file named REBUILD in its mirror directory and
+restart the sidecar
+```
+
+The reason is read from the manifests when the sidecar starts, so it reads the
+same after a restart; it is not "diverged" and not "still bootstrapping". Each
+table's reason is cut at 160 characters in the probe and the metric; the full
+text is in the log line `table halted` and in `halted_tables` in the `/readyz`
+JSON. `/metrics` carries:
+
+```
+quicksilver_halted_tables 1
+quicksilver_table_halted{table="public.orders",reason="halting public.orders: column \"amount\" …"} 1
+```
+
+Alert on `quicksilver_halted_tables > 0`.
+
+**Should the Pod be unready when one table of several is halted?** By default,
+yes. A reader behind the Service cannot tell a Pod mirroring three tables from
+one mirroring two, so by default it never reaches the second kind. Set
+`QS_SERVE_WITH_HALTED_TABLES=true` on the sidecar to keep the Pod ready on the
+strength of its healthy tables; the probe then answers 200 with
+`…; DEGRADED, serving the other tables (QS_SERVE_WITH_HALTED_TABLES): 1 table is
+halted and not mirrored: …`, the metrics above are unchanged, and the halted
+table's view is still refused. Whatever the switch says, a Pod whose tables are
+all halted is unready. (Like `QS_MAX_SLOT_WAL_BYTES`, this is read from the
+sidecar's environment; the plugin does not have a parameter for it yet.)
+
+**Rebuilding one table.** Fix the cause at the source first (update or delete
+the row, or finish the schema change), then ask for the rebuild with a file in
+that table's mirror directory, on the Pod concerned, and restart the sidecar:
+
+```sh
+kubectl exec <pod> -c postgres -- \
+  touch /var/lib/postgresql/data/quicksilver/public.orders/REBUILD
+kubectl delete pod <pod>        # or any restart of the sidecar
+```
+
+At start, a table that is halted **and** carries that file is re-snapshotted
+through the same path as a table that joined an existing slot (an exported
+snapshot with an exact LSN floor); its halt is cleared only after the snapshot
+is durable, and the file is then removed. The other tables resume from the slot
+and are not re-snapshotted — the log shows `snapshot complete` for the rebuilt
+table alone. Without the file a halted table stays halted across any number of
+restarts. If the snapshot meets the same problem again the table stays halted,
+the file is kept, and the other tables carry on. A `REBUILD` file on a table
+that is not halted is discarded with a warning: it never re-snapshots a healthy
+table and never waits around to rebuild a future halt unattended.
+
+It is a file and not an environment variable because it is a request, which is
+spent once honoured; an env var stays in the Pod spec and would rebuild away
+every later halt without anyone looking. It is also per Pod, like the halt.
+
+When every table was halted the sidecar keeps retrying with backoff and
+re-reads the manifests each time, so there the `REBUILD` files are picked up
+without a restart; the slot is new, so each requested table is snapshotted.
+
+Deleting the whole mirror directory still works and still costs every table a
+snapshot.
 
 ---
 
@@ -384,8 +477,9 @@ way to reach: live reconcile behaviour, and a Pod that actually runs.
   Two cases the sidecar does handle itself, because it is still running when
   they happen: a Pod that is **promoted** drops its own slot when it stands
   down (it would otherwise sit on the new primary after every failover or
-  switchover), and a mirror that is **halted** drops its slot rather than pin
-  WAL until an operator arrives. Both mean a snapshot the next time that Pod
+  switchover), and a mirror whose tables are **all halted** drops its slot
+  rather than pin WAL until an operator arrives (one halted table among
+  several does not: the stream carries on and keeps confirming). Both mean a snapshot the next time that Pod
   mirrors. Neither has been exercised on a real cluster.
 
   - set `max_slot_wal_keep_size`, so PostgreSQL bounds what any slot can pin;

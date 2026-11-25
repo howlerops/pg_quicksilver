@@ -537,6 +537,34 @@ func (t *Table) Halt(reason string) error {
 // Halted reports the reason this mirror is out of service, or "".
 func (t *Table) Halted() string { return t.State.Halted }
 
+// ClearHalt puts a halted table back in service, durably. The one caller is a
+// rebuild an operator asked for, and it calls this only AFTER Snapshot has
+// replaced the table's contents: Snapshot itself leaves the halt in the
+// manifest, so a crash anywhere before this line restarts with a table that is
+// still halted rather than one that is empty and trusted.
+func (t *Table) ClearHalt() error {
+	t.State.Halted = ""
+	return t.saveState()
+}
+
+// HaltedOnDisk reads a table's halt reason straight from its manifest, without
+// opening the table. Opening one needs the column list, which needs the source;
+// the readiness probe has to be able to say "halted" before the source answers.
+// A table with no manifest, or one that cannot be read, reports "".
+func HaltedOnDisk(root, schema, table string) string {
+	b, err := os.ReadFile(filepath.Join(root, schema+"."+table, "state.json"))
+	if err != nil {
+		return ""
+	}
+	var st struct {
+		Halted string `json:"halted"`
+	}
+	if json.Unmarshal(b, &st) != nil {
+		return ""
+	}
+	return st.Halted
+}
+
 // ---- arrow schema ---------------------------------------------------------
 
 // ArrowSchema maps declared Postgres types to a FIXED Arrow schema. Inferring
