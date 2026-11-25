@@ -167,6 +167,7 @@ func (t *Table) Reload() error {
 	}
 	t.State = st
 	t.index, t.patch, t.partialCols = nil, nil, nil
+	t.resetDead()
 	return nil
 }
 

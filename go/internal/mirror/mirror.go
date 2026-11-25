@@ -38,6 +38,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/arrow/array"
@@ -162,6 +163,21 @@ type Table struct {
 	// compacting is the rewrite currently in flight, if any. Only the apply
 	// goroutine touches this field.
 	compacting *Compaction
+
+	// dead is each data file's dead set, by dvStem, as the manifest in State
+	// describes it. See dvcache.go. Only the apply goroutine touches it.
+	dead map[string]*deadSet
+
+	// What the idle compaction trigger needs to know and the manifest does not
+	// say: when this table was last written, when its base was last rewritten
+	// and how long that took. None of it is durable, deliberately — after a
+	// restart "just written" is the safe assumption. See CompactIdleSeconds.
+	lastChange    time.Time
+	lastCompacted time.Time
+	lastRewrite   time.Duration
+	seenSeq       int
+	retryAt       time.Time // no rewrite before this; see CompactionFailed
+	clock         func() time.Time
 }
 
 func New(root, schema, table, key string, cols map[string]string, order []string) (*Table, error) {
@@ -272,9 +288,21 @@ func (t *Table) ensureIndex() error {
 			target = t.patch
 		}
 		n := 0
-		err := t.forEachRowGroup(filepath.Join(t.Dir, rel), dead, partial,
+		// The dead rows are skipped HERE, not by forEachRowGroup. Handing it
+		// the vector makes it drop them before fn sees the group, and then
+		// first+i is a position among the SURVIVORS: every row after a dead
+		// one was indexed one place too early. Nothing reads wrong at that
+		// point. The next delete or update of such a row marks its
+		// neighbour's position dead instead of its own — the row that should
+		// have gone stays, and a row nobody touched disappears — and it took
+		// only a restart or a Reload with one delete in a delta file to get
+		// there (TestIndexRebuildKeepsDeltaPositions).
+		err := t.forEachRowGroup(filepath.Join(t.Dir, rel), nil, partial,
 			func(rows []map[string]any, first int) error {
 				for i, r := range rows {
+					if dead[first+i] {
+						continue
+					}
 					target.set(t.keyOf(r[t.Key]), loc{File: id, Pos: int32(first + i)})
 				}
 				n = first + len(rows)
@@ -337,14 +365,8 @@ func (t *Table) deadPositionsLatest(rel string) (map[int]bool, error) {
 }
 
 func (t *Table) readDV(path, rel string) (map[int]bool, error) {
-	if path == "" {
-		return nil, ErrStaleManifest
-	}
-	pos, err := readDVFile(path)
+	pos, err := readDVPositions(path)
 	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, ErrStaleManifest
-		}
 		return nil, err
 	}
 	dead := make(map[int]bool, len(pos))
@@ -425,6 +447,7 @@ func (t *Table) dropDV(rel string) {
 		_ = os.Remove(m)
 	}
 	delete(t.State.DVGen, dvStem(rel))
+	t.forgetDead(rel)
 }
 
 // removeDataFile deletes a data file and the deletion vectors that described it.
@@ -1076,6 +1099,12 @@ func appendValue(b array.Builder, dt arrow.DataType, v any) {
 // throughput collapsed as the table grew (docs/18). Marking a position dead is
 // O(1) per key, and the file it lives in is never rewritten.
 //
+// The VECTOR is rewritten, though, and that sentence used to hide a third cost
+// of the same kind: the previous generation was read back from disk into a map
+// and sorted on every call, so a thousand deletes cost 3.5 ms with 7,000 rows
+// already dead in the file and 590 ms with two million. The dead set is now
+// held in memory (dvcache.go) and only the write remains.
+//
 // Each call publishes a NEW deletion-vector generation rather than overwriting
 // the one a reader may be holding; see State.DVGen. The generation two back is
 // removed, which leaves any reader a full write cycle of grace and turns the
@@ -1083,14 +1112,24 @@ func appendValue(b array.Builder, dt arrow.DataType, v any) {
 func (t *Table) markDead(byFile map[fileID][]int) error {
 	for id, positions := range byFile {
 		rel := id.name()
-		existing, err := t.deadPositions(rel)
+		set, err := t.deadSetFor(rel)
 		if err != nil {
 			return err
 		}
+		added := 0
 		for _, p := range positions {
-			existing[p] = true
+			if set.add(p) {
+				added++
+			}
 		}
-		merged := dvSorted(existing)
+		if added == 0 {
+			// Nothing this generation does not already say. A new one would be
+			// the same file under a new name, and would retire a generation
+			// some reader is holding in exchange for nothing.
+			continue
+		}
+		t.lastChange = t.now()
+		merged := set.positions()
 
 		stem := dvStem(rel)
 		gen := t.State.DVGen[stem] + 1
@@ -1099,12 +1138,16 @@ func (t *Table) markDead(byFile map[fileID][]int) error {
 		// leaves a window where it parses as nothing — which reads as "nothing
 		// is dead" and undoes every delete in the file.
 		if err := writeDV(t.dvPathGen(rel, gen), merged); err != nil {
+			// The set in memory is now ahead of anything on disk. Drop it, so
+			// the next caller reloads what the manifest actually names.
+			t.forgetDead(rel)
 			return err
 		}
 		if t.State.DVGen == nil {
 			t.State.DVGen = map[string]int{}
 		}
 		t.State.DVGen[stem] = gen
+		set.gen = gen
 		if gen > 2 {
 			// Both encodings, because the generation being retired here may
 			// predate the format change.
@@ -1128,6 +1171,7 @@ func (t *Table) truncate() error {
 	t.State.BaseRows, t.State.DeltaRows = 0, 0
 	t.State.PartialCols, t.State.FileRows, t.State.DVGen = nil, nil, nil
 	t.index, t.patch, t.partialCols = nil, nil, nil
+	t.resetDead()
 	return nil
 }
 
@@ -1432,7 +1476,7 @@ const (
 func (t *Table) ShouldCompact() bool { return t.CompactReason() != "" }
 
 // CompactReason is ShouldCompact with the answer attached: "" for no, otherwise
-// which of the two triggers pulled.
+// which of the three triggers pulled — "churn", "dead-fraction" or "idle".
 //
 // It exists because an A/B of QS_COMPACT_DEAD_FRACTION measured nothing and did
 // not say so. Six runs across three shapes came back with identical compaction
@@ -1445,19 +1489,51 @@ func (t *Table) ShouldCompact() bool { return t.CompactReason() != "" }
 // In production it answers the same question for an operator staring at a
 // rewrite: a base rewrite is the most expensive thing this process does, and
 // "why now" should not require reading this function.
+//
+// It is meant to be asked on EVERY tick, idle ones included, and is cheap
+// enough to be: the only thing it ever read from disk was the base's deletion
+// vector, and that is now a count held in memory (dvcache.go).
+//
+// The three triggers, in the order they are tried:
+//
+//   - churn: the deltas hold a fifth of the base. Sized by what the rewrite
+//     costs; see compactChurnRatio.
+//   - dead-fraction: a fifth of the base is dead. The same bound for a workload
+//     that deletes without writing, which churn cannot see at all.
+//   - idle: the base carries a vector and nothing has been written for a while.
+//     Sized by what the vector costs READERS; see CompactIdleSeconds.
+//
+// The first two bound how much a busy table carries. Only the third bounds how
+// LONG a quiet one carries it, and it is the one that was missing.
 func (t *Table) CompactReason() string {
-	if len(t.State.DeltaFiles) == 0 {
+	t.noteActivity()
+	if !t.retryAt.IsZero() && t.now().Before(t.retryAt) {
 		return ""
 	}
-	threshold := t.State.BaseRows / compactChurnRatio
-	if threshold < compactMinRows {
-		threshold = compactMinRows
+	if len(t.State.DeltaFiles) > 0 {
+		threshold := t.State.BaseRows / compactChurnRatio
+		if threshold < compactMinRows {
+			threshold = compactMinRows
+		}
+		if t.State.DeltaRows >= threshold {
+			return "churn"
+		}
 	}
-	if t.State.DeltaRows >= threshold {
-		return "churn"
+	// Everything below is about the base's deletion vector, and does not need a
+	// delta file to exist: a workload of pure deletes writes none, and used to
+	// leave here on the first line with a vector that could only ever grow.
+	dead, err := t.baseDead()
+	if err != nil || dead == 0 {
+		// A vector we cannot read is not a reason to rewrite the table. The
+		// read path will raise ErrStaleManifest and retry, which is a better
+		// answer than a compaction started on a guess.
+		return ""
 	}
-	if t.baseVectorTooExpensive() {
+	if t.baseVectorTooExpensive(dead) {
 		return "dead-fraction"
+	}
+	if t.idleWithBaseVector() {
+		return "idle"
 	}
 	return ""
 }
@@ -1487,66 +1563,137 @@ func (t *Table) CompactReason() string {
 // ceiling in any useful sense. What matters is how long the base is allowed to
 // carry a vector at all, and the only thing that removes one is a rewrite.
 //
-// WHY IT IS OFF BY DEFAULT. The same measurement says the penalty is a property
-// of NARROW rows, because the anti-join is per-row while the scan it competes
-// with is per-byte:
+// That is why the fraction is NOT the lever for read cost, and why it is no
+// longer asked to be. The same measurement says the penalty is a property of
+// NARROW rows, because the anti-join is per-row while the scan it competes with
+// is per-byte:
 //
 //	shape       bytes/row   column scan   penalty at 1% dead
 //	narrow              6        1.0 ms       13.9 ms  14.5x
 //	wide               27        1.1 ms        7.8 ms   6.9x
 //	jsonb            1692      238.3 ms        2.0 ms  <0.01x
 //
-// On jsonb the vector is a rounding error, so compacting sooner would buy that
-// shape nothing and cost it a full rewrite.
-//
-// It used to say the rest was an unmeasured throughput change, to be defaulted
-// on once an A/B said what it costs the write path. That A/B has now run —
-// three shapes, six paired runs on a quiet machine — and the answer is not a
-// cost. It is that this trigger BARELY FIRES:
+// so a small fraction would buy the narrow shape a factor of two or three at
+// most and cost every shape a rewrite per few percent of the table — at 1%,
+// twenty times the rewriting the churn trigger settled on. The A/B at 0.01
+// (three shapes, six paired runs) then found the trigger barely fired anyway,
+// because churn was tested first and any workload deleting enough to fill a
+// vector was usually writing enough to clear that bar:
 //
 //	shape      frac=0            frac=0.01
 //	deletes    6 churn           5 churn + 1 dead-fraction
 //	jsonb      3 churn           3 churn
 //	churn      no compaction     no compaction
 //
-// Same total number of rewrites either way. ShouldCompact tests churn first and
-// returns early, so this only gets a say while DeltaRows is below
-// max(BaseRows/5, 25k) — and any workload that deletes enough to fill a vector
-// is usually also writing enough to clear that bar. Sixty seconds of workload
-// across three shapes moved one rewrite slightly earlier.
+// WHAT IT DEFAULTS TO NOW, AND WHY THAT IS NOT A SCHEDULE CHANGE. It used to be
+// off, with the gap named honestly: the case it was designed for is a base that
+// fills with dead rows while its deltas stay small — deletes without
+// accompanying writes — and no shape in bench/scripts/workload_matrix.sh
+// produced that. The purge shape was added to produce it, and did
+// (bench/results/workload_matrix_purge.txt): a 400,000-row base with 100,800
+// dead and zero compactions, count(*) at 15.1 ms against 5.7 ms rewritten.
+// Off, that workload has NO trigger at all: no delta rows means no churn, and
+// CompactReason used to return before even looking when there were no delta
+// files, so a table that only ever deleted kept every row it had ever held and
+// a vector naming most of them.
 //
-// Which means the throughput numbers that A/B produced — drain rate within
-// 0.5%, CPU per row-change identical — are two runs of the same behaviour, and
-// would have read exactly like a knob that is free. The trigger reason is now
-// logged (CompactReason) precisely so that "costs nothing" and "does nothing"
-// stop looking alike.
+// The default is now 1/compactChurnRatio, the SAME fifth the churn trigger
+// uses, above the same compactMinRows floor. That number was chosen for what a rewrite costs — five rows rewritten
+// per row changed, amortised — and a dead base row is a changed row whether or
+// not a replacement was written for it. For any workload that updates, the two
+// reach a fifth together (each update is one dead position and one delta row)
+// and churn is tested first, so nothing about its schedule moves; that is the
+// A/B above, read the other way. Only the delete-only workload gets a rewrite
+// it did not have, at the price already accepted for everything else.
 //
-// So it stays off, for a better reason than before, and the honest gap is
-// named: the case it was designed for is a mirror whose base fills with dead
-// rows while its deltas stay small — deletes without accompanying writes — and
-// no shape in bench/scripts/workload_matrix.sh produces that. Defaulting it on
-// would be trading a measured read win for an unmeasured schedule change on a
-// shape nobody has run.
-var CompactDeadFraction = envFloat("QS_COMPACT_DEAD_FRACTION", 0)
+// A rewrite also cannot retrigger this on its own: the new base holds only live
+// rows, so the fraction restarts from whatever died during the rewrite.
+//
+// Set QS_COMPACT_DEAD_FRACTION=0 to turn it off, or lower to trade rewrites for
+// a shorter vector under sustained deletes.
+var CompactDeadFraction = envFloat("QS_COMPACT_DEAD_FRACTION", 1.0/compactChurnRatio)
 
-func (t *Table) baseVectorTooExpensive() bool {
-	if CompactDeadFraction <= 0 || t.State.BaseRows < compactMinRows {
+func (t *Table) baseVectorTooExpensive(dead int) bool {
+	if CompactDeadFraction <= 0 {
 		return false
 	}
-	dead := 0
-	for _, b := range t.State.BaseFiles {
-		if gen := t.State.DVGen[dvStem(b)]; gen != 0 {
-			d, err := t.readDV(t.dvPathGenAny(filepath.Join("base", b), gen), b)
-			if err != nil {
-				// A vector we cannot read is not a reason to rewrite the table.
-				// The read path will raise ErrStaleManifest and retry, which is
-				// a better answer than a compaction started on a guess.
-				return false
-			}
-			dead += len(d)
-		}
+	// The same floor as churn, for the same reason, and so that the two stay
+	// the same bound: without it a 30,000-row table was rewritten by this
+	// trigger at 6,000 updates when churn would have waited for 25,000.
+	threshold := float64(t.State.BaseRows) * CompactDeadFraction
+	if threshold < compactMinRows {
+		threshold = compactMinRows
 	}
-	return float64(dead) >= float64(t.State.BaseRows)*CompactDeadFraction
+	return float64(dead) >= threshold
+}
+
+// CompactIdleSeconds is how long a table must go unwritten before a base that
+// carries a deletion vector is rewritten to get rid of it. Zero turns it off.
+//
+// This is the trigger the measurements above were asking for. If the cost is
+// the step from no vector to any vector, the quantity to bound is not how many
+// rows are dead but HOW LONG the base carries a vector — and under the two
+// triggers above that was unbounded. A 10M-row mirror that had 8% of its rows
+// updated or deleted and then went quiet sat at 700,000 dead and four deltas,
+// under both thresholds, with
+//
+//	count(*)              3 ms  ->  332 ms
+//	count by status      19 ms  ->  112 ms
+//	sum                  37 ms  ->  127 ms
+//
+// for as long as nobody wrote another 12% of the table. And it could not have
+// fired even with a threshold to cross, because the triggers were only
+// evaluated on a tick that applied something: the moment a mirror has spare
+// capacity to rewrite was exactly the moment it stopped asking whether to.
+//
+// WHY IDLENESS AND NOT A TIMER. A rewrite is O(table), and the comments at the
+// top of this block are about what happens when its trigger scales with
+// anything else. "The vector is N seconds old" scales with the clock: under
+// steady writes it rewrites the table every N seconds forever, each rewrite
+// landing with a fresh vector for the rows that changed while it ran. Idleness
+// cannot do that. A write to the table resets the clock, so under steady writes
+// this never fires and the schedule is exactly the churn trigger's; when writes
+// stop it fires once, the swap lands a base with no vector, and there is
+// nothing left for it to fire on.
+//
+// The price is that a table written continuously and slowly keeps its vector
+// until a fifth of it has changed. That is the existing behaviour, not a new
+// one, and it is the workload where a rewrite would be stale on arrival.
+//
+// Thirty seconds is long enough that a pause between two batches of one job is
+// not mistaken for the end of it, and short against how long a quiet mirror
+// would otherwise serve the slow answer, which was indefinitely.
+var CompactIdleSeconds = envFloat("QS_COMPACT_IDLE_SECONDS", 30)
+
+// CompactIdleBackoff spaces idle rewrites by what a rewrite costs: after one
+// lands, the idle trigger stays quiet for this many times as long as that
+// rewrite took.
+//
+// It is for the workload idleness alone gets wrong — bursts with gaps just
+// longer than CompactIdleSeconds. Each gap looks idle, so each burst would buy
+// a full rewrite, and on a table whose rewrite takes longer than the gap that
+// is a mirror rewriting continuously for a handful of changed rows: the storm
+// again, arrived at by a different road. Thirty seconds says nothing about the
+// table's size; how long the last rewrite took says exactly that. At 10 the
+// idle trigger can keep the background rewriter busy for at most one part in
+// eleven, whatever the table and whatever the bursts.
+var CompactIdleBackoff = envFloat("QS_COMPACT_IDLE_BACKOFF", 10)
+
+// idleWithBaseVector reports whether the idle trigger should pull. The caller
+// has already established that the base carries a vector.
+func (t *Table) idleWithBaseVector() bool {
+	if CompactIdleSeconds <= 0 {
+		return false
+	}
+	now := t.now()
+	if now.Sub(t.lastChange) < time.Duration(CompactIdleSeconds*float64(time.Second)) {
+		return false
+	}
+	if t.lastCompacted.IsZero() {
+		return true
+	}
+	wait := time.Duration(CompactIdleBackoff * float64(t.lastRewrite))
+	return now.Sub(t.lastCompacted) >= wait
 }
 
 // writeJSON writes atomically: temp file, fsync, rename.

@@ -175,9 +175,28 @@ while the scan it competes with is per-byte:
 
 ## 8. Compaction policy, measured
 
-`QS_COMPACT_DEAD_FRACTION` adds a second compaction trigger. It ships **off**,
+`QS_COMPACT_DEAD_FRACTION` adds a second compaction trigger. It shipped **off**,
 and [docs/32](docs/32-the-knob-that-barely-fires.md) is the story of finding out
-why that is the right default.
+why that was the right default for the value being tested (0.01).
+
+It now defaults to **0.2** — the same fifth of the base, above the same 25,000-row
+floor, that the churn trigger uses — so a workload that updates sees no change in
+schedule (churn is tested first and reaches a fifth at the same moment) and a
+delete-only workload, which had no trigger at all, gets one at the price already
+accepted for everything else. On the `purge` table below that is one rewrite at
+80,000 dead instead of none.
+
+What bounds how LONG a base carries a vector is a third trigger, `why=idle`:
+a table that has not been written for `QS_COMPACT_IDLE_SECONDS` (default 30,
+0 = off) and whose base has a deletion vector is rewritten, and idle rewrites
+are spaced by `QS_COMPACT_IDLE_BACKOFF` (default 10) times how long the last
+rewrite took. Triggers are evaluated on idle ticks as well as applying ones;
+before, a mirror that stopped receiving writes also stopped asking. Measured on
+a 1M-row table after an 8% update/delete burst (`count(*)` through the view,
+one thread): 1.3 ms fresh, 54.8 ms churned, 1.0 ms after the idle rewrite,
+which started 30 s after the last write and took 4.4 s.
+
+The 0.01 A/B, for the record:
 
 On the `purge` shape (the only one that reaches the trigger):
 

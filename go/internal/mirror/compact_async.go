@@ -359,6 +359,7 @@ func (t *Table) FinishCompaction() (int, error) {
 	// more dangerous of the two to leave lying around.
 	t.patch.deleteWhere(func(p loc) bool { return c.files[p.File] })
 
+	t.noteCompacted(c)
 	t.index = c.index // O(1): the rewrite built it
 	t.State.BaseFiles = []string{c.name}
 	t.State.DeltaFiles = keptDeltas
