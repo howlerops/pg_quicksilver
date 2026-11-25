@@ -28,6 +28,8 @@ source "$(dirname "$0")/lib_lsn.sh"
 source "$(dirname "$0")/lib_syncslots.sh"
 HEALTH=127.0.0.1:9199
 DB=app
+source "$(dirname "$0")/lib_slotname.sh"
+SLOT=$(qs_pod_slot qs_e2e e2e-2)   # what the sidecar derives from QS_SLOT and QS_POD_NAME
 FAIL=0
 
 say()  { printf '\n== %s ==\n' "$*"; }
@@ -236,7 +238,7 @@ curl -sf "http://$HEALTH/readyz" >/dev/null \
 say "5c. recovery: clearing the halt rebuilds from a fresh snapshot"
 kill $MIRROR_PID 2>/dev/null; wait $MIRROR_PID 2>/dev/null
 rm -rf $MIRROR; install -d -o postgres -g postgres $MIRROR
-psq 5443 "SELECT pg_drop_replication_slot('qs_e2e') FROM pg_replication_slots WHERE slot_name='qs_e2e'" >/dev/null
+psq 5443 "SELECT pg_drop_replication_slot('$SLOT') FROM pg_replication_slots WHERE slot_name='$SLOT'" >/dev/null
 su postgres -c "QS_CLUSTER=e2e QS_MODE=shadow QS_INGEST=logical \
   QS_TABLES=public.events QS_SLOT=qs_e2e QS_PUBLICATION=qs_e2e \
   QS_MIRROR_PATH=$MIRROR QS_FRESHNESS_SLO=15s \

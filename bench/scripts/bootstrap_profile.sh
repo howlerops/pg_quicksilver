@@ -31,6 +31,8 @@ STANDBY=$BASE/standby
 HEALTH=127.0.0.1:9197
 DEBUG=127.0.0.1:9196
 DB=app
+source "$(dirname "$0")/lib_slotname.sh"
+SLOT=$(qs_pod_slot bp_slot bp-2)   # what the sidecar derives from QS_SLOT and QS_POD_NAME
 ROWS=${ROWS:-400000}
 SHAPES=${SHAPES:-"narrow jsonb"}
 OUT=${OUT:-/tmp/bootstrap-profiles}
@@ -65,7 +67,7 @@ for SHAPE in $SHAPES; do
   say "shape: $SHAPE"
   MIRROR=$BASE/bp-$SHAPE
   rm -rf $MIRROR; install -d -o postgres -g postgres $MIRROR
-  psq 5443 "SELECT pg_drop_replication_slot('bp_slot') FROM pg_replication_slots WHERE slot_name='bp_slot'" >/dev/null 2>&1
+  psq 5443 "SELECT pg_drop_replication_slot('$SLOT') FROM pg_replication_slots WHERE slot_name='$SLOT'" >/dev/null 2>&1
   psq 5443 "DROP PUBLICATION IF EXISTS bp_pub" >/dev/null 2>&1
 
   /tmp/qs-matrix -dsn "postgres://postgres@localhost:5443/$DB" -shape "$SHAPE" \

@@ -36,6 +36,8 @@ STANDBY=$BASE/tz-standby
 MIRROR=$BASE/tz-mirror
 HEALTH=127.0.0.1:9198
 DB=tzapp
+source "$(dirname "$0")/lib_slotname.sh"
+SLOT=$(qs_pod_slot tz_slot tz-2)   # what the sidecar derives from QS_SLOT and QS_POD_NAME
 PINNED=${QS_PIN_RENDERING:-1}
 FAIL=0
 
@@ -94,7 +96,7 @@ printf '  server timezone is now %s, and renders the instant as %s\n' \
   "$(psq 'SHOW timezone' postgres)" "$(psq "SELECT at::text FROM t LIMIT 1")"
 
 rm -rf $MIRROR; install -d -o postgres -g postgres $MIRROR
-psq "SELECT pg_drop_replication_slot('tz_slot') FROM pg_replication_slots WHERE slot_name='tz_slot'" >/dev/null 2>&1
+psq "SELECT pg_drop_replication_slot('$SLOT') FROM pg_replication_slots WHERE slot_name='$SLOT'" >/dev/null 2>&1
 psq "DROP PUBLICATION IF EXISTS tz_pub" >/dev/null 2>&1
 go -C go build -o /tmp/qs-mirror ./cmd/qs-mirror || skip "build failed"
 go -C go build -o /tmp/qs-verify ./cmd/qs-verify || skip "build failed"
@@ -125,7 +127,7 @@ printf '  server timezone is now %s, and renders the same instant as %s\n' \
 # A reload does not touch the walsender already running, so the stream is
 # restarted the way a rollout would: the sidecar reconnects and the new session
 # picks the new setting up.
-psq "SELECT pg_terminate_backend(active_pid) FROM pg_replication_slots WHERE slot_name='tz_slot' AND active" >/dev/null 2>&1
+psq "SELECT pg_terminate_backend(active_pid) FROM pg_replication_slots WHERE slot_name='$SLOT' AND active" >/dev/null 2>&1
 sleep 3
 psq "INSERT INTO t SELECT g, '2026-01-15 12:00:00+00'::timestamptz,
        '2026-01-15'::date, 'row '||g FROM generate_series(101,200) g" >/dev/null

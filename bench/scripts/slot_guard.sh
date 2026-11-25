@@ -32,6 +32,8 @@ STANDBY=$BASE/standby
 MIRROR=$BASE/guard-mirror
 HEALTH=127.0.0.1:9194
 DB=guard
+source "$(dirname "$0")/lib_slotname.sh"
+SLOT=$(qs_pod_slot gd_slot gd-2)   # what the sidecar derives from QS_SLOT and QS_POD_NAME
 ROWS=${ROWS:-400000}
 
 # 64 KB, not 16 MB, and the first version of this got that wrong.
@@ -83,7 +85,7 @@ chmod 755 /tmp/qs-mirror
 
 say "a sidecar whose slot may hold only $(numfmt --to=iec "$LIMIT")"
 rm -rf $MIRROR; install -d -o postgres -g postgres $MIRROR
-psq 5443 "SELECT pg_drop_replication_slot('gd_slot') FROM pg_replication_slots WHERE slot_name='gd_slot'" >/dev/null 2>&1
+psq 5443 "SELECT pg_drop_replication_slot('$SLOT') FROM pg_replication_slots WHERE slot_name='$SLOT'" >/dev/null 2>&1
 psq 5443 "DROP PUBLICATION IF EXISTS gd_pub" >/dev/null 2>&1
 su postgres -c "QS_CLUSTER=gd QS_MODE=shadow QS_INGEST=logical \
   QS_TABLES=public.m QS_SLOT=gd_slot QS_PUBLICATION=gd_pub \
@@ -141,13 +143,13 @@ else
   bad "no drop was attempted after the guard fired"
 fi
 retained=$(psq 5443 "SELECT COALESCE(pg_wal_lsn_diff(pg_current_wal_lsn(), restart_lsn),0)::bigint
-                     FROM pg_replication_slots WHERE slot_name='gd_slot'" postgres)
+                     FROM pg_replication_slots WHERE slot_name='$SLOT'" postgres)
 if [ -z "$retained" ]; then
-  ok "no gd_slot exists at all right now, so nothing is pinned on its behalf"
+  ok "no $SLOT exists at all right now, so nothing is pinned on its behalf"
 elif [ "$retained" -lt $((LIMIT * 64)) ]; then
-  ok "the current gd_slot (rebuilt) pins $(numfmt --to=iec "$retained"), not the runaway amount"
+  ok "the current $SLOT (rebuilt) pins $(numfmt --to=iec "$retained"), not the runaway amount"
 else
-  bad "a slot named gd_slot is pinning $(numfmt --to=iec "$retained") — the drop did not take effect"
+  bad "a slot named $SLOT is pinning $(numfmt --to=iec "$retained") — the drop did not take effect"
 fi
 
 say "3. the primary is still serving"
