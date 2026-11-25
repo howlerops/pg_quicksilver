@@ -164,8 +164,9 @@ func currentLSN(ctx context.Context, conn *pgx.Conn) (string, error) {
 	return lsn, err
 }
 
-// maxPendingChanges is how much may wait in memory before the loop stops
-// reading from the stream.
+// maxPendingChanges is how much may wait in pump's own queue before the loop
+// stops taking from the stream's buffer. It is half of the memory bound; the
+// other half is maxStreamBufferedChanges, below.
 //
 // Four ticks' worth. Enough that a tick never waits on the network for work it
 // could already have, and small enough that the queue is a buffer rather than a
@@ -176,3 +177,23 @@ func currentLSN(ctx context.Context, conn *pgx.Conn) (string, error) {
 // Reading without a bound while applying with one is what put 2.4 GB of
 // resident memory behind a 139 MB mirror.
 var maxPendingChanges = int(envInt("QS_MAX_PENDING_CHANGES", 4*int64(maxTickChanges)))
+
+// maxStreamBufferedChanges is how much the stream itself may hold, received but
+// not yet taken by pump, before it stops reading the replication socket and
+// leaves the rest in PostgreSQL's WAL.
+//
+// maxPendingChanges alone bounded nothing: pump declining to take from the
+// stream only moved the backlog into the stream's buffer, which had no cap
+// (47 MB to 1.27 GB of heap in seven seconds, against a 256Mi default limit).
+// The two caps are one budget. Pump takes the whole stream buffer whenever its
+// queue is under maxPendingChanges, so the worst case in memory is
+//
+//	maxPendingChanges + 2 x maxStreamBufferedChanges (+ one transaction)
+//
+// — the queue just under its cap, one full buffer taken on top, and the buffer
+// refilled behind it. A quarter of the queue (one tick's worth at the
+// defaults) keeps that at 1.5x maxPendingChanges without leaving a tick short
+// of work.
+var maxStreamBufferedChanges = int(envInt("QS_MAX_STREAM_BUFFERED_CHANGES", int64(maxPendingChanges)/4))
+
+func init() { changestream.DefaultMaxBufferedChanges = maxStreamBufferedChanges }

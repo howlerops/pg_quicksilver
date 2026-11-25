@@ -602,20 +602,30 @@ func pump(
 		}
 		tt.done("is_primary")
 
-		// BACKPRESSURE. Do not drain the stream into memory when there is
-		// already more waiting than a tick will apply.
+		// BACKPRESSURE. Do not take from the stream when there is already
+		// more waiting here than a tick will apply.
 		//
-		// This is the half of the tick cap that was missing. Capping what a tick
-		// APPLIES, without capping what it READS, does not slow the backlog
-		// down — it moves it from PostgreSQL's WAL, where it costs disk, into
-		// this process's heap, where it costs RSS. The large-scale run measured
-		// the result: 2.4 GB resident for a mirror holding a 139 MB table,
-		// 125 bytes per live row, and a qs-verify OOM-killed beside it.
+		// Capping what a tick APPLIES without capping what is READ does not
+		// slow the backlog down — it moves it from PostgreSQL's WAL, where it
+		// costs disk, into this process's heap, where it costs RSS. The
+		// large-scale run measured the result: 2.4 GB resident for a mirror
+		// holding a 139 MB table, 125 bytes per live row, and a qs-verify
+		// OOM-killed beside it.
 		//
-		// Skipping the read is safe because nothing is lost: the stream's buffer
-		// and then the slot hold what is not taken, which is what they are for.
-		// It is the WAL that should absorb a backlog, not the sidecar — and the
-		// slot guard already bounds how much WAL that may be.
+		// This check is only half of the bound, and for a while it was the
+		// only half: skipping Transactions() left the stream's receiver
+		// reading the socket into its own uncapped buffer, so the backlog
+		// accumulated one layer down instead (47 MB to 1.27 GB of heap in
+		// seven seconds). The other half is in changestream.Streaming: at
+		// maxStreamBufferedChanges it stops reading the socket, while still
+		// sending status updates so the walsender does not time it out, and
+		// TCP flow control holds the rest in WAL. Together: at most
+		// maxPendingChanges + 2 x maxStreamBufferedChanges row-changes in
+		// memory, plus one transaction — pgoutput proto v1 delivers a
+		// transaction whole however large it is.
+		//
+		// Nothing is lost by not taking: the slot holds what is not read, and
+		// the slot guard already bounds how much WAL that may be.
 		queued := 0
 		for _, t := range pending {
 			queued += len(t.Changes)
