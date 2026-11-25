@@ -124,6 +124,32 @@ func (t *Table) BeginCompaction() *Compaction {
 	// The new base file's id and the table's key form are resolved here, on the
 	// apply goroutine, so the background goroutine never reads anything the
 	// apply loop writes.
+	// The DEAD SETS are captured here too, as the manifest names them, and not
+	// read from disk by the rewrite. It used to take the newest vector on disk
+	// (deadPositionsLatest), on the argument that seeing more rows dead than the
+	// snapshot accounts for is safe because every key that moved is reconciled
+	// at the swap. That holds only for vectors an Apply went on to commit. An
+	// Apply that publishes its vector and then fails to write the manifest — or
+	// a process that dies between the two — leaves a generation on disk that no
+	// manifest names; a rewrite started before the replay folded that vector in,
+	// dropped the row, and nothing was in `touched` to put it back. Idle
+	// compaction made that reachable on the first tick after a restart.
+	deadSnap := make(map[string]*deadSet, len(snapshot))
+	for _, rel := range snapshot {
+		d, err := t.deadSetFor(rel)
+		if err != nil {
+			return nil
+		}
+		deadSnap[rel] = &deadSet{gen: d.gen, n: d.n, words: append([]uint64(nil), d.words...)}
+	}
+	deadOf := func(rel string) map[int]bool {
+		d := deadSnap[rel]
+		m := make(map[int]bool, d.n)
+		for _, p := range d.positions() {
+			m[p] = true
+		}
+		return m
+	}
 	newID, numeric, hashing := baseID(c.name), t.numericKey, t.elideWorked
 	// base/... sorts before delta/..., and delta names are a zero-padded
 	// sequence, so this is base first and then deltas oldest to newest.
@@ -150,7 +176,7 @@ func (t *Table) BeginCompaction() *Compaction {
 			if pcols[rel] == nil {
 				continue
 			}
-			dead, derr := t.deadPositionsLatest(rel)
+			dead, derr := deadOf(rel), error(nil)
 			if derr != nil {
 				c.err = derr
 				return
@@ -197,7 +223,7 @@ func (t *Table) BeginCompaction() *Compaction {
 			if pcols[rel] != nil {
 				continue
 			}
-			dead, derr := t.deadPositionsLatest(rel)
+			dead, derr := deadOf(rel), error(nil)
 			if derr != nil {
 				w.Close()
 				c.err = derr

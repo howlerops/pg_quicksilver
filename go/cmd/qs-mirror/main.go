@@ -201,6 +201,7 @@ func supervise(ctx context.Context, log *slog.Logger, o options, h *health.Healt
 				if err := clearStaleSyncSlots(ctx, o, log); err != nil {
 					log.Warn("could not reconcile synchronized_standby_slots", "err", err)
 				}
+				releaseOwnSlot(ctx, o, log, "this node was promoted and no longer consumes it")
 				wasPrimary = true
 			}
 			h.RecordCaughtUp() // a node that builds no mirror is never stale
@@ -221,6 +222,15 @@ func supervise(ctx context.Context, log *slog.Logger, o options, h *health.Healt
 		if errors.Is(err, ErrSlotTooFar) {
 			dropSlot(ctx, o, log)
 		}
+		// A halted mirror does not stream, so nothing confirms its slot and
+		// nothing guards it either: the guard lives in the pump. Left alone the
+		// slot pins WAL on the primary for as long as the halt lasts, and a
+		// halt lasts until an operator rebuilds the mirror — which starts from
+		// a snapshot and a new slot regardless. So the slot goes now. Once is
+		// enough; dropSlot is quiet when there is nothing to drop.
+		if errors.Is(err, ErrHalted) {
+			dropSlot(ctx, o, log)
+		}
 		log.Error("mirror stopped", "err", err, "retry_in", backoff)
 		sleep(ctx, backoff)
 		if backoff < 30*time.Second {
@@ -228,6 +238,10 @@ func supervise(ctx context.Context, log *slog.Logger, o options, h *health.Healt
 		}
 	}
 }
+
+// ErrHalted is runMirror refusing to start because a table's manifest records a
+// durable halt. See supervise for what happens to the slot.
+var ErrHalted = errors.New("the mirror is halted")
 
 func sleep(ctx context.Context, d time.Duration) {
 	t := time.NewTimer(d)
@@ -439,8 +453,8 @@ func runMirror(ctx context.Context, log *slog.Logger, o options, h *health.Healt
 			// Durable, so a restart cannot quietly resume. Readiness goes false
 			// and stays false: this node must leave the endpoint.
 			h.RecordVerification(true)
-			return fmt.Errorf("%s is halted and will not resume without an operator: %s",
-				qualified, reason)
+			return fmt.Errorf("%w: %s will not resume without an operator: %s",
+				ErrHalted, qualified, reason)
 		}
 		tables[qualified] = t
 	}

@@ -361,11 +361,11 @@ func (t *Table) deadPositions(rel string) (map[int]bool, error) {
 // deadPositionsLatest reads the newest deletion vector on disk for a file,
 // ignoring the manifest.
 //
-// This is for the background compactor, which cannot read t.State.DVGen — the
-// apply goroutine writes it on every batch — and does not need to: seeing MORE
-// rows as dead than its snapshot accounts for is safe there, because every key
-// that moved while the rewrite ran is reconciled against the live index at swap
-// time anyway. An external reader must never do this; see deadPositions.
+// Nothing on the write path uses it any more. The background compactor did,
+// and it was wrong to: the newest vector on disk can belong to an Apply that
+// never committed its manifest. See BeginCompaction, which now captures the
+// dead sets the manifest names. An external reader must never use this either;
+// see deadPositions.
 func (t *Table) deadPositionsLatest(rel string) (map[int]bool, error) {
 	matches := t.dvGlob(rel)
 	if len(matches) == 0 {
@@ -561,6 +561,14 @@ func arrowType(pgType string) arrow.DataType {
 		return temporalArrowType(k)
 	}
 	s := strings.ToLower(strings.TrimSpace(pgType))
+	// An ARRAY is text, whatever it is an array of. The cases below match on a
+	// prefix, so numeric(10,2)[] and double precision[] used to come out as a
+	// decimal and a float; the value {1.00,2.50} is neither, and once a value
+	// that cannot be stored exactly became a halt rather than a NULL, every
+	// table with such a column stopped on its first row.
+	if strings.HasSuffix(s, "[]") {
+		return arrow.BinaryTypes.String
+	}
 	switch {
 	case strings.HasPrefix(s, "numeric"), strings.HasPrefix(s, "decimal"):
 		prec, scale := int32(38), int32(9)

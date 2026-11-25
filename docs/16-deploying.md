@@ -381,6 +381,13 @@ way to reach: live reconcile behaviour, and a Pod that actually runs.
   confirmation, and the sidecar's own slot guard cannot help because the sidecar
   that would run it no longer exists. There is no reconciler. Until there is:
 
+  Two cases the sidecar does handle itself, because it is still running when
+  they happen: a Pod that is **promoted** drops its own slot when it stands
+  down (it would otherwise sit on the new primary after every failover or
+  switchover), and a mirror that is **halted** drops its slot rather than pin
+  WAL until an operator arrives. Both mean a snapshot the next time that Pod
+  mirrors. Neither has been exercised on a real cluster.
+
   - set `max_slot_wal_keep_size`, so PostgreSQL bounds what any slot can pin;
   - after removing an instance, drop its slot by hand —
 
