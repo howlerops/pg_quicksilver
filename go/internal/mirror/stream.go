@@ -16,7 +16,12 @@ package mirror
 
 import (
 	"context"
+	"io"
 	"os"
+	"path/filepath"
+	"strings"
+	"sync"
+	"sync/atomic"
 
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/arrow/array"
@@ -49,7 +54,144 @@ type parquetWriter struct {
 	// converts once on the way in; the snapshot, whose rows arrive from a scan
 	// already in order, never builds a map at all.
 	pending [][]any
+	// f is the file underneath w. The writer keeps it, rather than letting
+	// pqarrow close it, because a file is not finished when its footer is
+	// written: it is finished when fsync has returned. See Close.
+	f *os.File
 }
+
+// ---- making a write durable ------------------------------------------------
+//
+// After Apply returns, the caller confirms the LSN to PostgreSQL, and from then
+// on the source will never resend what that batch held. So by the time the
+// manifest naming a file is written, the file has to survive power loss — its
+// bytes AND its name. Those are two separate promises on a POSIX filesystem:
+// fsync on the file makes the contents durable, and only fsync on the
+// DIRECTORY makes the entry that names it durable. A manifest that survives a
+// crash while naming a zero-length file, or no file at all, is a mirror that
+// cannot be read and cannot be replayed.
+//
+// Neither was happening. Parquet files were closed and never synced, and the
+// three atomic writers reopened their temp file read-only, synced that, and
+// threw the error away.
+//
+// The cost is paid once per file, on the descriptor that wrote it, and once
+// per touched directory per MANIFEST WRITE rather than once per file created
+// in it: a writer records that its directory is owed a sync (owesDirSync) and
+// saveState pays every debt under the table immediately before it writes the
+// manifest. An Apply whose updates land on rows in seventeen files publishes
+// seventeen deletion vectors into one directory, and that is one directory
+// sync, not seventeen.
+//
+// It is not free. An Apply of a small batch (BenchmarkApplySync: one delta
+// file, one vector, the manifest) made 2 fsyncs before this and makes 6 now —
+// the delta file, which was not synced at all, and the three directories — and
+// on a shared ext4 disk where an fsync costs about 2 ms that took the Apply
+// from roughly 8 ms to roughly 15.5 ms, old and new run alternately. Six is
+// the floor for that layout: three files, in three directories.
+
+// syncHook, when set, is told about every fsync before it happens and can
+// refuse it. It exists for tests: "was this file synced before the manifest
+// named it" cannot be observed from outside the process, and "what does the
+// caller do when fsync fails" cannot be provoked.
+var syncHook atomic.Pointer[func(path string, dir bool) error]
+
+// syncFile makes the contents of an open file durable.
+func syncFile(f *os.File) error {
+	if h := syncHook.Load(); h != nil {
+		if err := (*h)(f.Name(), false); err != nil {
+			return err
+		}
+	}
+	return f.Sync()
+}
+
+// syncDir makes the entries of a directory durable: files created in it,
+// renamed into it, or removed from it since the last call.
+func syncDir(dir string) error {
+	if h := syncHook.Load(); h != nil {
+		if err := (*h)(dir, true); err != nil {
+			return err
+		}
+	}
+	d, err := os.Open(dir)
+	if err != nil {
+		return err
+	}
+	err = d.Sync()
+	if cerr := d.Close(); err == nil {
+		err = cerr
+	}
+	return err
+}
+
+// dirsOwed is every directory that has gained an entry no manifest has yet
+// been written after. It is package state rather than a field on Table because
+// two of the writers have no Table to hang it on: writeDV is a function of a
+// path, and a background rewrite must not write to the Table the apply loop
+// owns. Keyed by path, so tables do not see each other's.
+var dirsOwed = struct {
+	sync.Mutex
+	m map[string]bool
+}{m: map[string]bool{}}
+
+// owesDirSync records that dir has a new entry which is not durable until
+// syncOwedDirs has run for the table it belongs to.
+func owesDirSync(dir string) {
+	dirsOwed.Lock()
+	dirsOwed.m[dir] = true
+	dirsOwed.Unlock()
+}
+
+// syncOwedDirs fsyncs every directory at or under root that is owed one. A
+// directory whose sync fails stays owed.
+func syncOwedDirs(root string) error {
+	var due []string
+	dirsOwed.Lock()
+	for dir := range dirsOwed.m {
+		if dir == root || strings.HasPrefix(dir, root+string(filepath.Separator)) {
+			due = append(due, dir)
+			delete(dirsOwed.m, dir)
+		}
+	}
+	dirsOwed.Unlock()
+	for i, dir := range due {
+		if err := syncDir(dir); err != nil {
+			for _, d := range due[i:] {
+				owesDirSync(d)
+			}
+			return err
+		}
+	}
+	return nil
+}
+
+// writeFileAtomic replaces path with data so that a reader — and a crash —
+// sees either the old contents or the new, never a prefix: temp file, fsync,
+// rename. The caller owes the directory a syncDir before relying on the name.
+func writeFileAtomic(path string, data []byte) error {
+	tmp := path + ".tmp"
+	f, err := os.Create(tmp)
+	if err != nil {
+		return err
+	}
+	_, err = f.Write(data)
+	if err == nil {
+		err = syncFile(f)
+	}
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	if err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	return os.Rename(tmp, path)
+}
+
+// keepOpen hides a file's Close from pqarrow, whose FileWriter closes the sink
+// it is handed — which would leave nothing to fsync.
+type keepOpen struct{ io.Writer }
 
 // ZstdLevel is the compression level every Parquet file is written at.
 //
@@ -77,9 +219,11 @@ var ZstdLevel = int(envInt("QS_ZSTD_LEVEL", 1))
 // bigger and those bytes have to be fetched and touched too.
 var SnappyDeltas = os.Getenv("QS_SNAPPY_DELTAS") == "1"
 
-// durable distinguishes a base file from a delta. Both are zstd now; the flag
-// still exists because it also selects the fsync behaviour, and because
-// SnappyDeltas needs to know which is which.
+// durable distinguishes a base file from a delta, and despite its name selects
+// only the codec: SnappyDeltas needs to know which is which. It does NOT decide
+// whether the file is fsynced. Every file this writer produces is synced when
+// it is closed, because a delta is named by the manifest exactly as a base
+// file is.
 func (t *Table) newParquetWriter(path string, cols []string, durable bool) (*parquetWriter, error) {
 	if cols == nil {
 		cols = t.Order
@@ -99,12 +243,12 @@ func (t *Table) newParquetWriter(path string, cols []string, durable bool) (*par
 		parquet.WithCompressionLevel(ZstdLevel),
 		parquet.WithMaxRowGroupLength(RowGroupRows),
 	)
-	w, err := pqarrow.NewFileWriter(schema, f, props, pqarrow.DefaultWriterProps())
+	w, err := pqarrow.NewFileWriter(schema, keepOpen{f}, props, pqarrow.DefaultWriterProps())
 	if err != nil {
 		f.Close()
 		return nil, err
 	}
-	return &parquetWriter{w: w, schema: schema, cols: cols, tbl: t}, nil
+	return &parquetWriter{w: w, schema: schema, cols: cols, tbl: t, f: f}, nil
 }
 
 // Append takes ownership of nothing: rows are flattened to column order on the
@@ -179,18 +323,38 @@ func (pw *parquetWriter) flush(n int) error {
 	return nil
 }
 
-// Close flushes whatever is left and writes the footer. An empty table still
-// needs a valid file with a footer, which is why this is called unconditionally
-// rather than only when rows were written.
+// Close flushes whatever is left, writes the footer, and makes the file
+// durable. An empty table still needs a valid file with a footer, which is why
+// this is called unconditionally rather than only when rows were written.
 //
-// pqarrow's FileWriter closes the sink it was handed, so the os.File must not
-// be closed again here.
+// The fsync is here, and its error is the caller's error, because every caller
+// goes on to put this file's name in the manifest. The directory entry is the
+// other half; it is recorded as owed and paid by saveState, immediately before
+// the manifest is written, so that several files landing in one directory cost
+// one directory sync between them.
+//
+// A writer built without a file (f == nil) leaves closing the sink to pqarrow,
+// as before.
 func (pw *parquetWriter) Close() error {
-	if err := pw.flush(len(pw.pending)); err != nil {
-		_ = pw.w.Close()
+	err := pw.flush(len(pw.pending))
+	if cerr := pw.w.Close(); err == nil {
+		err = cerr
+	}
+	if pw.f == nil {
 		return err
 	}
-	return pw.w.Close()
+	f := pw.f
+	pw.f = nil
+	if err == nil {
+		err = syncFile(f)
+	}
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	if err == nil {
+		owesDirSync(filepath.Dir(f.Name()))
+	}
+	return err
 }
 
 // forEachRowGroup decodes a file one row group at a time, handing each run of
