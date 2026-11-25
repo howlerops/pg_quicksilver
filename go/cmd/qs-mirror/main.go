@@ -687,6 +687,17 @@ func pump(
 				warnedStuck = false
 				h.RecordCaughtUp()
 			}
+			// Maintenance runs on idle ticks too. It used to run only below, on
+			// a tick that had applied something, which got the timing exactly
+			// backwards: a mirror that stopped receiving writes also stopped
+			// asking whether to compact, and stopped SWAPPING IN a rewrite that
+			// had already finished. So a burst that ended mid-rewrite left the
+			// new base file written and unused, and a burst that ended just
+			// short of the churn threshold left the base under a deletion
+			// vector — count(*) at 332 ms instead of 3 on a 10M-row table —
+			// until the next write, however long that took to arrive. Idle is
+			// when a rewrite is cheapest and when its result lasts longest.
+			maintain(log, tables, tt)
 			tt.report(log)
 			continue
 		}
@@ -767,77 +778,7 @@ func pump(
 			tt.done("evolve")
 		}
 
-		// Compaction is triggered by how much has CHANGED, not by how many
-		// batches have gone by. It rewrites every live row, so a batch-count
-		// trigger makes the cost scale with the table while the trigger scales
-		// with traffic — measured at 5M rows as a 30x throughput collapse and a
-		// multi-gigabyte RSS spike (docs/18).
-		for q, t := range tables {
-			// A finished rewrite is swapped in here, on this goroutine, which is
-			// what lets the swap decide liveness against the current index with
-			// no locking.
-			if t.Compacting() {
-				if n, err := t.FinishCompaction(); err != nil {
-					log.Warn("compaction failed", "table", q, "err", err)
-				} else if n > 0 {
-					log.Info("compacted", "table", q, "rows", n)
-				}
-				// The rewrite itself is asynchronous; THIS is the part that is
-				// not. The swap walks the rewritten file deciding liveness
-				// against the current index, so it is O(rows in the file) on
-				// the apply goroutine, and on a shape with a large base and
-				// small deltas it is the only candidate for a tail.
-				tt.done("finish_compaction")
-			}
-			reason := t.CompactReason()
-			switch {
-			case t.Compacting() && t.ShouldMergeDeltas():
-				// Merging is allowed DURING a rewrite, over the deltas the
-				// rewrite is not reading. Blocking it let the file count grow
-				// unchecked behind a rewrite that heavy churn had already made
-				// stale (docs/19).
-				n, err := t.MergeDeltas()
-				if err != nil {
-					log.Warn("delta merge failed", "table", q, "err", err)
-				} else if n > 0 {
-					log.Info("merged deltas during compaction", "table", q, "rows", n)
-				}
-				tt.done("merge_during_compaction")
-
-			case t.Compacting():
-				// a rewrite is in flight and the file count is fine
-
-			case reason != "":
-				// Enough of the TABLE has changed to justify rewriting the base.
-				// This runs in the BACKGROUND: doing it inline is what put p99
-				// commit-to-visible at 24.6s against a p50 of 206ms (docs/19).
-				//
-				// `reason` names WHICH trigger pulled — churn or dead-fraction.
-				// Without it, an A/B of the dead-fraction trigger came back with
-				// identical compaction counts in both arms and no way to tell
-				// "the knob costs nothing" from "the knob never fired".
-				if c := t.BeginCompaction(); c != nil {
-					log.Info("compaction started", "table", q, "why", reason,
-						"base_rows", t.State.BaseRows, "delta_rows", t.State.DeltaRows)
-				}
-				tt.done("begin_compaction")
-
-			case t.ShouldMergeDeltas():
-				// too many files to read through, but not enough churn to pay
-				// for a base rewrite — merge the deltas instead, which costs
-				// only what the deltas hold
-				t0 := time.Now()
-				n, err := t.MergeDeltas()
-				if err != nil {
-					log.Warn("delta merge failed", "table", q, "err", err)
-					continue
-				}
-				log.Info("merged deltas", "table", q, "rows", n,
-					"seconds", time.Since(t0).Seconds())
-				tt.done("merge_deltas")
-			}
-		}
-
+		maintain(log, tables, tt)
 		tt.report(log)
 
 		// Whatever the barrier cut off is held in `pending` and applied on the
@@ -846,6 +787,94 @@ func pump(
 			ticker.Reset(time.Millisecond)
 		} else {
 			ticker.Reset(200 * time.Millisecond)
+		}
+	}
+}
+
+// maintain is the part of a tick that is about the mirror's files rather than
+// the stream: swap in a rewrite that has finished, start one that is due, merge
+// deltas that have piled up. It runs on EVERY tick, whether or not the tick
+// applied anything — see the idle branch of pump for what happened when it did
+// not.
+//
+// That is affordable because none of the questions it asks costs anything when
+// the answer is no: CompactReason is counters and a clock, and ShouldMergeDeltas
+// is a length.
+func maintain(log *slog.Logger, tables map[string]*mirror.Table, tt *tickTimer) {
+	// Compaction is triggered by how much has CHANGED, not by how many
+	// batches have gone by. It rewrites every live row, so a batch-count
+	// trigger makes the cost scale with the table while the trigger scales
+	// with traffic — measured at 5M rows as a 30x throughput collapse and a
+	// multi-gigabyte RSS spike (docs/18).
+	for q, t := range tables {
+		// A finished rewrite is swapped in here, on this goroutine, which is
+		// what lets the swap decide liveness against the current index with
+		// no locking.
+		if t.Compacting() {
+			if n, err := t.FinishCompaction(); err != nil {
+				log.Warn("compaction failed", "table", q, "err", err)
+				// Or the trigger that started it starts it again on the next
+				// tick, and now every tick is one.
+				t.CompactionFailed()
+			} else if n > 0 {
+				log.Info("compacted", "table", q, "rows", n,
+					"seconds", t.LastRewrite().Seconds())
+			}
+			// The rewrite itself is asynchronous; THIS is the part that is
+			// not. The swap walks the rewritten file deciding liveness
+			// against the current index, so it is O(rows in the file) on
+			// the apply goroutine, and on a shape with a large base and
+			// small deltas it is the only candidate for a tail.
+			tt.done("finish_compaction")
+		}
+		reason := t.CompactReason()
+		switch {
+		case t.Compacting() && t.ShouldMergeDeltas():
+			// Merging is allowed DURING a rewrite, over the deltas the
+			// rewrite is not reading. Blocking it let the file count grow
+			// unchecked behind a rewrite that heavy churn had already made
+			// stale (docs/19).
+			n, err := t.MergeDeltas()
+			if err != nil {
+				log.Warn("delta merge failed", "table", q, "err", err)
+			} else if n > 0 {
+				log.Info("merged deltas during compaction", "table", q, "rows", n)
+			}
+			tt.done("merge_during_compaction")
+
+		case t.Compacting():
+			// a rewrite is in flight and the file count is fine
+
+		case reason != "":
+			// Enough of the TABLE has changed to justify rewriting the base,
+			// or it has gone quiet with a deletion vector still on it.
+			// This runs in the BACKGROUND: doing it inline is what put p99
+			// commit-to-visible at 24.6s against a p50 of 206ms (docs/19).
+			//
+			// `reason` names WHICH trigger pulled — churn, dead-fraction or
+			// idle (mirror.CompactReason says what each is for).
+			// Without it, an A/B of the dead-fraction trigger came back with
+			// identical compaction counts in both arms and no way to tell
+			// "the knob costs nothing" from "the knob never fired".
+			if c := t.BeginCompaction(); c != nil {
+				log.Info("compaction started", "table", q, "why", reason,
+					"base_rows", t.State.BaseRows, "delta_rows", t.State.DeltaRows)
+			}
+			tt.done("begin_compaction")
+
+		case t.ShouldMergeDeltas():
+			// too many files to read through, but not enough churn to pay
+			// for a base rewrite — merge the deltas instead, which costs
+			// only what the deltas hold
+			t0 := time.Now()
+			n, err := t.MergeDeltas()
+			if err != nil {
+				log.Warn("delta merge failed", "table", q, "err", err)
+				continue
+			}
+			log.Info("merged deltas", "table", q, "rows", n,
+				"seconds", time.Since(t0).Seconds())
+			tt.done("merge_deltas")
 		}
 	}
 }

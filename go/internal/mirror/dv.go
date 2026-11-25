@@ -118,6 +118,12 @@ func writeDVFile(path string, positions []int) (err error) {
 		parquet.WithCompression(compress.Codecs.Zstd),
 		parquet.WithCompressionLevel(ZstdLevel),
 		parquet.WithMaxRowGroupLength(dvRowGroup),
+		// No dictionary. Every position is distinct, so a dictionary is the
+		// column again plus a hash table built to discover that, and the writer
+		// then falls back to plain pages anyway. At two million positions the
+		// write took 200 ms and the file was a quarter larger (2.61 MB against
+		// 2.06 MB); without it the same write is 125 ms.
+		parquet.WithDictionaryDefault(false),
 	)
 	w, err := pqarrow.NewFileWriter(dvSchema, keepOpen{f}, props, pqarrow.DefaultWriterProps())
 	if err != nil {
