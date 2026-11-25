@@ -169,6 +169,10 @@ func TestReaderSeesAConsistentSnapshot(t *testing.T) {
 // answer the generations exist to prevent.
 func TestReaderRefusesAManifestOlderThanTheVectors(t *testing.T) {
 	tbl := racyTable(t)
+	// With a grace period the vector is still there and the reader answers,
+	// consistently, from its older manifest. This is about what happens once
+	// the grace has run out, so it runs without one.
+	tbl.publisher().grace = 0
 	var seed []changestream.Change
 	for i := 1; i <= 20; i++ {
 		row := map[string]any{"id": fmt.Sprint(i), "v": "x", "n": "0"}

@@ -89,6 +89,7 @@ func TestNewestVectorWinsAcrossEncodings(t *testing.T) {
 	dir := t.TempDir()
 	_ = os.MkdirAll(filepath.Join(dir, "dv"), 0o755)
 	tbl := &Table{Dir: dir}
+	tbl.publisher().grace = 0 // dropDV retires; this is about what it finds
 	rel := "base/000001.parquet"
 
 	b, _ := json.Marshal([]int{1})
