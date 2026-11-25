@@ -40,8 +40,6 @@ import (
 	"strings"
 
 	"github.com/apache/arrow-go/v18/arrow"
-	"github.com/apache/arrow-go/v18/arrow/array"
-	"github.com/apache/arrow-go/v18/arrow/decimal128"
 
 	"github.com/howlerops/pg_quicksilver/go/internal/changestream"
 )
@@ -974,23 +972,26 @@ func (t *Table) writeParquetCols(path string, rows []map[string]any,
 	cols []string, durable bool,
 ) error {
 	// cols == nil means "every column", and it has to be resolved HERE rather
-	// than left to the writer: checkTemporal walks the list it is given, and a
+	// than left to the writer: the check walks the list it is given, and a
 	// nil list checks nothing at all. That is not hypothetical — a whole-row
 	// write passes nil, which is most writes, so the check silently covered
 	// only the column-partial ones until a test caught it.
 	if cols == nil {
 		cols = t.Order
 	}
-	// A value Arrow cannot hold is caught BEFORE anything is written, so the
-	// mirror halts with the file untouched rather than half a batch on disk.
-	if err := t.checkTemporal(rows, cols); err != nil {
+	// A value the column cannot hold is caught BEFORE anything is written, so
+	// the mirror halts with the file untouched rather than half a batch on
+	// disk. The check is the conversion (values.go), so its result is what the
+	// writer is handed and nothing is parsed a second time.
+	vals, err := t.storableRows(t.arrowSchemaFor(cols), cols, rows)
+	if err != nil {
 		return err
 	}
 	w, err := t.newParquetWriter(path, cols, durable)
 	if err != nil {
 		return err
 	}
-	if err := w.Append(rows); err != nil {
+	if err := w.appendStorable(vals); err != nil {
 		w.Close()
 		return err
 	}
@@ -999,89 +1000,6 @@ func (t *Table) writeParquetCols(path string, rows []map[string]any,
 
 func (t *Table) writeParquet(path string, rows []map[string]any) error {
 	return t.writeParquetCodec(path, rows, true)
-}
-
-func appendValue(b array.Builder, dt arrow.DataType, v any) {
-	if v == nil {
-		b.AppendNull()
-		return
-	}
-	switch bb := b.(type) {
-	case *array.TimestampBuilder:
-		k := kindTimestamp
-		if tt, ok := dt.(*arrow.TimestampType); ok && tt.TimeZone != "" {
-			k = kindTimestampTZ
-		}
-		appendTemporal(bb.Append, arrow.Timestamp(0), k, v, bb.AppendNull)
-	case *array.Date32Builder:
-		appendTemporal(bb.Append, arrow.Date32(0), kindDate, v, bb.AppendNull)
-	case *array.Time64Builder:
-		appendTemporal(bb.Append, arrow.Time64(0), kindTime, v, bb.AppendNull)
-	case *array.MonthDayNanoIntervalBuilder:
-		// Not appendTemporal: that helper is generic over one integer, and an
-		// interval is three. See interval.go.
-		s, ok := v.(string)
-		if !ok {
-			s = fmt.Sprint(v)
-		}
-		if iv, ok := parseInterval(s); ok {
-			bb.Append(iv)
-		} else {
-			bb.AppendNull()
-		}
-	case *array.Int64Builder:
-		if str, ok := v.(string); ok {
-			if n, err := strconv.ParseInt(strings.TrimSpace(str), 10, 64); err == nil {
-				bb.Append(n)
-			} else {
-				bb.AppendNull()
-			}
-			return
-		}
-		n, err := strconv.ParseInt(strings.TrimSpace(fmt.Sprint(v)), 10, 64)
-		if err != nil {
-			bb.AppendNull()
-			return
-		}
-		bb.Append(n)
-	case *array.Float64Builder:
-		f, err := strconv.ParseFloat(fmt.Sprint(v), 64)
-		if err != nil {
-			bb.AppendNull()
-			return
-		}
-		bb.Append(f)
-	case *array.BooleanBuilder:
-		switch x := v.(type) {
-		case bool:
-			bb.Append(x)
-		default:
-			s := strings.ToLower(fmt.Sprint(v))
-			bb.Append(s == "t" || s == "true" || s == "1")
-		}
-	case *array.Decimal128Builder:
-		d := dt.(*arrow.Decimal128Type)
-		sv, ok := v.(string)
-		if !ok {
-			sv = fmt.Sprint(v)
-		}
-		dec, err := decimal128.FromString(sv, d.Precision, d.Scale)
-		if err != nil {
-			bb.AppendNull()
-			return
-		}
-		bb.Append(dec)
-	case *array.StringBuilder:
-		// pgoutput delivers every value as text, so this is the hot path and
-		// fmt.Sprint on an interface holding a string is pure overhead.
-		if str, ok := v.(string); ok {
-			bb.Append(str)
-			return
-		}
-		bb.Append(fmt.Sprint(v))
-	default:
-		b.AppendNull()
-	}
 }
 
 // markDead marks the previous rows for the given keys dead, wherever they

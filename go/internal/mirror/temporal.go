@@ -56,6 +56,28 @@ const (
 	negInfinity int64 = math.MinInt64
 )
 
+// A date is stored in 32 bits, so its infinities are the extremes of THAT
+// domain. They used to be the 64-bit ones narrowed by a conversion, which is
+// not an extreme of anything: `infinity` in a date column was stored as day -1
+// and read back as 1969-12-31. Neither sentinel collides with a real date —
+// PostgreSQL's last one, 5874897-12-31, is day 2,145,031,948.
+const (
+	posInfinityDate int64 = math.MaxInt32
+	negInfinityDate int64 = math.MinInt32
+)
+
+// dateDays turns what parseTemporal returns for a date into what a Date32
+// column stores, or says that it does not fit.
+func dateDays(n int64) (int64, bool) {
+	switch n {
+	case posInfinity:
+		return posInfinityDate, true
+	case negInfinity:
+		return negInfinityDate, true
+	}
+	return n, n > negInfinityDate && n < posInfinityDate
+}
+
 // temporalKind is which of the four shapes a column is, or none.
 type temporalKind int
 
@@ -241,6 +263,12 @@ func renderTemporal(k temporalKind, v int64) string {
 	case kindTimestamp:
 		return time.UnixMicro(v).UTC().Format("2006-01-02 15:04:05.999999")
 	case kindDate:
+		switch v {
+		case posInfinityDate:
+			return "infinity"
+		case negInfinityDate:
+			return "-infinity"
+		}
 		return time.Unix(v*86400, 0).UTC().Format("2006-01-02")
 	case kindTime:
 		d := time.Duration(v) * time.Microsecond
@@ -264,114 +292,4 @@ func unrepresentable(table, col, pgType, value string) string {
 		"else would be silently wrong. Rebuild the mirror with "+
 		"QS_TEMPORAL_TYPES=0 to store temporal columns as text instead",
 		table, col, pgType, value)
-}
-
-// appendTemporal is the one shape all four builders share: parse, or refuse.
-//
-// A value that will not parse appends NULL here and is caught by checkTemporal
-// before the file is written — the two exist separately because the builder has
-// no way to report an error, and losing the reason is how a halt becomes a
-// blank column.
-func appendTemporal[T ~int32 | ~int64](
-	add func(T), _ T, k temporalKind, v any, null func(),
-) {
-	s, ok := v.(string)
-	if !ok {
-		s = fmt.Sprint(v)
-	}
-	n, ok := parseTemporal(k, s)
-	if !ok {
-		null()
-		return
-	}
-	add(T(n))
-}
-
-// temporalKinds classifies a column list once, and says whether any of it is
-// temporal at all — which for most tables is the whole answer and costs one
-// pass rather than one per row.
-func (t *Table) temporalKinds(cols []string) ([]temporalKind, bool) {
-	if !TemporalTypes {
-		return nil, false
-	}
-	kinds := make([]temporalKind, len(cols))
-	any := false
-	for i, c := range cols {
-		kinds[i] = temporalOf(t.Columns[c])
-		if kinds[i] != notTemporal {
-			any = true
-		}
-	}
-	return kinds, any
-}
-
-// checkOne is the per-value half, shared by both shapes of the check.
-func (t *Table) checkOne(k temporalKind, col string, v any) error {
-	if k == notTemporal || v == nil {
-		return nil
-	}
-	s, ok := v.(string)
-	if !ok {
-		s = fmt.Sprint(v)
-	}
-	// An interval is three numbers, not one, so it validates through its own
-	// parser. Routing it into parseTemporal would refuse every interval and
-	// halt the mirror on the first one.
-	if k == kindInterval {
-		if _, ok := parseInterval(s); ok {
-			return nil
-		}
-	} else if _, ok := parseTemporal(k, s); ok {
-		return nil
-	}
-	reason := unrepresentable(t.Qualified, col, t.Columns[col], s)
-	_ = t.Halt(reason)
-	return fmt.Errorf("%s", reason)
-}
-
-// checkTemporalValues is the column-ordered form, for the snapshot's path.
-//
-// It exists because the check has to cover EVERY way into the writer. It used
-// to be called from writeParquetCols only, and the snapshot does not go through
-// there — so bootstrap, the one path that loads data written before the mirror
-// existed and therefore the one most likely to meet a date from 44 BC, was the
-// path that never looked.
-func (t *Table) checkTemporalValues(vals []any, cols []string) error {
-	kinds, any := t.temporalKinds(cols)
-	if !any {
-		return nil
-	}
-	for i, c := range cols {
-		if i >= len(vals) {
-			break
-		}
-		if err := t.checkOne(kinds[i], c, vals[i]); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-// checkTemporal refuses a batch containing a temporal value Arrow cannot hold.
-//
-// It runs before the writer rather than inside it because the writer cannot
-// report which value was the problem, and "which value" is the only part an
-// operator can act on.
-func (t *Table) checkTemporal(rows []map[string]any, cols []string) error {
-	kinds, any := t.temporalKinds(cols)
-	if !any {
-		return nil
-	}
-	for _, r := range rows {
-		for i, c := range cols {
-			v, present := r[c]
-			if !present {
-				continue
-			}
-			if err := t.checkOne(kinds[i], c, v); err != nil {
-				return err
-			}
-		}
-	}
-	return nil
 }

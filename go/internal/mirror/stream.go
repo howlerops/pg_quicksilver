@@ -42,7 +42,7 @@ type parquetWriter struct {
 	w      *pqarrow.FileWriter
 	schema *arrow.Schema
 	cols   []string
-	// tbl is held for one reason: the temporal check has to live where the
+	// tbl is held for one reason: the value check has to live where the
 	// write happens. It used to sit in writeParquetCols, which is one of TWO
 	// paths into this writer — the snapshot builds its own writer and appends
 	// directly, so bootstrap never checked at all. A table carrying a BC date
@@ -253,19 +253,22 @@ func (t *Table) newParquetWriter(path string, cols []string, durable bool) (*par
 
 // Append takes ownership of nothing: rows are flattened to column order on the
 // way in, so the caller may reuse or drop the map immediately after.
+//
+// The whole batch is converted — which is also how it is checked, see
+// values.go — before any of it is queued, so a batch holding one value the
+// column cannot store writes none of its rows.
 func (pw *parquetWriter) Append(rows []map[string]any) error {
-	if pw.tbl != nil {
-		if err := pw.tbl.checkTemporal(rows, pw.cols); err != nil {
-			return err
-		}
+	vals, err := pw.tbl.storableRows(pw.schema, pw.cols, rows)
+	if err != nil {
+		return err
 	}
-	for _, r := range rows {
-		vals := make([]any, len(pw.cols))
-		for i, name := range pw.cols {
-			vals[i] = r[name]
-		}
-		pw.pending = append(pw.pending, vals)
-	}
+	return pw.appendStorable(vals)
+}
+
+// appendStorable queues rows that storableRows has already converted, for the
+// caller that had to check them before it opened the file.
+func (pw *parquetWriter) appendStorable(vals [][]any) error {
+	pw.pending = append(pw.pending, vals...)
 	return pw.drain()
 }
 
@@ -278,10 +281,8 @@ func (pw *parquetWriter) Append(rows []map[string]any) error {
 // small columns. Bootstrap is per-row CPU bound (docs/25), and this is the
 // per-row work.
 func (pw *parquetWriter) AppendValues(vals []any) error {
-	if pw.tbl != nil {
-		if err := pw.tbl.checkTemporalValues(vals, pw.cols); err != nil {
-			return err
-		}
+	if err := pw.tbl.storableValues(pw.schema, pw.cols, vals); err != nil {
+		return err
 	}
 	pw.pending = append(pw.pending, vals)
 	return pw.drain()

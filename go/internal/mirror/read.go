@@ -63,18 +63,17 @@ func arrayValue(a arrow.Array, i int) any {
 		return nil
 	}
 	switch v := a.(type) {
-	// Temporal arrays render back to exactly the text PostgreSQL would print,
-	// because that text is what the checksum compares against the source.
+	// Temporal and decimal arrays come back as typed wrappers, not strings. A
+	// wrapper prints as exactly the text PostgreSQL would print — that text is
+	// what the checksum compares against the source — but a compaction can
+	// append it to the next file without formatting and re-parsing it, which
+	// was half the cost of a rewrite. See values.go.
 	case *array.Timestamp:
-		k := kindTimestamp
-		if tt, ok := v.DataType().(*arrow.TimestampType); ok && tt.TimeZone != "" {
-			k = kindTimestampTZ
-		}
-		return renderTemporal(k, int64(v.Value(i)))
+		return temporalValue{k: temporalKindOf(v.DataType()), v: int64(v.Value(i))}
 	case *array.Date32:
-		return renderTemporal(kindDate, int64(v.Value(i)))
+		return temporalValue{k: kindDate, v: int64(v.Value(i))}
 	case *array.Time64:
-		return renderTemporal(kindTime, int64(v.Value(i)))
+		return temporalValue{k: kindTime, v: int64(v.Value(i))}
 	case *array.Int64:
 		return v.Value(i)
 	case *array.Float64:
@@ -85,7 +84,7 @@ func arrayValue(a arrow.Array, i int) any {
 		return v.Value(i)
 	case *array.Decimal128:
 		dt := v.DataType().(*arrow.Decimal128Type)
-		return v.Value(i).ToString(dt.Scale)
+		return decimalValue{num: v.Value(i), prec: dt.Precision, scale: dt.Scale}
 	default:
 		return v.ValueStr(i)
 	}
@@ -244,6 +243,10 @@ func (t *Table) ForEachLive(fn func(map[string]any) error) error {
 							applyPatch(r, p)
 						}
 					}
+					// Rows leave this package as they always have: decimals
+					// and temporals as the text PostgreSQL prints, not as
+					// the wrappers the writer prefers (values.go).
+					plainRow(r)
 					if err := fn(r); err != nil {
 						return err
 					}
@@ -293,6 +296,17 @@ func renderValue(v any) string {
 		return "false"
 	case string:
 		return normalizeNumeric(x)
+	// The forms a value read back from Parquet takes, spelled out so that none
+	// of them pays for fmt's reflection. Each produces the text the default
+	// branch would.
+	case int64:
+		return strconv.FormatInt(x, 10)
+	case float64:
+		return normalizeNumeric(strconv.FormatFloat(x, 'g', -1, 64))
+	case decimalValue:
+		return normalizeNumeric(x.String())
+	case temporalValue:
+		return normalizeNumeric(x.String())
 	default:
 		return normalizeNumeric(fmt.Sprint(x))
 	}
