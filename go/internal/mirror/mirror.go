@@ -171,6 +171,20 @@ type Table struct {
 	// describes it. See dvcache.go. Only the apply goroutine touches it.
 	dead map[string]*deadSet
 
+	// deferDead is non-nil while an Apply is in progress, and holds the
+	// positions it has superseded so far, per file, not yet published as
+	// deletion-vector generations. See Apply and markDead.
+	deferDead map[fileID]*deadSet
+
+	// sweptOrphans is whether this process has looked for delta files a
+	// crashed Apply left behind. See removeOrphanDeltas.
+	sweptOrphans bool
+
+	// afterChunk, when set, is called each time Apply has landed a chunk and
+	// published nothing. Tests use it to look at the mirror as a reader would
+	// in the middle of a transaction.
+	afterChunk func()
+
 	// What the idle compaction trigger needs to know and the manifest does not
 	// say: when this table was last written, when its base was last rewritten
 	// and how long that took. None of it is durable, deliberately — after a
@@ -538,9 +552,35 @@ func (t *Table) Evolve(cols map[string]string, order []string, missing map[strin
 // Halt records, durably, that this mirror cannot be trusted and why. Recovery
 // is deliberately manual: the reasons a mirror halts are ones where guessing
 // produced the problem in the first place.
+//
+// A halt raised from INSIDE an Apply — a value the column cannot hold, found in
+// the fourth chunk of a large transaction — must not write the manifest in
+// memory: that one already names the delta files of the chunks before it, and
+// saving it would publish a third of a transaction on the way to refusing the
+// rest. So the halt is added to the manifest that is on disk, which still
+// describes the mirror as it was before the transaction began.
 func (t *Table) Halt(reason string) error {
 	t.State.Halted = reason
-	return t.saveState()
+	if t.deferDead == nil || t.detached {
+		return t.saveState()
+	}
+	var onDisk State
+	if b, err := os.ReadFile(t.statePath()); err == nil {
+		if err := json.Unmarshal(b, &onDisk); err != nil {
+			return err
+		}
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	onDisk.Halted = reason
+	b, err := json.MarshalIndent(onDisk, "", "  ")
+	if err != nil {
+		return err
+	}
+	if err := writeFileAtomic(t.statePath(), b); err != nil {
+		return err
+	}
+	return syncDir(t.Dir)
 }
 
 // Halted reports the reason this mirror is out of service, or "".
@@ -643,12 +683,29 @@ type ApplyStats struct {
 	AppliedLSN string
 }
 
-// Apply lands a run of whole transactions atomically: every change in every
-// transaction, then applied_lsn advances. There is no state in which half a
-// transaction is visible.
-func (t *Table) Apply(txns []changestream.Transaction) (ApplyStats, error) {
-	upserts := map[rowKey]map[string]any{}
-	order := []rowKey{}
+// ApplyChunkChanges is how many row-changes of a LARGE transaction Apply holds
+// in memory at once. A transaction with more than this is landed in chunks:
+// each chunk is carried forward, written to its own delta file(s) and dropped
+// before the next is read, and the manifest names none of them until the last
+// is down. A batch of ordinary transactions is never split by it — those are
+// already in memory, and one delta file per batch is what the drain-rate
+// numbers in cmd/qs-mirror/tick.go were measured with.
+//
+// So the memory Apply needs for one transaction is
+//
+//	ApplyChunkChanges x (decoded row + its carry-forward) + 1 bit per row of
+//	every file the transaction supersedes rows in
+//
+// whatever the transaction's size. Zero disables chunking.
+var ApplyChunkChanges = 100_000
+
+// applyRun is the state of one Apply call: the chunk being accumulated, and
+// what must happen at the end for all of it to become visible at once.
+type applyRun struct {
+	t *Table
+
+	upserts map[rowKey]map[string]any
+	order   []rowKey
 	// queued is membership of `order`, kept SEPARATELY from upserts.
 	//
 	// It used to be answered by looking the key up in upserts, which is wrong the
@@ -662,9 +719,65 @@ func (t *Table) Apply(txns []changestream.Transaction) (ApplyStats, error) {
 	// in ONE file and both positions are in this one, so every later delete or
 	// update tombstones the copy the index names and leaves the other live
 	// forever. See apply_order_test.go.
-	queued := map[rowKey]bool{}
-	deletes := map[rowKey]bool{}
+	//
+	// ACROSS CHUNKS the same rule is kept by different means. A key written by
+	// an earlier chunk is no longer in these maps; it is in the index, pointing
+	// into that chunk's delta file, exactly as if an earlier batch had written
+	// it. The later change finds it there, marks that position dead and — for
+	// an update — carries its columns forward from that file.
+	queued  map[rowKey]bool
+	deletes map[rowKey]bool
+	n       int // changes accumulated since the last flush
+
+	stats ApplyStats
+	// doomed are files a TRUNCATE inside this batch orphaned. They are removed
+	// only after the manifest that no longer names them is durable.
+	doomed []string
+}
+
+func (a *applyRun) reset() {
+	a.upserts, a.order = map[rowKey]map[string]any{}, nil
+	a.queued, a.deletes = map[rowKey]bool{}, map[rowKey]bool{}
+	a.n = 0
+}
+
+// Apply lands a run of whole transactions atomically: every change in every
+// transaction, then applied_lsn advances. There is no state in which half a
+// transaction is visible.
+//
+// "Visible" means named by the manifest, and that is what makes it possible to
+// apply a transaction larger than memory. Delta files are written as the
+// transaction is read and superseded positions are collected, but the manifest
+// on disk goes on naming the files and the deletion-vector generations it
+// named before. Only when everything is down are the new vector generations
+// published and the manifest replaced, once. A crash before that leaves the
+// previous manifest describing a mirror that is entirely still there; the
+// delta files written so far are named by nothing, and removeOrphanDeltas
+// collects them on the first Apply after the restart.
+func (t *Table) Apply(txns []changestream.Transaction) (ApplyStats, error) {
+	stats, err := t.apply(txns)
+	t.deferDead = nil
+	if err != nil {
+		// Memory is ahead of the manifest in ways that are not worth unwinding
+		// one by one: the caller stops on an Apply error, and what it restarts
+		// from is the disk. The dead sets are the one thing a retry in this
+		// process would silently trust.
+		t.resetDead()
+	}
+	return stats, err
+}
+
+func (t *Table) apply(txns []changestream.Transaction) (ApplyStats, error) {
+	t.removeOrphanDeltas()
+	a := &applyRun{t: t}
+	a.reset()
 	last := t.State.AppliedLSN
+
+	// Deletion vectors are published once, at the end. markDead publishes a new
+	// generation per call and retires the one two back; called per chunk it
+	// would retire, on the third chunk, the generation the manifest on disk
+	// still names — and a reader would find its vector gone mid-transaction.
+	t.deferDead = map[fileID]*deadSet{}
 
 	// Per-table LSN floor. A transaction this table has already applied is
 	// skipped, and the reason is not idempotence — the mirror is upsert-by-key,
@@ -678,50 +791,132 @@ func (t *Table) Apply(txns []changestream.Transaction) (ApplyStats, error) {
 	// that has never been bootstrapped has no floor and takes everything.
 	floor := changestream.ParseLSN(t.State.AppliedLSN)
 
-	for _, txn := range txns {
+	for i := range txns {
+		txn := &txns[i]
 		if floor > 0 && changestream.ParseLSN(txn.CommitLSN) < floor {
 			continue
 		}
-		for _, c := range txn.Changes {
-			if c.Qualified() != t.Qualified {
-				continue
-			}
-			switch c.Op {
-			case changestream.OpInsert, changestream.OpUpdate:
-				k := t.keyOf(c.Row[t.Key])
-				if !queued[k] {
-					queued[k] = true
-					order = append(order, k)
+		// A spooled transaction is read from disk once per table. One that
+		// never mentions this table need not be read at all.
+		if !txn.Spooled() || txn.Touches(t.Qualified) {
+			chunked := ApplyChunkChanges > 0 && txn.Len() > ApplyChunkChanges
+			err := txn.Each(func(c changestream.Change) error {
+				if c.Qualified() != t.Qualified {
+					return nil
 				}
-				// An earlier change to the same key in this batch is the better
-				// base than anything on disk, so merge onto it. A column absent
-				// from BOTH is filled from the mirror afterwards.
-				if prev, seen := upserts[k]; seen {
-					merged := make(map[string]any, len(t.Order))
-					for name, v := range prev {
-						merged[name] = v
-					}
-					for name, v := range c.Row {
-						merged[name] = v
-					}
-					upserts[k] = merged
-				} else {
-					upserts[k] = c.Row
+				if err := a.add(c); err != nil {
+					return err
 				}
-				delete(deletes, k)
-			case changestream.OpDelete:
-				k := t.keyOf(c.Key[t.Key])
-				deletes[k] = true
-				delete(upserts, k)
-			case changestream.OpTruncate:
-				if err := t.truncate(); err != nil {
-					return ApplyStats{}, err
+				if chunked && a.n >= ApplyChunkChanges {
+					return a.flush()
 				}
-				upserts, order, queued, deletes = map[rowKey]map[string]any{}, nil,
-					map[rowKey]bool{}, map[rowKey]bool{}
+				return nil
+			})
+			if err != nil {
+				return ApplyStats{}, err
 			}
 		}
 		last = txn.CommitLSN
+	}
+	if err := a.flush(); err != nil {
+		return ApplyStats{}, err
+	}
+
+	// Everything is written. Publish: one new generation per vector that
+	// changed, then the manifest that names them and the new delta files.
+	pending := t.deferDead
+	t.deferDead = nil
+	if len(pending) > 0 {
+		byFile := make(map[fileID][]int, len(pending))
+		for id, set := range pending {
+			byFile[id] = set.positions()
+		}
+		if err := t.markDead(byFile); err != nil {
+			return ApplyStats{}, err
+		}
+	}
+	t.State.AppliedLSN = last
+	if err := t.saveState(); err != nil {
+		return ApplyStats{}, err
+	}
+	for _, p := range a.doomed {
+		_ = os.Remove(p)
+	}
+	a.stats.AppliedLSN = last
+	return a.stats, nil
+}
+
+// add folds one change into the chunk being accumulated.
+func (a *applyRun) add(c changestream.Change) error {
+	t := a.t
+	switch c.Op {
+	case changestream.OpInsert, changestream.OpUpdate:
+		k := t.keyOf(c.Row[t.Key])
+		if !a.queued[k] {
+			a.queued[k] = true
+			a.order = append(a.order, k)
+		}
+		// An earlier change to the same key in this batch is the better
+		// base than anything on disk, so merge onto it. A column absent
+		// from BOTH is filled from the mirror afterwards.
+		if prev, seen := a.upserts[k]; seen {
+			merged := make(map[string]any, len(t.Order))
+			for name, v := range prev {
+				merged[name] = v
+			}
+			for name, v := range c.Row {
+				merged[name] = v
+			}
+			a.upserts[k] = merged
+		} else {
+			a.upserts[k] = c.Row
+		}
+		delete(a.deletes, k)
+	case changestream.OpDelete:
+		k := t.keyOf(c.Key[t.Key])
+		a.deletes[k] = true
+		delete(a.upserts, k)
+	case changestream.OpTruncate:
+		a.truncate()
+	}
+	a.n++
+	return nil
+}
+
+// truncate empties the mirror for a TRUNCATE on the source, in memory only.
+//
+// Table.truncate writes the empty manifest at once, which is right for a
+// snapshot and wrong here: the rows the transaction goes on to insert would
+// then appear some time after the table had visibly emptied, which is a state
+// the source never had. So the files are forgotten, not removed, and the
+// manifest is left alone; the one written at the end of Apply names whatever
+// the transaction left, and only then are the old files deleted — the same
+// order Table.truncate keeps, for the same reason.
+//
+// Everything on disk at this moment is doomed, including delta files written
+// by earlier chunks of this same transaction: TRUNCATE supersedes those too.
+func (a *applyRun) truncate() {
+	t := a.t
+	for _, sub := range []string{"base", "delta", "dv", "index"} {
+		entries, _ := os.ReadDir(filepath.Join(t.Dir, sub))
+		for _, e := range entries {
+			a.doomed = append(a.doomed, filepath.Join(t.Dir, sub, e.Name()))
+		}
+	}
+	t.forgetFiles()
+	t.deferDead = map[fileID]*deadSet{}
+	a.stats = ApplyStats{}
+	a.reset()
+}
+
+// flush lands the accumulated chunk: delta files written, the index moved, and
+// the positions it supersedes collected. It publishes nothing.
+func (a *applyRun) flush() error {
+	t := a.t
+	upserts, order, deletes := a.upserts, a.order, a.deletes
+	a.reset()
+	if len(upserts) == 0 && len(deletes) == 0 {
+		return nil
 	}
 
 	// Drop large values the mirror can prove it already holds. pgoutput omits an
@@ -731,7 +926,7 @@ func (t *Table) Apply(txns []changestream.Transaction) (ApplyStats, error) {
 	// change that arrived carrying fewer columns.
 	elided, err := t.elideUnchanged(upserts)
 	if err != nil {
-		return ApplyStats{}, err
+		return err
 	}
 
 	// Which of these changes can be stored as they arrived, as a patch on the
@@ -739,15 +934,20 @@ func (t *Table) Apply(txns []changestream.Transaction) (ApplyStats, error) {
 	// rows. Decided before carry-forward, because carry-forward is the expansion.
 	asPatch, err := t.classifyPartial(upserts)
 	if err != nil {
-		return ApplyStats{}, err
+		return err
 	}
 
 	// Carry forward anything pgoutput did not resend. A large value that an
 	// update did not change arrives as "unchanged TOAST" — the column is simply
 	// absent — and writing NULL for it destroys the data with no error and no
 	// change in row count. Absent means "keep what is there".
+	//
+	// "What is there" is wherever the index says, and for a key an earlier
+	// chunk of this transaction wrote, that is the earlier chunk's delta file:
+	// closed, on disk, and not yet in any manifest, which does not matter to a
+	// read by position.
 	if err := t.carryForward(upserts, asPatch); err != nil {
-		return ApplyStats{}, err
+		return err
 	}
 
 	// Tombstones, in two kinds. A whole-row write supersedes both the row the
@@ -791,7 +991,7 @@ func (t *Table) Apply(txns []changestream.Transaction) (ApplyStats, error) {
 
 	if len(superseded) > 0 || len(patchDead) > 0 {
 		if err := t.ensureIndex(); err != nil {
-			return ApplyStats{}, err
+			return err
 		}
 		byFile := map[fileID][]int{}
 		for k := range superseded {
@@ -805,7 +1005,7 @@ func (t *Table) Apply(txns []changestream.Transaction) (ApplyStats, error) {
 			}
 		}
 		if err := t.markDead(byFile); err != nil {
-			return ApplyStats{}, err
+			return err
 		}
 		// A deleted key has no current location. Leaving it in the index would
 		// make a later re-insert of the same key tombstone the wrong row.
@@ -822,17 +1022,45 @@ func (t *Table) Apply(txns []changestream.Transaction) (ApplyStats, error) {
 	}
 	if len(upserts) > 0 {
 		if err := t.writeUpserts(order, upserts, asPatch); err != nil {
-			return ApplyStats{}, err
+			return err
 		}
 		// After the writes, so the locations the hashes attach to are current.
 		t.noteHashes(upserts, asPatch, elided)
 	}
-
-	t.State.AppliedLSN = last
-	if err := t.saveState(); err != nil {
-		return ApplyStats{}, err
+	a.stats.Upserts += len(upserts)
+	a.stats.Deletes += len(deletes)
+	if t.afterChunk != nil {
+		t.afterChunk()
 	}
-	return ApplyStats{Upserts: len(upserts), Deletes: len(deletes), AppliedLSN: last}, nil
+	return nil
+}
+
+// removeOrphanDeltas deletes delta files a crashed Apply left behind, once per
+// process, before this process writes any.
+//
+// A large transaction writes its delta files chunk by chunk and names them in
+// the manifest only at the end, so a crash in between leaves files nothing
+// refers to. They are recognisable without guessing: a delta file's name is a
+// sequence number, the manifest holds the highest one ever committed, and
+// nothing with a higher number can have been written by anything but an Apply
+// (or a delta merge) that did not reach its manifest. The replay usually
+// overwrites them name for name; this is for the ones it does not.
+func (t *Table) removeOrphanDeltas() {
+	if t.sweptOrphans || t.detached {
+		return
+	}
+	t.sweptOrphans = true
+	entries, _ := os.ReadDir(filepath.Join(t.Dir, "delta"))
+	for _, e := range entries {
+		n, err := strconv.Atoi(trimParquet(e.Name()))
+		if err != nil || n <= t.State.Seq || contains(t.State.DeltaFiles, e.Name()) {
+			continue
+		}
+		_ = os.Remove(filepath.Join(t.Dir, "delta", e.Name()))
+		for _, m := range t.dvGlob("delta/" + e.Name()) {
+			_ = os.Remove(m)
+		}
+	}
 }
 
 // carryForward fills columns that a change did not carry, from the row the
@@ -1091,6 +1319,22 @@ func (t *Table) writeParquet(path string, rows []map[string]any) error {
 // removed, which leaves any reader a full write cycle of grace and turns the
 // remaining case into a retry rather than a wrong answer.
 func (t *Table) markDead(byFile map[fileID][]int) error {
+	if t.deferDead != nil {
+		// Inside Apply: collect, and publish once when the whole batch is
+		// written (see Apply). A generation per chunk would retire one the
+		// manifest on disk still names.
+		for id, positions := range byFile {
+			set := t.deferDead[id]
+			if set == nil {
+				set = &deadSet{}
+				t.deferDead[id] = set
+			}
+			for _, p := range positions {
+				set.add(p)
+			}
+		}
+		return nil
+	}
 	for id, positions := range byFile {
 		rel := id.name()
 		set, err := t.deadSetFor(rel)
