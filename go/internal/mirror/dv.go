@@ -79,34 +79,47 @@ const dvRowGroup = 1 << 20
 // which the file parses as empty — which reads as "nothing in this file is
 // dead" and silently undoes every delete it described. So: temp file, fsync,
 // rename, exactly as writeJSON does and for exactly the same reason.
+//
+// The fsync error is returned, and the directory is recorded as owed a sync
+// after the rename (owesDirSync), which saveState pays before it writes the
+// manifest that names this generation. A vector that does not survive a crash
+// the manifest survives is ErrStaleManifest on every read.
 func writeDV(path string, positions []int) error {
 	tmp := path + ".tmp"
 	if err := writeDVFile(tmp, positions); err != nil {
 		_ = os.Remove(tmp)
 		return err
 	}
-	f, err := os.Open(tmp)
-	if err != nil {
+	if err := os.Rename(tmp, path); err != nil {
 		return err
 	}
-	_ = f.Sync()
-	_ = f.Close()
-	return os.Rename(tmp, path)
+	owesDirSync(filepath.Dir(path))
+	return nil
 }
 
-func writeDVFile(path string, positions []int) error {
+// writeDVFile writes the vector and fsyncs it before returning.
+func writeDVFile(path string, positions []int) (err error) {
 	f, err := os.Create(path)
 	if err != nil {
 		return err
 	}
-	defer f.Close()
+	// pqarrow closes the sink it is given, so it is given one it cannot close:
+	// the descriptor has to outlive the footer to be synced.
+	defer func() {
+		if err == nil {
+			err = syncFile(f)
+		}
+		if cerr := f.Close(); err == nil {
+			err = cerr
+		}
+	}()
 
 	props := parquet.NewWriterProperties(
 		parquet.WithCompression(compress.Codecs.Zstd),
 		parquet.WithCompressionLevel(ZstdLevel),
 		parquet.WithMaxRowGroupLength(dvRowGroup),
 	)
-	w, err := pqarrow.NewFileWriter(dvSchema, f, props, pqarrow.DefaultWriterProps())
+	w, err := pqarrow.NewFileWriter(dvSchema, keepOpen{f}, props, pqarrow.DefaultWriterProps())
 	if err != nil {
 		return err
 	}

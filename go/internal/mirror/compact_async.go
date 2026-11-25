@@ -29,8 +29,10 @@ package mirror
 
 import (
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"time"
 )
@@ -49,6 +51,10 @@ type Compaction struct {
 	index    *keyIndex // key -> position in the new base file
 	dupDead  []int     // positions superseded within the rewrite itself
 	rowCount int
+	// halted is the reason the rewrite met a value the mirror cannot hold. The
+	// rewrite works on a detached copy of the table and cannot halt the real
+	// one; the swap does it, on the apply goroutine.
+	halted string
 
 	// touched is every key the apply loop superseded or deleted while this
 	// rewrite was running. It is written only by the apply goroutine, and it is
@@ -123,9 +129,18 @@ func (t *Table) BeginCompaction() *Compaction {
 	// sequence, so this is base first and then deltas oldest to newest.
 	sort.Strings(snapshot)
 
+	// And the schema. The rewrite reads the column order, the column types and
+	// the missing-value map for every row group it decodes, and a DDL barrier
+	// replaces all three without waiting for it (AbortCompaction returns at
+	// once, by design: waiting would stall the apply loop for the length of a
+	// rewrite). So the goroutine gets its own copy and never sees the Table the
+	// apply loop owns — inside it, t IS the copy.
+	snap, sizeHint := t.rewriteSnapshot(), t.State.BaseRows
+
 	t.compacting = c
-	go func() {
+	go func(t *Table) {
 		defer close(c.done)
+		defer func() { c.halted = t.State.Halted }()
 
 		// Patches first, because they amend rows that come from other files.
 		// They are bounded by the delta files, which the compaction policy keeps
@@ -169,7 +184,7 @@ func (t *Table) BeginCompaction() *Compaction {
 		// dead and THEN writing the new one, so a compactor reading between
 		// those steps holds both copies. Files are read base-first then deltas
 		// in sequence order, so the last occurrence is the newest.
-		idx := newKeyIndex(t.State.BaseRows)
+		idx := newKeyIndex(sizeHint)
 		var dup []int
 		out := 0
 
@@ -238,16 +253,46 @@ func (t *Table) BeginCompaction() *Compaction {
 		c.index = idx
 		c.dupDead = dup
 		c.rowCount = out
-	}()
+	}(snap)
 	return c
+}
+
+// rewriteSnapshot is the immutable view of the table a background rewrite
+// works from: where the files are, what the key is, and the schema as it stood
+// when the rewrite began. It is small — one map entry per column — and it is
+// everything the read and write paths consult (forEachRowGroup, fillMissing,
+// newParquetWriter, arrowSchemaFor, checkTemporal).
+//
+// It is a *Table so that those paths need no second implementation, and it is
+// detached so that the one thing they can do besides read — Halt, on a value
+// Arrow cannot hold — does not write a manifest from a State that is mostly
+// empty. The reason is carried back in Compaction.halted instead.
+func (t *Table) rewriteSnapshot() *Table {
+	s := &Table{
+		Qualified:  t.Qualified,
+		Key:        t.Key,
+		Dir:        t.Dir,
+		Columns:    maps.Clone(t.Columns),
+		Order:      slices.Clone(t.Order),
+		numericKey: t.numericKey,
+		detached:   true,
+	}
+	s.State.MissingVals = maps.Clone(t.State.MissingVals)
+	return s
 }
 
 // AbortCompaction discards a rewrite in flight and removes its partial output.
 //
-// Needed for DDL: the background goroutine reads t.Order and t.Columns while it
-// works, and a schema change mutates both. Rather than lock the schema for the
-// length of a rewrite, a barrier throws the rewrite away — it is recomputable,
-// and the next one starts from the evolved schema.
+// Needed for DDL: a rewrite produces a file in the schema it started with, and
+// a schema change makes that the wrong file. Rather than lock the schema for
+// the length of a rewrite, a barrier throws the rewrite away — it is
+// recomputable, and the next one starts from the evolved schema. Needed for
+// TRUNCATE for the same reason with the rows in place of the columns.
+//
+// This does NOT wait for the goroutine, which goes on reading until it is
+// done. That is safe only because it reads a private snapshot of the schema
+// (rewriteSnapshot) and files that are immutable; nothing it touches is
+// something the caller is about to change.
 func (t *Table) AbortCompaction() {
 	c := t.compacting
 	if c == nil {
@@ -277,6 +322,9 @@ func (t *Table) FinishCompaction() (int, error) {
 	t.compacting = nil
 	if c.err != nil {
 		_ = os.Remove(filepath.Join(t.Dir, "base", c.name))
+		if c.halted != "" {
+			_ = t.Halt(c.halted)
+		}
 		return 0, c.err
 	}
 	if err := t.ensureIndex(); err != nil {
@@ -367,6 +415,10 @@ func (t *Table) FinishCompaction() (int, error) {
 
 	// State last, then the old files. A crash before this leaves the old set
 	// intact and the new base as an orphan; a crash after leaves the new set.
+	//
+	// The new base was fsynced by the goroutine that wrote it, and its vector
+	// just above; both left their directories owed a sync, which saveState
+	// pays before it writes the manifest.
 	if err := t.saveState(); err != nil {
 		return 0, err
 	}

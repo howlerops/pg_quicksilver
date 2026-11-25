@@ -162,6 +162,11 @@ type Table struct {
 	// compacting is the rewrite currently in flight, if any. Only the apply
 	// goroutine touches this field.
 	compacting *Compaction
+
+	// detached marks the private copy a background rewrite works from
+	// (rewriteSnapshot). It shares a directory with the real table and nothing
+	// else, and must never write the manifest: its State is a fragment.
+	detached bool
 }
 
 func New(root, schema, table, key string, cols map[string]string, order []string) (*Table, error) {
@@ -175,6 +180,13 @@ func New(root, schema, table, key string, cols map[string]string, order []string
 	t.numericKey = arrowType(cols[key]) == arrow.PrimitiveTypes.Int64
 	for _, sub := range []string{"base", "delta", "dv", "index"} {
 		if err := os.MkdirAll(filepath.Join(t.Dir, sub), 0o755); err != nil {
+			return nil, err
+		}
+	}
+	// The directories are named by nothing but their parents, so those are
+	// what has to be durable for a file written under them to be findable.
+	for _, dir := range []string{t.Dir, root} {
+		if err := syncDir(dir); err != nil {
 			return nil, err
 		}
 	}
@@ -452,22 +464,28 @@ func (t *Table) statePath() string { return filepath.Join(t.Dir, "state.json") }
 
 // saveState writes the durable watermark AFTER the data files, so a crash
 // replays the last batch rather than skipping it.
+//
+// "After" means after they are DURABLE, not after they are written. Each data
+// file was fsynced when it was closed; the directories they were created in
+// are synced here (syncOwedDirs, stream.go), and only then is the manifest replaced — temp file, fsync,
+// rename — and the table directory synced so that the rename itself survives.
+// Every one of those can fail, and a failure is returned: the caller must not
+// confirm an LSN on the strength of a manifest that may not exist.
 func (t *Table) saveState() error {
+	if t.detached {
+		return nil
+	}
 	b, err := json.MarshalIndent(t.State, "", "  ")
 	if err != nil {
 		return err
 	}
-	tmp := t.statePath() + ".tmp"
-	if err := os.WriteFile(tmp, b, 0o644); err != nil {
+	if err := syncOwedDirs(t.Dir); err != nil {
 		return err
 	}
-	f, err := os.Open(tmp)
-	if err != nil {
+	if err := writeFileAtomic(t.statePath(), b); err != nil {
 		return err
 	}
-	_ = f.Sync()
-	_ = f.Close()
-	return os.Rename(tmp, t.statePath())
+	return syncDir(t.Dir)
 }
 
 // Evolve adopts a new column list. Existing files are untouched — the read path
@@ -1117,18 +1135,52 @@ func (t *Table) markDead(byFile map[fileID][]int) error {
 	return nil
 }
 
+// truncate empties the mirror, for a TRUNCATE on the source.
+//
+// Two things here are about ordering.
+//
+// A background rewrite in flight is ABORTED first. Its output lives under
+// base/, which is about to be emptied, and it folds in rows the source no
+// longer has; left alone, the next FinishCompaction installed a manifest naming
+// a file this function had deleted, over a table that had since moved on, and
+// the mirror was unreadable from then until someone rebuilt it. The same holds
+// for a rewrite that has finished but not been swapped in.
+//
+// And the EMPTY MANIFEST is written before the files are removed, not after.
+// The old manifest names those files; deleting them first leaves a window in
+// which a crash produces a manifest pointing at nothing. Written first, a
+// crash leaves an empty table at the previous watermark, and replay from there
+// arrives at the TRUNCATE again.
 func (t *Table) truncate() error {
+	t.forgetFiles()
+	if err := t.saveState(); err != nil {
+		return err
+	}
+	t.removeAllFiles()
+	return nil
+}
+
+// forgetFiles abandons any rewrite in flight and clears every in-memory record
+// of the files the mirror holds. It removes nothing from disk.
+func (t *Table) forgetFiles() {
+	t.AbortCompaction()
+	t.State.BaseFiles, t.State.DeltaFiles = nil, nil
+	t.State.BaseRows, t.State.DeltaRows = 0, 0
+	t.State.PartialCols, t.State.FileRows, t.State.DVGen = nil, nil, nil
+	t.index, t.patch, t.partialCols = nil, nil, nil
+}
+
+// removeAllFiles deletes every data file, vector and index on disk. An aborted
+// rewrite may still be writing its output under base/; unlinking it is
+// harmless, and AbortCompaction removes it again when the goroutine ends in
+// case it was created after this ran.
+func (t *Table) removeAllFiles() {
 	for _, sub := range []string{"base", "delta", "dv", "index"} {
 		entries, _ := os.ReadDir(filepath.Join(t.Dir, sub))
 		for _, e := range entries {
 			_ = os.Remove(filepath.Join(t.Dir, sub, e.Name()))
 		}
 	}
-	t.State.BaseFiles, t.State.DeltaFiles = nil, nil
-	t.State.BaseRows, t.State.DeltaRows = 0, 0
-	t.State.PartialCols, t.State.FileRows, t.State.DVGen = nil, nil, nil
-	t.index, t.patch, t.partialCols = nil, nil, nil
-	return nil
 }
 
 // Compact folds base + deltas into one base file with deletion vectors applied,
@@ -1142,9 +1194,10 @@ func (t *Table) Compact() (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	if err := t.truncate(); err != nil {
-		return 0, err
-	}
+	// Not truncate(): that persists an empty manifest, and these rows are only
+	// in memory until the write below.
+	t.forgetFiles()
+	t.removeAllFiles()
 	t.State.Seq++
 	name := fmt.Sprintf("%06d.parquet", t.State.Seq)
 	if err := t.writeParquet(filepath.Join(t.Dir, "base", name), rows); err != nil {
@@ -1558,22 +1611,17 @@ func (t *Table) baseVectorTooExpensive() bool {
 // to life. Background compaction reads these vectors on another goroutine while
 // the apply loop writes them, so the window is not theoretical: it resurrected
 // rows deleted 7 rounds before the rewrite even started.
+//
+// The fsync error is returned, and the directory is synced after the rename.
 func writeJSON(path string, v any) error {
 	b, err := json.Marshal(v)
 	if err != nil {
 		return err
 	}
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, b, 0o644); err != nil {
+	if err := writeFileAtomic(path, b); err != nil {
 		return err
 	}
-	f, err := os.Open(tmp)
-	if err != nil {
-		return err
-	}
-	_ = f.Sync()
-	_ = f.Close()
-	return os.Rename(tmp, path)
+	return syncDir(filepath.Dir(path))
 }
 
 func trimParquet(name string) string { return strings.TrimSuffix(name, ".parquet") }
