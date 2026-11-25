@@ -598,6 +598,23 @@ func pump(
 	guard := &slotGuard{slot: o.slot, conn: conn, last: time.Now()}
 	warnedStuck := false
 
+	// confirmedLSN is the newest position this loop may consider confirmed. It
+	// starts at the highest applied_lsn + 1, which the resume check has shown
+	// to be at or beyond the slot's confirmed_flush_lsn (resume.go), so an idle
+	// position below it — the walsender re-decoding from restart_lsn after a
+	// restart — is never confirmed backwards.
+	var confirmedLSN uint64
+	for _, t := range tables {
+		if at := changestream.ParseLSN(t.State.AppliedLSN) + 1; at > confirmedLSN {
+			confirmedLSN = at
+		}
+	}
+	var lastIdleConfirm time.Time
+	// For the stuck-stream test below: the position at the previous slot
+	// measurement, and how many measurements in a row found the slot far
+	// behind without that position having moved.
+	measuredAt, stalled := confirmedLSN, 0
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -669,6 +686,70 @@ func pump(
 			// nothing; a stuck stream retains more with every commit. So the
 			// question the guard already asks every interval answers this one
 			// too: silence plus a growing slot is not idleness.
+			//
+			// IDLE ADVANCE. Before asking, move the slot past WAL that was not
+			// for this mirror. The source being quiet FOR US is not the source
+			// being quiet: other tables, vacuum and other databases write WAL
+			// the walsender decodes and sends nothing for, and a confirmation
+			// only ever followed a transaction. So a caught-up mirror's slot
+			// stood still, pinned all of it, read as "stuck" below, and at
+			// QS_MAX_SLOT_WAL_BYTES the guard dropped the slot of a mirror
+			// that was missing nothing — with /readyz at 200 throughout.
+			//
+			// IdleLSN is a position P such that every transaction committing
+			// below P has already been handed to this loop, and `pending` is
+			// empty, so every one of them is applied. That makes P confirmable.
+			//
+			// The values, and why these two:
+			//
+			//	applied_lsn  <-  P-1     written first, fsynced, on EVERY table
+			//	confirm      <-  P       only after that
+			//
+			// which is the pump's own convention (applied = commit, confirm =
+			// commit+1) with P-1 standing where the commit LSN stands. Both
+			// readers of applied_lsn stay exact:
+			//
+			//   - planResume re-snapshots when confirmed > applied+1. Here
+			//     confirmed == applied+1, and applied is durable before the
+			//     confirmation is even queued, so a crash between the two
+			//     leaves the slot BEHIND the mirror, which is the replayable
+			//     direction.
+			//   - Table.Apply skips commit LSN < applied_lsn, i.e. < P-1. Every
+			//     transaction not yet handed out commits at or above P, so the
+			//     floor cannot touch it; and PostgreSQL skips only commits
+			//     starting below the confirmed P, so it is still sent. A
+			//     transaction open across this advance commits later, above P,
+			//     and restart_lsn — which the server holds at the oldest
+			//     transaction still in progress regardless of what is
+			//     confirmed — keeps its WAL.
+			//
+			// It goes through Apply with a transaction that changes nothing
+			// rather than a new way to write applied_lsn: that is the code path
+			// that already owns the floor and the fsync. A table whose floor is
+			// above P-1 (re-snapshotted at a later point) ignores it.
+			//
+			// Rate-limited because each advance is a state.json fsync per
+			// table, and a keepalive can arrive for every few bytes of WAL.
+			if p := st.IdleLSN(); p > confirmedLSN && time.Since(lastIdleConfirm) >= idleConfirmInterval {
+				marker := changestream.Transaction{
+					CommitLSN: pglogrepl.LSN(p - 1).String(),
+					NextLSN:   pglogrepl.LSN(p).String(),
+				}
+				for _, t := range tables {
+					if _, err := t.Apply([]changestream.Transaction{marker}); err != nil {
+						return fmt.Errorf("idle advance: %w", err)
+					}
+				}
+				if err := st.Confirm(ctx, marker.NextLSN); err != nil {
+					return fmt.Errorf("idle confirm: %w", err)
+				}
+				log.Debug("confirmed WAL that held nothing for this mirror",
+					"slot", o.slot, "from", pglogrepl.LSN(confirmedLSN).String(),
+					"to", marker.NextLSN)
+				confirmedLSN, lastIdleConfirm = p, time.Now()
+				tt.done("idle_confirm")
+			}
+
 			retained, unconfirmed, gerr := guard.check(ctx, log)
 			if gerr != nil {
 				return gerr
@@ -676,11 +757,30 @@ func pump(
 			if retained >= 0 {
 				h.RecordSlotRetention(retained)
 			}
+			// What "stuck" has to mean now that an idle mirror confirms. A slot
+			// far behind is no longer evidence by itself: one burst of
+			// unrelated WAL puts it a segment behind until the next idle
+			// advance lands. The evidence is that it is far behind AND the
+			// position this loop holds has not moved since the previous
+			// measurement AND the stream is not offering one to move to — for
+			// a whole interval, twice, so a burst that arrives just before a
+			// measurement is not a fault. And the verdict stands until the next
+			// measurement: it used to be recomputed on every tick from "no
+			// measurement this tick", which cleared it 200 ms after it was
+			// reached, so readiness never did fail.
+			if unconfirmed >= 0 {
+				if unconfirmed >= stuckSlotBytes && confirmedLSN == measuredAt && st.IdleLSN() <= confirmedLSN {
+					stalled++
+				} else {
+					stalled = 0
+				}
+				measuredAt = confirmedLSN
+			}
 			// UNCONFIRMED, not retained. See slotguard.go: retention is what the
 			// slot costs the primary in disk; confirmation is how far behind
 			// this mirror actually is. Using the first gave a mirror that was
 			// 103 bytes behind a "your stream is stuck" warning at 537 MB.
-			if unconfirmed >= stuckSlotBytes {
+			if stalled >= 2 {
 				// Deliberately NOT RecordCaughtUp: lag_seconds keeps growing
 				// from the last real progress, so readiness fails once the SLO
 				// is exceeded and this node leaves the read endpoint. Serving
@@ -767,6 +867,9 @@ func pump(
 			return fmt.Errorf("confirm: %w", err)
 		}
 		tt.done("confirm")
+		if at := changestream.ParseLSN(last.NextLSN); at > confirmedLSN {
+			confirmedLSN = at
+		}
 
 		var headLSN string
 		_ = conn.QueryRow(ctx, "SELECT pg_current_wal_lsn()::text").Scan(&headLSN)

@@ -201,6 +201,12 @@ func dropSlot(ctx context.Context, o options, log *slog.Logger) {
 // anything is written and keeps going.
 var stuckSlotBytes = envInt("QS_STUCK_SLOT_BYTES", 16<<20)
 
+// idleConfirmInterval is how often a mirror with nothing to apply may confirm a
+// position the server reports as holding nothing for it (see the idle branch of
+// pump). Each one costs a state.json fsync per table, and the slot only needs
+// to stay well inside a WAL segment or two of the head, so seconds is plenty.
+var idleConfirmInterval = envDuration("QS_IDLE_CONFIRM_INTERVAL", 5*time.Second)
+
 // releaseOwnSlot drops this Pod's slot from the LOCAL server, for the two cases
 // where this sidecar has stopped consuming it and nothing else ever will.
 //

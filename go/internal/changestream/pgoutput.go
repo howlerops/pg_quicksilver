@@ -118,6 +118,7 @@ type Streaming struct {
 	confirmDirty    bool               // confirmed moved since the last status update
 	interrupt       context.CancelFunc // aborts the receiver's blocking read
 	received        pglogrepl.LSN
+	idle            pglogrepl.LSN // see IdleLSN; zero when there is none
 	relations       map[uint32]*pglogrepl.RelationMessage
 
 	// wake rouses a paused receiver: the buffer was drained, or there is a new
@@ -359,9 +360,20 @@ func (s *Streaming) receive(ctx context.Context) {
 		switch cd.Data[0] {
 		case pglogrepl.PrimaryKeepaliveMessageByteID:
 			k, err := pglogrepl.ParsePrimaryKeepaliveMessage(cd.Data[1:])
-			if err == nil && k.ReplyRequested {
+			if err != nil {
+				continue
+			}
+			if k.ReplyRequested {
 				replyNow = true
 			}
+			// See IdleLSN. s.cur belongs to this goroutine; the buffer is read
+			// under the mutex so the decision and Transactions() cannot
+			// interleave.
+			s.mu.Lock()
+			if s.cur == nil && len(s.buffered) == 0 {
+				s.idle = k.ServerWALEnd
+			}
+			s.mu.Unlock()
 		case pglogrepl.XLogDataByteID:
 			xld, err := pglogrepl.ParseXLogData(cd.Data[1:])
 			if err != nil {
@@ -370,6 +382,10 @@ func (s *Streaming) receive(ctx context.Context) {
 			}
 			s.mu.Lock()
 			s.received = xld.WALStart
+			// Data invalidates the idle position: whatever this message
+			// belongs to is not applied yet, and only a LATER keepalive, with
+			// nothing buffered, can vouch for a position again.
+			s.idle = 0
 			s.mu.Unlock()
 			if err := s.handle(xld.WALData); err != nil {
 				s.setErr(err)
@@ -546,6 +562,41 @@ func (s *Streaming) Confirm(ctx context.Context, lsn string) error {
 		}
 	}
 	return nil
+}
+
+// IdleLSN is a position the server has decoded up to with nothing left for
+// this consumer below it, or zero when there is no such position right now.
+//
+// Without it a caught-up mirror never confirms anything while the primary
+// writes WAL that is not for its publication: other tables, vacuum, another
+// database. Confirm only ever followed a transaction, so the slot stood still,
+// pinned every segment written since, and the slot guard eventually dropped a
+// slot whose consumer was missing nothing.
+//
+// The position is the walsender's keepalive, which carries the end of the last
+// WAL record it has decoded. Decoding a commit record emits its transaction
+// before that end is reported, and the stream is ordered, so by the time a
+// keepalive saying P is read, every transaction whose commit record starts
+// below P has been read too. It is recorded only when none of those is still
+// here: nothing buffered for Transactions() and no transaction being assembled.
+// Any XLogData clears it. So a non-zero answer means
+//
+//	every transaction committing below P was handed out by an EARLIER
+//	Transactions() call, and every transaction not yet handed out commits at or
+//	above P
+//
+// which is what pg_recvlogical relies on when it flushes a keepalive's
+// position. Whether those earlier transactions are APPLIED is the caller's to
+// know; it must hold none unapplied before treating P as confirmable, and it
+// must ask after its Transactions() call, not before.
+//
+// P can be BELOW the slot's confirmed position: after a restart the walsender
+// decodes again from restart_lsn and reports where it has got to. The caller
+// must not confirm backwards.
+func (s *Streaming) IdleLSN() uint64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return uint64(s.idle)
 }
 
 func (s *Streaming) ReceivedLSN() string {

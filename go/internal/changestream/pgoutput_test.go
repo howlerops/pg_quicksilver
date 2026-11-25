@@ -296,3 +296,73 @@ func TestConfirmConcurrentWithReceive(t *testing.T) {
 	want, _ := pglogrepl.ParseLSN(last)
 	waitFor(t, "the last position to be sent", func() bool { return f.lastStatus() == want })
 }
+
+func keepalive(walEnd uint64) pgproto3.BackendMessage {
+	b := u64(u64([]byte{pglogrepl.PrimaryKeepaliveMessageByteID}, walEnd), 0)
+	return &pgproto3.CopyData{Data: append(b, 0)}
+}
+
+// The bug: a caught-up mirror never confirmed a position while the primary
+// wrote WAL that was not for it, so its slot pinned all of that WAL until the
+// slot guard dropped it. A keepalive's position is confirmable, but ONLY when
+// nothing received before it is still waiting here: confirming past a
+// transaction that is buffered or half-assembled, and then crashing, loses it.
+func TestIdleLSN(t *testing.T) {
+	s, f := startFake(t, 0, time.Hour)
+	ctx := context.Background()
+	send := func(msgs ...pgproto3.BackendMessage) {
+		t.Helper()
+		before := f.received.Load()
+		for _, m := range msgs {
+			f.msgs <- m
+		}
+		// Handed over is not processed. The receiver is back in a read only
+		// after it has dealt with the last message.
+		waitFor(t, "the receiver to process the messages", func() bool {
+			return f.received.Load() == before+int64(len(msgs)) && f.inIO.Load() == 1
+		})
+	}
+	want := func(when string, lsn uint64) {
+		t.Helper()
+		if got := s.IdleLSN(); got != lsn {
+			t.Fatalf("%s: IdleLSN = %s, want %s", when, pglogrepl.LSN(got), pglogrepl.LSN(lsn))
+		}
+	}
+
+	want("before anything is received", 0)
+	send(keepalive(0x1000))
+	want("keepalive with nothing held", 0x1000)
+	send(keepalive(0x2000))
+	want("a later keepalive", 0x2000)
+
+	// A transaction being assembled: the Begin clears the position, and a
+	// keepalive in the middle of it must not bring one back.
+	all := txn(0x3000, 0, 2)
+	send(xlog(1, relationMsg()), all[0], all[1])
+	want("data arrived", 0)
+	send(keepalive(0x2800))
+	want("keepalive while a transaction is being assembled", 0)
+
+	// Committed and buffered, not yet taken: still not confirmable, however
+	// far ahead the server says it is.
+	send(all[2:]...)
+	send(keepalive(0x4000))
+	want("keepalive while a transaction is buffered", 0)
+
+	// Taking the buffer does not create a position either: the keepalive that
+	// arrived while it was full was discarded, and only a new one counts.
+	got, err := s.Transactions(ctx)
+	if err != nil || len(got) != 1 || len(got[0].Changes) != 2 {
+		t.Fatalf("Transactions = %d txns, err %v", len(got), err)
+	}
+	if c := ParseLSN(got[0].CommitLSN); c != 0x3000 {
+		t.Fatalf("commit LSN %s", got[0].CommitLSN)
+	}
+	want("after the drain, before another keepalive", 0)
+	send(keepalive(0x5000))
+	want("keepalive after the drain", 0x5000)
+
+	// And the next transaction clears it again.
+	send(txn(0x6000, 2, 1)...)
+	want("the next transaction", 0)
+}
