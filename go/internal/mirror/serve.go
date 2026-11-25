@@ -22,11 +22,13 @@ package mirror
 // and which produces exactly what ForEachLive produces in this process.
 //
 // The SQL is a SNAPSHOT of a manifest, exactly like the in-process read path.
-// A compaction that lands mid-query deletes files the query names, and the
-// engine will say so; the caller re-asks for the SQL and re-runs, which is the
-// same ErrStaleManifest contract read.go documents. Publishing a view that
-// "never goes stale" would mean either pinning files forever or answering from
-// a mixture of two manifests, and the second is the bug round five was about.
+// Publishing a view that "never goes stale" would mean either pinning files
+// forever or answering from a mixture of two manifests, and the second is the
+// bug round five was about. What a reader gets instead is in publish.go: the
+// writer publishes this SQL after every manifest change, with a sequence number
+// to notice the change by, and the files a snapshot names outlive it by a grace
+// period so the query already running on it finishes. Past that the engine
+// says a file is missing, and the reader picks up the current snapshot.
 
 import (
 	"encoding/json"
@@ -91,7 +93,7 @@ func fileColumns(path string) (map[string]bool, error) {
 // deletion vector the manifest names applied.
 func (t *Table) branch(rel string, want []string) (string, error) {
 	abs := filepath.Join(t.Dir, rel)
-	have, err := fileColumns(abs)
+	have, err := t.columnsOf(abs)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return "", ErrStaleManifest

@@ -181,6 +181,10 @@ type Table struct {
 	seenSeq       int
 	retryAt       time.Time // no rewrite before this; see CompactionFailed
 	clock         func() time.Time
+
+	// pub is the published snapshot and the files waiting out their grace
+	// after leaving the manifest. See publish.go.
+	pub *publisher
 }
 
 func New(root, schema, table, key string, cols map[string]string, order []string) (*Table, error) {
@@ -454,15 +458,16 @@ func dvGenOf(path string) int {
 // data file itself is going away.
 func (t *Table) dropDV(rel string) {
 	for _, m := range t.dvGlob(rel) {
-		_ = os.Remove(m)
+		t.retire(m)
 	}
 	delete(t.State.DVGen, dvStem(rel))
 	t.forgetDead(rel)
 }
 
-// removeDataFile deletes a data file and the deletion vectors that described it.
+// removeDataFile retires a data file and the deletion vectors that described
+// it: they go after the grace period, not now. See retire, publish.go.
 func (t *Table) removeDataFile(rel string) {
-	_ = os.Remove(filepath.Join(t.Dir, rel))
+	t.retire(filepath.Join(t.Dir, rel))
 	t.dropDV(rel)
 	t.dropIndexJSON(filepath.Base(rel))
 }
@@ -506,7 +511,11 @@ func (t *Table) saveState() error {
 	if err := writeFileAtomic(t.statePath(), b); err != nil {
 		return err
 	}
-	return syncDir(t.Dir)
+	if err := syncDir(t.Dir); err != nil {
+		return err
+	}
+	// Only now, with the manifest durable, is there something to publish.
+	return t.publish()
 }
 
 // Evolve adopts a new column list. Existing files are untouched — the read path
@@ -1096,7 +1105,7 @@ func (t *Table) markDead(byFile map[fileID][]int) error {
 			// Both encodings, because the generation being retired here may
 			// predate the format change.
 			for _, ext := range dvExts {
-				_ = os.Remove(filepath.Join(t.Dir, "dv",
+				t.retire(filepath.Join(t.Dir, "dv",
 					fmt.Sprintf("%s.%09d.dv%s", stem, gen-2, ext)))
 			}
 		}
@@ -1148,7 +1157,11 @@ func (t *Table) removeAllFiles() {
 	for _, sub := range []string{"base", "delta", "dv", "index"} {
 		entries, _ := os.ReadDir(filepath.Join(t.Dir, sub))
 		for _, e := range entries {
-			_ = os.Remove(filepath.Join(t.Dir, sub, e.Name()))
+			if sub == "index" {
+				_ = os.Remove(filepath.Join(t.Dir, sub, e.Name()))
+				continue
+			}
+			t.retire(filepath.Join(t.Dir, sub, e.Name()))
 		}
 	}
 }
