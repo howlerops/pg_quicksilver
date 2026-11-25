@@ -121,10 +121,19 @@ func (a loc) sameRow(b loc) bool { return a.File == b.File && a.Pos == b.Pos }
 // both have to land on the same key; when the column is an integer type they
 // land on `num`, and the string half stays empty — which is what keeps a
 // several-million-entry map free of pointers.
+//
+// A UUID is the other key people actually use, and as text it was the worst
+// case this file had: 36 bytes on the heap per key behind a pointer the
+// collector follows, 190 bytes a key all told and 169 ms of every GC cycle at
+// four million of them. It is 128 bits, so it is held as 128 bits — the high
+// half in `num`, the low half in `lo` — and indexed in a map as pointer-free as
+// the integer one.
 type rowKey struct {
-	num   int64
-	str   string
-	isNum bool
+	num    int64
+	lo     uint64
+	str    string
+	isNum  bool
+	isUUID bool
 }
 
 // String renders the key as PostgreSQL would print it. Used for the persisted
@@ -133,7 +142,68 @@ func (k rowKey) String() string {
 	if k.isNum {
 		return strconv.FormatInt(k.num, 10)
 	}
+	if k.isUUID {
+		return formatUUID(uint64(k.num), k.lo)
+	}
 	return k.str
+}
+
+const hexDigits = "0123456789abcdef"
+
+// parseUUID reads a UUID in exactly the form PostgreSQL prints one: 36 bytes,
+// lowercase hex, hyphens after the 8th, 12th, 16th and 20th digit.
+//
+// EXACTLY that form, and the strictness is what makes the compact key safe to
+// use without knowing the column's type. PostgreSQL accepts braces, upper case
+// and no hyphens on input and prints none of them for a `uuid` column, so a
+// uuid key always parses. A `text` key can hold any of those spellings, and
+// there 'A0…' and 'a0…' are DIFFERENT keys — so anything that is not already
+// canonical is refused here and stays a string, and formatUUID gives back
+// byte for byte what was parsed.
+func parseUUID(s string) (hi, lo uint64, ok bool) {
+	if len(s) != 36 || s[8] != '-' || s[13] != '-' || s[18] != '-' || s[23] != '-' {
+		return 0, 0, false
+	}
+	n := 0
+	for i := 0; i < 36; i++ {
+		c := s[i]
+		var d uint64
+		switch {
+		case c >= '0' && c <= '9':
+			d = uint64(c - '0')
+		case c >= 'a' && c <= 'f':
+			d = uint64(c-'a') + 10
+		case c == '-' && (i == 8 || i == 13 || i == 18 || i == 23):
+			continue
+		default:
+			return 0, 0, false
+		}
+		if n < 16 {
+			hi = hi<<4 | d
+		} else {
+			lo = lo<<4 | d
+		}
+		n++
+	}
+	return hi, lo, true
+}
+
+func formatUUID(hi, lo uint64) string {
+	var b [36]byte
+	j := 0
+	for i := 0; i < 32; i++ {
+		if i == 8 || i == 12 || i == 16 || i == 20 {
+			b[j] = '-'
+			j++
+		}
+		w, sh := hi, uint(60-4*i)
+		if i >= 16 {
+			w, sh = lo, uint(60-4*(i-16))
+		}
+		b[j] = hexDigits[(w>>sh)&0xf]
+		j++
+	}
+	return string(b[:])
 }
 
 // keyOf converts a raw key value — text from pgoutput, an int64 from Parquet —
@@ -177,56 +247,83 @@ func keyStringFor(numeric bool, s string) rowKey {
 			return rowKey{num: n, isNum: true}
 		}
 	}
+	if hi, lo, ok := parseUUID(s); ok {
+		return rowKey{num: int64(hi), lo: lo, isUUID: true}
+	}
 	return rowKey{str: s}
 }
 
-// keyIndex maps keys to locations, with the integer keys held separately so
-// that the common case is a map the garbage collector never has to walk.
+// keyIndex maps keys to locations, with the integer and UUID keys held
+// separately so that the common cases are maps the garbage collector never has
+// to walk. Only a key that is neither falls through to the string map.
+//
+// A table's keys are all of one form, so only one of the three is ever built,
+// and it is built on the first set rather than in newKeyIndex: the hint is the
+// table's row count, and spending it on the integer map of a table keyed by
+// UUID bought several hundred megabytes of empty buckets and left the map that
+// was actually filled to grow from nothing.
 type keyIndex struct {
-	nums map[int64]loc
-	strs map[string]loc
+	nums  map[int64]loc
+	uuids map[[2]uint64]loc
+	strs  map[string]loc
+	hint  int
 }
 
-func newKeyIndex(hint int) *keyIndex {
-	return &keyIndex{nums: make(map[int64]loc, hint)}
-}
+func newKeyIndex(hint int) *keyIndex { return &keyIndex{hint: hint} }
 
 func (x *keyIndex) get(k rowKey) (loc, bool) {
-	if k.isNum {
+	// Reading a nil map is defined and finds nothing, which is the answer.
+	switch {
+	case k.isNum:
 		l, ok := x.nums[k.num]
 		return l, ok
-	}
-	if x.strs == nil {
-		return loc{}, false
+	case k.isUUID:
+		l, ok := x.uuids[[2]uint64{uint64(k.num), k.lo}]
+		return l, ok
 	}
 	l, ok := x.strs[k.str]
 	return l, ok
 }
 
 func (x *keyIndex) set(k rowKey, l loc) {
-	if k.isNum {
+	switch {
+	case k.isNum:
+		if x.nums == nil {
+			x.nums = make(map[int64]loc, x.hint)
+		}
 		x.nums[k.num] = l
-		return
+	case k.isUUID:
+		if x.uuids == nil {
+			x.uuids = make(map[[2]uint64]loc, x.hint)
+		}
+		x.uuids[[2]uint64{uint64(k.num), k.lo}] = l
+	default:
+		if x.strs == nil {
+			x.strs = make(map[string]loc, x.hint)
+		}
+		x.strs[k.str] = l
 	}
-	if x.strs == nil {
-		x.strs = map[string]loc{}
-	}
-	x.strs[k.str] = l
 }
 
 func (x *keyIndex) del(k rowKey) {
-	if k.isNum {
+	switch {
+	case k.isNum:
 		delete(x.nums, k.num)
-		return
+	case k.isUUID:
+		delete(x.uuids, [2]uint64{uint64(k.num), k.lo})
+	default:
+		delete(x.strs, k.str)
 	}
-	delete(x.strs, k.str)
 }
 
-func (x *keyIndex) len() int { return len(x.nums) + len(x.strs) }
+func (x *keyIndex) len() int { return len(x.nums) + len(x.uuids) + len(x.strs) }
 
 func (x *keyIndex) each(fn func(rowKey, loc)) {
 	for n, l := range x.nums {
 		fn(rowKey{num: n, isNum: true}, l)
+	}
+	for u, l := range x.uuids {
+		fn(rowKey{num: int64(u[0]), lo: u[1], isUUID: true}, l)
 	}
 	for s, l := range x.strs {
 		fn(rowKey{str: s}, l)
@@ -240,6 +337,11 @@ func (x *keyIndex) deleteWhere(pred func(loc) bool) {
 	for n, l := range x.nums {
 		if pred(l) {
 			delete(x.nums, n)
+		}
+	}
+	for u, l := range x.uuids {
+		if pred(l) {
+			delete(x.uuids, u)
 		}
 	}
 	for s, l := range x.strs {
