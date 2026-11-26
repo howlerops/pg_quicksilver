@@ -178,7 +178,7 @@ grows fastest. Set the PostgreSQL parameter.
     - name: quicksilver.howlerops.io
       parameters:
         tables: public.events
-        sidecarMemory: 2Gi      # ~90 bytes of RSS per live row
+        sidecarMemory: 3Gi      # 300 bytes per live row at the peak; this is 10M rows
 ```
 
 The sidecar's heap is dominated by one structure — the key index, one entry per
@@ -194,11 +194,17 @@ That is 42 bytes per live row of live heap, and roughly twice that resident.
 The mirror weighed 120 MB on disk and the sidecar peaked at 1,854 MB, so
 **sizing from the mirror's size on disk is wrong by an order of magnitude.**
 
+That profile is the steady state. The limit has to hold the peak, which is
+catching up and rewriting the base at the same time: 2,972 and 3,040 MB at
+10.5M rows (`bench/engine_compare/merged_build/out/p2_summary.txt`), 290 bytes
+per row. So budget **300 bytes per live row**; the default went from 256Mi to
+1Gi for that reason.
+
 | rows | `sidecarMemory` |
 |---|---|
-| 1M | `256Mi` (the default) |
-| 5M | `512Mi` |
-| 20M | `2Gi` |
+| up to 3.5M | `1Gi` (the default) |
+| 10M | `3Gi` |
+| 20M | `6Gi` |
 
 **`kubectl top` after a restart is now a usable second opinion**, because the
 key index is built *before* `/readyz` passes. RSS at readiness is the RSS the

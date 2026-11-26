@@ -492,3 +492,52 @@ Dates and timestamps before 1 AD or beyond year 294247 still halt.
 
 Still on the list above, untouched: enums (the mirror is not given the label
 order), `interval`, arrays and json as native types.
+
+## What is routed, in the end
+
+This document measured the dialect. [40](40-the-router-moves-inside.md) turned
+the measurement into a rule (nothing is routed unless every construct in it is
+on a verified list) and then into a system: the extension, the sidecar and the
+DuckLake mirror wired together, with the list grown by running this corpus
+through them. The final numbers, on the hot standby, each statement run from
+the heap and through the router and compared byte for byte, RowDescription
+included:
+
+| database | of this corpus's 728 | of 1,142 with the router's own two corpora | different |
+|---|---|---|---|
+| ICU `en-US` | 120 routed | 438 routed | 0 |
+| C locale | 146 routed | 467 routed | 0 |
+
+With the opt-in setting that accepts a lost overflow error: 486 and 515, 0
+different. Against the 17% of statements that came back with a different value
+and no error when everything was sent to DuckDB, the routed set has none,
+because the differences above are exactly what the list leaves out.
+
+The exclusions, each with the statement that proved it
+(`ext/pg_quicksilver/validate/results/widen-icu-en-US.json` has all of them):
+
+- **Case folding and ILIKE**: `lower('İstanbul')` (cmp-016, str-017: 40 rows
+  on the heap, 80 from the mirror), `upper('straße')` (str-027: `STRASSE` vs
+  `STRAẞE`).
+- **Regular expressions**: `~` with POSIX classes (str-022: 988 vs 648).
+- **`char(n)`**: `=`, the cast to text and `||` (cmp-031, str-062: padding).
+- **Integer division**: `/(bigint,integer)` (own-100: 2 vs 1).
+- **`count(DISTINCT ...)`** (agg-029: 41 vs 40).
+- **`timestamptz - timestamptz`** (dt-038: a daylight-saving hour) and
+  **`timestamptz::text`** (cast-011: `-04:56:02` vs `-04:56`).
+- **Floats as text and text as numbers**: `float8::text`, `real::text`
+  (`0` vs `0.0`), `text::numeric`, `text::float8` (`1.5` vs `1.500`),
+  `bytea::text` (`\xc4` vs `\xC4`).
+- **Float statistics**: `stddev`, `var_pop`, `var_samp`, `corr`, `covar_pop`,
+  `regr_slope` (agg-025, agg-059: the last one or two digits).
+- **Anything not immutable** (39 functions and operators: `now()`, `to_char`,
+  `date_trunc` on a timestamptz, `timestamptz + interval`, ...): never proposed.
+- **Text order** unless the collation is `C`; **integer `+ - *`** unless the
+  session accepts a lost overflow error; **`numeric` without a precision**;
+  **enum, `inet`, `jsonb` and array columns**, which the mirror relation
+  publishes as text.
+- **326 constructs that fewer than three routed statements exercise**: not
+  known to be wrong, not shown to be right.
+
+One finding of this document is retired by the same runs: the mirror keeps
+`±infinity` in dates and timestamps now, and reads it back identical.

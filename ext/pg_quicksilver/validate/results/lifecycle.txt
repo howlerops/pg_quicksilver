@@ -1,0 +1,92 @@
+[ok] start: an empty cluster, configuration only: heap 1000000 rows, sum 499995368.91
+       open since the start: mirror after 0.5s, equal
+       opened before the step: mirror after 0.6s, equal
+       new: mirror after 0.6s, equal
+       kept plan: equal, Quicksilver: mirror; Quicksilver Reason: 430436 rows from mirrored tables, over 50000
+       EXPLAIN: Quicksilver: mirror; Quicksilver Reason: 430436 rows from mirrored tables, over 50000
+       lookup:  Quicksilver: heap (cheap on the heap); Quicksilver Detail: cost 8 under 10000, 1 rows from mirrored tables under 50000
+       mirror relation: first
+[ok] write burst: 50,000 inserts, 20,000 updates, 5,000 deletes: heap 1045000 rows, sum 512390593.91
+       open since the start: mirror after 1.6s, equal
+       opened before the step: mirror after 0.4s, equal
+       new: mirror after 0.3s, equal
+       kept plan: equal, Quicksilver: mirror; Quicksilver Reason: 430436 rows from mirrored tables, over 50000
+       EXPLAIN: Quicksilver: mirror; Quicksilver Reason: 455221 rows from mirrored tables, over 50000
+       lookup:  Quicksilver: heap (cheap on the heap); Quicksilver Detail: cost 8 under 10000, 1 rows from mirrored tables under 50000
+       mirror relation: same relation
+[ok] delta merge (seen in the sidecar's log, after 15 small transactions): heap 1045000 rows, sum 512390668.91
+       open since the start: mirror after 0.3s, equal
+       opened before the step: mirror after 0.5s, equal
+       new: mirror after 0.4s, equal
+       kept plan: equal, Quicksilver: mirror; Quicksilver Reason: 430436 rows from mirrored tables, over 50000
+       EXPLAIN: Quicksilver: mirror; Quicksilver Reason: 458062 rows from mirrored tables, over 50000
+       lookup:  Quicksilver: heap (cheap on the heap); Quicksilver Detail: cost 8 under 10000, 1 rows from mirrored tables under 50000
+       mirror relation: same relation
+[ok] idle base rewrite (compacted, per the sidecar's log): heap 1005000 rows, sum 504390468.91
+       open since the start: mirror after 0.1s, equal
+       opened before the step: mirror after 0.6s, equal
+       new: mirror after 0.4s, equal
+       kept plan: equal, Quicksilver: mirror; Quicksilver Reason: 418750 rows from mirrored tables, over 50000
+       EXPLAIN: Quicksilver: mirror; Quicksilver Reason: 418750 rows from mirrored tables, over 50000
+       lookup:  Quicksilver: heap (cheap on the heap); Quicksilver Detail: cost 8 under 10000, 1 rows from mirrored tables under 50000
+       mirror relation: same relation
+[ok] TRUNCATE + reload of 300,000 rows: heap 300000 rows, sum 149998500.00
+       open since the start: mirror after 3.6s, equal (first on the heap: mirror is not fresh enough: public.orders: mirror is at 0/12FFFFD7, this node is at 0/1842F330 (88273753 WAL bytes behind; quicksilver.max_lag = 0 routes only a mirror that has caught up))
+       opened before the step: mirror after 0.7s, equal
+       new: mirror after 0.4s, equal
+       kept plan: equal, Quicksilver: mirror; Quicksilver Reason: 176471 rows from mirrored tables, over 50000
+       EXPLAIN: Quicksilver: mirror; Quicksilver Reason: 176471 rows from mirrored tables, over 50000
+       lookup:  Quicksilver: heap (cheap on the heap); Quicksilver Detail: cost 8 under 10000, 1 rows from mirrored tables under 50000
+       mirror relation: same relation
+[ok] DDL barrier: ADD COLUMN channel: heap 300000 rows, sum 149998500.00
+       open since the start: mirror after 1.4s, equal
+       opened before the step: mirror after 0.6s, equal
+       new: mirror after 0.6s, equal
+       kept plan: equal, Quicksilver: mirror; Quicksilver Reason: 171815 rows from mirrored tables, over 50000
+       EXPLAIN: Quicksilver: mirror; Quicksilver Reason: 171815 rows from mirrored tables, over 50000
+       lookup:  Quicksilver: heap (cheap on the heap); Quicksilver Detail: cost 8 under 10000, 1 rows from mirrored tables under 50000
+       mirror relation: RE-CREATED
+[ok]   ... and the new column, routed: heap 300000 rows, sum 149998500.00
+       new: mirror after 0.4s, equal
+       EXPLAIN: Quicksilver: mirror; Quicksilver Reason: 171815 rows from mirrored tables, over 50000
+       lookup:  Quicksilver: heap (cheap on the heap); Quicksilver Detail: cost 8 under 10000, 1 rows from mirrored tables under 50000
+       mirror relation: same relation
+[ok] before the halt: public.qs_types is routed (mirror)
+[ok] halted (a date the mirror cannot hold): public.qs_types answered by the heap (mirror is not fresh enough: public.qs_types: its mirror on this node is reported unreadable (halted, rebuilding or not published)), equal to the heap: True
+       mirror_status: public.qs_types: its mirror on this node is reported unreadable (halted, rebuilding or not published)
+[ok]   ... while the other tables stay routed: heap 300000 rows, sum 149998500.00
+       open since the start: mirror after 0.1s, equal
+       opened before the step: mirror after 0.6s, equal
+       new: mirror after 0.6s, equal
+       kept plan: equal, Quicksilver: mirror; Quicksilver Reason: 171815 rows from mirrored tables, over 50000
+       EXPLAIN: Quicksilver: mirror; Quicksilver Reason: 171815 rows from mirrored tables, over 50000
+       lookup:  Quicksilver: heap (cheap on the heap); Quicksilver Detail: cost 8 under 10000, 1 rows from mirrored tables under 50000
+       mirror relation: same relation
+[ok] REBUILD of public.qs_types (sidecar restarted with the request): routed again after 0.3s, equal to the heap: True
+[ok]   ... and public.orders after the sidecar restart: heap 300000 rows, sum 149998500.00
+       open since the start: mirror after 0.1s, equal
+       opened before the step: mirror after 0.7s, equal
+       new: mirror after 0.6s, equal
+       kept plan: equal, Quicksilver: mirror; Quicksilver Reason: 171815 rows from mirrored tables, over 50000
+       EXPLAIN: Quicksilver: mirror; Quicksilver Reason: 171815 rows from mirrored tables, over 50000
+       lookup:  Quicksilver: heap (cheap on the heap); Quicksilver Detail: cost 8 under 10000, 1 rows from mirrored tables under 50000
+       mirror relation: same relation
+[ok] sidecar killed (-9), then a write: answered by the heap (public.orders: mirror is at 0/1AD73830, this node is at 0/1ADBC4C8 (298136 WAL bytes behind; quicksilver.max_lag = 0 rou), equal to the heap: True
+[ok] sidecar kill -9 and restart: heap 300000 rows, sum 149998510.00
+       open since the start: mirror after 0.2s, equal
+       opened before the step: mirror after 1.4s, equal
+       new: mirror after 1.3s, equal
+       kept plan: equal, Quicksilver: mirror; Quicksilver Reason: 171815 rows from mirrored tables, over 50000
+       EXPLAIN: Quicksilver: mirror; Quicksilver Reason: 172133 rows from mirrored tables, over 50000
+       lookup:  Quicksilver: heap (cheap on the heap); Quicksilver Detail: cost 8 under 10000, 1 rows from mirrored tables under 50000
+       mirror relation: same relation
+       standby restarted: 2 of 2 open sessions were closed by the server, as a restart does; reconnected
+[ok] standby restart (the applied LSNs in its shared memory are gone, and reported again): heap 300000 rows, sum 149998510.00
+       open since the start: mirror after 0.7s, equal
+       opened before the step: mirror after 0.9s, equal
+       new: mirror after 0.5s, equal
+       kept plan: equal, Quicksilver: mirror; Quicksilver Reason: 172133 rows from mirrored tables, over 50000
+       EXPLAIN: Quicksilver: mirror; Quicksilver Reason: 172133 rows from mirrored tables, over 50000
+       lookup:  Quicksilver: heap (cheap on the heap); Quicksilver Detail: cost 8 under 10000, 1 rows from mirrored tables under 50000
+       mirror relation: same relation
+all steps ok

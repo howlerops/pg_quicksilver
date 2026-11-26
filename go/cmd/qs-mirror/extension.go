@@ -1,0 +1,680 @@
+package main
+
+// The sidecar's half of pg_quicksilver (ext/pg_quicksilver, docs/40): the
+// extension routes a read to a table's mirror relation when it is safe, and
+// it believes three things somebody has to keep true. This file keeps them.
+//
+//  1. On the PRIMARY, because the registry is a table: every mirrored table
+//     has a mirror relation, registered in quicksilver.mirrors, and the lake
+//     it reads is in quicksilver.lakes. The mirror relation is a pg_duckdb
+//     view over the table's DuckLake table. It names the lake table and no
+//     file and no path, so its text is the same on every instance and is not
+//     generated again when the mirror compacts; the catalog's path is in
+//     quicksilver.lakes and is the same on every Pod. The extension attaches
+//     the lake in a session itself, the first time it needs it and only where
+//     the catalog file exists: there is no login trigger, so there is nothing
+//     here that can stop a login on a node without a mirror.
+//
+//  2. On THIS node: quicksilver.report_applied_lsn(table, lsn), for every
+//     table, with the LSN a reader of the lake gets — the publisher's last
+//     published one, not the manifest's, because the publisher is
+//     asynchronous. 0/0 for a table that must not be read here (halted,
+//     being rebuilt, refused in the lake, not yet published); the extension
+//     then answers from the heap on this node whatever the registry says.
+//
+//  3. Nothing about infinity. quicksilver.mirrors.finite_columns existed
+//     because the mirror once could not hold an infinite date or timestamp.
+//     It does now, as DuckDB's own infinity, and the equality harness reads
+//     it back identical through DuckLake and pg_duckdb (docs/40), so the
+//     allowlist no longer asks for the column and the sidecar does not
+//     maintain it.
+//
+// All of it needs QS_DUCKLAKE=on: the lake table is the only mirror relation
+// that survives a compaction. QS_EXTENSION=off turns this file off.
+
+import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"fmt"
+	"log/slog"
+	"os"
+	"sort"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"time"
+
+	"github.com/jackc/pgx/v5"
+
+	"github.com/howlerops/pg_quicksilver/go/internal/changestream"
+	"github.com/howlerops/pg_quicksilver/go/internal/ducklake"
+	"github.com/howlerops/pg_quicksilver/go/internal/mirror"
+)
+
+const (
+	extName        = "pg_quicksilver"
+	extLakeAlias   = "lake"
+	extViewComment = "quicksilver mirror relation; maintained by the sidecar, do not edit. "
+	// How often a report is repeated when nothing moved. The reports live in
+	// the local server's shared memory and are gone when it restarts.
+	extHeartbeat = time.Second
+	extRecheck   = time.Minute
+	extRetry     = 15 * time.Second
+)
+
+// castable are the types a pg_duckdb row field can be cast to as the heap
+// declares them. Anything else is published as text; the extension then keeps
+// a statement that reads the column on the heap ("stored as a different type
+// in the mirror"). Found by trying each (pg_duckdb 1.2.0): a cast to an enum
+// or inet is refused when the view is created, one to jsonb or an array when
+// it is planned or run — and a view with one such column cannot be read at
+// all, whichever columns the statement names.
+var castable = map[uint32]bool{
+	16: true, 21: true, 23: true, 20: true, // boolean, smallint, integer, bigint
+	700: true, 701: true, 1700: true, // real, double precision, numeric
+	25: true, 1043: true, 1042: true, // text, varchar, char
+	2950: true, 17: true, 114: true, // uuid, bytea, json
+	1082: true, 1083: true, 1266: true, 1114: true, 1184: true, 1186: true, // date, time, timetz, timestamp, timestamptz, interval
+}
+
+type extColumn struct {
+	Name, Type string
+	TypeOID    uint32
+}
+
+// extLink is the state of both halves. The primary half runs on the pump's
+// goroutine and its connection; the local half is one goroutine with one kept
+// connection of its own, so the apply loop never waits for the local server.
+type extLink struct {
+	log    *slog.Logger
+	o      options
+	off    bool
+	schema string
+
+	mu      sync.Mutex
+	blocked map[string]bool // tables the pump says must not be read: halted
+	known   map[string]bool // tables in QS_TABLES
+
+	// primary half
+	dirty     bool
+	checkedAt time.Time
+	present   bool
+	saidWhy   string
+	lastHalt  string
+
+	// what the last report said, for the tests and for /metrics
+	reported map[string]string
+
+	// The stream's idle position (see position). The pump owns the stream;
+	// these three are how the reporter reads it without asking the pump.
+	stream atomic.Pointer[changestream.Streaming]
+	idleOK atomic.Bool
+	gen    atomic.Uint64
+	// applied is the end of the last transaction the pump applied in this
+	// stream, when it holds nothing unapplied: see position.
+	applied atomic.Uint64
+	tick    time.Duration
+}
+
+// ext is nil until main sets it; every method is safe on nil.
+var ext *extLink
+
+func newExtLink(log *slog.Logger, o options) *extLink {
+	e := &extLink{log: log, o: o, dirty: true,
+		schema:  env("QS_EXTENSION_SCHEMA", "quicksilver_mirror"),
+		blocked: map[string]bool{}, known: map[string]bool{}, reported: map[string]string{}}
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("QS_EXTENSION"))) {
+	case "off", "0", "false", "no":
+		e.off = true
+	}
+	for _, q := range o.tables {
+		e.known[q] = true
+	}
+	e.tick = 25 * time.Millisecond
+	if d, err := time.ParseDuration(os.Getenv("QS_EXTENSION_REPORT_INTERVAL")); err == nil && d >= time.Millisecond {
+		e.tick = d
+	}
+	return e
+}
+
+func (e *extLink) say(why, msg string, args ...any) {
+	if e.saidWhy != why {
+		e.saidWhy = why
+		e.log.Info(msg, args...)
+	}
+}
+
+// ---- which tables must not be read here ---------------------------------------
+
+// observe records which tables are halted. Called by the pump every tick and
+// wherever a table halts, so the next report (at most one extTick away) says
+// 0/0 for it; the lake refuses it too, but only once the publisher has got to
+// the manifest that says so.
+func (e *extLink) observe(tables map[string]*mirror.Table) {
+	if e == nil || e.off {
+		return
+	}
+	halted := make([]string, 0)
+	e.mu.Lock()
+	for q, t := range tables {
+		h := t.Halted() != ""
+		if h {
+			halted = append(halted, q)
+		}
+		e.blocked[q] = h
+	}
+	e.mu.Unlock()
+	sort.Strings(halted)
+	if s := strings.Join(halted, ","); s != e.lastHalt {
+		// a halted table leaves the registry, a rebuilt one returns: at the next tick, not the next retry
+		e.lastHalt, e.dirty, e.checkedAt = s, true, time.Time{}
+	}
+}
+
+// The pump brackets every tick with these. Between pumpBusy and pumpIdle a
+// transaction may have been handed out by the stream and not applied.
+func (e *extLink) pumpBusy() {
+	if e != nil {
+		e.idleOK.Store(false)
+		e.gen.Add(1)
+	}
+}
+
+// pumpIdle says the pump holds nothing unapplied. through is the end LSN of
+// the last transaction it applied from THIS stream, or zero if it has applied
+// none yet: the stream is ordered by commit, so every transaction committing
+// below it has been applied too (or was already in the mirror when the stream
+// began). The manifests' own applied LSN is where a commit record STARTS; a
+// node that can see that commit has replayed to where it ENDS, and without
+// this a mirror that had applied everything would look a record behind.
+func (e *extLink) pumpIdle(through uint64) {
+	if e != nil {
+		if through > e.applied.Load() {
+			e.applied.Store(through)
+		}
+		e.idleOK.Store(true)
+	}
+}
+
+func (e *extLink) attachStream(st *changestream.Streaming) {
+	if e != nil {
+		e.idleOK.Store(false)
+		e.gen.Add(1)
+		e.applied.Store(0)
+		e.stream.Store(st)
+	}
+}
+
+// position is a WAL position P such that every transaction committing below
+// P is in the mirror's manifests, or zero when there is none to vouch for.
+//
+// It is the later of the stream's idle position (changestream.IdleLSN: the
+// walsender has decoded up to P and nothing for this publication below P is
+// still in flight) and the end of the last transaction the pump applied
+// (pumpIdle), taken while the pump holds nothing unapplied. The pump says so
+// with idleOK, and gen moves whenever it is about to take more from the
+// stream; both are read before AND after, so a tick that came and went in
+// between is noticed.
+//
+// This is what lets a mirror be reported as current while the primary writes
+// WAL that is not for its tables. Nothing is persisted for it (the manifest's
+// own applied LSN follows every few seconds, because that costs fsyncs): a
+// report lives in the local server's shared memory and needs no durability.
+func (e *extLink) position() uint64 {
+	st := e.stream.Load()
+	if st == nil || !e.idleOK.Load() {
+		return 0
+	}
+	g := e.gen.Load()
+	p := st.IdleLSN()
+	if a := e.applied.Load(); a > p {
+		p = a
+	}
+	if !e.idleOK.Load() || e.gen.Load() != g || e.stream.Load() != st {
+		return 0
+	}
+	return p
+}
+
+// lsns is what to report now, per table: how far a reader of the lake table
+// is guaranteed to see, or 0/0 for a table that must not be read.
+//
+// The lake is published asynchronously, so it is the publisher's LSN that
+// counts, not the manifest's. The idle position is added only when the lake
+// has published the newest manifest it was given, and it is read BEFORE the
+// publisher's state: position P vouches for the manifests submitted by then,
+// and a publisher that has nothing outstanding afterwards has published all
+// of those.
+func (e *extLink) lsns() map[string]string {
+	out := make(map[string]string, len(e.known))
+	pos := e.position()
+	var stats map[string]ducklake.TableStats
+	if lake != nil {
+		stats, _ = lake.Stats()
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	for q := range e.known {
+		st, ok := stats[q]
+		if ok && st.PublishedLSN == "" && st.Refused == "" && st.PublishedAt.IsZero() {
+			ok = false // submitted, and the publisher has not got to it yet
+		}
+		if !ok && !e.blocked[q] {
+			// Nothing is known yet: this process has just started and has
+			// not submitted the table. Whatever the last process reported
+			// stands (the lake is as it left it, and it reported 0/0 itself
+			// if the table was not to be read), rather than every restart
+			// of the sidecar taking every table off the mirror for a moment.
+			continue
+		}
+		if e.blocked[q] || st.Refused != "" || st.PublishedLSN == "" {
+			out[q] = "0/0"
+			continue
+		}
+		out[q] = st.PublishedLSN
+		// Not the manifest sequence numbers: they count files, and a manifest
+		// that only marks rows dead has its predecessor's.
+		if _, current := lake.Current(q); current && pos > parseLSNBytes(st.PublishedLSN) {
+			out[q] = fmt.Sprintf("%X/%X", uint32(pos>>32), uint32(pos))
+		}
+	}
+	return out
+}
+
+// ---- the local half: report_applied_lsn ---------------------------------------
+
+const extReportSQL = `
+SELECT quicksilver.report_applied_lsn(c.oid, v.lsn)
+  FROM unnest($1::text[], $2::text[], $3::pg_lsn[]) AS v(s, t, lsn)
+  JOIN pg_catalog.pg_namespace n ON n.nspname = v.s
+  JOIN pg_catalog.pg_class c ON c.relnamespace = n.oid AND c.relname = v.t`
+
+// run reports until ctx ends. One statement per report, on a connection that
+// is kept; a report is sent when an LSN moved and otherwise once a heartbeat.
+// Every failure is survivable: the connection is dropped and made again, and
+// what the extension does with a table nobody reports is answer from the heap.
+func (e *extLink) run(ctx context.Context) {
+	if e == nil || e.off {
+		return
+	}
+	var conn *pgx.Conn
+	defer func() {
+		if conn != nil {
+			_ = conn.Close(context.WithoutCancel(ctx))
+		}
+	}()
+	var last map[string]string
+	var sentAt, absentAt time.Time
+	var lastErr string
+	tick := time.NewTicker(e.tick)
+	defer tick.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-tick.C:
+		}
+		if lake == nil {
+			continue // nothing publishes a mirror relation; reconcile says so once
+		}
+		if !absentAt.IsZero() && time.Since(absentAt) < extRecheck {
+			continue
+		}
+		// Ask the walsender where it is, so the idle position follows a
+		// source that is writing WAL for other tables.
+		if st := e.stream.Load(); st != nil && e.idleOK.Load() {
+			st.RequestKeepalive()
+		}
+		now := e.lsns()
+		if conn != nil && sameLSNs(now, last) && time.Since(sentAt) < extHeartbeat {
+			continue
+		}
+		if conn == nil {
+			c, err := pgx.Connect(ctx, e.o.localDSN())
+			if err != nil {
+				if msg := err.Error(); msg != lastErr {
+					lastErr = msg
+					e.log.Warn("cannot reach the local PostgreSQL to report applied LSNs; "+
+						"reads stay on the heap here until it answers", "err", err)
+				}
+				continue
+			}
+			var have bool
+			if err := c.QueryRow(ctx, `SELECT to_regprocedure('quicksilver.report_applied_lsn(regclass,pg_lsn)') IS NOT NULL`).Scan(&have); err != nil || !have {
+				_ = c.Close(ctx)
+				absentAt = time.Now() // not installed here (yet): look again in a minute
+				continue
+			}
+			conn, absentAt, last = c, time.Time{}, nil
+		}
+		schemas, names, lsns := make([]string, 0, len(now)), make([]string, 0, len(now)), make([]string, 0, len(now))
+		for q, lsn := range now {
+			s, n, _ := strings.Cut(q, ".")
+			schemas, names, lsns = append(schemas, s), append(names, n), append(lsns, lsn)
+		}
+		rctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		_, err := conn.Exec(rctx, extReportSQL, schemas, names, lsns)
+		cancel()
+		if err != nil {
+			if msg := err.Error(); msg != lastErr {
+				lastErr = msg
+				e.log.Warn("reporting applied LSNs to the local PostgreSQL failed; reconnecting", "err", err)
+			}
+			_ = conn.Close(context.WithoutCancel(ctx))
+			conn = nil
+			continue
+		}
+		if lastErr != "" {
+			e.log.Info("reporting applied LSNs to the local PostgreSQL again")
+			lastErr = ""
+		}
+		last, sentAt = now, time.Now()
+		e.mu.Lock()
+		e.reported = now
+		e.mu.Unlock()
+	}
+}
+
+func sameLSNs(a, b map[string]string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for k, v := range a {
+		if b[k] != v {
+			return false
+		}
+	}
+	return true
+}
+
+// Metrics is what was last reported, per table, as an LSN in bytes (0: told
+// not to read it).
+func (e *extLink) Metrics() string {
+	if e == nil || e.off {
+		return ""
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if len(e.reported) == 0 {
+		return ""
+	}
+	names := make([]string, 0, len(e.reported))
+	for q := range e.reported {
+		names = append(names, q)
+	}
+	sort.Strings(names)
+	var b strings.Builder
+	b.WriteString("# HELP quicksilver_extension_reported_lsn The applied LSN last reported to pg_quicksilver on this node; 0 means the table was reported unreadable.\n")
+	b.WriteString("# TYPE quicksilver_extension_reported_lsn gauge\n")
+	for _, q := range names {
+		fmt.Fprintf(&b, "quicksilver_extension_reported_lsn{table=%q} %d\n", q, parseLSNBytes(e.reported[q]))
+	}
+	return b.String()
+}
+
+func parseLSNBytes(s string) uint64 {
+	var hi, lo uint64
+	if _, err := fmt.Sscanf(s, "%X/%X", &hi, &lo); err != nil {
+		return 0
+	}
+	return hi<<32 | lo
+}
+
+// ---- the primary half: mirror relations and the registry ----------------------
+
+// extViewName is the mirror relation's name in the dedicated schema:
+// "schema.table" as one identifier, which cannot collide across schemas.
+func extViewName(qualified string) string {
+	if len(qualified) <= 63 {
+		return qualified
+	}
+	sum := sha256.Sum256([]byte(qualified))
+	return qualified[:54] + "_" + hex.EncodeToString(sum[:4])
+}
+
+func extQuote(s string) string { return `"` + strings.ReplaceAll(s, `"`, `""`) + `"` }
+
+// extViewSQL is the mirror relation: the heap's column names, in the heap's
+// order, cast to the heap's types, over the lake table by name.
+func extViewSQL(mirrorSchema, heapSchema, heapTable string, cols []extColumn) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "CREATE VIEW %s.%s AS\nSELECT ", extQuote(mirrorSchema), extQuote(extViewName(heapSchema+"."+heapTable)))
+	for i, c := range cols {
+		if i > 0 {
+			b.WriteString(",\n       ")
+		}
+		typ := c.Type
+		if !castable[c.TypeOID] {
+			typ = "text"
+		}
+		fmt.Fprintf(&b, "(r['%s'])::%s AS %s", strings.ReplaceAll(c.Name, "'", "''"), typ, extQuote(c.Name))
+	}
+	fmt.Fprintf(&b, "\nFROM duckdb.query($qs$ SELECT * FROM %s.%s.%s $qs$) r",
+		extLakeAlias, extQuote(heapSchema), extQuote(heapTable))
+	return b.String()
+}
+
+func extSignature(viewSQL string) string {
+	sum := sha256.Sum256([]byte(viewSQL))
+	return extViewComment + "sha256:" + hex.EncodeToString(sum[:])
+}
+
+// reconcile makes the primary's registry match the tables this sidecar
+// mirrors, when something that decides it has changed: at start, after a DDL
+// barrier, when a table halts or is rebuilt. It never fails the pump; what it
+// could not do it tries again.
+func (e *extLink) reconcile(ctx context.Context, conn *pgx.Conn, tables map[string]*mirror.Table) {
+	if e == nil || e.off {
+		return
+	}
+	e.observe(tables)
+	switch {
+	case e.dirty && time.Since(e.checkedAt) >= extRetry:
+	case !e.present && time.Since(e.checkedAt) >= extRecheck:
+	case e.checkedAt.IsZero():
+	default:
+		return
+	}
+	e.checkedAt = time.Now()
+	var have, haveLakes bool
+	if err := conn.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM pg_extension WHERE extname = $1),
+		to_regclass('quicksilver.lakes') IS NOT NULL`, extName).Scan(&have, &haveLakes); err != nil {
+		e.log.Warn("could not ask the primary whether pg_quicksilver is installed", "err", err)
+		return
+	}
+	e.present = have && haveLakes
+	switch {
+	case !have:
+		e.say("absent", "pg_quicksilver is not installed in this database; no mirror relation is registered "+
+			"(CREATE EXTENSION pg_quicksilver on the primary to route reads; this is looked at again every minute)",
+			"database", e.o.database)
+		return
+	case !haveLakes:
+		e.say("old", "pg_quicksilver is installed but has no quicksilver.lakes table; this sidecar needs a newer extension")
+		return
+	case lake == nil:
+		e.say("nolake", "pg_quicksilver is installed but QS_DUCKLAKE is off, so there is no mirror relation "+
+			"that survives a compaction; nothing is registered and reads stay on the heap")
+		e.present = false
+		return
+	}
+	desired := map[string]bool{}
+	for q, t := range tables {
+		if t.Halted() == "" {
+			desired[q] = true
+		}
+	}
+	if err := e.sync(ctx, conn, desired); err != nil {
+		e.log.Warn("could not bring pg_quicksilver's registry to the mirrored tables; will retry",
+			"err", err, "retry_in", extRetry)
+		return
+	}
+	e.dirty = false
+}
+
+// markDirty asks for a reconcile at the next tick: the heap's columns changed.
+func (e *extLink) markDirty() {
+	if e != nil {
+		e.dirty, e.checkedAt = true, time.Time{}
+	}
+}
+
+func (e *extLink) sync(ctx context.Context, conn *pgx.Conn, desired map[string]bool) error {
+	// DuckDB's ducklake and sqlite extensions, which pg_duckdb then loads in
+	// every backend of every instance. Not in the transaction below: this is
+	// DuckDB's doing, and a failure (no way out to the extension repository,
+	// and the image does not carry them) must not undo the rest.
+	for _, x := range []string{"ducklake", "sqlite"} {
+		var n int
+		if err := conn.QueryRow(ctx, `SELECT count(*) FROM duckdb.extensions WHERE name = $1`, x).Scan(&n); err != nil {
+			return fmt.Errorf("pg_duckdb is not installed in this database (duckdb.extensions): %w", err)
+		}
+		if n > 0 {
+			continue
+		}
+		if _, err := conn.Exec(ctx, `SELECT duckdb.install_extension($1)`, x); err != nil {
+			e.log.Warn("could not install a DuckDB extension the lake needs; mirror relations will not plan "+
+				"until it is there, and reads stay on the heap", "extension", x, "err", err)
+		}
+	}
+
+	tx, err := conn.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
+	// Every sidecar of the cluster does this; one at a time.
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext('quicksilver.mirrors'))`); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `INSERT INTO quicksilver.lakes AS l (alias, catalog) VALUES ($1, $2)
+		ON CONFLICT (alias) DO UPDATE SET catalog = EXCLUDED.catalog WHERE l.catalog IS DISTINCT FROM EXCLUDED.catalog`,
+		extLakeAlias, lakeCatalogPath(e.o)); err != nil {
+		return fmt.Errorf("quicksilver.lakes: %w", err)
+	}
+	if _, err := tx.Exec(ctx, "CREATE SCHEMA IF NOT EXISTS "+extQuote(e.schema)); err != nil {
+		return err
+	}
+
+	names := make([]string, 0, len(desired))
+	for q := range desired {
+		names = append(names, q)
+	}
+	sort.Strings(names)
+	keep := make([]string, 0, len(names))
+	var made, kept []string
+	for _, q := range names {
+		schema, table, _ := strings.Cut(q, ".")
+		view := extViewName(q)
+		keep = append(keep, view)
+		rows, err := tx.Query(ctx, `
+			SELECT a.attname, format_type(a.atttypid, a.atttypmod), a.atttypid::oid
+			  FROM pg_attribute a
+			 WHERE a.attrelid = to_regclass(format('%I.%I', $1::text, $2::text))
+			   AND a.attnum > 0 AND NOT a.attisdropped
+			 ORDER BY a.attnum`, schema, table)
+		if err != nil {
+			return err
+		}
+		cols, err := pgx.CollectRows(rows, func(r pgx.CollectableRow) (extColumn, error) {
+			var c extColumn
+			return c, r.Scan(&c.Name, &c.Type, &c.TypeOID)
+		})
+		if err != nil {
+			return err
+		}
+		if len(cols) == 0 {
+			continue // the table is gone on the source; the pump will say so
+		}
+		viewSQL := extViewSQL(e.schema, schema, table, cols)
+		sig := extSignature(viewSQL)
+		var haveSig *string
+		var registered, foreign *bool
+		if err := tx.QueryRow(ctx, `
+			WITH v AS (SELECT to_regclass(format('%I.%I', $3::text, $4::text)) AS oid),
+			     h AS (SELECT to_regclass(format('%I.%I', $1::text, $2::text)) AS oid)
+			SELECT obj_description(v.oid, 'pg_class'),
+			       (SELECT m.mirror = v.oid FROM quicksilver.mirrors m WHERE m.heap = h.oid),
+			       (SELECT n.nspname <> $3 FROM quicksilver.mirrors m
+			          JOIN pg_class c ON c.oid = m.mirror JOIN pg_namespace n ON n.oid = c.relnamespace
+			         WHERE m.heap = h.oid)
+			  FROM v, h`, schema, table, e.schema, view).Scan(&haveSig, &registered, &foreign); err != nil {
+			return err
+		}
+		if foreign != nil && *foreign {
+			e.say("foreign:"+q, "a table is registered in quicksilver.mirrors with a mirror relation that is not "+
+				"this sidecar's; leaving it alone", "table", q)
+			continue
+		}
+		if haveSig != nil && *haveSig == sig && registered != nil && *registered {
+			kept = append(kept, q)
+			continue
+		}
+		rel := extQuote(e.schema) + "." + extQuote(view)
+		if _, err := tx.Exec(ctx, "DROP VIEW IF EXISTS "+rel); err != nil {
+			return fmt.Errorf("%s: %w", q, err)
+		}
+		if _, err := tx.Exec(ctx, viewSQL); err != nil {
+			return fmt.Errorf("%s: create the mirror relation: %w", q, err)
+		}
+		if _, err := tx.Exec(ctx, fmt.Sprintf("COMMENT ON VIEW %s IS '%s'", rel, strings.ReplaceAll(sig, "'", "''"))); err != nil {
+			return err
+		}
+		// Not register_mirror(): that resets max_lag_bytes and enabled, which
+		// are the operator's to set and survive a re-created view.
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO quicksilver.mirrors AS m (heap, mirror)
+			VALUES (to_regclass(format('%I.%I', $1::text, $2::text)), to_regclass(format('%I.%I', $3::text, $4::text)))
+			ON CONFLICT (heap) DO UPDATE SET mirror = EXCLUDED.mirror`, schema, table, e.schema, view); err != nil {
+			return fmt.Errorf("%s: register: %w", q, err)
+		}
+		made = append(made, q)
+	}
+
+	// Ours, and no longer wanted: the table left QS_TABLES, or is halted.
+	rows, err := tx.Query(ctx, `
+		SELECT c.oid, c.relname
+		  FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+		 WHERE n.nspname = $1 AND c.relkind = 'v' AND c.relname <> ALL($2::text[])
+		   AND obj_description(c.oid, 'pg_class') LIKE $3`, e.schema, keep, extViewComment+"%")
+	if err != nil {
+		return err
+	}
+	type gone struct {
+		oid  uint32
+		name string
+	}
+	drop, err := pgx.CollectRows(rows, func(r pgx.CollectableRow) (gone, error) {
+		var g gone
+		return g, r.Scan(&g.oid, &g.name)
+	})
+	if err != nil {
+		return err
+	}
+	var dropped []string
+	for _, g := range drop {
+		if _, err := tx.Exec(ctx, `DELETE FROM quicksilver.mirrors WHERE mirror = $1::oid`, g.oid); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx, "DROP VIEW IF EXISTS "+extQuote(e.schema)+"."+extQuote(g.name)); err != nil {
+			return err
+		}
+		dropped = append(dropped, g.name)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return err
+	}
+	if len(made)+len(dropped) > 0 || e.saidWhy != "synced" {
+		e.saidWhy = "synced"
+		e.log.Info("pg_quicksilver registry brought to the mirrored tables", "schema", e.schema,
+			"created", made, "unchanged", len(kept), "dropped", dropped,
+			"lake", lakeCatalogPath(e.o))
+	}
+	return nil
+}
+
+// lakeCatalogPath is the catalog a reader attaches; the same on every Pod.
+func lakeCatalogPath(o options) string {
+	return ducklake.CatalogPathIn(o.mirrorPath, os.Getenv("QS_DUCKLAKE_PATH"))
+}

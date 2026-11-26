@@ -288,9 +288,9 @@ EXECUTE plus;
 (3 rows)
 
 SELECT side, reason, detail FROM quicksilver.last_decision();
- side |             reason             |                 detail                 
-------+--------------------------------+----------------------------------------
- heap | construct not on the allowlist | operator pg_catalog.+(integer,integer)
+ side |           reason           |                                   detail                                   
+------+----------------------------+----------------------------------------------------------------------------
+ heap | inside a transaction block | the transaction has written; the mirror cannot see its uncommitted changes
 (1 row)
 
 ROLLBACK;

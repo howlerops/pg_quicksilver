@@ -80,6 +80,33 @@ func (p pgReplConn) SendStatus(ctx context.Context, pos pglogrepl.LSN) error {
 		pglogrepl.StandbyStatusUpdate{WALWritePosition: pos})
 }
 
+// SendStatusAsk is SendStatus with "reply requested": the walsender answers
+// with a keepalive carrying the position it has decoded up to.
+func (p pgReplConn) SendStatusAsk(ctx context.Context, pos pglogrepl.LSN) error {
+	return pglogrepl.SendStandbyStatusUpdate(ctx, p.c,
+		pglogrepl.StandbyStatusUpdate{WALWritePosition: pos, ReplyRequested: true})
+}
+
+// RequestKeepalive asks the server, with the next status update, to say where
+// it has decoded up to. A walsender skipping WAL that is not for this
+// publication sends keepalives rarely; a caller that wants IdleLSN to follow
+// the source closely asks. It costs one small message each way.
+func (s *Streaming) RequestKeepalive() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.err != nil || s.askKeepalive {
+		return
+	}
+	s.askKeepalive = true
+	if s.interrupt != nil {
+		s.interrupt()
+	}
+	select {
+	case s.wake <- struct{}{}:
+	default:
+	}
+}
+
 // weight is what a transaction costs against MaxBufferedChanges. A transaction
 // with no changes for our tables still occupies a slice element, so it counts
 // as one; otherwise a flood of them would be unbounded.
@@ -132,6 +159,7 @@ type Streaming struct {
 	interrupt       context.CancelFunc // aborts the receiver's blocking read
 	received        pglogrepl.LSN
 	idle            pglogrepl.LSN // see IdleLSN; zero when there is none
+	askKeepalive    bool          // see RequestKeepalive
 	relations       map[uint32]*pglogrepl.RelationMessage
 
 	// wake rouses a paused receiver: the buffer was drained, or there is a new
@@ -352,7 +380,9 @@ func (s *Streaming) receive(ctx context.Context) {
 		// no way to be interrupted".
 		s.mu.Lock()
 		pos := s.confirmed
-		send := s.confirmDirty || replyNow || !time.Now().Before(nextStatus)
+		ask := s.askKeepalive
+		s.askKeepalive = false
+		send := s.confirmDirty || replyNow || ask || !time.Now().Before(nextStatus)
 		paused := s.MaxBufferedChanges > 0 && s.bufferedChanges >= s.MaxBufferedChanges
 		var rctx context.Context
 		var cancel context.CancelFunc
@@ -365,7 +395,15 @@ func (s *Streaming) receive(ctx context.Context) {
 		s.mu.Unlock()
 
 		if send {
-			if err := s.rc.SendStatus(ctx, pos); err != nil {
+			var err error
+			if asker, ok := s.rc.(interface {
+				SendStatusAsk(context.Context, pglogrepl.LSN) error
+			}); ok && ask {
+				err = asker.SendStatusAsk(ctx, pos)
+			} else {
+				err = s.rc.SendStatus(ctx, pos)
+			}
+			if err != nil {
 				if ctx.Err() == nil {
 					s.setErr(err)
 				}

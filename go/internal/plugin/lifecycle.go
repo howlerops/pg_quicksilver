@@ -112,7 +112,7 @@ func (LifecycleImpl) LifecycleHook(
 // MirrorSidecar builds the container spec. Exported so the tests can assert on
 // it directly rather than through a JSON patch.
 func MirrorSidecar(clusterName string, cfg Config) *corev1.Container {
-	return &corev1.Container{
+	c := &corev1.Container{
 		Name:  MirrorContainerName,
 		Image: cfg.SidecarImage,
 		Env: []corev1.EnvVar{
@@ -133,6 +133,12 @@ func MirrorSidecar(clusterName string, cfg Config) *corev1.Container {
 			// killed. See sidecarResources for the measured cliff this is
 			// sized to stay clear of.
 			{Name: "GOMEMLIMIT", Value: goMemLimit(sidecarMemory(cfg))},
+			// Always set, in the sidecar's own spelling, so that what a Pod
+			// runs with can be read off its spec rather than inferred from an
+			// absence.
+			{Name: "QS_DUCKLAKE", Value: onOff(cfg.DuckLake)},
+			{Name: "QS_SERVE_WITH_HALTED_TABLES", Value: onOff(cfg.ServeWithHaltedTables)},
+			{Name: "QS_EXTENSION", Value: extensionSetting(cfg)},
 			{
 				Name: "QS_POD_NAME",
 				ValueFrom: &corev1.EnvVarSource{
@@ -209,6 +215,12 @@ func MirrorSidecar(clusterName string, cfg Config) *corev1.Container {
 			Capabilities:             &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}},
 		},
 	}
+	// Only when asked for: unset, the sidecar's own default (5m) applies, and
+	// that default is the sidecar's to change.
+	if cfg.DuckLake && cfg.DuckLakeRetention > 0 {
+		c.Env = append(c.Env, corev1.EnvVar{Name: "QS_DUCKLAKE_RETENTION", Value: cfg.DuckLakeRetention.String()})
+	}
+	return c
 }
 
 // HealthPort is where the sidecar serves /readyz, /healthz and /metrics.
@@ -234,6 +246,22 @@ func MirrorSidecar(clusterName string, cfg Config) *corev1.Container {
 const HealthPort = 9188
 
 func boolPtr(b bool) *bool { return &b }
+
+func onOff(b bool) string {
+	if b {
+		return "on"
+	}
+	return "off"
+}
+
+// extensionSetting falls back to auto for a value Validate would have refused:
+// an already-admitted Cluster must still get a Pod.
+func extensionSetting(cfg Config) string {
+	if cfg.Extension == ExtensionOff {
+		return ExtensionOff
+	}
+	return ExtensionAuto
+}
 
 // sidecarResources sets the mirror sidecar's memory request AND limit to the
 // same value, and derives GOMEMLIMIT from it.

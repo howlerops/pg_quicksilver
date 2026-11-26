@@ -96,6 +96,32 @@ func CatalogPath(mirrorRoot string) string {
 	return filepath.Join(mirrorRoot, DirName, CatalogFile)
 }
 
+// CatalogPathIn is CatalogPath for a lake directory that may have been
+// configured (Options.Dir); the absolute path a reader attaches.
+func CatalogPathIn(mirrorRoot, dir string) string {
+	if dir == "" {
+		dir = filepath.Join(mirrorRoot, DirName)
+	}
+	if abs, err := filepath.Abs(dir); err == nil {
+		dir = abs
+	}
+	return filepath.Join(dir, CatalogFile)
+}
+
+// Current reports whether the lake table stands at the newest manifest that
+// was submitted for it, and the LSN it stands at. The manifest sequence
+// number cannot answer that: it counts files, and two manifests that differ
+// only in which rows are dead, or only in their applied LSN, share one.
+func (p *Publisher) Current(qualified string) (lsn string, current bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	pub := p.published[qualified]
+	if pub == nil {
+		return "", false
+	}
+	return pub.AppliedLSN, pub == p.submitted[qualified] && pub.Refusal == ""
+}
+
 // Publisher keeps one lake in step with the mirror tables submitted to it.
 type Publisher struct {
 	opt     Options
@@ -117,9 +143,13 @@ type Publisher struct {
 	why     map[string]string      // why the published manifest needs a rewrite, "" if it does not
 	asks    map[string]*rewriteAsk // rewrites asked for and not yet seen to have helped
 	stats   map[string]*TableStats
-	global  GlobalStats
-	recent  []float64 // seconds, a ring of the last publishes
-	recentN int
+	// The newest manifest submitted for a table, and the one the lake stands
+	// at: see Current.
+	submitted map[string]*mirror.LakeManifest
+	published map[string]*mirror.LakeManifest
+	global    GlobalStats
+	recent    []float64 // seconds, a ring of the last publishes
+	recentN   int
 
 	wake chan struct{}
 	stop chan struct{}
@@ -320,6 +350,10 @@ func (p *Publisher) Submit(m *mirror.LakeManifest) {
 	}
 	p.pending[q] = &pendingManifest{m: m, since: since}
 	delete(p.retry, q)
+	if p.submitted == nil {
+		p.submitted = map[string]*mirror.LakeManifest{}
+	}
+	p.submitted[q] = m
 	st.SubmittedSeq = int64(m.Seq)
 	st.SubmittedLSN = m.AppliedLSN
 	p.mu.Unlock()
@@ -438,6 +472,10 @@ func (p *Publisher) Publish(ctx context.Context, m *mirror.LakeManifest) (res Re
 		return res, err
 	}
 	st.LastError = ""
+	if p.published == nil {
+		p.published = map[string]*mirror.LakeManifest{}
+	}
+	p.published[q] = m
 	st.PublishedSeq, st.PublishedLSN = int64(m.Seq), m.AppliedLSN
 	st.Refused, st.NeedsRewrite = res.Refused, rewrite != ""
 	// What was asked for a different reason, or for one that has gone, is

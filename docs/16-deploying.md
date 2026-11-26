@@ -422,6 +422,121 @@ the conformance test is one table);
 
 ---
 
+## Routing reads with pg_quicksilver
+
+Optional, and the only part of this that needs anything in the PostgreSQL
+image. [`ext/pg_quicksilver`](../ext/pg_quicksilver) is an extension that
+answers a read from the mirror when every construct in the statement is on a
+verified list, the plan is expensive enough and the mirror has caught up, and
+from the heap otherwise ([docs/40](40-the-router-moves-inside.md)). The
+sidecar does its half by itself when it finds the extension installed.
+
+**The image.** The image the Cluster's `imageName` points at must contain
+
+| | |
+|---|---|
+| pg_duckdb | 1.2.0 is what was verified. It reads the mirror. |
+| `pg_quicksilver.so`, `pg_quicksilver.control`, `pg_quicksilver--0.1.sql` | built from `ext/pg_quicksilver` against the same PostgreSQL major (PGXS, `postgresql-server-dev-17`, nothing else) |
+
+`deploy/Dockerfile` has a target for it, on top of a CloudNativePG image:
+
+```
+docker build --target postgres -t registry.example/postgresql-quicksilver:17 \
+       --build-arg CNPG_BASE=ghcr.io/cloudnative-pg/postgresql:17-standard-bookworm .
+```
+
+It installs pg_duckdb from a package (`--build-arg PG_DUCKDB_DEB=`: a package
+name in a repository the base image knows, or a `.deb`) and builds the
+extension in a separate stage. By hand it is `make -C ext/pg_quicksilver &&
+make -C ext/pg_quicksilver install` on a machine with the server headers, and
+the three files above copied to `pg_config --pkglibdir` and `--sharedir`'s
+`extension/`. The target was written against the layout `make install` was
+seen to produce; it has not been built (docs/40, not validated).
+
+**The Cluster.**
+
+```yaml
+spec:
+  imageName: registry.example/postgresql-quicksilver:17
+  postgresql:
+    shared_preload_libraries: ["pg_duckdb", "pg_quicksilver"]   # in this order
+  plugins:
+    - name: quicksilver.howlerops.io
+      parameters:
+        tables: public.orders,public.customers
+        ducklake: "true"                 # the mirror relation is a view over the lake table
+        serveWithHaltedTables: "true"    # a halted table is answered from the heap; see below
+        sidecarMemory: 2Gi
+```
+
+and once, on the primary: `CREATE EXTENSION pg_duckdb; CREATE EXTENSION
+pg_quicksilver;` in the mirrored database, and `quicksilver.route = auto` for
+the roles or the database that should be routed (`shadow` first:
+`quicksilver.reason_stats` then says what would have moved).
+
+| plugin parameter | default | sidecar setting | |
+|---|---|---|---|
+| `ducklake` | `false` | `QS_DUCKLAKE` | publish every table as a DuckLake table. Required for routing: it is the mirror relation that survives a compaction |
+| `ducklakeRetention` | unset (the sidecar's 5m) | `QS_DUCKLAKE_RETENTION` | how long a lake snapshot outlives being replaced; at least 10s, and only with `ducklake` |
+| `serveWithHaltedTables` | `false` | `QS_SERVE_WITH_HALTED_TABLES` | keep the Pod ready with a halted table. With the extension that table is answered from the heap on that Pod, so there this is safe |
+| `extension` | `auto` | `QS_EXTENSION` | `auto`: register mirror relations and report applied LSNs if `pg_quicksilver` is installed, do nothing and say so once if it is not. `off`: never touch it |
+| `sidecarMemory` | `1Gi` | request, limit, `GOMEMLIMIT` | see below |
+
+A value that is not a boolean, a duration or a quantity is refused at
+admission; the sidecar itself would have read it as off.
+
+**What the sidecar then does**, with no further configuration: creates the
+schema `quicksilver_mirror` and one view per table over `lake."schema"."table"`,
+registers it, records the lake's catalog path in `quicksilver.lakes`, installs
+DuckDB's `ducklake` and `sqlite` extensions through pg_duckdb, and reports each
+table's applied LSN to the PostgreSQL in its own Pod every 25 ms. The view
+names no file and no path, so it is the same on every instance; the extension
+attaches the lake in a session itself, only where the catalog file exists, so
+a primary (which has no mirror) is untouched and answers from the heap.
+
+- *DuckDB's extensions.* Every instance loads `ducklake` and `sqlite` when a
+  session first uses DuckDB. pg_duckdb keeps them under
+  `$PGDATA/pg_duckdb/extensions` and fetches them from DuckDB's extension
+  repository when they are not there. An instance that cannot reach it stays
+  on the heap. This was not tested without network access.
+- *Who is routed.* Stock pg_duckdb lets only a superuser read local files, so
+  only superusers are routed and everybody else is answered from the heap,
+  correctly.
+- *Freshness is strict by default*: a statement is routed only if the mirror
+  has reached what the statement can see on its instance. With steady writes
+  to a mirrored table that is rarely true (docs/40 has the numbers); such a
+  workload sets `quicksilver.max_lag` or stays on the heap.
+
+### Sizing `sidecarMemory`
+
+The default was 256Mi and is now **1Gi**. 256Mi came from the key index at
+readiness, 90 to 130 bytes of RSS per live row (METRICS.md). The peak is
+somewhere else. `bench/engine_compare/merged_build/out/p2_summary.txt`, 10.5M
+rows (10M orders, 500k customers), the current build:
+
+| | peak RSS | per row |
+|---|---|---|
+| initial snapshot and key index | 1,395 MB | 133 bytes |
+| catching up 3.5 GB of WAL, then the idle base rewrite | 2,972 and 3,040 MB (two runs) | 290 bytes |
+
+A limit is for the peak: a sidecar that is killed in the middle of a base
+rewrite restarts, rewrites again and is killed again. So:
+
+> **300 bytes per live row across the mirrored tables, and not less than 1Gi.**
+
+| rows | `sidecarMemory` |
+|---|---|
+| up to 3.5M | `1Gi` (the default) |
+| 10M | `3Gi` |
+| 20M | `6Gi` |
+
+1Gi holds 3.5M rows through a rewrite by that rule (256Mi held under 900k) and
+about 8M at steady state. The request equals the limit, so the sidecar is
+Guaranteed QoS and cannot get the PostgreSQL Pod evicted, and `GOMEMLIMIT` is
+80% of it, so an undersized sidecar gets slow before it gets killed. A
+quantity under 128Mi is refused. `kubectl top` at readiness shows the steady
+figure, not the peak.
+
 ## Verifying the mirror
 
 ```

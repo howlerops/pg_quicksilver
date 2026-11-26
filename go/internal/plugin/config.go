@@ -26,6 +26,7 @@ import (
 
 	apiv1 "github.com/cloudnative-pg/api/pkg/api/v1"
 	"github.com/cloudnative-pg/cnpg-i/pkg/operator"
+	"k8s.io/apimachinery/pkg/api/resource"
 )
 
 // PluginName is the name a Cluster uses in .spec.plugins[].name.
@@ -116,6 +117,27 @@ type Config struct {
 	// Burstable, and the Pod it makes an eviction candidate is the one running
 	// PostgreSQL.
 	SidecarMemory string
+
+	// DuckLake publishes every mirrored table as a DuckLake table as well
+	// (QS_DUCKLAKE, docs/16). Off by default. It is what pg_quicksilver routes
+	// to: a mirror relation over a lake table is not regenerated when the
+	// mirror compacts.
+	DuckLake bool
+	// DuckLakeRetention is how long a lake snapshot stays readable after a
+	// newer one replaced it (QS_DUCKLAKE_RETENTION); zero leaves the sidecar's
+	// default (5m).
+	DuckLakeRetention time.Duration
+	// ServeWithHaltedTables keeps a Pod ready while one of its tables is
+	// halted (QS_SERVE_WITH_HALTED_TABLES). Off by default: a reader of the
+	// mirror then never gets a partial set of tables without being told. With
+	// pg_quicksilver the halted table is answered from the heap on that Pod,
+	// so there it is safe to turn on.
+	ServeWithHaltedTables bool
+	// Extension is the sidecar's half of pg_quicksilver (QS_EXTENSION): auto
+	// (the default) registers mirror relations and reports applied LSNs when
+	// the extension is installed in the database and does nothing when it is
+	// not; off never touches it.
+	Extension string
 }
 
 // Defaults that apply when a parameter is absent.
@@ -129,10 +151,28 @@ const (
 	// a version — so both the chart and any sensible deployment override it.
 	FallbackSidecarImage = "ghcr.io/howlerops/pg_quicksilver-mirror:latest"
 
-	// DefaultSidecarMemory suits a mirror up to roughly three million rows.
-	// Past that it is wrong, and see Config.SidecarMemory for the arithmetic:
-	// budget about 90 bytes of RSS per live row across the mirrored tables.
-	DefaultSidecarMemory = "256Mi"
+	// DefaultSidecarMemory was 256Mi, sized from the key index alone (about 90
+	// bytes of RSS per live row at readiness). The sidecar's peak is not at
+	// readiness. bench/engine_compare/merged_build/out/p2_summary.txt, 10.5M
+	// rows (10M orders + 500k customers), current build:
+	//
+	//	peak RSS, initial snapshot + index     1,395 MB   ~133 bytes/row
+	//	peak RSS, catch-up + idle base rewrite 2,972 and 3,040 MB (two runs)
+	//	                                                  ~290 bytes/row
+	//
+	// and METRICS.md puts RSS at readiness at 90 to 130 bytes per live row. A
+	// limit is for the peak: a sidecar that is OOM-killed in the middle of a
+	// base rewrite restarts, rewrites again and is killed again. So the rule
+	// is 300 bytes per live row across the mirrored tables, and the default
+	// is the smallest round value that holds a few million rows through a
+	// rewrite: 1Gi is 3.5M rows by that rule (256Mi was under 900k), and about
+	// 8M at steady state. Past that, set sidecarMemory; see docs/16.
+	DefaultSidecarMemory = "1Gi"
+
+	// ExtensionAuto and ExtensionOff are the values of the `extension`
+	// parameter.
+	ExtensionAuto = "auto"
+	ExtensionOff  = "off"
 )
 
 // DefaultSidecarImage is the mirror image injected when a Cluster does not name
@@ -187,6 +227,16 @@ func ParseConfig(clusterName string, params map[string]string) Config {
 		Database:          get("database", DefaultDatabase),
 		CredentialsSecret: get("credentialsSecret", clusterName+"-superuser"),
 		SidecarMemory:     get("sidecarMemory", DefaultSidecarMemory),
+		Extension:         strings.ToLower(get("extension", ExtensionAuto)),
+	}
+	if b, err := strconv.ParseBool(get("ducklake", "false")); err == nil {
+		cfg.DuckLake = b
+	}
+	if b, err := strconv.ParseBool(get("serveWithHaltedTables", "false")); err == nil {
+		cfg.ServeWithHaltedTables = b
+	}
+	if d, err := time.ParseDuration(get("ducklakeRetention", "")); err == nil {
+		cfg.DuckLakeRetention = d
 	}
 
 	for _, t := range strings.Split(get("tables", ""), ",") {
@@ -230,6 +280,8 @@ func Validate(cluster *apiv1.Cluster, params map[string]string) []*operator.Vali
 		"sidecarImage": true, "slotName": true, "publication": true,
 		"mirrorPath": true, AcknowledgeParam: true,
 		"database": true, "credentialsSecret": true, "sidecarMemory": true,
+		"ducklake": true, "ducklakeRetention": true,
+		"serveWithHaltedTables": true, "extension": true,
 	}
 	for k := range params {
 		if !known[k] {
@@ -298,6 +350,42 @@ func Validate(cluster *apiv1.Cluster, params map[string]string) []*operator.Vali
 			add("freshnessSLO", raw, "must be a Go duration, for example 30s or 2m")
 		case d < time.Second:
 			add("freshnessSLO", raw, "must be at least 1s")
+		}
+	}
+
+	// The sidecar reads these as "on" or not-on, and anything it does not
+	// recognise is off: `ducklake: yes please` would run without a lake and
+	// say nothing. So a value that is not a boolean is refused here.
+	for _, param := range []string{"ducklake", "serveWithHaltedTables"} {
+		if raw, ok := params[param]; ok && strings.TrimSpace(raw) != "" {
+			if _, err := strconv.ParseBool(strings.TrimSpace(raw)); err != nil {
+				add(param, raw, "must be true or false")
+			}
+		}
+	}
+	if raw, ok := params["ducklakeRetention"]; ok && strings.TrimSpace(raw) != "" {
+		d, err := time.ParseDuration(strings.TrimSpace(raw))
+		switch {
+		case err != nil:
+			add("ducklakeRetention", raw, "must be a Go duration, for example 5m")
+		case d < 10*time.Second:
+			add("ducklakeRetention", raw, "must be at least 10s: a reader that started on a "+
+				"snapshot must be able to finish on it")
+		case !cfg.DuckLake:
+			add("ducklakeRetention", raw, "has no effect without ducklake: \"true\"")
+		}
+	}
+	switch cfg.Extension {
+	case ExtensionAuto, ExtensionOff:
+	default:
+		add("extension", cfg.Extension, "must be one of: auto, off")
+	}
+	if raw, ok := params["sidecarMemory"]; ok && strings.TrimSpace(raw) != "" {
+		if q, err := resource.ParseQuantity(strings.TrimSpace(raw)); err != nil {
+			add("sidecarMemory", raw, "must be a Kubernetes quantity, for example 2Gi")
+		} else if q.Cmp(resource.MustParse("128Mi")) < 0 {
+			add("sidecarMemory", raw, "must be at least 128Mi; size it at about 300 bytes "+
+				"per live row across the mirrored tables")
 		}
 	}
 

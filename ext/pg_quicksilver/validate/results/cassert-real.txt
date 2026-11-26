@@ -1,0 +1,23 @@
+debug_assertions = on (primary), on (standby)
+# All 10 tests passed.
+expected, from the heap on the primary at 0/10D4CB38: total (1000000, Decimal('499995000.00')), customer 1 (300000, Decimal('149988000.00')), customer 5 (70, Decimal('34685.70'))
+  44s  checksum at 0/13F76420: heap 112499150.07, standby 112499150.07 by the mirror: EQUAL  (2522 write transactions so far)
+  95s  checksum at 0/14B2EE90: heap 112499163.42, standby 112499163.42 by the mirror: EQUAL  (4462 write transactions so far)
+ 145s  checksum at 0/150F9AA8: heap 112499154.46, standby 112499154.46 by the mirror: EQUAL  (6330 write transactions so far)
+ 195s  checksum at 0/1550BF58: heap 112499204.25, standby 112499204.25 by the mirror: EQUAL  (8785 write transactions so far)
+ 245s  checksum at 0/156F56A0: heap 112499048.83, standby 112499048.83 by the mirror: EQUAL  (10805 write transactions so far)
+ 296s  checksum at 0/16DBDEB0: heap 112499067.82, standby 112499067.82 by the mirror: EQUAL  (12819 write transactions so far)
+statements, by client and by who answered:
+  lag                    mirror 5722
+  lookup                 heap   148997
+  prepared, customer 1   heap   2077
+  prepared, customer 1   mirror 537
+  prepared, customer 5   heap   2561
+  strict                 heap   1325
+  strict                 mirror 884
+write transactions on the primary: 12819; sidecar: 70 delta merges, 1 base rewrites during the run
+primary.log: 0 crash or leak lines
+standby.log: 0 crash or leak lines
+errors: 0   wrong answers: 0   checksum checks routed and equal: 6 of 6
+primary.log: 0 crash lines, 0 leaked-resource warnings, 0 WARNING lines in all, 33 ERROR lines
+standby.log: 0 crash lines, 0 leaked-resource warnings, 0 WARNING lines in all, 0 ERROR lines

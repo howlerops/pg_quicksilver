@@ -21,6 +21,15 @@ same server:
 - 781 stayed on the heap, and those are identical because they are the heap.
 - With one opt-in setting 409 are routed; all 409 are identical.
 
+**Since then the extension has been wired to the sidecar and the mirror is
+read through DuckLake** ([Wired to the sidecar](#wired-to-the-sidecar), at the
+end). On the hot standby, with mirror relations the sidecar made and an
+allowlist widened by the same harness: **438 of the 1,142 statements routed in
+the ICU `en-US` database and 467 in the C locale one, 0 different in either**
+(486 and 515 with the opt-in setting, 0 different). Freshness is strict by
+default now, and three things in the sections below are no longer true; each
+says so where it stands.
+
 Getting there removed things from the list that the task's own sketch put on
 it. They are in [What the harness took off the list](#what-the-harness-took-off-the-list),
 and they are the most useful part of this document.
@@ -85,6 +94,9 @@ mirror`). For a `SELECT` that reads at least one registered table:
     it checks the session again and **the mirror's freshness**; then it runs the
     mirror and holds its rows back while they fit in `work_mem`. If the mirror
     fails in that stretch, the heap child answers and the client sees nothing.
+    (Freshness is now decided before step 8 for a plan that is about to run,
+    and at this point only for a kept plan; and "fails" is now a narrower
+    word. See [Wired to the sidecar](#wired-to-the-sidecar).)
 
 ```
 =# EXPLAIN (COSTS OFF) SELECT * FROM orders WHERE id = 4242;
@@ -183,7 +195,10 @@ plans.
 
 **Freshness at planning.** A prepared statement without parameters is planned
 once and its plan is kept. Freshness is a fact about the moment of execution,
-so it is checked there. So is the session's state: a plan made outside a
+so it is checked there. (True of a kept plan. For a statement planned and run
+in one go this turned out to be too late: pg_duckdb fixes the lake snapshot
+when it plans. See [a snapshot older than the freshness check had just
+approved](#a-snapshot-older-than-the-freshness-check-had-just-approved).) So is the session's state: a plan made outside a
 transaction and executed inside one goes to its heap child.
 
 **The plan cache.** There is no hook where PostgreSQL chooses between a custom
@@ -228,6 +243,8 @@ tree says whether a column holds one, so date and timestamp columns are
 routable only if the registry lists them in `finite_columns`. That list is the
 sidecar's to maintain, because it sees every value it writes;
 `validate/finite.sql` fills it by scanning the heap, which is a stand-in.
+(No longer: the mirror keeps infinity now, the harness reads it back identical,
+and `finite_columns` is retired. See [below](#infinity-is-kept-now-and-finite_columns-is-retired).)
 
 **Integer overflow.** Found late, by a statement written to test something
 else:
@@ -487,6 +504,10 @@ And where it is not what the heap would do:
 
 ## What was not validated
 
+(As of the stand-in runs. The sidecar now does its part, the equality harness
+runs on the standby, and there is a 16-client run; the list that stands is at
+the end of [Wired to the sidecar](#wired-to-the-sidecar).)
+
 - **A non-superuser reading a real mirror.** Stock pg_duckdb lets only a
   superuser read local files. The permission tests use mirrors that are
   DuckDB `VALUES`, which need no file; the equality, timing and client runs are
@@ -509,6 +530,8 @@ And where it is not what the heap would do:
 
 ## What an image needs
 
+(Items 4 and 5 are superseded: see [What an image needs, now](#what-an-image-needs-now).)
+
 1. `pg_quicksilver.so`, `pg_quicksilver.control`, `pg_quicksilver--0.1.sql`
    (`make install`; PGXS, `postgresql-server-dev-17`; no other dependency).
 2. `shared_preload_libraries = 'pg_duckdb,pg_quicksilver'`, in that order.
@@ -529,6 +552,12 @@ instance that does not, the mirror cannot plan and the heap answers.
 
 ## Running it
 
+The stand-in path, as it was run for the sections above. Its views are
+per-file and its LSN is the one at publication, so `validate/setup.sh` now
+sets `quicksilver.max_lag = '16MB'` for its cluster; it has not been run again
+since the extension changed. The regression tests now run against
+`validate/real` (the commands are at the end of the next section).
+
 ```
 cd ext/pg_quicksilver && make && sudo make install
 validate/setup.sh                       # primary 5541, standby 5542, sidecar, mirror, views, registry
@@ -541,4 +570,367 @@ python3 validate/psycopg_check.py && validate/standby_check.sh
 validate/latency.sh && python3 validate/routed_timing.py
 CA=/path/to/cassert/prefix validate/cassert.sh
 validate/teardown.sh
+```
+
+## Wired to the sidecar
+
+Everything above this section was measured with stand-ins: a script created
+the mirror relations, registered them, scanned the heap for infinities and
+reported an LSN once. The three pieces are now one system, and this section
+is what changed, what it found, and the numbers that replace the ones above.
+The scripts are in [`validate/real`](../ext/pg_quicksilver/validate/real): a
+primary, a streaming hot standby, the production sidecar next to the standby
+with `QS_DUCKLAKE=on`, and nothing else configured. Results are in
+[`validate/results`](../ext/pg_quicksilver/validate/results).
+
+### What the sidecar does for the extension
+
+`go/cmd/qs-mirror/extension.go`. If `pg_quicksilver` is installed in the
+mirrored database (it looks, says once if not, and looks again every minute):
+
+- **On the primary**, because the registry is a table: each mirrored table gets
+  a mirror relation in the schema `quicksilver_mirror`, registered in
+  `quicksilver.mirrors`. It is a pg_duckdb view over the table's **DuckLake**
+  table, with the heap's column names, order and types:
+
+  ```
+  CREATE VIEW "quicksilver_mirror"."public.orders" AS
+  SELECT (r['id'])::bigint AS "id", (r['amount'])::numeric(12,2) AS "amount", ...
+  FROM duckdb.query($qs$ SELECT * FROM lake."public"."orders" $qs$) r
+  ```
+
+  It names the lake table, no file and no path, so it is the same text on
+  every instance and is never generated again when the mirror compacts. It is
+  made again only when the heap's columns change at a DDL barrier (the view's
+  comment carries a hash of its definition), and it is dropped and
+  unregistered when the table leaves `QS_TABLES` or halts. A type pg_duckdb
+  cannot cast a row field to (an enum, `inet`, `jsonb`, an array) is published
+  as text, and the extension then keeps statements that read that column on
+  the heap. `max_lag_bytes` and `enabled` are the operator's and survive.
+- **The lake's catalog path** goes in a new table, `quicksilver.lakes`. The
+  extension attaches it in a session itself, the first time that session is
+  about to route, and only where the file exists. There is no login trigger,
+  so there is nothing that can stop a login on a node without a mirror; and a
+  session that was open before any of this existed is routed like a new one.
+- **On its own node**: `quicksilver.report_applied_lsn` for every table, in one
+  statement on a kept connection, from a goroutine of its own (the apply loop
+  never waits for the local server; a restart of it is reconnected to and the
+  reports, which live in its shared memory, are sent again). What it reports
+  is what a reader of the lake is guaranteed to see: the publisher's last
+  published LSN, not the manifest's, and `0/0` for a table that is halted,
+  being rebuilt or refused in the lake. `0/0` now means "do not read it on
+  this node" and overrules the registry's own `applied_lsn` column, which is
+  the same on every node and which the sidecar leaves NULL.
+- **Nothing about infinity.** See below.
+
+`QS_EXTENSION=off` turns all of it off. It needs `QS_DUCKLAKE=on`; without it
+the sidecar says so once and registers nothing.
+
+### Infinity is kept now, and `finite_columns` is retired
+
+The mirror used to lose `±infinity`; it now stores DuckDB's own infinity. With
+the `finite` option taken off the three types, the equality harness routes the
+statements over `t_time` (which holds `infinity` and `-infinity` in a date, a
+timestamp and a timestamptz): `SELECT max(d), min(d), max(ts), min(tz) FROM
+t_time` and 20 more, all identical. So the seed no longer carries `finite`,
+`finite_columns` is unused by any shipped row, and the sidecar does not
+maintain it. (The option still exists in the extension for a list that wants
+it.) That alone moved the seed from 361 routed statements to 382.
+
+### Freshness is strict by default
+
+`quicksilver.max_lag` defaulted to 16MB, which let a routed read be older than
+what the heap on the same node would have answered: not "identical". It now
+defaults to **0**: a statement is routed only if its mirror has reached
+everything the statement can see on this node when it starts (the replay
+position on a standby; the insert position on a primary, which bounds every
+commit a snapshot can see). A mirror that has not is given
+`quicksilver.freshness_wait` (20 ms; 0 allowed) and then the heap answers.
+Bounded staleness is something a session asks for: `max_lag > 0` means "a
+routed read may be this much WAL behind the heap on this node". Separately, a
+transaction that has an xid is never routed, whatever
+`quicksilver.route_in_transaction` says: the mirror cannot show a transaction
+its own uncommitted writes.
+
+Strict only works if the report keeps up while the primary writes WAL that is
+not for the mirrored tables. The sidecar now reports, every 25 ms
+(`QS_EXTENSION_REPORT_INTERVAL`), the later of the lake's published LSN and a
+position it can vouch for with nothing persisted: the end of the last
+transaction the apply loop applied, or the walsender's idle position, which it
+asks for (a status update with reply requested) instead of waiting for a
+keepalive. Only while the lake stands at the newest manifest.
+
+`validate/real/strict.py`: `SELECT count(*), sum(amount) FROM public.orders`
+on the standby every 20 ms for 20 s per cell, 200 small transactions a second
+on the primary.
+
+| load on the primary | setting | routed | median, routed | median, heap |
+|---|---|---|---|---|
+| none | strict, wait 0 | 419 of 422 (99.3%) | 23.0 ms | 68.4 ms |
+| none | strict, wait 20 ms (default) | 348 of 348 | 32.5 ms | |
+| none | `max_lag` 1MB | 383 of 383 | 28.3 ms | |
+| an **unmirrored** table | strict, wait 0 | 37 of 223 (16.6%) | 34.8 ms | 67.9 ms |
+| | strict, wait 20 ms (default) | **333 of 346 (96.2%)** | 30.6 ms | 84.9 ms |
+| | strict, wait 200 ms | 294 of 294 | 45.7 ms | |
+| | `max_lag` 1MB | 331 of 331 | 34.6 ms | |
+| the **mirrored** table | strict, wait 0 | 0 of 225 | | 65.8 ms |
+| | strict, wait 20 ms (default) | **0 of 178** | | 88.5 ms |
+| | strict, wait 200 ms | 31 of 73 (42.5%) | 215.7 ms | 275.9 ms |
+| | `max_lag` 1MB | 290 of 290 | 39.2 ms | |
+
+Read plainly: with writes that do not touch the mirrored table, the strict
+default routes 96% and the wait is not visible in the median (within this
+host's noise against the `max_lag` row). **With steady writes to the mirrored
+table itself, the strict default routes nothing.** The mirror applies on a
+200 ms tick and publishes asynchronously, so it is always a transaction
+behind a standby that replays in milliseconds; a 200 ms wait gets 42% at a
+cost of 200 ms each. A workload like that either accepts a bound
+(`max_lag`) or is answered by the heap. The default was not loosened to hide
+this.
+
+### A snapshot older than the freshness check had just approved
+
+Found by `validate/real/freshness.py`, in the build that first had the wait: a
+read-your-writes session waited 0.6 s for the mirror, was told it had caught
+up, was routed, and returned the answer from before its write.
+
+pg_duckdb runs one DuckDB transaction per PostgreSQL transaction, and a
+DuckLake transaction reads the snapshot that was current when it first touched
+the lake. For a statement that is planned and then run, that is when pg_duckdb
+**plans** it. The freshness check ran when the plan started executing, and
+believed a report that had arrived after the snapshot was already fixed.
+
+So the check moved to before pg_duckdb is asked anything, and what a
+transaction believes about every mirror is recorded at that moment (`qs_pin`)
+and not updated for the rest of the transaction; waiting is only possible
+before it. A plan kept from an earlier transaction is checked when it starts,
+as before. In a transaction block the record is made at the block's first
+planned statement, so with `route_in_transaction` a later statement is routed
+only if nothing it can see is newer than that. `validate/real/concurrency.py`
+checks the whole chain against the heap at a known LSN (below).
+
+Two more things the same runs found, both in the sidecar's favour of being
+wrong: the manifest sequence number counts files, so two manifests that differ
+only in which rows are dead share one, and "published seq = submitted seq" did
+not mean the lake was current (the publisher now says so by identity,
+`Publisher.Current`); and a restarted sidecar reported `0/0` for every table
+until its first publish, taking every table off the mirror for a moment.
+
+### The allowlist, widened by evidence
+
+`validate/widen.py` is re-runnable. It takes each statement's missing
+constructs from `quicksilver.unsafe_constructs()`, proposes the ones that are
+simply not on the list (first those that are the only thing a statement lacks,
+so a difference names its culprit; then the rest together), runs all 1,142
+statements on the **standby** with `route = heap` and `route = auto`, removes
+the newest entries of every routed statement that differs, and repeats until
+no routed statement differs. An entry is kept only if at least three routed
+statements that exercise it came back identical, and those statements are
+recorded per entry (`results/widen-*.json`). It ran in the ICU `en-US`
+database; its result was then applied in the C locale database, prune only;
+what survived both is in the extension's SQL between two markers, which
+`widen.py --splice` writes.
+
+| 1,142 statements, routed / different | default | `tolerate_lost_errors` |
+|---|---|---|
+| seed, stand-in views (the numbers above) | 361 / 0 | 409 / 0 |
+| seed, sidecar + DuckLake, `finite` retired | 382 / 0 | 430 / 0 |
+| **widened, ICU en-US, standby** | **438 / 0** | **486 / 0** |
+| **widened, C locale, standby** | **467 / 0** | **515 / 0** |
+| widened, ICU en-US, primary (LSN vouched for by a script) | 438 / 0 | |
+
+Of `bench/exactness`'s 728 statements, 120 are routed in the ICU database
+(52 above) and 146 in the C one; 69 of `corpus_own`'s 121; 249 of
+`corpus_seed`'s 293.
+
+17 entries were added: the features `offset`, `union`, `union_all`,
+`sublink_any`, `sublink_exists`, `sublink_expr`, `agg_filter`,
+`agg_order_by`, `window`; `row_number()` and `rank()`; `LIKE`
+(`~~(text,text)`, deterministic collations); `<(boolean,boolean)`;
+`array_agg(anynonarray)`; the types `real`, `double precision` and
+`integer[]`.
+
+**Rejected, and why.** These are the documented exclusions.
+
+| construct | the statement | heap | mirror |
+|---|---|---|---|
+| `lower(text)`, `ILIKE` | cmp-016, str-017 | 40 rows match | 80: DuckDB folds `İ` to `i` |
+| `upper(text)` | str-027 | `STRASSE` | `STRAẞE` |
+| `~(text,text)` | str-022 | 988 | 648: POSIX classes differ |
+| `=(character,character)`, `text(character)`, `\|\|` | cmp-031, str-062 | `'banana\|'`, 41 rows | `'banana  \|'`, 0 rows: `char(n)` padding |
+| `/(bigint,integer)` | own-100 | 2 | 1: not integer division |
+| `count(DISTINCT ...)` (`agg_distinct`) | agg-029 | 41 | 40 |
+| `timestamptz - timestamptz` | dt-038 | `71 days 11:47:00` | `71 days 12:47:00`: a DST hour |
+| `timestamptz::text` | cast-011 | `-04:56:02` | `-04:56`: seconds of a historical offset |
+| `float8::text`, `real::text` | cast-005, cast-006 | `0`, `-1401` | `0.0`, `-1401.0` |
+| `text::numeric`, `text::float8` | cast-066 | `1.5` | `1.500` |
+| `bytea::text` | cast-017 | `\xc4` | `\xC4` |
+| `stddev`, `var_pop`, `var_samp`, `corr`, `covar_pop`, `regr_slope`, `float8(integer)` | agg-025, agg-059 | `8750636.925781539` | `8750636.92578154`: the last digits |
+
+- **39 constructs that are not immutable** were never proposed (`now()`,
+  `date_trunc(text, timestamptz)`, `timestamptz + interval`, `to_char`,
+  `concat`, `extract` from a timestamptz, ...). Their result depends on session
+  settings, and the corpus runs in one time zone.
+- **326 were exercised by fewer than three routed statements** and were taken
+  out again (184 by none once their neighbours were rejected, 106 by one, 36 by
+  two: `avg`, `sum(double precision)`, `EXCEPT`, `INTERSECT`, `round`,
+  `varchar`, `json`, `bytea`, window frames, ...). None of them is known to be
+  wrong. They are the worklist: a corpus that exercises one three times gets it
+  verified by running the script again.
+- Unchanged from above: integer `+ - *` only with `tolerate_lost_errors`, text
+  order only under `C`, `numeric` without precision, `numeric(integer)` only
+  under a comparison.
+
+What keeps the 704 on the heap in the ICU database: a construct not on the
+list 542, reads no mirrored table 143, cheap 17, no usable mirror 1, and one
+where the mirror failed and the heap answered. The first construct that
+stopped a statement: integer `+ - *` 56; text order under the database's
+collation 52; `t_doc.jb` (jsonb, text in the mirror) 31; `numeric(integer)`
+outside a comparison 19; `t_str.e` (enum) 14; `t_doc.ia` (array) 12;
+`t_num.nu` (numeric without precision) 10; `count(DISTINCT)` 8;
+`varchar::text` 8; window frames 7; `avg(integer)`, `avg(numeric)`, `ILIKE`,
+`~`, `date(timestamptz)`, `varchar` 6 each.
+
+The regression tests' "must stay on the heap" statements were written against
+the seed, so `failclosed`, `prepared` and `robustness` set the widened entries
+aside while they run and put them back.
+
+### Errors, and what may be answered from the heap instead
+
+There is still no subtransaction around the mirror: pg_duckdb raises from its
+subtransaction callback when one starts while its DuckDB transaction is open.
+So the catch was narrowed to where it is safe without one. A mirror-side error
+is answered from the heap only if it is a plain `ERROR` that pg_duckdb raised
+at its own C++ boundary (its messages begin `(PGDuckDB/`; DuckDB reads the
+lake's files and takes no buffer pin, relcache reference or lock on the way,
+and its C++ stack has unwound), or pg_duckdb's own refusal at the door.
+Everything else is rethrown: any error of PostgreSQL's own, a cancel or a
+shutdown however it is spelled (`statement_timeout` on a routed statement
+reaches the client as an error; there is a test), deadlock and serialization
+failures, out-of-memory, anything above `ERROR`. A mirror node that threw is
+not ended with `ExecEndNode`; it goes with the query's memory context.
+
+`sql/errors.sql` forces it: a kept plan whose Parquet file is replaced by
+garbage, and a mirror whose own cast fails at execution, each outside a
+transaction block, inside one, under a cursor, and with `fallback = off`. On
+the assertion-enabled build the whole suite passes and neither server log has
+a leaked-resource warning.
+
+The shared-memory table of applied LSNs (1,024 entries) never gave one back.
+It now holds entries only for registered heap tables and sweeps when the
+registry changes or it fills; `errors.sql` registers, reports and drops 1,100
+tables in a row.
+
+### The validation
+
+All on the standby unless it says otherwise. PostgreSQL 17.12, pg_duckdb
+1.2.0, one host, 4 vCPU.
+
+**From an empty cluster, across everything the mirror goes through**
+(`validate/real/lifecycle.py`). At each step, in a session open since the
+start, one opened just before the step, and a new one: `SELECT status,
+count(*), sum(amount) FROM public.orders GROUP BY status` is answered by the
+mirror and equals the heap; a statement prepared once at the start (its plan is
+kept) is the heap's answer too; `EXPLAIN` says `Quicksilver: mirror` and why; a
+primary-key lookup says `Quicksilver: heap (cheap on the heap)`.
+
+| step | routed again after | mirror relation |
+|---|---|---|
+| start: 1,000,000 orders, configuration only | 0.5 s | created by the sidecar |
+| write burst: 50,000 inserts, 20,000 updates, 5,000 deletes | 1.6 s | the same |
+| delta merge (seen in the sidecar's log) | 0.3 s | the same |
+| idle base rewrite (seen in the sidecar's log) | 0.1 s | the same |
+| `TRUNCATE` + reload of 300,000 rows | 3.6 s, the heap answering until then | the same |
+| `ADD COLUMN` (a DDL barrier) | 1.4 s; the new column is routed | re-created, as it should be |
+| a date the mirror cannot hold: `qs_types` halts | that table: the heap, at once; the others routed | dropped and unregistered within 0.2 s |
+| `REBUILD` of that table | 0.3 s after the sidecar was ready | registered again |
+| sidecar `kill -9`, a write, restart | the heap while it is down; 0.2 s after | the same |
+| standby restart | 0.7 s (the reports in its shared memory are sent again) | the same |
+
+The two sessions that were open across the standby restart were closed by it,
+as a restart does; every other step kept its sessions.
+
+**Freshness** (`validate/real/freshness.py`). Sidecar stopped, one write:
+strict goes to the heap ("760 WAL bytes behind"). A `max_lag = 1MB` session
+keeps the mirror's older answer, which is what it asked for, until the primary
+has written 9.7 MB, then the heap. `min_applied_lsn` set to the LSN of a
+write: with `freshness_wait = 0` the heap answers; with 500 ms it waits 567 ms
+and the heap answers; with 60 s and the sidecar started at the same moment it
+waits 1.1 s and the mirror answers, with the write. Strict routing resumes as
+soon as the sidecar is ready.
+
+**Concurrency** (`validate/real/concurrency.py`, on the assertion-enabled
+build): 16 clients on the standby for 300 s (6 aggregates with `max_lag`
+64MB, 4 strict, 3 lookups, 3 prepared statements), 12,819 transfer
+transactions on the primary, 70 delta merges and one base rewrite in the
+sidecar. Every answer is checked against three invariants computed from the
+heap before the writes (total, customer 1, customer 5: a transfer moves an
+amount between two rows of one customer), and every 50 s the writer pauses
+and a checksum the writes do change is computed from the primary's heap at a
+known LSN and asked of the standby with `min_applied_lsn` set to it.
+
+| | |
+|---|---|
+| statements answered by the mirror | 5,722 with `max_lag`, 884 strict, 537 prepared |
+| statements answered by the heap | 148,997 lookups, 1,325 strict, 4,638 prepared |
+| errors | 0 |
+| wrong answers | 0 |
+| checksum at a known LSN, routed and equal | 6 of 6 |
+| `TRAP`, signal, `PANIC`, leaked-resource warning, either log | 0 |
+
+**On the assertion-enabled build** (`validate/real/cassert.sh`): the ten
+regression files pass, and the run above.
+
+### What an image needs, now
+
+1. pg_duckdb 1.2.0 and `pg_quicksilver` in the PostgreSQL image
+   (`deploy/Dockerfile`, target `postgres`), and
+   `shared_preload_libraries = 'pg_duckdb,pg_quicksilver'`, in that order.
+2. `CREATE EXTENSION pg_duckdb; CREATE EXTENSION pg_quicksilver;` in the
+   database, on the primary.
+3. The plugin parameter `ducklake: "true"`. The sidecar does the rest,
+   including `duckdb.install_extension('ducklake')` and `('sqlite')`, which
+   every instance then loads: an instance that cannot reach DuckDB's extension
+   repository and does not have them under `$PGDATA/pg_duckdb/extensions`
+   cannot plan a mirror relation, and answers from the heap.
+4. `quicksilver.route = auto`, per role or per database; `shadow` first.
+
+Stock pg_duckdb still gives only a superuser a DuckDB that can read local
+files, so only superusers are routed; for anybody else the extension does not
+try to attach (the attempt fails, slowly) unless
+`quicksilver.attach_lakes_for_all` says the build allows it.
+
+### Not validated
+
+- A real Kubernetes Pod: the plugin's new parameters are unit-tested, and the
+  `postgres` image target was written and not built (no Docker daemon here).
+- More than one standby, each with its own sidecar, reconciling one registry;
+  a failover; a non-superuser reading a real mirror.
+- An instance with no route to DuckDB's extension repository.
+- Strict freshness on a primary beyond the regression tests: the primary has
+  no mirror in production, and the runs that route there vouch for the LSN by
+  script.
+- A lake reader that outlives `QS_DUCKLAKE_RETENTION` (60 s in these runs, 5 m
+  by default) inside one statement.
+- `route_in_transaction` under concurrency; pg_duckdb itself under assertions;
+  valgrind; anything but PostgreSQL 17.12, pg_duckdb 1.2.0, x86_64, 1M rows.
+- The catch in `qs_build_mirror` (analysis of a statement the extension wrote
+  over the mirror relation) is still a `PG_TRY` with no subtransaction. It is
+  not expected to throw, and it rethrows cancel, shutdown and resource errors.
+- After a failed attach, or when pg_duckdb's DuckDB was first started under a
+  non-superuser role and the session then became a superuser, the session
+  stays on the heap for five minutes before trying again.
+
+```
+cd ext/pg_quicksilver && make && sudo make install
+validate/real/setup.sh                                  # LOCALE=C for the other database
+python3 validate/widen.py --out validate/results/widen-icu-en-US.json
+python3 validate/widen.py --apply validate/results/widen-icu-en-US.json --out validate/results/widen-C.json
+python3 validate/widen.py --splice validate/results/widen-C.json && sudo make install
+python3 validate/equality.py --port 5581 --set quicksilver.freshness_wait=5s
+python3 validate/real/strict.py; python3 validate/real/freshness.py
+python3 validate/real/concurrency.py; python3 validate/real/lifecycle.py
+DB_ROUTE=none validate/real/setup.sh && validate/real/primary_report.sh && make installcheck PPORT=5580
+CA=/path/to/cassert/prefix validate/real/cassert.sh
+validate/real/teardown.sh
 ```
