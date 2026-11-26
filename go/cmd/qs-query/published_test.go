@@ -60,8 +60,36 @@ func TestPublishedModeReadsWhatTheWriterPublished(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if second.SQL != want {
-		t.Fatalf("published SQL is not the writer's view of its manifest:\n%s\n--- want\n%s", second.SQL, want)
+	// Rendered where the writer wrote it, the published snapshot is the
+	// writer's view of its manifest, path for path.
+	if got := publishedSQL(second, root, "", "public", "r"); got != want {
+		t.Fatalf("published SQL is not the writer's view of its manifest:\n%s\n--- want\n%s", got, want)
+	}
+	// What is published names no path of the writer's: a reader that mounts
+	// the mirror elsewhere could not have used one.
+	if strings.Contains(second.SQL, root) {
+		t.Fatalf("the published SQL contains the writer's absolute path %s:\n%s", root, second.SQL)
+	}
+	if second.Paths != mirror.PathsRelative || second.BaseDir != tbl.Dir {
+		t.Fatalf("paths=%q base_dir=%q", second.Paths, second.BaseDir)
+	}
+	// -root: the same snapshot for an engine that sees the mirror at /mnt/qs.
+	moved := publishedSQL(second, root, "/mnt/qs", "public", "r")
+	if strings.Contains(moved, root) || strings.Count(moved, "read_parquet('/mnt/qs/public.r/delta/") != 2 {
+		t.Fatalf("-root /mnt/qs rendered:\n%s", moved)
+	}
+	if moved != strings.ReplaceAll(want, root, "/mnt/qs") {
+		t.Fatalf("-root changed more than the paths:\n%s\n--- want\n%s", moved, strings.ReplaceAll(want, root, "/mnt/qs"))
+	}
+	// A snapshot.json from a writer that published absolute paths is still
+	// read, and still re-rooted.
+	legacy := *second
+	legacy.SQL, legacy.Paths, legacy.BaseDir = want, "", ""
+	if got := publishedSQL(&legacy, root, "", "public", "r"); got != want {
+		t.Fatalf("an absolute-path snapshot rendered at its own root changed:\n%s", got)
+	}
+	if got := publishedSQL(&legacy, root, "/mnt/qs", "public", "r"); got != moved {
+		t.Fatalf("an absolute-path snapshot was not re-rooted:\n%s", got)
 	}
 	if first.SQL == second.SQL {
 		t.Fatal("two manifests published the same SQL")

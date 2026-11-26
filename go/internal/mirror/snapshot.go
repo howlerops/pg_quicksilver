@@ -102,7 +102,7 @@ func (t *Table) beginSnapshot() (old []string, err error) {
 // replacement is written: whether they fit under RetireMaxBytes. The list is
 // the whole directory, so it already counts what is waiting out a grace.
 func (t *Table) canHold(paths []string) bool {
-	max := t.publisher().maxBytes
+	max := t.publisher().capNow()
 	if max <= 0 {
 		return true
 	}
@@ -293,5 +293,8 @@ func SourceRows(ctx context.Context, conn *pgx.Conn, qualified string,
 func (t *Table) finishSnapshot() error {
 	t.rebuilding = ""
 	t.ahead = false
+	// These rows were read from the source, by this binary: whatever the
+	// files they replace held, the new ones are at the current writer format.
+	t.freshContents = true
 	return t.saveState()
 }

@@ -18,7 +18,8 @@ package mirror
 // state.json: the view SQL for that manifest, the LSN it stands at, a sequence
 // number that only goes up, and the files it names. It is ONE file, so the SQL
 // and its descriptor cannot be read from two different snapshots, and it is
-// replaced by temp-fsync-rename-syncdir exactly as the manifest is.
+// replaced by temp-fsync-rename as the manifest is (see publishManifest for
+// why the directory is not synced a second time).
 //
 // The hook is the END OF saveState, and that is the whole coverage argument:
 // saveState is the only function that writes state.json, so apply, delta
@@ -97,6 +98,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/howlerops/pg_quicksilver/go/internal/diskfree"
 )
 
 // RetireGraceSeconds is how long a file outlives the snapshot that named it.
@@ -104,10 +107,35 @@ import (
 var RetireGraceSeconds = envFloat("QS_RETIRE_GRACE_SECONDS", 60)
 
 // RetireMaxBytes caps, per table, the bytes held only for the grace period.
-// Zero means no cap. A base file larger than this is unlinked as soon as it is
-// superseded, so a mirror whose readers need the grace across a rewrite sets
-// it above the size of its base.
+//
+// Set with QS_RETIRE_MAX_BYTES it is exactly that number (zero: no cap). Left
+// unset it is a FLOOR, and the cap is whichever is larger of it and
+// 1/RetireFreeFraction of the free space on the mirror's volume, read each
+// time the cap is consulted. A fixed gigabyte was the wrong shape: it is a
+// property of the volume how much can be spared for readers, and on any table
+// whose base file was larger than the number, the base got no grace at all —
+// so every query that ran across a rewrite of a table over 1 GiB failed, on
+// volumes with hundreds of gigabytes to spare.
+//
+// Scaling the default does not settle it alone (a base can be larger than a
+// quarter of what is free), so one more thing holds whatever the cap is: the
+// base files most recently retired keep their grace as long as the volume
+// has room for them, which means as much free space again as they occupy —
+// room for the next rewrite to be written beside them. See enforceCap. When
+// neither holds, the published snapshot says so before any reader starts on
+// it: Published.GraceUnprotected.
 var RetireMaxBytes = int64(envFloat("QS_RETIRE_MAX_BYTES", 1<<30))
+
+// retireMaxExplicit is whether QS_RETIRE_MAX_BYTES was set, which makes
+// RetireMaxBytes a number rather than a floor.
+var retireMaxExplicit = os.Getenv("QS_RETIRE_MAX_BYTES") != ""
+
+// RetireFreeFraction is the divisor of the volume's free space that the
+// default cap scales with.
+const RetireFreeFraction = 4
+
+// autoCap is publisher.maxBytes when the cap is to be derived from the volume.
+const autoCap = int64(-1)
 
 // PublishedFile is the name of the published snapshot, beside state.json.
 const PublishedFile = "snapshot.json"
@@ -129,16 +157,115 @@ type Published struct {
 	// the manifest's halt, or — for the length of a re-snapshot whose previous
 	// contents could not be kept — rebuildingReason.
 	Halted string `json:"halted,omitempty"`
-	// Files are relative to the table directory. SQL names them by the
-	// absolute path the WRITER sees, as ViewSQL always has.
+	// GraceUnprotected, when set, is why the files below are NOT covered by
+	// GraceSeconds: the base is larger than the retention cap and the volume
+	// has no room to hold it beside its replacement, so the next rewrite will
+	// unlink it the moment it is superseded. A reader that sees this knows a
+	// long query on this snapshot may lose its files, and can re-read the
+	// snapshot on "file not found" instead of reporting an error. It is the
+	// writer's assessment when the snapshot was published.
+	GraceUnprotected string `json:"grace_unprotected,omitempty"`
+	// BaseDir is the table directory as the WRITER sees it, and Paths says
+	// how SQL names files: PathsRelative for relative to the table directory,
+	// absent for the absolute writer's paths of a snapshot published before
+	// this field existed. Neither is what a reader should build a path from
+	// by hand; Render does it for both forms.
+	BaseDir string `json:"base_dir,omitempty"`
+	Paths   string `json:"paths,omitempty"`
+	// Files are relative to the table directory.
 	Files []string `json:"files"`
-	SQL   string   `json:"sql"`
+	// SQL is the view. Its file paths are relative to the table directory
+	// (Paths), because the writer's absolute path means nothing to a reader
+	// that mounts the mirror somewhere else — which is every reader that is
+	// not in the writer's container. Evaluate Render(dir), not this.
+	SQL string `json:"sql"`
+}
+
+// PathsRelative is Published.Paths when SQL names files relative to the table
+// directory.
+const PathsRelative = "relative"
+
+// Render returns the snapshot's SQL with every file named under tableDir, the
+// table directory as the READER sees it (<mirror root>/<schema>.<table>).
+// Empty means the writer's own (BaseDir).
+//
+// It reads both forms. A snapshot published before paths were relative names
+// files by the writer's absolute path; those are re-rooted the same way, on
+// the last two components of each, which is all a data file's place in a
+// table directory ever is (base/, delta/ or dv/, and a name).
+func (p *Published) Render(tableDir string) string {
+	if tableDir == "" {
+		tableDir = p.BaseDir
+	}
+	if tableDir == "" || p.Halted != "" {
+		return p.SQL
+	}
+	return rebaseSQL(p.SQL, func(path string) string {
+		path = filepath.ToSlash(path)
+		parts := strings.Split(path, "/")
+		if len(parts) >= 2 {
+			parts = parts[len(parts)-2:]
+		}
+		return filepath.Join(append([]string{tableDir}, parts...)...)
+	})
+}
+
+// rebaseSQL rewrites the path argument of every read_parquet( and read_json(
+// call in a view. It walks the SQL as SQL — string literals and quoted
+// identifiers are skipped as units — so a default value or a column name that
+// happens to contain the text of a call is never mistaken for one.
+func rebaseSQL(sql string, to func(path string) string) string {
+	var b strings.Builder
+	b.Grow(len(sql) + len(sql)/4)
+	for i := 0; i < len(sql); {
+		c := sql[i]
+		if c != '\'' && c != '"' {
+			b.WriteByte(c)
+			i++
+			continue
+		}
+		// A quoted run: to the closing quote, a doubled quote being one inside.
+		j := i + 1
+		for j < len(sql) {
+			if sql[j] == c {
+				if j+1 < len(sql) && sql[j+1] == c {
+					j += 2
+					continue
+				}
+				break
+			}
+			j++
+		}
+		end := min(j+1, len(sql))
+		lit := sql[i:end]
+		// What precedes the literal in the output is what precedes it in the
+		// input: only literals are ever replaced.
+		if c == '\'' && (strings.HasSuffix(sql[:i], "read_parquet(") || strings.HasSuffix(sql[:i], "read_json(")) {
+			path := strings.ReplaceAll(sql[i+1:j], "''", "'")
+			lit = sqlString(to(path))
+		}
+		b.WriteString(lit)
+		i = end
+	}
+	return b.String()
 }
 
 // ReadPublished reads a table's published snapshot. It needs no column list
 // and no manifest, which is the point: the writer already did that work.
+//
+// AppliedLSN is the EFFECTIVE one: a table that has been quiet publishes
+// nothing (watermark.go), so the LSN in the file is where its contents last
+// changed, and the root's watermark says how far past that it is known to be
+// current. A reader gating on freshness wants the second.
 func ReadPublished(root, schema, table string) (*Published, error) {
-	return readPublished(filepath.Join(root, schema+"."+table))
+	p, err := readPublished(filepath.Join(root, schema+"."+table))
+	if err != nil {
+		return nil, err
+	}
+	if w, werr := ReadWatermark(root); werr == nil {
+		p.AppliedLSN = effectiveLSN(schema+"."+table, p.AppliedLSN, w)
+	}
+	return p, nil
 }
 
 func readPublished(dir string) (*Published, error) {
@@ -158,6 +285,9 @@ func readPublished(dir string) (*Published, error) {
 type retired struct {
 	size     int64
 	deadline time.Time
+	// seq is the published sequence at which the file's clock started, which
+	// is what "most recently retired" means for a base: see enforceCap.
+	seq uint64
 	// id is the file the deadline was taken on, as it was when its clock
 	// started (after stamp set its mtime). drop unlinks nothing else.
 	id os.FileInfo
@@ -180,9 +310,16 @@ type publisher struct {
 	// file in the manifest on every apply.
 	cols map[string]map[string]bool
 
-	grace    time.Duration
+	grace time.Duration
+	// maxBytes is the cap on bytes held for the grace: a fixed number, zero
+	// for none, or autoCap to derive it from the volume (capNow).
 	maxBytes int64
-	now      func() time.Time
+	// free reads the volume's free space, and dir is where to read it. nil
+	// means it cannot be known: the cap is then a number and no file is
+	// exempt from it.
+	free diskfree.Probe
+	dir  string
+	now  func() time.Time
 	manual   bool // tests: no timer, reap only when told
 	closed   bool // Table.Close: no timer is armed again
 
@@ -198,10 +335,63 @@ func (t *Table) publisher() *publisher {
 			cols:     map[string]map[string]bool{},
 			grace:    time.Duration(RetireGraceSeconds * float64(time.Second)),
 			maxBytes: RetireMaxBytes,
+			free:     diskfree.Free,
+			dir:      t.Dir,
 			now:      time.Now,
+		}
+		if !retireMaxExplicit {
+			t.pub.maxBytes = autoCap
 		}
 	}
 	return t.pub
+}
+
+// capNow is the cap in force at this moment: the configured number, or for
+// the default the larger of RetireMaxBytes and a fraction of what is free.
+// Zero means there is none.
+func (p *publisher) capNow() int64 {
+	if p.maxBytes != autoCap {
+		return p.maxBytes
+	}
+	if p.free != nil {
+		if free, ok := p.free(p.dir); ok && free/RetireFreeFraction > RetireMaxBytes {
+			return free / RetireFreeFraction
+		}
+	}
+	return RetireMaxBytes
+}
+
+// roomFor reports whether the volume can go on holding size bytes of retired
+// files: whether as much again is free, so that the next file of that size
+// can be written while these wait.
+func (p *publisher) roomFor(size int64) bool {
+	if p.free == nil {
+		return false
+	}
+	free, ok := p.free(p.dir)
+	return ok && free >= size
+}
+
+// unprotected is what a snapshot naming these base files must tell its
+// readers, or "" when the grace covers them. It is the same test enforceCap
+// will apply when they are retired, made early.
+func (p *publisher) unprotected(dir string, bases []string) string {
+	max := p.capNow()
+	if max <= 0 || p.grace <= 0 {
+		return ""
+	}
+	var size int64
+	for _, b := range bases {
+		if fi, err := os.Lstat(filepath.Join(dir, "base", b)); err == nil {
+			size += fi.Size()
+		}
+	}
+	if size <= max || p.roomFor(size) {
+		return ""
+	}
+	return fmt.Sprintf("the base is %d bytes, over the retention cap of %d (QS_RETIRE_MAX_BYTES), "+
+		"and the volume has less than that free: the next rewrite unlinks it without the grace period",
+		size, max)
 }
 
 // load picks up the sequence and the file set of the snapshot a previous
@@ -306,26 +496,34 @@ func (t *Table) publishManifest(st *State, refusal string) error {
 		pub.Halted = refusal
 		pub.SQL = haltedSQL(t.Qualified, refusal)
 	} else {
-		sql, err := t.ViewSQL()
+		sql, err := t.relativeViewSQL()
 		if err != nil {
 			return fmt.Errorf("publish snapshot: %w", err)
 		}
-		pub.SQL = sql
+		pub.SQL, pub.Paths, pub.BaseDir = sql, PathsRelative, t.Dir
 		pub.Files = append(pub.Files, protect...)
+		pub.GraceUnprotected = p.unprotected(t.Dir, st.BaseFiles)
 	}
 	b, err := json.MarshalIndent(pub, "", "  ")
 	if err != nil {
 		return err
 	}
+	// The file is fsynced before it is renamed into place, so no crash can
+	// leave a snapshot.json that is not whole. The DIRECTORY is not synced
+	// again here, and that is deliberate: it was synced a moment ago for the
+	// manifest, and a second sync would buy only that this rename survives a
+	// power loss in the next few milliseconds. If it does not, what survives
+	// is the previous snapshot beside the new manifest — precisely the state
+	// a crash between the manifest and this line has always left, which the
+	// restart handles (publisher.load protects what that snapshot names, and
+	// the first Apply publishes again). Nothing is confirmed on the strength
+	// of snapshot.json. It was one of eight syncs in an ordinary Apply.
 	if err := writeFileAtomic(filepath.Join(t.Dir, PublishedFile), b); err != nil {
-		return fmt.Errorf("publish snapshot: %w", err)
-	}
-	if err := syncDir(t.Dir); err != nil {
 		return fmt.Errorf("publish snapshot: %w", err)
 	}
 	t.notifyLake(st, refusal)
 
-	named := make(map[string]bool, len(protect))
+	named :=make(map[string]bool, len(protect))
 	for _, f := range protect {
 		named[filepath.Join(t.Dir, f)] = true
 	}
@@ -392,6 +590,7 @@ func (p *publisher) supersede(named map[string]bool) {
 // is the only record a restart has of when a file stopped being named.
 func (p *publisher) stamp(path string, r *retired, now time.Time) {
 	r.deadline = now.Add(p.grace)
+	r.seq = p.seq
 	_ = os.Chtimes(path, now, now)
 	// The mtime is part of the file's identity, so it is read back.
 	if fi, err := os.Lstat(path); err == nil {
@@ -467,8 +666,17 @@ func (p *publisher) drop(path string, r *retired) {
 }
 
 // enforceCap gives up the oldest retirements when the grace is holding more
-// than RetireMaxBytes. Files the published snapshot still names are not
+// than the cap (capNow). Files the published snapshot still names are not
 // candidates: their readers are current, not slow.
+//
+// Nor are the base files most recently retired, while the volume has room
+// for them (roomFor). The cap exists so that a slow reader costs a re-read
+// rather than a full volume, and it is the right trade for the many small
+// files of the grace; applied to the one large file it meant that a table
+// whose base was over the cap gave NO reader the grace across a rewrite,
+// however much disk was free. Those files are the previous snapshot of the
+// whole table, there is at most one set of them, and the room test is exactly
+// "the next rewrite still fits": when it does not, they go like anything else.
 //
 // Neither is a file with another name, which is what a DuckLake's hard link
 // to it is (internal/ducklake). The cap is about disk, and unlinking such a
@@ -477,25 +685,48 @@ func (p *publisher) drop(path string, r *retired) {
 // only when the total is over the cap, and each time, because the lake drops
 // its link when its own retention says so.
 func (p *publisher) enforceCap() {
-	if p.maxBytes <= 0 || p.bytes <= p.maxBytes {
+	max := p.capNow()
+	if max <= 0 || p.bytes <= max {
 		return
 	}
+	// The newest retired base files: those whose clock started at the highest
+	// published sequence of any base waiting here.
+	var newest uint64
+	var newestSize int64
+	isBase := func(path string) bool { return filepath.Base(filepath.Dir(path)) == "base" }
+	for path, r := range p.pending {
+		if isBase(path) && !r.deadline.IsZero() && r.seq > newest {
+			newest = r.seq
+		}
+	}
+	for path, r := range p.pending {
+		if isBase(path) && !r.deadline.IsZero() && r.seq == newest {
+			newestSize += r.size
+		}
+	}
+	spare := newestSize > 0 && p.roomFor(newestSize)
+
 	var paths []string
-	var linked int64
+	var exempt int64
 	for path, r := range p.pending {
 		if fi, err := os.Lstat(path); err == nil && linkedElsewhere(fi) {
-			linked += r.size
+			exempt += r.size
 			continue
 		}
-		if !r.deadline.IsZero() {
-			paths = append(paths, path)
+		if r.deadline.IsZero() {
+			continue
 		}
+		if spare && isBase(path) && r.seq == newest {
+			exempt += r.size
+			continue
+		}
+		paths = append(paths, path)
 	}
 	sort.Slice(paths, func(i, j int) bool {
 		return p.pending[paths[i]].deadline.Before(p.pending[paths[j]].deadline)
 	})
 	for _, path := range paths {
-		if p.bytes-linked <= p.maxBytes {
+		if p.bytes-exempt <= max {
 			return
 		}
 		p.drop(path, p.pending[path])

@@ -528,8 +528,21 @@ A column named there is stored as `DECIMAL(38,s)`, reads as that, and takes
 back the halt: a value with more than `s` fractional digits, more than `38-s`
 integer digits, `NaN` or `Infinity` halts the table (next section). Better
 still, declare the precision in PostgreSQL — `numeric(18,4)` needs no setting.
-Changing the setting on an existing mirror is safe: files written the other way
-are cast by the view and converted at the next rewrite.
+Naming a column that **already holds rows** is a transition, not a switch. The
+view used to cast the stored text to the decimal at once, and an engine's cast
+rounds: `0.123456` at scale 4 read as `0.1235`, silently, until the next write
+of such a row halted the table. Now the sidecar checks first. At its first
+write after the restart it scans the column once:
+
+- every stored value fits `DECIMAL(38,s)` exactly: the column becomes the
+  decimal from that manifest on (`numeric_scales` in `state.json` records it),
+  the view casts the older files — exactly, because that is what was checked —
+  and a base rewrite converts them (`compaction started ... numeric-opt-in`);
+- a value does not fit: the option is **refused for that column**, with one log
+  line naming the value and its key (`QS_NUMERIC_SCALE is REFUSED for this
+  column`), and the column goes on being served as exact text. Nothing is
+  rounded and nothing halts. Correct the row or choose a scale that holds it,
+  and restart: a refusal is looked at again on every start.
 
 ### Bloom filters
 
@@ -581,6 +594,52 @@ Rebuild them (create `REBUILD` in the table's mirror directory and restart).
 And a reader that depended on an unconstrained `numeric` being a number
 should set `QS_NUMERIC_SCALE` (`=9` is what it was before: `DECIMAL(38,9)`), or
 cast in its queries; without either the column is `VARCHAR`.
+
+### Files from an older sidecar that cannot be trusted
+
+`state.json` records a writer format version for each data file
+(`file_format`; a file with no entry was written before versions were
+recorded, and a file made from older files keeps their version).
+`Table.LegacyFormatColumns()` reports, per table, the columns whose data comes
+from a version known to be inconsistent for that column's type and which
+therefore need the table rebuilt: the `::text` spellings above (`char(n)`,
+`inet`, `cidr`, `macaddr`, `bit`, `money`, `interval`, `timetz`) in a legacy
+base file, and an unconstrained `numeric` **primary key** that an older sidecar
+stored as `DECIMAL(38,9)` — there a key the source prints as `1.50` does not
+compare equal to the `1.5` the old file gives back, so changes to that row
+leave a duplicate until the table is rebuilt.
+
+---
+
+## Disk the mirror holds besides the data
+
+**Large transactions** are spooled under `<mirror>/.spool`. The total is
+bounded by `QS_SPOOL_MAX_BYTES` (unset: a quarter of the volume's free space
+when the stream starts, at most 64 GiB; `off`: no bound). At the bound the
+sidecar stops reading from PostgreSQL until a confirmation frees spooled
+transactions that have committed, so the backlog waits in WAL behind the slot.
+If the transactions still arriving do not fit by themselves the stream stops
+with `spool budget exceeded: ...`, which says how many bytes had been reached;
+nothing of them was applied and the slot has not moved.
+
+**Superseded files** are kept for `QS_RETIRE_GRACE_SECONDS` so that a query
+already running can finish, up to `QS_RETIRE_MAX_BYTES` per table. Unset, that
+cap is the larger of 1 GiB and a quarter of the volume's free space. Whatever
+the cap, the base file most recently superseded keeps its grace while the
+volume has as much free space again as the file is large. When it has not,
+the published `snapshot.json` carries `grace_unprotected` with the reason: a
+reader that sees it should re-read the snapshot on "file not found" rather
+than report an error.
+
+**`snapshot.json` names files relative to the table directory** (`"paths":
+"relative"`, with the writer's directory in `base_dir`), so a reader that
+mounts the mirror at another path can use it: `qs-query -published` renders
+the paths under the `-mirror` it was given, or under `-root`.
+
+**A table that receives no changes writes nothing.** Its `state.json` then
+says where it last changed; how far it is known to be current is in
+`<mirror>/watermark.json`, which the sidecar writes before it confirms a
+position (`qs-query -lsn` and `-published -lsn` already report that).
 
 ---
 
