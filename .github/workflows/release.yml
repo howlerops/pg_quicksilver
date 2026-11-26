@@ -1,25 +1,34 @@
-# Publish the two images and the chart, on a tag.
+# Publish the three images and the chart, on a tag.
 #
 # Nothing here runs on an ordinary push. A release is the one thing in this
 # repository that is not reversible — an image tag other people pull, a chart
 # version that gets installed — so it happens when somebody writes a tag and not
 # because a branch moved.
 #
-# WHAT GETS PUBLISHED, and why it is three things rather than one:
+# WHAT GETS PUBLISHED, and why it is four things rather than one:
 #
 #   -plugin   the CNPG-I plugin server. Runs as a Deployment, talks to the
 #             operator, touches no data.
 #   -mirror   the sidecar injected into every instance Pod. Runs as UID 26 and
 #             writes to the data volume; see deploy/Dockerfile for why that
 #             matters.
+#   -postgres the PostgreSQL operand image, for Clusters that route reads:
+#             CloudNativePG's PostgreSQL 17 with pg_duckdb, pg_quicksilver and
+#             DuckDB's extensions. Tagged 17-<version>, not <version>:
+#             CloudNativePG reads the PostgreSQL major from the front of an
+#             image tag, so the bare version would be PostgreSQL 0.
 #   chart     packaged and pushed as an OCI artifact, so `helm install
 #             oci://ghcr.io/...` works without a chart repository to host.
 #
-# The image tag and the chart version both come from the git tag, so a chart
+# The image tags and the chart version all come from the git tag, so a chart
 # cannot name an image that was never built. That is the failure this is
 # arranged to prevent: charts/quicksilver/values.yaml pins image tags, and a
 # release that updated one without the other would install a mirror from a
-# different build than the plugin it is paired with.
+# different build than the plugin it is paired with, or tell people to run an
+# operand image whose extension does not match the sidecar that feeds it.
+#
+# What triggers a release has not changed: a v* tag, or a dispatch with a
+# version.
 
 name: release
 
@@ -77,6 +86,7 @@ jobs:
       # different build — so it fails here rather than at somebody's helm
       # install.
       - name: the chart and the tag must agree
+        id: pins
         run: |
           v="${{ steps.v.outputs.version }}"
           cv=$(grep '^version:' charts/quicksilver/Chart.yaml | awk '{print $2}')
@@ -84,11 +94,23 @@ jobs:
           bad=0
           [ "$cv" = "$v" ] || { echo "::error::Chart.yaml version is $cv, tag says $v"; bad=1; }
           [ "$av" = "$v" ] || { echo "::error::Chart.yaml appVersion is $av, tag says $v"; bad=1; }
+          # `^  name: `, so that a comment mentioning "mirror:" is not read
+          # as the pin.
           for img in plugin mirror; do
-            pinned=$(grep "  $img:" charts/quicksilver/values.yaml | sed 's/.*://')
+            pinned=$(grep "^  $img: " charts/quicksilver/values.yaml | sed 's/.*://')
             [ "$pinned" = "$v" ] || {
               echo "::error::values.yaml pins $img at $pinned, tag says $v"; bad=1; }
           done
+          # The operand image is 17-<version>: PG_MAJOR from the Dockerfile,
+          # then the same version as everything else.
+          major=$(sed -n 's/^ARG PG_MAJOR=//p' deploy/Dockerfile)
+          pinned=$(grep "^  postgres: " charts/quicksilver/values.yaml | sed 's/.*://')
+          [ "$pinned" = "$major-$v" ] || {
+            echo "::error::values.yaml pins postgres at $pinned, tag says $major-$v"; bad=1; }
+          # And the example people copy must name the image this run publishes.
+          grep -q "pg_quicksilver-postgres:$major-$v\$" examples/cluster-routed.yaml || {
+            echo "::error::examples/cluster-routed.yaml does not use pg_quicksilver-postgres:$major-$v"; bad=1; }
+          echo "pg_major=$major" >> "$GITHUB_OUTPUT"
           exit $bad
 
       - uses: docker/setup-buildx-action@v3
@@ -125,6 +147,35 @@ jobs:
             ghcr.io/${{ github.repository }}-mirror:latest
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      # The operand image. Built and pushed LAST of the three: its build ends
+      # with a self-check that runs with the network off (deploy/
+      # duckdb-extensions.sh verify), so if pg_duckdb's package, DuckDB's
+      # extension repository or the extension's build is wrong today, the
+      # release stops here rather than publishing an image that cannot route.
+      # The chart job below needs this job, so no chart is pushed either.
+      #
+      # 17-<version> and 17, never :latest. CloudNativePG refuses a Cluster
+      # whose imageName is tagged latest, because it reads the PostgreSQL
+      # version from the tag; `17` is the moving tag for this major.
+      #
+      # linux/amd64 only, like the other two: the pg_duckdb package in the
+      # Dockerfile is pinned by checksum to its amd64 build.
+      - name: postgres (operand) image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/Dockerfile
+          target: postgres
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository }}-postgres:${{ steps.pins.outputs.pg_major }}-${{ steps.v.outputs.version }}
+            ghcr.io/${{ github.repository }}-postgres:${{ steps.pins.outputs.pg_major }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.version=${{ steps.pins.outputs.pg_major }}-${{ steps.v.outputs.version }}
+          cache-from: type=gha,scope=postgres
+          cache-to: type=gha,mode=max,scope=postgres
 
   chart:
     name: package and push the chart

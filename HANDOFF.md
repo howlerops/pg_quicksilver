@@ -10,7 +10,8 @@ kubelet, and there is a script that answers it.
 ## TL;DR
 
 ```sh
-# The cluster path. Green as of 29 Sep 2026; run it to re-verify. ~25 min.
+# The cluster path. The two-instance version was green on 29 Sep 2026; the
+# three-instance version with DuckLake and the router has NOT RUN YET. ~45 min.
 bash bench/docker/cluster_kind.sh
 
 # Everything else, reproducible in a container. ~20 min.
@@ -20,9 +21,13 @@ bash bench/docker/testbed.sh
 bash bench/docker/testbed.sh --serving
 ```
 
-Both paths are green. `cluster-e2e` also runs in GitHub Actions again, and
+`cluster-e2e` also runs in GitHub Actions again, now on pull requests, and
 when it does, prefer it — `bench/docker/` exists to survive CI being
 unavailable, not to replace it.
+
+**Read [What CI proves now](#what-ci-proves-now) before trusting a green
+tick.** The cluster test was rewritten in a sandbox that cannot start a Pod,
+and that section lists exactly what was run and what was only written.
 
 ---
 
@@ -197,18 +202,25 @@ reason the cluster test was never run locally.
 
 ### `bench/docker/cluster_kind.sh` — the open question
 
-Creates a kind cluster on the host's Docker, builds this checkout, side-loads
-both images plus a second `:dev-rolled` tag for the roll, and runs
-`cluster_e2e.sh` against it.
+Creates a kind cluster on the host's Docker, builds this checkout's three
+images (plugin, mirror, and the PostgreSQL operand image, tagged `17-dev`),
+side-loads them plus a second `:dev-rolled` tag for the roll, and runs
+`cluster_e2e.sh` against it in full scope. It is the same run `cluster-e2e`
+makes on a pull request.
 
 ```sh
-bash bench/docker/cluster_kind.sh          # ~25 min, deletes the cluster after
+bash bench/docker/cluster_kind.sh          # ~45 min, deletes the cluster after
 KEEP=1 bash bench/docker/cluster_kind.sh   # leave it up to poke at
 ```
 
-It preflights before spending the 25 minutes: Docker reachable, cgroup version,
-`CAP_SYS_RESOURCE`, kind/kubectl/helm present, ≥12 G free. Each prints a reason
+It preflights before spending the 45 minutes: Docker reachable, cgroup version,
+`CAP_SYS_RESOURCE`, kind/kubectl/helm present, ≥14 G free. Each prints a reason
 and exits 2 (INCOMPLETE) rather than failing halfway through.
+
+Whatever happens, `cluster_e2e.sh` leaves `/tmp/qs-cluster-e2e/` behind: both
+containers' logs per Pod, each sidecar's `/metrics` and `/readyz`,
+`quicksilver.mirror_status()`, every replication slot, the Cluster as the API
+server holds it, and the operator's and plugin's logs.
 
 `:dev-rolled` is deliberately not `:latest` — Kubernetes defaults that tag's
 `imagePullPolicy` to `Always`, which ignores the node's copy and goes to a
@@ -319,11 +331,11 @@ git push origin v0.0.3
 
 What that sets off, in order, and what each step is worth watching for:
 
-1. **`release`** — refuses unless `Chart.yaml` version, `appVersion` and both
-   image pins in `values.yaml` all equal the tag. That guard was replayed
-   verbatim against this tree and passes; both image targets were also built
-   locally at `VERSION=0.0.3` and the string is in the binary. It then pushes
-   `-plugin`, `-mirror` and the chart to ghcr.
+1. **`release`** — refuses unless `Chart.yaml` version, `appVersion` and the
+   image pins in `values.yaml` all equal the tag. (For 0.0.3 that guard was
+   replayed verbatim and both image targets were built locally at
+   `VERSION=0.0.3`.) It then pushes `-plugin`, `-mirror` and the chart to
+   ghcr, and from the next release `-postgres` as well: see below.
 2. **`cluster-e2e`**, automatically, in **`published`** mode — the run that
    closed the registry gap above (run 32 for 0.0.3). It resolves the version with `helm show chart`
    against the registry, which returns the newest chart there; verified live.
@@ -336,10 +348,117 @@ follows it. It does not create the git tag.
 
 ---
 
+### The next release is 0.0.4, and it is prepared, not published
+
+`Chart.yaml`, `appVersion`, `image.plugin` and `image.mirror` say `0.0.4`, and
+`image.postgres` says `17-0.0.4`. Nothing with those tags exists on ghcr until
+`v0.0.4` is tagged, so an unpinned `helm install charts/quicksilver` from a
+checkout names images that are not there yet; every README still tells people
+to install `0.0.3`, which is.
+
+`release` gained one thing: a third image, `-postgres`, pushed as
+`17-<version>` and `17`, after the other two. Its build ends in an offline
+self-check, so a release on a day when pg_duckdb's package or DuckDB's
+extension repository is wrong stops before the chart is pushed. The guard now
+also requires `image.postgres` to be `17-<tag>` and
+`examples/cluster-routed.yaml` to name it; replayed against this tree it
+passes for 0.0.4 and fails, on six counts, for 0.0.3. What triggers a release
+is unchanged.
+
+The operand tag is `17-<version>` and not `<version>` because CloudNativePG
+reads the PostgreSQL major from the front of an image tag: `0.0.4` is
+PostgreSQL 0 to the operator, and `dev` is refused at admission.
+
+After the release, `cluster-e2e` runs in `published` mode as before. It picks
+its scope from the version: `0.0.3` and earlier are **legacy** (two instances,
+stock image, the original pull, roll and gate), anything later is **full** and
+pulls `-postgres:17-<version>` too.
+
+---
+
+## What CI proves now
+
+Two workflows on a pull request, and what each job is evidence of.
+
+**`ci`**, every push and pull request:
+
+| Job | Proves |
+|---|---|
+| `test` | every Go package builds, vets and passes, with explicit timeouts; the DuckLake publisher against DuckDB 2.0.1 (four named tests must PASS, not skip); `cmd/qs-mirror` under `-race`; every feature flag off |
+| `race (0..2/3)` | `internal/mirror` under `-race`, split across three jobs by [`go_test_shard.sh`](bench/scripts/go_test_shard.sh), which takes the test list from the package at run time and fails if the shards do not partition it |
+| `cnpgi` | the CNPG-I handshake and Pod facts against the operator's own code |
+| `manifests` | `helm lint`; kubeconform; both examples against CloudNativePG's CRD; the chart's rendering; that the chart, the examples, the Dockerfile and the cluster test agree on the operand image, its extension directory and the preload order |
+| `lint` | `actionlint` on the workflows, `hadolint` on the Dockerfile, `shellcheck` on the scripts CI runs and any a pull request changes |
+| `images` | all three images build; the operand image passes its offline self-check during the build and again as a container with no network and a read-only root |
+| `integration` | the suite against PostgreSQL 17; `bench/exactness --selfcheck` |
+| `extension` | `make installcheck` for `pg_quicksilver` against PostgreSQL 17 with pg_duckdb 1.2.0; DuckDB's extensions load under `unshare -n`; the cluster test's slot, verify, routing, halt and REBUILD sections against a real primary, standby and sidecar |
+| `serving` | the patched pg_duckdb, built and served through (unchanged) |
+
+**`cluster-e2e`**, on a pull request to `main` that touches something that ends
+up in a Pod (not docs, not tests), on a push to `main`, after a release,
+weekly, and on demand. Its eleven sections are listed at the top of
+[`cluster_e2e.sh`](bench/scripts/cluster_e2e.sh).
+
+**What was run here, and what was not.** This was written in a sandbox with no
+Docker daemon and no Kubernetes.
+
+*Run, and passing:* `actionlint`, `hadolint`, `shellcheck`, `helm lint`,
+`validate_manifests.sh` (and that it fails on four seeded mistakes);
+`go build`, `go vet`, `go test ./...`, the DuckLake conformance tests, the
+whole `-race` suite and one of its three shards through the shard script;
+`go/fidelity`; every command of the Dockerfile's Go and extension build stages;
+`deploy/duckdb-extensions.sh install` then `verify` under `unshare -n` with a
+root-owned directory, and its control; `make installcheck` (10 of 10);
+`bench/exactness --selfcheck`; `cluster_e2e_selftest.sh`, plus controls showing
+its assertions fail on an orphaned slot, a diverged mirror and an unrouted read;
+`release.yml`'s version guard, replayed.
+
+*Not run, and so unverified until CI does:*
+
+- any `docker build`: the three targets as images, the PGDG header pin inside
+  the CloudNativePG base, the Debian 12 build of the pg_duckdb package,
+  `ADD --checksum` and `RUN --network=none` under the runner's BuildKit;
+- anything on Kubernetes: admission refusals by the plugin, three instances on
+  the operand image, two sidecars against one primary, routing through the
+  `-ro` Service, the halt and REBUILD by Pod deletion, the switchover, the
+  scale-down, and whether sections 10 and 11 still pass on three-then-two
+  instances with the DuckLake parameters set;
+- the workflows as workflows: triggers, path filters, the concurrency
+  expression, artifact upload, the `images` job's cache scopes, and every
+  step's behaviour on a GitHub-hosted runner (`sudo unshare -n`, system `pip`);
+- `release.yml`'s new image push.
+
+*Known before the first run:*
+
+- `ci`'s **"every feature flag off"** step fails on this tree, for a reason
+  that is not this change's: four tests in `go/internal/mirror`
+  (`TestEveryTypeIsStoredAsDeclared`, `TestOldFilesAndNewCoexist`,
+  `TestNegativeInfinityIsStoredAsTheEngineReadsIt` and
+  `TestClusteredRewriteKeepsRanges/tie-goes-to-time`) assert native temporal
+  types and do not skip under `QS_TEMPORAL_TYPES=0`, as their neighbours do
+  for their own flags. The step skips those four by name and says so in an
+  annotation; the fix is a `t.Skip` in each, and then the list in `ci.yml`
+  goes.
+- **There is no slot janitor in this build.** Sections 8 and 9 assert slot
+  state and mark the janitor check NOT RUN. The script detects a janitor by
+  the plugin reporting a parameter with "janitor" in its name
+  (`JANITOR_PARAM` overrides) and then sets it to `JANITOR_PERIOD` (20s) and
+  requires orphans to be gone.
+- **Section 9 will report an orphaned slot** after the scale-down, drop it by
+  hand as docs/16 says, and pass. That is the documented gap, shown.
+- If `cluster-e2e` is made a required check, a docs-only pull request never
+  starts it and waits forever: path-filtered workflows report nothing when
+  they do not run.
+
+---
+
 ## When Actions comes back
 
-Nothing needs changing. `cluster-e2e` runs on a push touching
-`bench/scripts/cluster_e2e.sh`, `.github/workflows/cluster-e2e.yml`,
-`go/internal/plugin/**`, `charts/quicksilver/**` or `deploy/Dockerfile`, in
-`source` mode, bounded to one run at a time. `ci` runs on every push and was
-green on all six jobs. Both are current on `main`.
+`cluster-e2e` used to run on a push, to any branch, touching the harness, the
+plugin, the chart or the Dockerfile. It now runs on a **pull request to
+`main`** and on a push to `main`, when the change touches the sidecar, the
+plugin, the extension, the chart, `deploy/` or the harness, in `source` mode.
+Pull requests get a concurrency group each; everything else still shares one.
+A branch with no pull request no longer gets a cluster run by pushing: use
+`workflow_dispatch` with `images: source`. The reasons are at the top of the
+workflow file. `ci` runs on every push.

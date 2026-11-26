@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # The replication slot a sidecar REALLY uses, for scripts that have to name it.
 #
 # QS_SLOT stopped being the slot's name when slots became one per Pod: the

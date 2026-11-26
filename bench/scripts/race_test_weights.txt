@@ -1,0 +1,31 @@
+# Seconds each heavy test of go/internal/mirror took under -race, for
+# bench/scripts/go_test_shard.sh. A WEIGHT, not a list of what runs: every test
+# the package has is run by exactly one shard whether or not it is named here,
+# and a test missing from this file is weighed at one second. So a stale file
+# costs balance and never coverage.
+#
+# Measured with
+#   taskset -c 0,1 go -C go test -json -race -count=1 ./internal/mirror
+# on a shared 4-core machine: 610 s for the package, which is over go test's
+# default 10-minute timeout and is why the suite "timed out once under load".
+# Tests of 5 s and over are listed; they are 20 of 125 tests and 563 of the 609 s.
+ 118 TestCompactionCost
+  80 TestKidxModel
+  75 TestRandomInterleavingsAgainstAModel
+  58 TestCompactionRacesApplyClustered
+  29 TestChunkedApplyMatchesUnchunked
+  27 TestCompactionRacesPartialRows
+  26 TestDeadCacheMatchesDisk
+  22 TestCompactionRacesApply
+  20 TestSteadyWritesDoNotStormRewrites
+  19 TestClusteredRewriteOverLegacyFiles
+  13 TestPersistedIndexCost
+  12 TestClusteredRewriteKeepsRanges
+  11 TestIndexCost
+   9 TestForEachLiveStreamsRatherThanMaterialising
+   9 TestPartialDeltaThroughMergeAndCompaction
+   7 TestRepeatedEvolveDuringAbortedCompaction
+   7 TestDeleteOnlyWorkloadCompacts
+   7 TestTruncateDuringCompaction
+   7 TestKidxNeverTrusted
+   6 TestEvolveDuringAbortedCompaction

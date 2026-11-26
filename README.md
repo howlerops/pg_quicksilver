@@ -104,8 +104,12 @@ helm install quicksilver oci://ghcr.io/howlerops/charts/quicksilver \
 > `unretryable` — **PostgreSQL never starts**, in the default `shadow` mode, on every
 > instance. Fixed in `0.0.3` ([docs/35](docs/35-the-port-that-stopped-postgresql.md)).
 
-Then add the plugin to a `Cluster` — [docs/16](docs/16-deploying.md) has the spec, the two
+Then add the plugin to a `Cluster` — [docs/16](docs/16-deploying.md) has the spec, the
 images, what the plugin refuses, and what is not yet verified.
+[`examples/cluster-shadow.yaml`](examples/cluster-shadow.yaml) mirrors and changes nothing
+else. [`examples/cluster-routed.yaml`](examples/cluster-routed.yaml) also publishes the
+mirror as a DuckLake and routes reads to it from inside PostgreSQL, which needs the
+operand image (`pg_quicksilver-postgres:17-<version>`, first published with `0.0.4`).
 
 To run the verification yourself, in Docker: **[HANDOFF.md](HANDOFF.md)**.
 

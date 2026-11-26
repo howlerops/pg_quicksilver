@@ -1,8 +1,12 @@
-# Two binaries, one build, two images selected by --target.
+# One build, three images, selected by --target.
 #
-#   docker build --target plugin -t ghcr.io/howlerops/pg_quicksilver-plugin:dev .
-#   docker build --target mirror -t ghcr.io/howlerops/pg_quicksilver-mirror:dev .
-#   docker build --target postgres -t <registry>/postgresql-quicksilver:17 .   (optional; see the end)
+#   docker build --target plugin   -t ghcr.io/howlerops/pg_quicksilver-plugin:dev   -f deploy/Dockerfile .
+#   docker build --target mirror   -t ghcr.io/howlerops/pg_quicksilver-mirror:dev   -f deploy/Dockerfile .
+#   docker build --target postgres -t ghcr.io/howlerops/pg_quicksilver-postgres:17-dev -f deploy/Dockerfile .
+#
+# The operand image's tag has to START WITH THE POSTGRESQL MAJOR: CloudNativePG
+# reads a Cluster's PostgreSQL version from the front of the image tag, takes
+# "0.0.4" for PostgreSQL 0 and refuses "dev" outright.
 #
 # Base images are fully qualified on purpose. Docker silently resolves a bare
 # "golang:1.27" against Docker Hub; podman and buildah refuse it outright unless
@@ -13,24 +17,59 @@
 # The mirror image is NOT a PostgreSQL image. It is a sidecar that shares the
 # instance Pod's data volume and talks to PostgreSQL over the network and the
 # local socket, so it needs no server binaries and no extensions. That is what
-# lets docs/07 hold: the CNPG PostgreSQL image stays the stock upstream one, and
-# nothing here forks it.
+# lets docs/07 hold for the mirror alone: a Cluster that only mirrors keeps the
+# stock CloudNativePG image. The `postgres` target at the end is for the one
+# feature that does need something in the server: routing reads.
+#
+# Needs BuildKit (the default builder since Docker 23): the `postgres` target
+# uses `ADD --checksum` and `RUN --network=none`.
 
-# For the `postgres` target at the end of this file.
+# ---- what is pinned, in one place -----------------------------------------
+# An ARG a FROM uses has to come before the first FROM.
+#
+# GO_IMAGE      the minor line go/go.mod asks for (`go 1.27`). GOTOOLCHAIN=local
+#               below makes a go.mod that outgrows it a build error instead of
+#               a toolchain downloaded mid-build.
+# CNPG_BASE     the CloudNativePG operand image, by PostgreSQL MINOR, because
+#               pg_quicksilver.so is compiled against that minor's headers and
+#               the headers are installed at exactly the server's version.
+#               17.12 is what docs/40 was validated on.
+# PG_DUCKDB_*   the package, by URL and SHA-256. pg_duckdb publishes no
+#               packages of its own (its releases are container images), and
+#               building it is DuckDB's build: an hour of C++. This is the
+#               Debian 12 build from the apt repository the project's
+#               validation hosts use, which is where docs/40's 1.2.0 came from.
+#               Fetched as one file with a checksum rather than by adding the
+#               repository: nothing else from it is wanted, and a checksum is a
+#               stronger pin than a signing key that can sign a newer version.
+#               To move it: take Filename and SHA256 for postgresql-17-pg-duckdb
+#               from <repo>/dists/bookworm/main/binary-amd64/Packages.
 ARG PG_MAJOR=17
-ARG CNPG_BASE=ghcr.io/cloudnative-pg/postgresql:17-standard-bookworm
+ARG GO_IMAGE=docker.io/library/golang:1.27
+ARG CNPG_BASE=ghcr.io/cloudnative-pg/postgresql:17.12-standard-bookworm
+ARG PG_DUCKDB_DEB_URL=https://repo.pigsty.io/apt/pgsql/bookworm/pool/main/p/pg-duckdb/postgresql-17-pg-duckdb_1.2.0-1PGSTY~bookworm_amd64.deb
+ARG PG_DUCKDB_DEB_SHA256=084aad6d002517fadcd537211f6b53baf50c809f45ba0c7e5dd85ab79346daa6
 
-FROM docker.io/library/golang:1.27 AS build
+FROM ${GO_IMAGE} AS build
 WORKDIR /src
+# CGO off: the binaries go into distroless/static, which has no libc, and
+# nothing in the module needs cgo (the DuckLake catalog is written with a
+# pure-Go SQLite driver for exactly this reason).
+ENV CGO_ENABLED=0 GOTOOLCHAIN=local
 COPY go/go.mod go/go.sum ./
 RUN go mod download
 COPY go/ ./
 ARG VERSION=dev
-RUN CGO_ENABLED=0 go build -trimpath \
+# qs-verify and qs-query ship in the mirror image because an operator needs
+# them INSIDE the Pod, next to the mirror's files: qs-verify answers "is the
+# mirror telling the truth", qs-query prints the ATTACH a reader of the lake
+# needs. The image has no shell, so `kubectl exec ... -- /qs-verify ...`.
+RUN go build -trimpath \
       -ldflags "-s -w -X github.com/howlerops/pg_quicksilver/go/internal/plugin.Version=${VERSION}" \
       -o /out/quicksilver-plugin ./cmd/quicksilver-plugin \
- && CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o /out/qs-mirror  ./cmd/qs-mirror \
- && CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o /out/qs-verify  ./cmd/qs-verify
+ && go build -trimpath -ldflags "-s -w" -o /out/qs-mirror ./cmd/qs-mirror \
+ && go build -trimpath -ldflags "-s -w" -o /out/qs-verify ./cmd/qs-verify \
+ && go build -trimpath -ldflags "-s -w" -o /out/qs-query  ./cmd/qs-query
 
 # The plugin never touches PostgreSQL or the filesystem; distroless static is
 # the whole of what it needs.
@@ -42,9 +81,14 @@ ENTRYPOINT ["/quicksilver-plugin"]
 # The sidecar runs in the instance Pod and writes to the data volume, so it runs
 # as the same UID the CNPG images use for postgres (26). Running as anyone else
 # produces files the instance cannot read and a mirror nobody can serve.
-FROM gcr.io/distroless/static-debian12 AS mirror
+#
+# distroless publishes no version tags, only :latest and :nonroot (the plugin's
+# base above), so there is nothing more specific to name short of a digest.
+# hadolint ignore=DL3007
+FROM gcr.io/distroless/static-debian12:latest AS mirror
 COPY --from=build /out/qs-mirror /qs-mirror
 COPY --from=build /out/qs-verify /qs-verify
+COPY --from=build /out/qs-query  /qs-query
 USER 26:26
 # 9188, not 9187: CNPG's instance manager binds 9187 in the same network
 # namespace, and the sidecar starting first would stop PostgreSQL booting.
@@ -52,53 +96,117 @@ EXPOSE 9188
 ENTRYPOINT ["/qs-mirror"]
 
 # ---------------------------------------------------------------------------
-# The PostgreSQL image, for clusters that route reads with pg_quicksilver.
+# The PostgreSQL operand image, for Clusters that route reads with
+# pg_quicksilver. Everything above still holds: the mirror alone needs nothing
+# in the server. Routing runs inside PostgreSQL, so the image the Cluster's
+# imageName points at has to carry
 #
-#   docker build --target postgres -t registry.example/postgresql-quicksilver:17 .
+#   pg_duckdb        the engine that reads the mirror (1.2.0, DuckDB 2.0.0)
+#   pg_quicksilver   ext/pg_quicksilver, built here against the same minor
+#   ducklake, sqlite DuckDB's own extensions, which every backend that routes
+#                    loads. pg_duckdb would otherwise fetch them from
+#                    extensions.duckdb.org into $PGDATA on first use, and an
+#                    instance with no route there never routes.
 #
-# Everything above still holds: the sidecar is not a PostgreSQL image and the
-# mirror alone needs nothing in the server. Routing does. It runs inside
-# PostgreSQL, so the image the Cluster's imageName points at has to carry
-#
-#   pg_duckdb        the engine that reads the mirror (1.2.0 is what was verified)
-#   pg_quicksilver   ext/pg_quicksilver, built here against the same major
-#
-# and the Cluster has to load them, in this order:
+# and the Cluster has to say, in this order and with this directory:
 #
 #   postgresql:
 #     shared_preload_libraries: ["pg_duckdb", "pg_quicksilver"]
+#     parameters:
+#       duckdb.extension_directory: /usr/lib/quicksilver/duckdb-extensions
 #
-# docs/16 has the rest (CREATE EXTENSION, the sidecar's ducklake parameter).
+# examples/cluster-routed.yaml is the whole Cluster; docs/16 has the rest.
 #
-# pg_duckdb is installed from a package, not built: its build is DuckDB's, an
-# hour of C++, and the package is what docs/40 was measured on. PG_DUCKDB_DEB
-# names it; the default is the package name in the repository this project's
-# validation hosts use, and an image built elsewhere points it at whatever
-# carries pg_duckdb 1.2.0 for its distribution (a .deb URL works too).
-# (PG_MAJOR and CNPG_BASE are declared at the top of this file: an ARG a FROM
-# uses has to come before the first FROM.)
+# Nothing about CloudNativePG's contract changes: same base, same UID 26, same
+# PATH, no ENTRYPOINT (the operator supplies the instance manager), and
+# nothing added outside /usr, which a Pod with a read-only root filesystem
+# reads like any other part of the image.
+
+# A build stage: nothing from it but three files reaches an image, so it stays
+# root, which apt and `make install` need.
 FROM ${CNPG_BASE} AS extension-build
 ARG PG_MAJOR
+# hadolint ignore=DL3002
 USER root
-RUN apt-get update && apt-get install -y --no-install-recommends \
-      build-essential postgresql-server-dev-${PG_MAJOR} \
- && rm -rf /var/lib/apt/lists/*
+# The headers at exactly the version of the server in the base image, so the
+# .so is built against what will load it. PGDG's main suite keeps the recent
+# minors; its archive suite keeps all of them, and is added only when the main
+# one no longer has this version, so a base pinned to an older minor still
+# builds.
+# hadolint ignore=DL3008
+RUN set -eux; \
+    . /etc/os-release; \
+    v=$(dpkg-query -W -f='${Version}' "postgresql-${PG_MAJOR}"); \
+    apt-get update; \
+    if ! apt-get install -y --no-install-recommends build-essential "postgresql-server-dev-${PG_MAJOR}=${v}"; then \
+      echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt-archive.postgresql.org/pub/repos/apt ${VERSION_CODENAME}-pgdg-archive main" \
+        > /etc/apt/sources.list.d/pgdg-archive.list; \
+      apt-get update; \
+      apt-get install -y --no-install-recommends build-essential "postgresql-server-dev-${PG_MAJOR}=${v}"; \
+    fi; \
+    rm -rf /var/lib/apt/lists/*
 COPY ext/pg_quicksilver/ /src/pg_quicksilver/
 # with_llvm=no: no bitcode, so no clang in the build stage; the JIT does not
 # inline into an extension it has no bitcode for and nothing else changes.
-RUN make -C /src/pg_quicksilver PG_CONFIG=/usr/lib/postgresql/${PG_MAJOR}/bin/pg_config with_llvm=no \
- && make -C /src/pg_quicksilver PG_CONFIG=/usr/lib/postgresql/${PG_MAJOR}/bin/pg_config with_llvm=no \
+RUN make -C /src/pg_quicksilver PG_CONFIG="/usr/lib/postgresql/${PG_MAJOR}/bin/pg_config" with_llvm=no \
+ && make -C /src/pg_quicksilver PG_CONFIG="/usr/lib/postgresql/${PG_MAJOR}/bin/pg_config" with_llvm=no \
       DESTDIR=/out install
 
-FROM ${CNPG_BASE} AS postgres
+# The server with both extensions in it, and nothing else yet.
+FROM ${CNPG_BASE} AS postgres-extensions
 ARG PG_MAJOR
-ARG PG_DUCKDB_DEB=postgresql-17-pg-duckdb
+ARG PG_DUCKDB_DEB_URL
+ARG PG_DUCKDB_DEB_SHA256
 USER root
-RUN apt-get update && apt-get install -y --no-install-recommends ${PG_DUCKDB_DEB} \
- && rm -rf /var/lib/apt/lists/*
+# DL3020 wants COPY for files; this is a URL behind an ARG, which only ADD
+# fetches, and --checksum is what makes fetching it safe.
+# hadolint ignore=DL3020
+ADD --checksum=sha256:${PG_DUCKDB_DEB_SHA256} ${PG_DUCKDB_DEB_URL} /tmp/pg_duckdb.deb
+# The .deb depends on postgresql-17, which the base image has from PGDG, and on
+# libraries Debian carries; apt resolves those, so the lists are needed once.
+# hadolint ignore=DL3008
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends /tmp/pg_duckdb.deb \
+ && rm -rf /var/lib/apt/lists/* /tmp/pg_duckdb.deb
 COPY --from=extension-build /out/usr/lib/postgresql/${PG_MAJOR}/lib/pg_quicksilver.so \
      /usr/lib/postgresql/${PG_MAJOR}/lib/
 COPY --from=extension-build /out/usr/share/postgresql/${PG_MAJOR}/extension/pg_quicksilver* \
      /usr/share/postgresql/${PG_MAJOR}/extension/
+COPY --chmod=0755 deploy/duckdb-extensions.sh /usr/local/bin/qs-duckdb-extensions
+USER 26
+
+# DuckDB's extensions, fetched by the DuckDB that will load them. This is the
+# only stage of this target that needs the network after apt.
+FROM postgres-extensions AS duckdb-extensions
+ARG PG_MAJOR
+USER root
+RUN install -d -o 26 -g 26 /usr/lib/quicksilver/duckdb-extensions
+USER 26
+RUN PG_MAJOR="${PG_MAJOR}" qs-duckdb-extensions install /usr/lib/quicksilver/duckdb-extensions
+
+FROM postgres-extensions AS postgres-assembled
+# root-owned: PostgreSQL reads these and must never be able to replace them.
+COPY --from=duckdb-extensions --chown=root:root \
+     /usr/lib/quicksilver/duckdb-extensions /usr/lib/quicksilver/duckdb-extensions
+
+# The proof, and the reason this is not just a claim in a README. With the
+# network OFF and as the user PostgreSQL runs as: both libraries preload in the
+# documented order, both extensions are created, the sidecar's own
+# duckdb.install_extension succeeds, and a DuckLake on a SQLite catalog is
+# written and read back. If any of that would have needed the network, or the
+# .so does not load in this server, the image does not build.
+FROM postgres-assembled AS postgres-verified
+ARG PG_MAJOR
+USER 26
+RUN --network=none PG_MAJOR="${PG_MAJOR}" PRELOAD=pg_duckdb,pg_quicksilver \
+    qs-duckdb-extensions verify /usr/lib/quicksilver/duckdb-extensions > /tmp/verified.txt \
+ && cat /tmp/verified.txt
+
+FROM postgres-assembled AS postgres
+# Copying the transcript out of the verification stage is what makes that
+# stage part of this target's build: a stage nothing depends on is skipped.
+COPY --from=postgres-verified /tmp/verified.txt /usr/share/quicksilver/verified.txt
+LABEL io.howlerops.quicksilver.shared-preload-libraries="pg_duckdb,pg_quicksilver" \
+      io.howlerops.quicksilver.duckdb-extension-directory="/usr/lib/quicksilver/duckdb-extensions"
 # The postgres UID of the CNPG images, as for the sidecar: do not invent one.
 USER 26
