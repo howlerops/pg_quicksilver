@@ -115,6 +115,10 @@ type extLink struct {
 	// stream, when it holds nothing unapplied: see position.
 	applied atomic.Uint64
 	tick    time.Duration
+	// nudge is the pump saying "I just finished applying": the reporter looks
+	// now, and keeps looking every millisecond until the lake has published
+	// what was applied, instead of finding out on its next 25 ms tick.
+	nudge chan struct{}
 }
 
 // ext is nil until main sets it; every method is safe on nil.
@@ -123,7 +127,8 @@ var ext *extLink
 func newExtLink(log *slog.Logger, o options) *extLink {
 	e := &extLink{log: log, o: o, dirty: true,
 		schema:  env("QS_EXTENSION_SCHEMA", "quicksilver_mirror"),
-		blocked: map[string]bool{}, known: map[string]bool{}, reported: map[string]string{}}
+		blocked: map[string]bool{}, known: map[string]bool{}, reported: map[string]string{},
+		nudge: make(chan struct{}, 1)}
 	switch strings.ToLower(strings.TrimSpace(os.Getenv("QS_EXTENSION"))) {
 	case "off", "0", "false", "no":
 		e.off = true
@@ -194,6 +199,12 @@ func (e *extLink) pumpIdle(through uint64) {
 			e.applied.Store(through)
 		}
 		e.idleOK.Store(true)
+		if pumpEvents {
+			select {
+			case e.nudge <- struct{}{}:
+			default:
+			}
+		}
 	}
 }
 
@@ -309,11 +320,29 @@ func (e *extLink) run(ctx context.Context) {
 	var lastErr string
 	tick := time.NewTicker(e.tick)
 	defer tick.Stop()
+	// After a nudge: look every millisecond for as long as the lake is still
+	// publishing what the pump applied, bounded so a publish that fails or is
+	// slow costs one burst and then the ordinary tick.
+	var fastUntil time.Time
+	fast := time.NewTimer(time.Hour)
+	defer fast.Stop()
 	for {
+		ticked := false
 		select {
 		case <-ctx.Done():
 			return
 		case <-tick.C:
+			ticked = true
+		case <-e.nudge:
+			fastUntil = time.Now().Add(extFastWindow)
+		case <-fast.C:
+		}
+		if !fastUntil.IsZero() {
+			if time.Now().Before(fastUntil) && e.lakeBehind() {
+				fast.Reset(time.Millisecond)
+			} else {
+				fastUntil = time.Time{}
+			}
 		}
 		if lake == nil {
 			continue // nothing publishes a mirror relation; reconcile says so once
@@ -323,7 +352,7 @@ func (e *extLink) run(ctx context.Context) {
 		}
 		// Ask the walsender where it is, so the idle position follows a
 		// source that is writing WAL for other tables.
-		if st := e.stream.Load(); st != nil && e.idleOK.Load() {
+		if st := e.stream.Load(); ticked && st != nil && e.idleOK.Load() {
 			st.RequestKeepalive()
 		}
 		now := e.lsns()
@@ -374,6 +403,30 @@ func (e *extLink) run(ctx context.Context) {
 		e.reported = now
 		e.mu.Unlock()
 	}
+}
+
+// extFastWindow bounds the millisecond polling that follows a nudge.
+const extFastWindow = 100 * time.Millisecond
+
+// lakeBehind reports whether some table that can be read has a manifest the
+// lake has not published yet: the one case in which looking again in a
+// millisecond can find something new.
+func (e *extLink) lakeBehind() bool {
+	if lake == nil {
+		return false
+	}
+	stats, _ := lake.Stats()
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	for q := range e.known {
+		if e.blocked[q] || stats[q].Refused != "" {
+			continue
+		}
+		if _, current := lake.Current(q); !current {
+			return true
+		}
+	}
+	return false
 }
 
 func sameLSNs(a, b map[string]string) bool {

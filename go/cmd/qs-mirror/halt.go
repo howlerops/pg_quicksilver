@@ -26,6 +26,8 @@ import (
 	"strings"
 	"syscall"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/howlerops/pg_quicksilver/go/internal/health"
 	"github.com/howlerops/pg_quicksilver/go/internal/mirror"
 )
@@ -238,4 +240,80 @@ func serveWithHalted() bool {
 		return true
 	}
 	return false
+}
+
+// ---- stored generated columns ---------------------------------------------
+//
+// The one halt a rebuild does not cure.
+//
+// Logical replication does not send stored generated columns (pgoutput skips
+// them; PostgreSQL 18 can be told to publish them and this publication does
+// not ask). A snapshot reads them, because a snapshot is a query. So a table
+// with one was mirrored correctly at its snapshot and wrongly ever after: each
+// row changed since keeps, in that column, whatever the stream did not say.
+// Found by running the rebuild this file offers against PostgreSQL: after
+// ADD COLUMN ... GENERATED ALWAYS AS (...) STORED the table halted (the heap
+// was rewritten), the operator's REBUILD put it "back in service", and 3,018
+// rows then differed in that column and nothing else, with matching counts.
+//
+// So such a table is halted with a reason that says a rebuild will not help,
+// a rebuild request for it is refused, and it comes back the way every halted
+// table does once the column is gone: DROP COLUMN, then REBUILD.
+
+const generatedHaltMark = "stored generated column"
+
+func generatedHaltReason(qualified string, cols []string) string {
+	sort.Strings(cols)
+	return fmt.Sprintf("%s has %s(s) %s, which logical replication does not send: "+
+		"every row changed after a snapshot would keep a stale value there. "+
+		"A rebuild does not fix this; drop the column(s) (then REBUILD) or stop mirroring the table",
+		qualified, generatedHaltMark, strings.Join(cols, ", "))
+}
+
+// generatedColumns lists a table's stored generated columns on the source.
+func generatedColumns(ctx context.Context, conn *pgx.Conn, schema, table string) ([]string, error) {
+	rows, err := conn.Query(ctx, `
+		SELECT a.attname::text
+		  FROM pg_attribute a
+		 WHERE a.attrelid = to_regclass(format('%I.%I', $1::text, $2::text))
+		   AND a.attnum > 0 AND NOT a.attisdropped AND a.attgenerated = 's'
+		 ORDER BY a.attnum`, schema, table)
+	if err != nil {
+		return nil, err
+	}
+	return pgx.CollectRows(rows, pgx.RowTo[string])
+}
+
+// haltGenerated halts every table that has a stored generated column and
+// withdraws any rebuild request for it. It runs at every start, before the
+// rebuild plan is made, so neither a restart nor a REBUILD file can put such a
+// table back in service.
+func haltGenerated(
+	ctx context.Context, log *slog.Logger, h *health.Health, conn *pgx.Conn,
+	tables map[string]*mirror.Table, requested map[string]bool,
+) error {
+	for q, t := range tables {
+		schema, name, _ := strings.Cut(q, ".")
+		cols, err := generatedColumns(ctx, conn, schema, name)
+		if err != nil {
+			return fmt.Errorf("read generated columns of %s: %w", q, err)
+		}
+		if len(cols) == 0 {
+			continue
+		}
+		reason := generatedHaltReason(q, cols)
+		if t.Halted() != reason {
+			if err := t.Halt(reason); err != nil {
+				return fmt.Errorf("%s must halt but the halt cannot be made durable: %w (halt reason: %s)", q, err, reason)
+			}
+		}
+		recordHalt(log, h, q, t)
+		if requested[q] {
+			requested[q] = false
+			log.Error("rebuild request refused: a rebuild cannot fix this table, and the "+
+				"request is kept for when the column is gone",
+				"table", q, "reason", reason, "file", filepath.Join(t.Dir, rebuildMarker))
+		}
+	}
+	return nil
 }

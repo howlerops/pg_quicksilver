@@ -166,6 +166,9 @@ type Streaming struct {
 	// position to confirm.
 	wake chan struct{}
 
+	// ready tells the consumer there is something to take: see Ready.
+	ready chan struct{}
+
 	// SpoolDir, SpoolThresholdChanges and SpoolThresholdBytes default from the
 	// package variables in spool.go. Set before Start.
 	SpoolDir              string
@@ -232,6 +235,7 @@ func newStreaming(rc replConn, tables map[string]bool) *Streaming {
 		SpoolThresholdBytes:   SpoolThresholdBytes,
 		InProgress:            DefaultInProgress,
 		wake:                  make(chan struct{}, 1),
+		ready:                 make(chan struct{}, 1),
 		done:                  make(chan struct{}),
 	}
 }
@@ -460,6 +464,9 @@ func (s *Streaming) receive(ctx context.Context) {
 			// interleave.
 			s.mu.Lock()
 			if s.cur == nil && s.inStream == nil && len(s.buffered) == 0 {
+				if s.idle == 0 {
+					s.signalReady() // an idle position where there was none
+				}
 				s.idle = k.ServerWALEnd
 			}
 			s.mu.Unlock()
@@ -694,7 +701,24 @@ func (s *Streaming) commit(a *assembly, at pglogrepl.LSN) error {
 	s.buffered = append(s.buffered, a.txn)
 	s.bufferedChanges += weight(&a.txn)
 	s.mu.Unlock()
+	s.signalReady()
 	return nil
+}
+
+// Ready is signalled when Transactions() has something new to say: a committed
+// transaction was buffered, the stream failed, or the stream went from having
+// no idle position to having one (the first keepalive after data; later
+// keepalives only move it and do not signal, or a consumer that asks for one
+// every few milliseconds would be woken by each answer). One signal may stand
+// for many events and may arrive after its transaction was already taken, so
+// a consumer treats it as "look now", never as a count.
+func (s *Streaming) Ready() <-chan struct{} { return s.ready }
+
+func (s *Streaming) signalReady() {
+	select {
+	case s.ready <- struct{}{}:
+	default:
+	}
 }
 
 func tupleBytes(t *pglogrepl.TupleData) int {
@@ -816,6 +840,7 @@ func (s *Streaming) setErr(err error) {
 		s.err = err
 	}
 	s.mu.Unlock()
+	s.signalReady()
 }
 
 // Transactions drains whatever has been received since the last call, and
