@@ -93,6 +93,16 @@ type Spool struct {
 	counted int64
 }
 
+// budgeted is how many bytes of the budget are this file's: what it has
+// counted into the shared total, which is what a Confirm (or a rollback) of
+// its transaction gives back.
+func (sp *Spool) budgeted() int64 {
+	if sp == nil || sp.acct == nil {
+		return 0
+	}
+	return sp.counted
+}
+
 var spoolSeq atomic.Int64
 
 func spoolDirOrTemp(dir string) string {

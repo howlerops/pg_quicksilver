@@ -85,27 +85,15 @@ var formatRules = []formatRule{
 			"and rows from the stream as its output function does; the two are stored side by side as text " +
 			"and cannot be told apart, so the column reads as DIVERGED from its source",
 	},
-	{
-		fixedIn: 1,
-		affects: func(t *Table, col, _ string, have map[string]bool) bool {
-			// An unconstrained numeric PRIMARY KEY the old binary stored as
-			// DECIMAL(38,9). The decimal lost the display scale: the key the
-			// source prints as 1.50 reads back from that file as 1.5, the
-			// stream sends 1.50, and the key index compares text — so an
-			// update or delete of that row does not find it, and the mirror
-			// keeps the old row beside the new one. Keys without trailing
-			// zeros (every integer among them) do compare equal, which is
-			// why it has to be flagged rather than assumed.
-			if col != t.Key || !isTextNumeric(t.Columns[col]) {
-				return false
-			}
-			return hasDecimal(col, have)
-		},
-		problem: "the primary key is an unconstrained numeric that an earlier binary stored as DECIMAL(38,9), " +
-			"losing its display scale: a key the source prints with trailing zeros (1.50) does not compare " +
-			"equal to the same key read from that file (1.5), so changes to those rows leave duplicates",
-	},
 }
+
+// What is NOT a rule, and was: an unconstrained numeric PRIMARY KEY that an
+// earlier binary stored as DECIMAL(38,9). The decimal lost the display scale,
+// so the key the source prints as 1.50 read back as 1.5 and the stream's 1.50
+// did not find it. That was never a property of the file. It was the key index
+// comparing a number as text, and it is fixed where it was wrong: the key of a
+// numeric column is its canonical value (keyMode, index.go), which 1.50, 1.5
+// and 1.500000000 all are. Such a table needs no rebuild.
 
 // castSpellingDiffers reports whether a type's ::text and its output function
 // can print the same value differently. Arrays of such types are included:
@@ -149,8 +137,9 @@ type LegacyColumn struct {
 // table every file of which this binary (or a later one) wrote from the
 // source or the stream, and for a table with no column of an affected type.
 //
-// It reads the manifest in State and, for the numeric-key rule, file footers
-// through the footer cache; it reads no data. A footer that cannot be read
+// It is derived from the files the manifest names NOW, never from history: a
+// table whose legacy files are gone (a rebuild, a TRUNCATE) is clean. It reads
+// the manifest in State and file footers through the footer cache; no data. A footer that cannot be read
 // is reported as an error rather than as a clean table.
 func (t *Table) LegacyFormatColumns() ([]LegacyColumn, error) {
 	byCol := map[string]*LegacyColumn{}
@@ -217,6 +206,8 @@ func (t *Table) stampFormats() {
 	// What the files being added were made from: everything this manifest
 	// stops naming. An Apply removes nothing and so writes at the current
 	// version; a merge or a rewrite removes its inputs and inherits from them.
+	// (A TRUNCATE inside an Apply removes files that are the inputs of
+	// nothing, and says so by emptying fmtPrev: applyRun.truncate.)
 	version := WriterFormatVersion
 	if !t.freshContents {
 		for name, v := range t.fmtPrev {

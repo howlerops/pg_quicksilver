@@ -10,8 +10,8 @@ package changestream
 // was half-way through as the spool itself.
 //
 // So every spool file of a Streaming counts its bytes into one total, and the
-// total has a budget. Two different things happen at the budget, because two
-// different things can be over it:
+// total has a budget. Three different things happen at the budget, because
+// three different things can be over it:
 //
 // A CONFIRMATION WOULD GIVE BYTES BACK. Some of the total belongs to
 // transactions that have committed and are waiting to be applied and
@@ -22,19 +22,30 @@ package changestream
 // behind the slot. The apply loop is not paused — it is what frees the bytes
 // — and its Confirm wakes the receiver.
 //
-// NONE WOULD. Everything spooled belongs to transactions still arriving.
+// NONE WOULD, AND ONE TRANSACTION IS THE WHOLE BUDGET. Everything spooled
+// belongs to transactions still arriving, and one of them has by itself
+// reached the budget: it does not fit even with every other byte drained.
 // Pausing cannot help: the server sends the rest of a streamed transaction
 // only to a reader, and nothing here can be applied before its commit. The
 // stream fails with *SpoolBudgetError, which says how many bytes the
-// transactions had reached, what the budget was and what to change. Nothing
-// of them was applied, no data file was being written on their account, and
-// the slot has not moved, so a restart with more room receives them again.
-// That is the "single transaction larger than the budget" case, and also the
-// rarer one of several open transactions that only together exceed it.
+// transaction had reached, what the budget was and what to change. Nothing
+// of it was applied, no data file was being written on its account, and
+// the slot has not moved, so a restart with more room receives it again.
 //
-// The check runs between messages, so the total can pass the budget by one
-// change before it is acted on. The default budget leaves three quarters of
-// what was free to the data files, which is what makes that slack harmless.
+// NONE WOULD, BUT EACH TRANSACTION STILL FITS. Several transactions the
+// server is streaming at once have only TOGETHER reached the budget. This
+// used to fail like the case above, and that was wrong twice over: none of
+// them is too large, and a restart replays the same interleaving into the
+// same failure, for ever. Pausing is wrong too — nothing is complete, so no
+// Confirm would ever come. The receiver READS ON: the first of them to
+// commit becomes a transaction a confirmation gives back, which is the first
+// case, and the receiver pauses there until the applier has drained it. The
+// price is stated plainly: while this lasts the total is over the budget, by
+// less than one budget per further transaction open at once. The default
+// budget is a quarter of what was free, for that reason among others.
+//
+// The check runs between messages, so one transaction can pass the budget by
+// one change before it is acted on.
 
 import (
 	"fmt"
@@ -109,33 +120,37 @@ func (s *Streaming) resolveSpoolBudget() {
 	}
 }
 
-// SpoolBudgetError is why a stream stopped: the transactions it was still
-// receiving had spooled more than the budget, and no confirmation could give
-// any of it back.
+// SpoolBudgetError is why a stream stopped: one transaction it was still
+// receiving had by itself spooled as much as the budget, so it could not fit
+// whatever a confirmation gave back.
 type SpoolBudgetError struct {
-	Spooled int64  // bytes the unfinished transactions had reached
-	Budget  int64  // the budget they were held to
-	Open    int    // how many transactions those bytes belong to
+	Spooled int64  // bytes that one unfinished transaction had reached
+	Budget  int64  // the budget it was held to
+	Open    int    // how many spooled transactions were still arriving, it among them
+	Total   int64  // bytes of all of those together
 	Dir     string // where the spool is
 }
 
 func (e *SpoolBudgetError) Error() string {
-	what := "a transaction still being received has"
+	others := ""
 	if e.Open > 1 {
-		what = fmt.Sprintf("%d transactions still being received have", e.Open)
+		others = fmt.Sprintf(" (%d transactions were arriving at once, %d bytes between them; "+
+			"the others are not the reason)", e.Open, e.Total)
 	}
-	return fmt.Sprintf("spool budget exceeded: %s spooled %d bytes under %s, and the budget is %d "+
+	return fmt.Sprintf("spool budget exceeded: a transaction still being received has spooled %d bytes under %s, "+
+		"and the budget is %d%s "+
 		"(%s; unset, it is 1/%d of the free space on that volume when the stream starts, at most %d). "+
 		"It needs MORE than %d bytes — how much more is not known until it commits. "+
 		"Nothing of it was applied and the slot has not moved, so it will be sent again: "+
 		"free space on the volume or set %s above its size, then restart",
-		what, e.Spooled, e.Dir, e.Budget, SpoolMaxBytesEnv, spoolFreeFraction, SpoolBudgetCap,
+		e.Spooled, e.Dir, e.Budget, others, SpoolMaxBytesEnv, spoolFreeFraction, SpoolBudgetCap,
 		e.Spooled, SpoolMaxBytesEnv)
 }
 
 // spoolVerdict is the budget check: whether to stop reading until a
-// confirmation frees spool bytes, or to fail because none will. Caller holds
-// mu.
+// confirmation frees spool bytes, or to fail because one transaction cannot
+// fit whatever is freed. Neither means read on. Caller holds mu and is the
+// receiving goroutine, which is the only writer of an assembling spool.
 func (s *Streaming) spoolVerdict() (pause bool, err error) {
 	if s.SpoolMaxBytes <= 0 {
 		return false, nil
@@ -144,16 +159,41 @@ func (s *Streaming) spoolVerdict() (pause bool, err error) {
 	if total < s.SpoolMaxBytes {
 		return false, nil
 	}
+	// A complete transaction is spooled and the consumer can drain it: wait
+	// for that, whatever else is open.
 	if s.heldBytes > 0 {
 		return true, nil
 	}
-	open := len(s.streams)
-	if s.cur != nil && s.cur.txn.spool != nil {
-		open++
+	// Everything counted is still arriving. Only a transaction that is the
+	// whole budget by itself is one no draining could make room for.
+	open, largest, arriving := s.openSpools()
+	if largest < s.SpoolMaxBytes {
+		return false, nil
 	}
 	return false, &SpoolBudgetError{
-		Spooled: total, Budget: s.SpoolMaxBytes, Open: open, Dir: spoolDirOrTemp(s.SpoolDir),
+		Spooled: largest, Budget: s.SpoolMaxBytes, Open: open, Total: arriving,
+		Dir: spoolDirOrTemp(s.SpoolDir),
 	}
+}
+
+// openSpools counts the transactions still arriving that have a spool file:
+// how many, the bytes of the largest and of all of them. Caller holds mu and
+// is the receiving goroutine.
+func (s *Streaming) openSpools() (n int, largest, total int64) {
+	note := func(a *assembly) {
+		if a == nil || a.txn.spool == nil {
+			return
+		}
+		b := a.txn.spool.budgeted()
+		n++
+		total += b
+		largest = max(largest, b)
+	}
+	for _, a := range s.streams {
+		note(a)
+	}
+	note(s.cur)
+	return n, largest, total
 }
 
 // SpoolBytes is how many bytes of spool files this stream has on disk now:

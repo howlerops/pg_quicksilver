@@ -213,3 +213,72 @@ func TestFreshnessGate(t *testing.T) {
 		t.Error("accepted an unknown source")
 	}
 }
+
+// A table nothing writes to keeps its manifest at its last change, and the
+// mirror root's watermark says how far it has applied since. The file source
+// reads the effective LSN, so the gate does not refuse a table for being
+// quiet; and it stops believing the watermark the moment the manifest moves.
+func TestFileSourceReadsTheEffectiveLSNOfAQuietTable(t *testing.T) {
+	root := t.TempDir()
+	write := func(rel, body string) {
+		t.Helper()
+		p := filepath.Join(root, rel)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("public.quiet/state.json", `{"applied_lsn":"0/2000","base_files":[]}`)
+	src, err := newLSNSource("file:" + filepath.Join(root, "public.quiet", "state.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	read := func() uint64 {
+		t.Helper()
+		got, err := src.AppliedLSN(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		return got
+	}
+	if got := read(); got != 0x2000 {
+		t.Fatalf("no watermark: %x", got)
+	}
+	// The server is 1 MB of WAL past the table's last change, all of it in
+	// other tables. By its manifest the table is stale; it is not.
+	server := uint64(0x2000 + 1<<20)
+	gate := func() bool {
+		f := &freshness{src: src, maxBytes: 4096}
+		ok, _ := f.check(context.Background(), server)
+		return ok
+	}
+	if gate() {
+		t.Fatal("the test needs the manifest alone to fail the gate")
+	}
+	write("watermark.json", `{"applied_lsn":"0/101F00","tables":{"public.quiet":"0/2000","public.other":"0/9"}}`)
+	if got := read(); got != 0x101F00 {
+		t.Fatalf("under a watermark that speaks for this manifest: %x", got)
+	}
+	if !gate() {
+		t.Fatal("a quiet table that has applied through the watermark was refused as stale")
+	}
+	// The table changes: its manifest is at a new LSN the watermark has not
+	// seen, and the watermark no longer speaks for it.
+	write("public.quiet/state.json", `{"applied_lsn":"0/3000","base_files":[]}`)
+	if got := read(); got != 0x3000 {
+		t.Fatalf("a manifest the watermark does not match: %x", got)
+	}
+	// A table the watermark does not name answers for itself.
+	write("public.halted/state.json", `{"applied_lsn":"0/10","base_files":[]}`)
+	other, _ := newLSNSource("file:" + filepath.Join(root, "public.halted", "state.json"))
+	if got, err := other.AppliedLSN(context.Background()); err != nil || got != 0x10 {
+		t.Fatalf("a table the watermark does not name: %x %v", got, err)
+	}
+	// And a table with no manifest is unknown, which is not fresh.
+	missing, _ := newLSNSource("file:" + filepath.Join(root, "public.none", "state.json"))
+	if _, err := missing.AppliedLSN(context.Background()); err == nil {
+		t.Fatal("a table with no manifest reported a position")
+	}
+}

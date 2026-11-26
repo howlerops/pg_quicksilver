@@ -149,6 +149,9 @@ type Table struct {
 	// index.go: it is the difference between a map the garbage collector walks
 	// entry by entry and one it never looks inside.
 	numericKey bool
+	// decimalKey is whether the primary key is a numeric, whose identity is
+	// its value and not its spelling. See keyMode in index.go.
+	decimalKey bool
 
 	// notNull is the columns the caller says the source declares NOT NULL
 	// now, which a file written now holds as REQUIRED. See nullability.go.
@@ -292,7 +295,8 @@ func New(root, schema, table, key string, cols map[string]string, order []string
 		Order:     order,
 		Dir:       filepath.Join(root, schema+"."+table),
 	}
-	t.numericKey = isIntegerType(arrowType(cols[key]))
+	t.numericKey = keyModeOf(cols[key]) == keyInt
+	t.decimalKey = keyModeOf(cols[key]) == keyDecimal
 	for _, sub := range []string{"base", "delta", "dv", "index"} {
 		if err := os.MkdirAll(filepath.Join(t.Dir, sub), 0o755); err != nil {
 			return nil, err
@@ -1033,6 +1037,12 @@ func (a *applyRun) truncate() {
 	t := a.t
 	a.doomed = append(a.doomed, t.allFiles()...)
 	t.forgetFiles()
+	// What this transaction goes on to write came from the stream, not from
+	// the files it just emptied: without this the manifest written at the end
+	// of the Apply would see legacy files disappear and new ones appear, take
+	// the one for the other's inputs (stampFormats), and a table with no
+	// legacy file left would stay flagged for a rebuild.
+	t.fmtPrev = map[string]int{}
 	t.deferDead = map[fileID]*deadSet{}
 	a.stats = ApplyStats{}
 	a.reset()

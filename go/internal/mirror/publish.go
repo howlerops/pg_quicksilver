@@ -317,11 +317,11 @@ type publisher struct {
 	// free reads the volume's free space, and dir is where to read it. nil
 	// means it cannot be known: the cap is then a number and no file is
 	// exempt from it.
-	free diskfree.Probe
-	dir  string
-	now  func() time.Time
-	manual   bool // tests: no timer, reap only when told
-	closed   bool // Table.Close: no timer is armed again
+	free   diskfree.Probe
+	dir    string
+	now    func() time.Time
+	manual bool // tests: no timer, reap only when told
+	closed bool // Table.Close: no timer is armed again
 
 	// lake is the hand-off to a DuckLake publisher, if one asked. See lake.go.
 	lake lakeHook
@@ -523,7 +523,7 @@ func (t *Table) publishManifest(st *State, refusal string) error {
 	}
 	t.notifyLake(st, refusal)
 
-	named :=make(map[string]bool, len(protect))
+	named := make(map[string]bool, len(protect))
 	for _, f := range protect {
 		named[filepath.Join(t.Dir, f)] = true
 	}

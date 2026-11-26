@@ -167,7 +167,7 @@ func (t *Table) BeginCompaction() *Compaction {
 		}
 		return m
 	}
-	numeric, hashing := t.numericKey, t.elideWorked
+	numeric, hashing := t.keyMode(), t.elideWorked
 	// base/... sorts before delta/..., and delta names are a zero-padded
 	// sequence, so this is base first and then deltas oldest to newest.
 	sort.Strings(snapshot)
@@ -366,6 +366,7 @@ func (t *Table) rewriteSnapshot() *Table {
 		Order:      slices.Clone(t.Order),
 		numericKey: t.numericKey,
 		notNull:    maps.Clone(t.notNull),
+		decimalKey: t.decimalKey,
 		detached:   true,
 	}
 	s.State.MissingVals = maps.Clone(t.State.MissingVals)

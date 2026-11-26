@@ -210,7 +210,7 @@ func main() {
 	flag.Float64Var(&cfg.th.Rows, "row-threshold", 50000, "send to the mirror when a scan of a mirrored table is expected to read more rows than this")
 	flag.Float64Var(&cfg.th.Cost, "cost-threshold", 10000, "or when the plan's total cost is above this")
 	flag.DurationVar(&ttl, "cache-ttl", time.Minute, "how long a decision is reused; 0 plans every statement")
-	flag.StringVar(&lsnSpec, "mirror-lsn", "", "where the mirror's applied LSN is read: http://sidecar/readyz or file:/mirror/table/state.json; empty disables the freshness gate")
+	flag.StringVar(&lsnSpec, "mirror-lsn", "", "where the mirror's applied LSN is read: http://sidecar/readyz or file:/mirror/schema.table/state.json (read with the mirror's watermark.json, so a quiet table is not stale); empty disables the freshness gate")
 	flag.Uint64Var(&maxLag, "max-lag-bytes", 16<<20, "do not use a mirror more than this many WAL bytes behind the server")
 	flag.BoolVar(&cfg.allowOrderBy, "allow-order-by", false, "let statements with ORDER BY go to the mirror (DuckDB orders NULLs and text differently)")
 	var words string

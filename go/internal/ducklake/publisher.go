@@ -135,6 +135,10 @@ type Publisher struct {
 	tables   map[string]*lakeTable
 	lastTime string
 	lastExp  time.Time
+	// What of the mirror's watermark the catalog holds: see watermark.go.
+	wmSynced bool
+	wmLSN    string
+	wmRows   map[string]string
 
 	mu      sync.Mutex
 	pending map[string]*pendingManifest
@@ -434,6 +438,11 @@ func (p *Publisher) run() {
 				return
 			default:
 			}
+		}
+		// After the publishes, so that a table published a moment ago and a
+		// watermark that already speaks for that manifest land together.
+		if err := p.SyncWatermark(ctx); err != nil {
+			p.opt.Log.Warn("ducklake: watermark not copied to the catalog", "err", err)
 		}
 		if err := p.Expire(ctx); err != nil {
 			p.opt.Log.Warn("ducklake: expiry failed", "err", err)

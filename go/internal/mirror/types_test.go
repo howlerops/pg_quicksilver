@@ -543,10 +543,10 @@ func TestUUIDKeyIsTheSameFromTextAndFromBytes(t *testing.T) {
 	if !ok || u.String() != s {
 		t.Fatalf("parseUUIDValue(%q) = %v, %v", s, u, ok)
 	}
-	if keyFor(false, u) != keyFor(false, s) || !keyFor(false, u).isUUID {
-		t.Errorf("a uuid keys differently as bytes (%+v) and as text (%+v)", keyFor(false, u), keyFor(false, s))
+	if keyFor(keyText, u) != keyFor(keyText, s) || !keyFor(keyText, u).isUUID {
+		t.Errorf("a uuid keys differently as bytes (%+v) and as text (%+v)", keyFor(keyText, u), keyFor(keyText, s))
 	}
-	if kidxWidth(keyFor(false, u)) != 16 {
+	if kidxWidth(keyFor(keyText, u)) != 16 {
 		t.Errorf("a 16-byte uuid key is not one the on-disk index can hold")
 	}
 	if up, ok := parseUUIDValue(strings.ToUpper(s)); !ok || up != u {
