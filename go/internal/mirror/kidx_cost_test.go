@@ -311,3 +311,89 @@ func TestKidxCost(t *testing.T) {
 		100*(ratios[len(ratios)/2]-1), 100*(ratios[len(ratios)/4]-1), 100*(ratios[3*len(ratios)/4]-1))
 	tbl.index.close()
 }
+
+// TestKidxTextCost is the same question for a key that is not fixed-width: a
+// table keyed by text, which before the index file held such keys kept every
+// one in a Go map of strings and read the key column at every start.
+//
+//	QS_COST=kidxtext go test ./internal/mirror/ -run TestKidxTextCost -v -timeout 60m
+//
+// It prints three lines: the map (QS_DISK_INDEX=0), the file being built from
+// the key column, and the file being loaded as a restart loads it.
+func TestKidxTextCost(t *testing.T) {
+	if testing.Short() || os.Getenv("QS_COST") != "kidxtext" {
+		t.Skip("builds a multi-million-row mirror; set QS_COST=kidxtext")
+	}
+	N := 2_000_000
+	if v, err := strconv.Atoi(os.Getenv("QS_KIDX_N")); err == nil && v > 0 {
+		N = v
+	}
+	defer func(v bool) { DiskIndex = v }(DiskIndex)
+	cols := map[string]string{"id": "text", "v": "text", "n": "bigint"}
+	order := []string{"id", "v", "n"}
+	root := t.TempDir()
+	key := func(i int) string { return "order-" + testUUID(i)[:18] + "-" + strconv.Itoa(i) }
+	open := func() *Table {
+		tbl, err := New(root, "public", "r", "id", cols, order)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return tbl
+	}
+	{
+		DiskIndex = false
+		tbl := open()
+		tbl.State.Seq++
+		name := fmt.Sprintf("%06d.parquet", tbl.State.Seq)
+		w, err := tbl.newParquetWriter(filepath.Join(tbl.Dir, "base", name), nil, true)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for i := 0; i < N; i++ {
+			if err := w.AppendValues([]any{key(i), "x", strconv.Itoa(i)}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := w.Close(); err != nil {
+			t.Fatal(err)
+		}
+		tbl.State.BaseFiles, tbl.State.BaseRows = []string{name}, N
+		if err := tbl.saveState(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	rng := rand.New(rand.NewSource(1))
+	probe := make([]rowKey, 200_000)
+	for i := range probe {
+		probe[i] = rowKey{str: key(rng.Intn(N))}
+	}
+	for _, disk := range []bool{false, true, true} {
+		DiskIndex = disk
+		runtime.GC()
+		h0 := heapInUse()
+		tbl := open()
+		t0 := time.Now()
+		if n, err := tbl.BuildIndex(); err != nil || n != N {
+			t.Fatal(n, err)
+		}
+		took := time.Since(t0)
+		runtime.GC()
+		h1 := heapInUse()
+		t1 := time.Now()
+		for _, k := range probe {
+			if _, ok := tbl.index.get(k); !ok {
+				t.Fatalf("key %s not found", k)
+			}
+		}
+		ns := float64(time.Since(t1).Nanoseconds()) / float64(len(probe))
+		var size int64
+		if d := tbl.index.disk; d != nil {
+			st, _ := os.Stat(d.path)
+			size = st.Size()
+		}
+		t.Logf("%d text keys, disk=%v: index at start %.2fs, Go heap %.1f MB (%.0f bytes a key), index file %.1f MB, lookup %.0f ns",
+			N, disk, took.Seconds(), h1-h0, (h1-h0)*(1<<20)/float64(N), float64(size)/(1<<20), ns)
+		runtime.KeepAlive(tbl)
+		tbl.index.close()
+	}
+}

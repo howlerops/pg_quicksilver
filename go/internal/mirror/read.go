@@ -195,9 +195,15 @@ func (t *Table) Reload() error {
 		return err
 	}
 	t.State = st
+	if w, err := ReadWatermark(filepath.Dir(t.Dir)); err == nil {
+		t.State.AppliedLSN = effectiveLSN(t.Qualified, st.AppliedLSN, w)
+	}
 	t.index.close()
 	t.index, t.patch, t.partialCols = nil, nil, nil
 	t.resetDead()
+	t.noteFormats()
+	t.forgetOptIns()
+	t.primeOptIns()
 	return nil
 }
 

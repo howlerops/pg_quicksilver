@@ -19,6 +19,13 @@
 //	qs-query -mirror ... -table ... -published        # the published snapshot's SQL
 //	qs-query -mirror ... -table ... -seq              # its sequence number, alone
 //	qs-query -mirror ... -table ... -published -lsn   # the LSN it stands at
+//	qs-query -mirror /mnt/qs -table ... -published -root /data/qs
+//	                                                  # for an engine that sees the mirror at /data/qs
+//
+// The published SQL names files relative to the table directory, and this
+// command renders them under the mirror root it was given (or -root), so a
+// reader that mounts the mirror at a different path from the writer's gets
+// paths that exist where it is.
 //
 // With QS_DUCKLAKE=on the sidecar also publishes the mirror as a DuckLake table,
 // and then there is nothing to regenerate at all (ducklake.go):
@@ -39,6 +46,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/jackc/pgx/v5"
@@ -57,6 +65,7 @@ func main() {
 	lsn := flag.Bool("lsn", false, "print only the applied LSN, for freshness gating")
 	published := flag.Bool("published", false, "print the snapshot the writer published, instead of regenerating from the manifest")
 	seq := flag.Bool("seq", false, "print only the published snapshot's sequence number, to detect change")
+	renderRoot := flag.String("root", "", "with -published: the mirror root the ENGINE will see, when it mounts the mirror at a different path from the one given to -mirror (default: -mirror)")
 	lake := flag.Bool("ducklake", false, "print what a reader of the DuckLake table needs (QS_DUCKLAKE=on): the ATTACH and the table name, or with -engine postgres the pg_duckdb view over it")
 	attachOnLogin := flag.Bool("attach-on-login", false, "with -ducklake -engine postgres: also emit a login event trigger that attaches the lake in every session")
 	flag.Parse()
@@ -94,7 +103,7 @@ func main() {
 				fail("%v", err)
 			}
 		}
-		emit(publishedHeader(p), p.SQL, *engine, *view, cols, order)
+		emit(publishedHeader(p), publishedSQL(p, *root, *renderRoot, schema, name), *engine, *view, cols, order)
 		return
 	}
 
@@ -132,6 +141,24 @@ func publishedScalar(p *mirror.Published, seq, lsn bool) (string, bool) {
 		return p.AppliedLSN, true
 	}
 	return "", false
+}
+
+// publishedSQL is the published view with its files named where the reader's
+// engine will find them. The snapshot holds paths relative to the table
+// directory (or, from an older writer, the writer's absolute ones); neither is
+// usable as it stands by a reader that mounts the mirror somewhere else.
+//
+// The default is the path this command was given, which is by definition a
+// path the mirror is readable at here. -root is for the case where the engine
+// that will run the SQL sees it somewhere else again.
+func publishedSQL(p *mirror.Published, mirrorRoot, renderRoot, schema, name string) string {
+	if renderRoot == "" {
+		renderRoot = mirrorRoot
+	}
+	if abs, err := filepath.Abs(renderRoot); err == nil {
+		renderRoot = abs
+	}
+	return p.Render(filepath.Join(renderRoot, schema+"."+name))
 }
 
 func publishedHeader(p *mirror.Published) string {

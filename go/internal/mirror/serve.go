@@ -298,7 +298,11 @@ func (t *Table) literalExpr(c string) string {
 
 // branch is one file's contribution: its columns projected to `want`, with the
 // deletion vector the manifest names applied.
-func (t *Table) branch(rel string, want []string) (string, error) {
+//
+// named is how the file's path is written into the SQL: absolute for a view
+// evaluated where this process runs, relative to the table directory for the
+// one that is published (see Published.Render).
+func (t *Table) branch(rel string, want []string, named func(abs string) string) (string, error) {
 	abs := filepath.Join(t.Dir, rel)
 	have, err := t.columnsOf(abs)
 	if err != nil {
@@ -333,7 +337,7 @@ func (t *Table) branch(rel string, want []string) (string, error) {
 		opts = ", file_row_number = true"
 	}
 	q := fmt.Sprintf("SELECT %s FROM read_parquet(%s%s)",
-		strings.Join(sel, ", "), sqlString(abs), opts)
+		strings.Join(sel, ", "), sqlString(named(abs)), opts)
 
 	if gen != 0 {
 		dv := t.dvPathGenAny(rel, gen)
@@ -343,7 +347,7 @@ func (t *Table) branch(rel string, want []string) (string, error) {
 			// row it retired.
 			return "", ErrStaleManifest
 		}
-		q += " WHERE file_row_number NOT IN " + dvSubquery(dv)
+		q += " WHERE file_row_number NOT IN " + dvSubquery(dv, named(dv))
 	}
 	return q, nil
 }
@@ -353,6 +357,21 @@ func (t *Table) branch(rel string, want []string) (string, error) {
 // It reflects the manifest as loaded, so a caller outside the apply goroutine
 // should Reload before asking, and should re-ask on ErrStaleManifest.
 func (t *Table) ViewSQL() (string, error) {
+	return t.viewSQL(func(abs string) string { return abs })
+}
+
+// relativeViewSQL is ViewSQL with every file named relative to the table
+// directory, which is the form that is published.
+func (t *Table) relativeViewSQL() (string, error) {
+	return t.viewSQL(func(abs string) string {
+		if rel, err := filepath.Rel(t.Dir, abs); err == nil {
+			return filepath.ToSlash(rel)
+		}
+		return abs
+	})
+}
+
+func (t *Table) viewSQL(named func(abs string) string) (string, error) {
 	if h := t.Halted(); h != "" {
 		return "", fmt.Errorf("mirror is halted and must not be served: %s", h)
 	}
@@ -360,7 +379,7 @@ func (t *Table) ViewSQL() (string, error) {
 	// Whole rows: the base files plus every delta that is not a patch file.
 	var whole []string
 	for _, b := range t.State.BaseFiles {
-		q, err := t.branch(filepath.Join("base", b), t.Order)
+		q, err := t.branch(filepath.Join("base", b), t.Order, named)
 		if err != nil {
 			return "", err
 		}
@@ -376,7 +395,7 @@ func (t *Table) ViewSQL() (string, error) {
 		rel := filepath.Join("delta", d)
 		cols := t.State.PartialCols[d]
 		if cols == nil {
-			q, err := t.branch(rel, t.Order)
+			q, err := t.branch(rel, t.Order, named)
 			if err != nil {
 				return "", err
 			}
@@ -388,7 +407,7 @@ func (t *Table) ViewSQL() (string, error) {
 			sigs = append(sigs, sig)
 			patchCols[sig] = cols
 		}
-		q, err := t.branch(rel, cols)
+		q, err := t.branch(rel, cols, named)
 		if err != nil {
 			return "", err
 		}
@@ -547,12 +566,14 @@ func schemaOf(path string) (map[string]string, []string, error) {
 // describe. The Parquet form is not only faster to parse — 0.6 ms against
 // 95.7 ms for 1.56M positions — it is also a plain column, so the engine reads
 // it as a column rather than unnesting one enormous list value.
-func dvSubquery(path string) string {
+//
+// path decides the encoding; named is how it is written into the SQL.
+func dvSubquery(path, named string) string {
 	if strings.HasSuffix(path, ".json") {
 		return fmt.Sprintf("(SELECT unnest(v) FROM read_json(%s, "+
-			"columns = {'v': 'BIGINT[]'}, format = 'unstructured'))", sqlString(path))
+			"columns = {'v': 'BIGINT[]'}, format = 'unstructured'))", sqlString(named))
 	}
-	return fmt.Sprintf("(SELECT p FROM read_parquet(%s))", sqlString(path))
+	return fmt.Sprintf("(SELECT p FROM read_parquet(%s))", sqlString(named))
 }
 
 // padBranch puts a constant in front of a whole-row branch's columns.

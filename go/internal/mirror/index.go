@@ -276,9 +276,10 @@ func keyStringFor(numeric bool, s string) rowKey {
 // was actually filled to grow from nothing.
 //
 // The maps are no longer the whole index. When `disk` is set, the keys of the
-// base file are in a sorted file (kidx.go) and the maps hold only what is NOT
-// there: every key whose current row is in a delta file, and any key the file
-// cannot represent. The rule that keeps the two from disagreeing is one
+// base file are in a sorted file (kidx.go) — integers, uuids, and keys of any
+// other type as their exact bytes — and the maps hold only what is NOT there:
+// every key whose current row is in a delta file, and a key that is not of the
+// table's kind at all. The rule that keeps the two from disagreeing is one
 // invariant:
 //
 //	a key is in a map  =>  none of its records in the file is live
@@ -389,11 +390,19 @@ func (x *keyIndex) markGone(positions []int) {
 // has not said which, the highest position is the newest, as it always was.
 func (x *keyIndex) diskLive(k rowKey) (i int, pos int32, ok bool) {
 	d := x.disk
-	if d == nil || kidxWidth(k) != d.width {
+	if d == nil {
 		return 0, 0, false
 	}
-	kk := toKKey(k)
+	kk, text, held := kidxKeyOf(d.kind, k)
+	if !held {
+		return 0, 0, false
+	}
 	for j := d.lowerBound(kk); j < d.n && d.keyAt(j) == kk; j++ {
+		// For a key of any length kk is a hash, and the record is this key's
+		// only if the key in the heap is these bytes.
+		if !d.holds(j, text) {
+			continue
+		}
 		if p := d.posAt(j); !x.isGone(p) {
 			i, pos, ok = j, p, true
 		}
@@ -525,7 +534,7 @@ func (x *keyIndex) each(fn func(rowKey, loc)) {
 	if d := x.disk; d != nil {
 		for i := 0; i < d.n; i++ {
 			if p := d.posAt(i); !x.isGone(p) {
-				fn(fromKKey(d.width, d.keyAt(i)), x.diskLoc(i, p))
+				fn(d.rowKeyAt(i), x.diskLoc(i, p))
 			}
 		}
 	}

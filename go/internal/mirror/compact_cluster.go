@@ -47,6 +47,8 @@ import (
 
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/arrow/memory"
+	"github.com/apache/arrow-go/v18/parquet"
+	"github.com/apache/arrow-go/v18/parquet/compress"
 	"github.com/apache/arrow-go/v18/parquet/file"
 	"github.com/apache/arrow-go/v18/parquet/metadata"
 	"github.com/apache/arrow-go/v18/parquet/pqarrow"
@@ -475,15 +477,7 @@ func (t *Table) clusterColumn(baseRels []string) (col, why string) {
 	if err != nil {
 		return "", "base file statistics unreadable: " + err.Error()
 	}
-	return chooseCluster(t.Order, ranges, groups, func(name string) int {
-		switch {
-		case temporalOf(t.Columns[name]) != notTemporal:
-			return 2
-		case name == t.Key:
-			return 1
-		}
-		return 0
-	})
+	return chooseCluster(t.Order, ranges, groups, t.clusterRank)
 }
 
 // ---- reading by row group -------------------------------------------------------
@@ -604,13 +598,48 @@ func eachGroup(path string, names []string, want func(start, n int) bool, fn fun
 // What duplicates remain are within the base stream, which is still written in
 // its own order.
 //
-// MEMORY. Per live delta row: one clusterEnt (24 bytes plus the boxed value,
-// about 40) and its key for the dropped-base-row test (16 bytes, sorted, behind
-// a filter). That is about 56 bytes a row, against the kilobyte a row costs as
-// a Go map; at the compaction trigger, a fifth of ten million rows, about
-// 110 MB. Whole rows are never held by the table or by the delta: next to the
-// one base row group the rewrite always held there is one BUCKET of delta
-// rows, a row group's worth, and nothing else.
+// MEMORY, MEASURED AT THE TRIGGER. Per live delta row: one clusterEnt (24
+// bytes and the boxed value, 16), its key for the dropped-base-row test (16
+// bytes, sorted, behind a filter), its place in its delta file while the
+// buckets are written (8), and what a slice grown by append leaves spare:
+// 75 bytes a row, from a heap profile. Whole rows are never held by the table
+// or by the delta. A base row group is decoded to Arrow and turned into rows a
+// few thousand at a time; next to it is one BUCKET of delta rows, whose size
+// is chosen against the number of bucket writers it implies (bucketRows), and
+// the two together cost about 85 KB x sqrt(D). So the live heap of a process
+// in the middle of a rewrite is
+//
+//	77 B x D   the table's own index of the keys in its deltas (a uuid key)
+//	75 B x D   the rewrite's run
+//	85 KB x sqrt(D)   the bucket being merged, and the writers of the rest
+//	116 MB     what grows with nothing: the row group being read and the one
+//	           being written, the key index's sort run
+//
+// D the live delta rows — at the churn trigger, a fifth of the table. Measured
+// with TestRewriteAtTrigger on the orders shape (uuid key, jsonb payload,
+// 65,536-row groups), both AT the trigger. The 116 MB is fitted; with it the
+// formula is within 5% of the measurement at both sizes:
+//
+//	rows    delta D   live heap    peak RSS (anon), default GC: twice that
+//	                  by formula   by formula    measured
+//	1.5M     300k       208 MB       416 MB       399 MB
+//	10M        2M       540 MB      1080 MB      1070 MB
+//
+// Peak RSS is twice the live heap because that is what Go's collector allows
+// itself by default; the sidecar runs with GOMEMLIMIT at 80% of its limit, and
+// it is the live heap that has to fit under that. The unclustered rewrite
+// (QS_CLUSTER_BY=none) has no 75 B x D and no buckets: 684 MB at ten million.
+//
+// This paragraph used to say 56 bytes a row and "about 110 MB" at the trigger,
+// from a run with 700,000 changed rows. At the trigger the same rewrite peaked
+// at 1,950 to 2,040 MB resident (1,650 to 1,740 anonymous), and four things it
+// did not mention were most of that: a bloom filter built for every small row
+// group of every bucket and held until the bucket closed (480 MB, growing with
+// the square of the delta; see newScratchWriter); the base file's dead
+// positions as a map (74 MB for what a bitmap says in 1.25); every base row
+// group as 65,536 Go maps at once (80 MB; forEachRows); and a 40 MB sort run
+// for the key index (kidxRunRecords). It is 1,314 MB resident now, 466 of
+// which the process held before the rewrite began.
 //
 // The buckets are the one extra copy this costs. Delta files are in arrival
 // order and the merge wants their rows in cluster order, so reading them a
@@ -629,6 +658,10 @@ func eachGroup(path string, names []string, want func(start, n int) bool, fn fun
 //
 // What that copy costs is one more trip through the writer for each delta row
 // — in proportion to the delta, whatever the size of the table.
+
+// A base that is NOT approximately sorted any more — one an older release's
+// rewrites appended to — is not merged into at all: it is sorted, once. See
+// "re-clustering" at the end of this file.
 
 // clusterEmitRows is how many rows are handed to the writer at a time.
 const clusterEmitRows = 4096
@@ -660,6 +693,7 @@ type clusterRewrite struct {
 	// at batch[ent.pos].
 	prefix           string
 	buckets          int
+	per              int // rows in a bucket; 0 is a row group's worth
 	batch            []map[string]any
 	batchLo, batchHi int
 
@@ -705,7 +739,7 @@ func (cr *clusterRewrite) inDelta(k rowKey) bool {
 
 // scan builds the sorted run: one entry per live delta row, the newest copy of
 // each key only, from two columns of each delta file.
-func (cr *clusterRewrite) scan(deadOf func(string) map[int]bool, medCls int) error {
+func (cr *clusterRewrite) scan(deadOf func(string) func(int) bool, medCls int) error {
 	t := cr.t
 	type fk struct {
 		k kkey
@@ -718,7 +752,7 @@ func (cr *clusterRewrite) scan(deadOf func(string) map[int]bool, medCls int) err
 		err := eachGroup(filepath.Join(t.Dir, rel), []string{t.Key, cr.col}, nil, func(v *groupView) error {
 			for i := 0; i < v.n; i++ {
 				pos := v.start + i
-				if dead[pos] {
+				if dead(pos) {
 					continue
 				}
 				kv, _ := v.value(0, i)
@@ -816,8 +850,30 @@ func (cr *clusterRewrite) ordered(v any) bool {
 	return cr.cls != ordNone && ordClass(v) == cr.cls
 }
 
-// bucketRows is how many delta rows are held as whole rows at once.
-func (cr *clusterRewrite) bucketRows() int { return int(RowGroupRows) }
+// bucketRows is how many delta rows are held as whole rows at once: the size of
+// a bucket.
+//
+// It was a row group's worth whatever the delta. But a bucket is paid for
+// twice over: once as the rows of the one being merged, about 1.2 KB each as Go
+// maps, and once as a writer held open for every bucket while they are filled,
+// about 1.5 MB each. For D delta rows in buckets of b that is 1.2 KB x b +
+// 1.5 MB x D/b, least at b = sqrt(1250 x D) — 16,000 rows for a delta of
+// 200,000, where a full row group was 80 MB of rows to save four writers.
+func (cr *clusterRewrite) bucketRows() int {
+	if cr.per > 0 {
+		return cr.per
+	}
+	return int(RowGroupRows)
+}
+
+const (
+	bucketMinRows = 8192
+	// writerBytes / rowBytes, as measured: see bucketRows.
+	bucketRatio = 1250
+	// spillHoldRows is how many rows wait, across all the buckets, to be
+	// written as row groups of their own.
+	spillHoldRows = 16384
+)
 
 func (cr *clusterRewrite) bucketPath(b int) string {
 	return fmt.Sprintf("%s%s%d", cr.prefix, scratchBucket, b)
@@ -862,21 +918,54 @@ func scratchLive(path string) bool {
 	return ok
 }
 
+// newScratchWriter opens a bucket: a Parquet file in the table's schema that
+// this rewrite will read back, whole, and remove. It is the table's writer
+// with three things taken away, because nothing but this rewrite reads it:
+//
+//   - No bloom filters. A filter is built per column chunk and held until the
+//     file is closed, and a bucket is written in many small row groups — one
+//     each time its share of the hold fills. With the adaptive builder that
+//     was a ladder of candidates, 256 KB for each of two columns, for every
+//     one of those row groups in every bucket: at two million delta rows, 31
+//     buckets of 31 row groups, 480 MB, growing with the SQUARE of the delta.
+//     It was most of the rewrite's peak, and it was thrown away unread.
+//   - No fsync: the writer syncs a file it owns, so it is not given this one.
+//     The caller closes the file it gets back.
+//   - No claim on the path. It is not a data file and no snapshot names it.
+func (t *Table) newScratchWriter(path string) (*parquetWriter, *os.File, error) {
+	schema := t.arrowSchemaFor(t.Order)
+	f, err := os.Create(path)
+	if err != nil {
+		return nil, nil, err
+	}
+	props := parquet.NewWriterProperties(
+		parquet.WithCompression(compress.Codecs.Zstd),
+		parquet.WithCompressionLevel(ZstdLevel),
+		parquet.WithMaxRowGroupLength(RowGroupRows),
+		parquet.WithStats(false),
+	)
+	w, err := pqarrow.NewFileWriter(schema, keepOpen{f}, props, pqarrow.DefaultWriterProps())
+	if err != nil {
+		f.Close()
+		return nil, nil, err
+	}
+	return &parquetWriter{w: w, schema: schema, cols: t.Order, tbl: t}, f, nil
+}
+
 // spill reads every delta file once and writes each row of the run to its
 // bucket. Afterwards an entry's pos is its row within the bucket, not within
 // the delta file.
 func (cr *clusterRewrite) spill() (err error) {
 	t := cr.t
 	defer func(t0 time.Time) { cr.spillTime = time.Since(t0) }(time.Now())
-	n, per := len(cr.ents), cr.bucketRows()
+	n := len(cr.ents)
 	if n == 0 {
 		return nil
 	}
-	type ref struct{ pos, idx int32 }
-	byFile := make([][]ref, len(cr.rels))
-	for i, e := range cr.ents {
-		byFile[e.file] = append(byFile[e.file], ref{e.pos, int32(i)})
+	if want := int(math.Sqrt(float64(n) * bucketRatio)); want < int(RowGroupRows) {
+		cr.per = min(max(want, bucketMinRows), int(RowGroupRows))
 	}
+	per := cr.bucketRows()
 	cr.buckets = (n + per - 1) / per
 	if cr.buckets == 1 {
 		// Small enough to hold: the bucket is this slice.
@@ -892,7 +981,6 @@ func (cr *clusterRewrite) spill() (err error) {
 			if w == nil {
 				continue
 			}
-			// The writer would fsync a file it owns. This one is scratch.
 			if cerr := w.Close(); err == nil {
 				err = cerr
 			}
@@ -902,15 +990,14 @@ func (cr *clusterRewrite) spill() (err error) {
 		}
 	}()
 	for b := range ws {
-		if ws[b], err = t.newParquetWriter(cr.bucketPath(b), nil, true); err != nil {
+		if ws[b], files[b], err = t.newScratchWriter(cr.bucketPath(b)); err != nil {
 			return err
 		}
-		files[b], ws[b].f = ws[b].f, nil
 	}
-	// Rows wait here, a row group's worth across ALL the buckets, and are then
+	// Rows wait here, a few thousand across ALL the buckets, and are then
 	// written out as a row group of their own: the writer would otherwise hold
 	// a full one per bucket.
-	hold := max(int(RowGroupRows)/max(cr.buckets, 1), 256)
+	hold := max(min(spillHoldRows, int(RowGroupRows))/max(cr.buckets, 1), 64)
 	pend := make([][]map[string]any, cr.buckets)
 	count := make([]int32, cr.buckets)
 	put := func(b int) error {
@@ -920,6 +1007,46 @@ func (cr *clusterRewrite) spill() (err error) {
 		clear(pend[b])
 		pend[b] = pend[b][:0]
 		return ws[b].flush(len(ws[b].pending))
+	}
+	err = cr.eachDeltaRow(func(idx int32, m map[string]any) error {
+		if cr.buckets == 0 {
+			cr.ents[idx].pos = idx
+			cr.batch[idx] = m
+			return nil
+		}
+		b := int(idx) / per
+		cr.ents[idx].pos = count[b]
+		count[b]++
+		pend[b] = append(pend[b], m)
+		if len(pend[b]) >= hold {
+			return put(b)
+		}
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	for b := range ws {
+		if want := min(per, n-b*per); int(count[b]) != want {
+			return fmt.Errorf("rewrite: %d delta rows to place in bucket %d, %d read", want, b, count[b])
+		}
+		if err := put(b); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// eachDeltaRow reads every delta file once, in its own order, and hands over
+// each row of the run — whole, as the table's schema has it — with its index in
+// cr.ents. Rows that are dead or superseded by a newer copy are not in the run
+// and are not read.
+func (cr *clusterRewrite) eachDeltaRow(fn func(idx int32, row map[string]any) error) error {
+	t := cr.t
+	type ref struct{ pos, idx int32 }
+	byFile := make([][]ref, len(cr.rels))
+	for i, e := range cr.ents {
+		byFile[e.file] = append(byFile[e.file], ref{e.pos, int32(i)})
 	}
 	for fi, refs := range byFile {
 		if len(refs) == 0 {
@@ -943,20 +1070,8 @@ func (cr *clusterRewrite) spill() (err error) {
 							m[name] = val
 						}
 					}
-					m = t.fillMissing(m, t.Order, true)
-					if cr.buckets == 0 {
-						cr.ents[refs[j].idx].pos = refs[j].idx
-						cr.batch[refs[j].idx] = m
-						continue
-					}
-					b := int(refs[j].idx) / per
-					cr.ents[refs[j].idx].pos = count[b]
-					count[b]++
-					pend[b] = append(pend[b], m)
-					if len(pend[b]) >= hold {
-						if err := put(b); err != nil {
-							return err
-						}
+					if err := fn(refs[j].idx, t.fillMissing(m, t.Order, true)); err != nil {
+						return err
 					}
 				}
 				return nil
@@ -965,14 +1080,6 @@ func (cr *clusterRewrite) spill() (err error) {
 			return err
 		}
 		byFile[fi] = nil
-	}
-	for b := range ws {
-		if want := min(per, n-b*per); int(count[b]) != want {
-			return fmt.Errorf("rewrite: %d delta rows to place in bucket %d, %d read", want, b, count[b])
-		}
-		if err := put(b); err != nil {
-			return err
-		}
 	}
 	return nil
 }
@@ -1091,8 +1198,8 @@ var afterSpill func(*clusterRewrite)
 // rewriteClustered writes the new base with the delta rows merged into the
 // base stream on col. It returns the number of rows written.
 func (t *Table) rewriteClustered(col string, baseRels, deltaRels []string,
-	deadOf func(string) map[int]bool, overlay map[rowKey]map[string]any,
-	numeric, hashing bool, kb *kidxBuilder, w *parquetWriter,
+	deadOf func(string) func(int) bool, overlay map[rowKey]map[string]any,
+	numeric, hashing bool, kb *kidxBuilder, w *parquetWriter, sortAll bool,
 ) (int, error) {
 	clusteredRewrites.Add(1)
 	start := time.Now()
@@ -1152,8 +1259,15 @@ func (t *Table) rewriteClustered(col string, baseRels, deltaRels []string,
 			"rows", cr.out, "delta_rows", len(cr.ents), "unordered", len(cr.ents)-cr.nOrd,
 			"scan_seconds", cr.scanTime.Seconds(), "buckets", cr.buckets,
 			"spill_seconds", cr.spillTime.Seconds(), "load_seconds", cr.loadTime.Seconds(),
-			"seconds", time.Since(start).Seconds())
+			"sorted", sortAll, "seconds", time.Since(start).Seconds())
 	}()
+	if sortAll {
+		// The base is not in the order this merge would keep: sort all of it.
+		if err := cr.rewriteSorted(baseRels, deadOf); err != nil {
+			return 0, err
+		}
+		return cr.out, cr.flush()
+	}
 	if err := cr.spill(); err != nil {
 		return 0, err
 	}
@@ -1162,7 +1276,7 @@ func (t *Table) rewriteClustered(col string, baseRels, deltaRels []string,
 	}
 
 	for _, rel := range baseRels {
-		err := t.forEachRowGroup(filepath.Join(t.Dir, rel), deadOf(rel), nil,
+		err := t.forEachRows(filepath.Join(t.Dir, rel), deadOf(rel), nil, rowChunk,
 			func(rows []map[string]any, first int) error {
 				g, known := groupAt[groupKey{rel, first}]
 				last := known && g == len(meds)-1
@@ -1203,3 +1317,538 @@ func (t *Table) rewriteClustered(col string, baseRels, deltaRels []string,
 	}
 	return cr.out, cr.flush()
 }
+
+// ---- re-clustering ----------------------------------------------------------
+//
+// The merge above keeps the order a base file HAS. A mirror that ran an older
+// release has a base that no longer has one worth keeping: every rewrite that
+// release did put the changed rows at the end, and those rows stay where they
+// are until something updates them again. Their row groups each span most of
+// the column's range, every range filter reads all of them, and the merge
+// faithfully carries them forward.
+//
+// DETECTION is from the footer and nothing else, and it asks two questions of
+// each column's row-group ranges.
+//
+// Is the file declustered on it? A file of G row groups that is clustered has
+// ranges that overlap their neighbours and no others: about 2·w/(G-1) of all
+// pairs, for a group overlapping w on each side. A file with a fraction f of
+// its rows appended out of place has about f·G groups that overlap everything,
+// which is 2f - f² of all pairs. So the measure is the EXCESS — overlapFraction
+// less what a clustered file of that many groups would show — and ReclusterOverlap
+// is how much of it is too much. One old rewrite at the churn trigger (f = 1/6)
+// scores about 0.3, two score 0.5; a snapshot scores 0.
+//
+// And was it ever clustered on it? That cannot be chooseCluster's test, which
+// wants fewer than half of all pairs overlapping: two old rewrites are past
+// that, and then the column that overlaps LEAST is whichever happens to hold
+// three values in long runs, and sorting on that would throw away the order
+// the file still has. What an old rewrite leaves is a file in two parts, and
+// the test is for exactly that shape: at least half the row groups are NARROW
+// (their range is a few G-ths of the column's whole span — the part still in
+// order), and those narrow groups do not overlap one another beyond what
+// neighbours do. A column with no order has no narrow groups. A column of a
+// few repeated values has nothing but, and they overlap each other entirely.
+//
+// THE CURE is the one thing the top of this file says not to do routinely: sort
+// the whole table on the column. Once. It is an external merge sort (see
+// rewriteSorted) with the memory of an ordinary rewrite, and what it writes is
+// exactly sorted, so the next look at the footer finds nothing to do.
+//
+// WHEN. Any rewrite that finds its base declustered sorts instead of merging;
+// the trigger that started it does not matter. And a table that is otherwise
+// quiet gets a rewrite for this alone ("recluster", CompactReason) — but never
+// sooner than ReclusterIntervalSeconds after its base file was WRITTEN, which
+// is the file's own mtime and therefore survives restarts, and never for a
+// table with no column that passes the second test: there is nothing to sort
+// by. QS_CLUSTER_BY names the column for a table the test is wrong about, and
+// `none` there turns this off for it.
+//
+// If a sort does not bring the measure down, sorting again would not either.
+// So a table is sorted on a column at most once per process, and a rewrite for
+// this alone is started at most once per interval whatever happens.
+
+// ReclusterOverlap is the excess overlap (see above) at which a base file is
+// sorted by the next rewrite. Zero or less turns re-clustering off.
+var ReclusterOverlap = envFloat("QS_RECLUSTER_OVERLAP", 0.10)
+
+// ReclusterIntervalSeconds is the least age of a base file before a rewrite is
+// started for no reason but to re-cluster it.
+var ReclusterIntervalSeconds = envFloat("QS_RECLUSTER_INTERVAL_SECONDS", 24*3600)
+
+const (
+	// reclusterNeighbours is how many groups either side a clustered file's
+	// row group may overlap before it counts against the file.
+	reclusterNeighbours = 2
+	// A row group is narrow if its range is at most this many G-ths of the
+	// column's span, G being the number of groups (and never more than a
+	// quarter of it).
+	reclusterNarrow = 8
+	// The narrow groups must be at least this fraction of the file...
+	reclusterCore = 0.5
+	// ...and overlap each other by no more than this beyond their neighbours.
+	reclusterCoreOverlap = 0.05
+)
+
+// clusteredOverlap is the overlap fraction a clustered file of this many row
+// groups shows.
+func clusteredOverlap(groups int) float64 {
+	if groups < 2 {
+		return 1
+	}
+	return min(1, 2*reclusterNeighbours/float64(groups-1))
+}
+
+// statNum places a statistics value on a line, so that the width of a range
+// can be compared with the span of a column. skip is the bytes every value of
+// the column begins with.
+func statNum(v any, skip int) float64 {
+	switch x := v.(type) {
+	case int64:
+		return float64(x)
+	case uint64:
+		return float64(x)
+	case float64:
+		return x
+	case []byte:
+		var n uint64
+		for i := 0; i < 8; i++ {
+			n <<= 8
+			if skip+i < len(x) {
+				n |= uint64(x[skip+i])
+			}
+		}
+		return float64(n)
+	}
+	return 0
+}
+
+// declustering is what the footer says about one column.
+type declustering struct {
+	groups int
+	excess float64 // overlap beyond a clustered file's, over all groups
+	narrow float64 // fraction of groups whose range is narrow
+	core   float64 // overlap beyond a clustered file's, among the narrow ones
+}
+
+// wasClustered: most of the file is still in order on this column.
+func (d declustering) wasClustered() bool {
+	return d.narrow >= reclusterCore && d.core <= reclusterCoreOverlap
+}
+
+// isDeclustered: enough of it is not.
+func (d declustering) isDeclustered() bool {
+	return ReclusterOverlap > 0 && d.groups >= clusterMinGroups && d.excess >= ReclusterOverlap
+}
+
+func measureDeclustering(r []statRange) (d declustering) {
+	d.groups = len(r)
+	if len(r) < clusterMinGroups {
+		return d
+	}
+	d.excess = overlapFraction(r) - clusteredOverlap(len(r))
+	lo, hi := r[0].lo, r[0].hi
+	for _, g := range r[1:] {
+		if ordCmp(g.lo, lo) < 0 {
+			lo = g.lo
+		}
+		if ordCmp(g.hi, hi) > 0 {
+			hi = g.hi
+		}
+	}
+	skip := 0
+	if a, ok := lo.([]byte); ok {
+		b, _ := hi.([]byte)
+		for skip < len(a) && skip < len(b) && a[skip] == b[skip] {
+			skip++
+		}
+	}
+	span := statNum(hi, skip) - statNum(lo, skip)
+	if !(span > 0) {
+		return d
+	}
+	limit := span * min(reclusterNarrow/float64(len(r)), 0.25)
+	var core []statRange
+	for _, g := range r {
+		if statNum(g.hi, skip)-statNum(g.lo, skip) <= limit {
+			core = append(core, g)
+		}
+	}
+	d.narrow = float64(len(core)) / float64(len(r))
+	d.core = 1
+	if len(core) >= clusterMinGroups {
+		d.core = overlapFraction(core) - clusteredOverlap(len(core))
+	}
+	return d
+}
+
+// reclusterSorted remembers, per table directory, the column a sort was last
+// done on, so that one which did not help is not repeated by this process.
+var reclusterSorted sync.Map
+
+// clusterRank breaks ties between columns: the time column is the one a filter
+// prunes on, and a key lookup goes through the key index.
+func (t *Table) clusterRank(name string) int {
+	switch {
+	case temporalOf(t.Columns[name]) != notTemporal:
+		return 2
+	case name == t.Key:
+		return 1
+	}
+	return 0
+}
+
+// reclusterColumn is the column the base files should be SORTED on because
+// they are badly declustered on it, or "" if there is none — which is the
+// answer for a clustered file, for a file with no clustered column, and for a
+// table this process has already sorted on that column.
+func (t *Table) reclusterColumn(baseRels []string) (col, why string) {
+	if len(baseRels) == 0 || ReclusterOverlap <= 0 {
+		return "", ""
+	}
+	cands, named := t.Order, false
+	if c, ok := clusterOverride(ClusterBy, t.Qualified); ok {
+		if _, known := t.Columns[c]; !known || c == "none" {
+			return "", ""
+		}
+		// The operator has said which column the base is clustered on.
+		cands, named = []string{c}, true
+	}
+	paths := make([]string, len(baseRels))
+	for i, rel := range baseRels {
+		paths[i] = filepath.Join(t.Dir, rel)
+	}
+	ranges, groups, err := columnRanges(paths, cands)
+	if err != nil {
+		return "", ""
+	}
+	var best declustering
+	for _, name := range cands {
+		r := ranges[name]
+		if len(r) < clusterMinGroups || len(r) < groups/2 {
+			continue
+		}
+		d := measureDeclustering(r)
+		if !d.isDeclustered() || !(named || d.wasClustered()) {
+			continue
+		}
+		if col == "" || t.clusterRank(name) > t.clusterRank(col) ||
+			t.clusterRank(name) == t.clusterRank(col) && d.narrow > best.narrow {
+			col, best = name, d
+		}
+	}
+	if col == "" {
+		return "", ""
+	}
+	if done, _ := reclusterSorted.Load(t.Dir); done == col {
+		return "", ""
+	}
+	return col, fmt.Sprintf("declustered on %s: %.0f%% of row-group pairs overlap beyond the %.1f%% a clustered file of %d groups shows; "+
+		"%.0f%% of the groups are still in order", col, 100*best.excess, 100*clusteredOverlap(best.groups), best.groups, 100*best.narrow)
+}
+
+// reclusterCheck is what reclusterDue last found for a table's base file.
+type reclusterCheck struct {
+	base    string
+	spec    string
+	col     string
+	written time.Time
+}
+
+var reclusterChecked sync.Map // table directory -> reclusterCheck
+
+// reclusterDue reports whether the table should be rewritten for no other
+// reason than that its base file is declustered. It is asked on every tick, so
+// the footer is read once per base file and the answer kept.
+func (t *Table) reclusterDue() bool {
+	if ReclusterOverlap <= 0 || len(t.State.BaseFiles) != 1 || t.compacting != nil {
+		return false
+	}
+	if !t.retryAt.IsZero() && t.now().Before(t.retryAt) {
+		return false
+	}
+	base := t.State.BaseFiles[0]
+	chk, _ := reclusterChecked.Load(t.Dir)
+	c, ok := chk.(reclusterCheck)
+	if !ok || c.base != base || c.spec != ClusterBy {
+		c = reclusterCheck{base: base, spec: ClusterBy}
+		rels := []string{filepath.Join("base", base)}
+		if st, err := os.Stat(filepath.Join(t.Dir, rels[0])); err == nil {
+			c.written = st.ModTime()
+			c.col, _ = t.reclusterColumn(rels)
+		}
+		reclusterChecked.Store(t.Dir, c)
+	}
+	if c.col == "" {
+		return false
+	}
+	return t.now().Sub(c.written) >= time.Duration(ReclusterIntervalSeconds*float64(time.Second))
+}
+
+// CompactReason is why a rewrite of the base is worth its cost right now, or
+// "" if it is not: one of the three triggers of compactReason (mirror.go), or
+// "recluster" for a base file that is badly declustered and old enough.
+func (t *Table) CompactReason() string {
+	if why := t.compactReason(); why != "" {
+		return why
+	}
+	if t.reclusterDue() {
+		return "recluster"
+	}
+	return ""
+}
+
+// sortRunRowGroup bounds the rows a run holds in one row group, which is what
+// the merge holds per run.
+const (
+	sortRunGroupMin = 64
+	sortRunGroupMax = 8192
+)
+
+// sortedRuns counts runs written by rewriteSorted, for tests.
+var sortedRuns atomic.Int64
+
+type sortRow struct {
+	val any
+	row map[string]any
+}
+
+// sortCursor is one sorted run being merged: a row group of it at a time.
+type sortCursor struct {
+	idx  int
+	ch   chan []map[string]any
+	errc chan error
+	rows []map[string]any
+	i    int
+	val  any
+	ord  bool
+}
+
+// rewriteSorted writes every live row in the order of the cluster column: an
+// external merge sort.
+//
+// PASS ONE reads the table as any rewrite does — the base a row group at a
+// time, less the rows a delta supersedes, then the newest delta copy of every
+// key — and cuts it into RUNS of one row group's worth of rows. Each run is
+// sorted in memory and written as a scratch Parquet file in the table's own
+// schema, in small row groups. PASS TWO merges the runs through a heap, holding
+// one small row group of each.
+//
+// MEMORY. Pass one holds the run being filled: R whole rows, R = RowGroupRows,
+// which is what the clustered merge held before its buckets were sized to the
+// delta. Pass two holds 2·g rows of each of the
+// k = rows/R runs, with g = R/(2k) clamped to [64, 8192]: R rows, until the
+// table passes R²/128 rows (33 million at the default) and the clamp makes it
+// k·128. Ordering is as the merge's: values of the column's class in order,
+// everything else — NULL included — after them, in the order it was read.
+//
+// A key is written once, as in the merge: a base row whose key is live in a
+// delta is dropped, and only the newest delta copy is in the run.
+func (cr *clusterRewrite) rewriteSorted(baseRels []string, deadOf func(string) func(int) bool) error {
+	t := cr.t
+	R := int(RowGroupRows)
+	total := len(cr.ents)
+	for _, rel := range baseRels {
+		if n, err := parquetRows(filepath.Join(t.Dir, rel)); err == nil {
+			total += int(n)
+		}
+	}
+	k := max((total+R-1)/R, 1)
+	g := min(max(R/(2*k), sortRunGroupMin), sortRunGroupMax)
+	if err := os.MkdirAll(filepath.Dir(cr.prefix), 0o755); err != nil {
+		return err
+	}
+
+	t0 := time.Now()
+	run := make([]sortRow, 0, R)
+	less := func(a, b sortRow) int {
+		ao, bo := cr.ordered(a.val), cr.ordered(b.val)
+		switch {
+		case ao && bo:
+			return ordCmp(a.val, b.val)
+		case ao:
+			return -1
+		case bo:
+			return 1
+		}
+		return 0
+	}
+	writeRun := func() (err error) {
+		if len(run) == 0 {
+			return nil
+		}
+		slices.SortStableFunc(run, less)
+		w, f, err := t.newScratchWriter(cr.bucketPath(cr.buckets))
+		if err != nil {
+			return err
+		}
+		cr.buckets++
+		sortedRuns.Add(1)
+		defer func() {
+			if cerr := w.Close(); err == nil {
+				err = cerr
+			}
+			if cerr := f.Close(); err == nil {
+				err = cerr
+			}
+		}()
+		rows := make([]map[string]any, 0, g)
+		for lo := 0; lo < len(run); lo += g {
+			rows = rows[:0]
+			for _, r := range run[lo:min(lo+g, len(run))] {
+				rows = append(rows, r.row)
+			}
+			if err := w.Append(rows); err != nil {
+				return err
+			}
+			if err := w.flush(len(w.pending)); err != nil {
+				return err
+			}
+		}
+		clear(run)
+		run = run[:0]
+		return nil
+	}
+	add := func(r map[string]any) error {
+		run = append(run, sortRow{val: r[cr.col], row: r})
+		if len(run) >= R {
+			return writeRun()
+		}
+		return nil
+	}
+	for _, rel := range baseRels {
+		err := t.forEachRows(filepath.Join(t.Dir, rel), deadOf(rel), nil, rowChunk,
+			func(rows []map[string]any, _ int) error {
+				for _, r := range rows {
+					k := keyFor(cr.numeric, r[t.Key])
+					if cr.inDelta(k) {
+						continue // a newer copy is in a delta
+					}
+					if p, ok := cr.overlay[k]; ok {
+						applyPatch(r, p)
+					}
+					if err := add(r); err != nil {
+						return err
+					}
+				}
+				return nil
+			})
+		if err != nil && !os.IsNotExist(err) {
+			return err
+		}
+	}
+	err := cr.eachDeltaRow(func(_ int32, r map[string]any) error {
+		if p, ok := cr.overlay[keyFor(cr.numeric, r[t.Key])]; ok {
+			applyPatch(r, p)
+		}
+		return add(r)
+	})
+	if err != nil {
+		return err
+	}
+	if err := writeRun(); err != nil {
+		return err
+	}
+	run = nil
+	cr.next = len(cr.ents) // the delta rows are in the runs
+	cr.spillTime = time.Since(t0)
+
+	// The merge. Each run is read by its own goroutine, which hands over one
+	// row group and waits: forEachRowGroup pushes, and a merge has to pull.
+	defer func(t0 time.Time) { cr.loadTime = time.Since(t0) }(time.Now())
+	stop := make(chan struct{})
+	defer close(stop)
+	curs := make([]*sortCursor, cr.buckets)
+	for b := range curs {
+		c := &sortCursor{idx: b, ch: make(chan []map[string]any), errc: make(chan error, 1)}
+		curs[b] = c
+		go func(path string) {
+			defer close(c.ch)
+			err := t.forEachRowGroup(path, nil, nil, func(rows []map[string]any, _ int) error {
+				select {
+				case c.ch <- rows:
+					return nil
+				case <-stop:
+					return errSortStopped
+				}
+			})
+			_ = os.Remove(path)
+			c.errc <- err
+		}(cr.bucketPath(b))
+	}
+	// advance moves a cursor to its next row; false at the end of its run.
+	advance := func(c *sortCursor) (bool, error) {
+		c.i++
+		for c.i >= len(c.rows) {
+			rows, ok := <-c.ch
+			if !ok {
+				return false, <-c.errc
+			}
+			c.rows, c.i = rows, 0
+		}
+		c.val = c.rows[c.i][cr.col]
+		c.ord = cr.ordered(c.val)
+		return true, nil
+	}
+	before := func(a, b *sortCursor) bool {
+		switch {
+		case a.ord && b.ord:
+			if d := ordCmp(a.val, b.val); d != 0 {
+				return d < 0
+			}
+		case a.ord != b.ord:
+			return a.ord
+		}
+		return a.idx < b.idx // runs were cut in the order the rows were read
+	}
+	var h []*sortCursor
+	down := func(i int) {
+		for {
+			l, m := 2*i+1, i
+			if l < len(h) && before(h[l], h[m]) {
+				m = l
+			}
+			if l+1 < len(h) && before(h[l+1], h[m]) {
+				m = l + 1
+			}
+			if m == i {
+				return
+			}
+			h[i], h[m] = h[m], h[i]
+			i = m
+		}
+	}
+	for _, c := range curs {
+		c.i = -1
+		ok, err := advance(c)
+		if err != nil {
+			return err
+		}
+		if ok {
+			h = append(h, c)
+		}
+	}
+	for i := len(h)/2 - 1; i >= 0; i-- {
+		down(i)
+	}
+	for len(h) > 0 {
+		c := h[0]
+		r := c.rows[c.i]
+		c.rows[c.i] = nil
+		if err := cr.emit(keyFor(cr.numeric, r[t.Key]), r); err != nil {
+			return err
+		}
+		ok, err := advance(c)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			h[0] = h[len(h)-1]
+			h = h[:len(h)-1]
+		}
+		down(0)
+	}
+	return nil
+}
+
+var errSortStopped = fmt.Errorf("rewrite: sort abandoned")
