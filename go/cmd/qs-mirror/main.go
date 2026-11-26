@@ -177,6 +177,7 @@ func main() {
 	go ext.run(ctx)
 	h.AddMetrics(pumpWakes.Metrics)
 	h.AddMetrics(spool.Metrics)
+	h.AddMetrics(legacy.Metrics)
 	jan := newJanitor(log, o)
 	h.AddMetrics(jan.Metrics)
 
@@ -505,6 +506,13 @@ func runMirror(ctx context.Context, log *slog.Logger, o options, h *health.Healt
 		}
 		lakeAttach(t)
 		tables[qualified] = t
+	}
+
+	// Legacy-format data, before the halted plan below: an automatic rebuild
+	// (QS_AUTO_REBUILD_LEGACY) is a halt plus a REBUILD request, and the plan
+	// is what acts on both.
+	if err := checkLegacy(log, tables, autoRebuildLegacy()); err != nil {
+		return err
 	}
 
 	// Halted tables. Durable, so a restart cannot quietly resume one: it stays

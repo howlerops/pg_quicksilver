@@ -789,6 +789,20 @@ stored as `DECIMAL(38,9)` — there a key the source prints as `1.50` does not
 compare equal to the `1.5` the old file gives back, so changes to that row
 leave a duplicate until the table is rebuilt.
 
+At start the sidecar checks every table this way. For each table that reports
+any such column it logs one `WARN` naming the table, the columns and the remedy,
+and it exports `quicksilver_table_needs_rebuild{table="public.orders"} 1` on
+`/metrics` for as long as the files are there. The default is to stop there:
+the table keeps serving what it has, and the operator decides when to rebuild
+it (create `REBUILD` in its mirror directory and restart, as for a halted
+table). With `QS_AUTO_REBUILD_LEGACY=true` the sidecar does it itself: it halts
+the table with a reason that says why, writes the `REBUILD` file, and the
+rebuild runs through the same start-up path. A table that is already halted for
+another reason is never rebuilt automatically, because that halt is there for a
+person to read. The rebuild takes the snapshot's time and the table is out of
+service for it, so leave the variable off on a large table until a window is
+planned.
+
 ---
 
 ## Disk the mirror holds besides the data
