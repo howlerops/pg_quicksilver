@@ -1,0 +1,4 @@
+== 39702d4 /var/lib/postgresql/qslake2/item4/base/public.t/base/000021.parquet
+[('amount', 'RLE_DICTIONARY, PLAIN, RLE', 'ZSTD', 31, 7212467), ('id', 'RLE_DICTIONARY, PLAIN, RLE', 'ZSTD', 31, 6043277), ('note', 'RLE_DICTIONARY, PLAIN, RLE', 'ZSTD', 31, 221596), ('status', 'RLE_DICTIONARY, PLAIN, RLE', 'ZSTD', 31, 5608)]
+== HEAD /var/lib/postgresql/qslake2/item4/head/public.t/base/000021.parquet
+[('amount', 'DELTA_BINARY_PACKED, RLE', 'UNCOMPRESSED', 31, 4361975), ('id', 'DELTA_BINARY_PACKED, RLE', 'UNCOMPRESSED', 31, 80680), ('note', 'RLE_DICTIONARY, PLAIN, RLE', 'ZSTD', 31, 221596), ('status', 'RLE_DICTIONARY, PLAIN, RLE', 'ZSTD', 31, 5608)]
