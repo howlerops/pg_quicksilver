@@ -4095,6 +4095,19 @@ qs_decide(Query *orig, PlannedStmt *heap, const char *query_string, int cursorOp
 		QS_HEAP(state, state_detail, NIL);
 	if (cursorOptions & CURSOR_OPT_SCROLL)
 		QS_HEAP(QR_CURSOR, NULL, NIL);
+
+	/*
+	 * A DECLARE that says neither SCROLL nor NO SCROLL gets a scrollable cursor
+	 * when the plan it is given can scan backward (PerformCursorOpen decides
+	 * from the plan it receives, which is ours). A routed plan cannot, so the
+	 * cursor would refuse a FETCH BACKWARD the heap answers. DECLARE is the only
+	 * caller at the top level that passes neither this nor CURSOR_OPT_PARALLEL_OK
+	 * (plain statements, PREPARE, SPI and EXPLAIN pass PARALLEL_OK; COPY and
+	 * CREATE TABLE AS are heap already), so that is the test.
+	 */
+	if (!(cursorOptions & (CURSOR_OPT_NO_SCROLL | CURSOR_OPT_PARALLEL_OK)) &&
+		ExecSupportsBackwardScan(heap->planTree))
+		QS_HEAP(QR_CURSOR, "the heap plan can scan backward, so the cursor would be scrollable", NIL);
 	if (qs_is_duckdb_scan(heap->planTree))
 		QS_HEAP(QR_NOT_MIRRORED, "the statement is not a heap statement", NIL);
 

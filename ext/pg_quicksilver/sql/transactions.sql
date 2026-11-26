@@ -92,8 +92,9 @@ FETCH 2 FROM c;
 FETCH ALL FROM c;
 FETCH 1 FROM c;
 CLOSE c;
--- a scrollable cursor needs to go backwards: heap. A holdable one does not: routed,
--- and its rows outlive the transaction like any other holdable cursor's
+-- a scrollable cursor needs to go backwards: heap. So does one declared with neither
+-- option whose heap plan can scan backward (the sort above): PostgreSQL makes it
+-- scrollable, and a routed plan cannot go backward, so the heap keeps it
 DECLARE s SCROLL CURSOR FOR SELECT id, b FROM qt.h ORDER BY id;
 FETCH 2 FROM s;
 FETCH BACKWARD 1 FROM s;
@@ -103,6 +104,15 @@ FETCH 1 FROM h;
 COMMIT;
 FETCH 1 FROM h;
 CLOSE h;
+-- a holdable cursor whose plan cannot scan backward is routed, and its rows outlive
+-- the transaction like any other holdable cursor's
+BEGIN;
+DECLARE g CURSOR WITH HOLD FOR SELECT count(*) FROM qt.h;
+FETCH 1 FROM g;
+:last
+COMMIT;
+FETCH 1 FROM g;
+CLOSE g;
 -- a cursor that is closed half-read, and one whose transaction aborts
 BEGIN;
 DECLARE c CURSOR FOR SELECT id, b FROM qt.h ORDER BY id;

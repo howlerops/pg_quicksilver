@@ -221,29 +221,29 @@ COMMIT;
 BEGIN;
 DECLARE c CURSOR FOR SELECT id, b FROM qt.h ORDER BY id;
 FETCH 2 FROM c;
- id |   b    
-----+--------
-  1 | mirror
-  2 | mirror
+ id |  b   
+----+------
+  1 | heap
+  2 | heap
 (2 rows)
 
 FETCH 2 FROM c;
- id |   b    
-----+--------
-  3 | mirror
-  4 | mirror
+ id |  b   
+----+------
+  3 | heap
+  4 | heap
 (2 rows)
 
 :last
-  side  | reason |           detail           
---------+--------+----------------------------
- mirror | routed | quicksilver.route = mirror
+ side |      reason       |                               detail                               
+------+-------------------+--------------------------------------------------------------------
+ heap | scrollable cursor | the heap plan can scan backward, so the cursor would be scrollable
 (1 row)
 
 FETCH ALL FROM c;
- id |   b    
-----+--------
-  5 | mirror
+ id |  b   
+----+------
+  5 | heap
 (1 row)
 
 FETCH 1 FROM c;
@@ -252,8 +252,9 @@ FETCH 1 FROM c;
 (0 rows)
 
 CLOSE c;
--- a scrollable cursor needs to go backwards: heap. A holdable one does not: routed,
--- and its rows outlive the transaction like any other holdable cursor's
+-- a scrollable cursor needs to go backwards: heap. So does one declared with neither
+-- option whose heap plan can scan backward (the sort above): PostgreSQL makes it
+-- scrollable, and a routed plan cannot go backward, so the heap keeps it
 DECLARE s SCROLL CURSOR FOR SELECT id, b FROM qt.h ORDER BY id;
 FETCH 2 FROM s;
  id |  b   
@@ -289,21 +290,44 @@ FETCH 1 FROM h;
 (1 row)
 
 CLOSE h;
+-- a holdable cursor whose plan cannot scan backward is routed, and its rows outlive
+-- the transaction like any other holdable cursor's
+BEGIN;
+DECLARE g CURSOR WITH HOLD FOR SELECT count(*) FROM qt.h;
+FETCH 1 FROM g;
+ count 
+-------
+     5
+(1 row)
+
+:last
+  side  | reason |           detail           
+--------+--------+----------------------------
+ mirror | routed | quicksilver.route = mirror
+(1 row)
+
+COMMIT;
+FETCH 1 FROM g;
+ count 
+-------
+(0 rows)
+
+CLOSE g;
 -- a cursor that is closed half-read, and one whose transaction aborts
 BEGIN;
 DECLARE c CURSOR FOR SELECT id, b FROM qt.h ORDER BY id;
 FETCH 1 FROM c;
- id |   b    
-----+--------
-  1 | mirror
+ id |  b   
+----+------
+  1 | heap
 (1 row)
 
 CLOSE c;
 DECLARE c CURSOR FOR SELECT id, b FROM qt.h ORDER BY id;
 FETCH 1 FROM c;
- id |   b    
-----+--------
-  1 | mirror
+ id |  b   
+----+------
+  1 | heap
 (1 row)
 
 SELECT 1 / 0;
@@ -498,54 +522,54 @@ COMMIT;
 BEGIN;
 DECLARE c CURSOR FOR SELECT id, b FROM qt.h ORDER BY id;
 :side
-  side  | reason |           detail           
---------+--------+----------------------------
- mirror | routed | quicksilver.route = mirror
+ side |      reason       |                               detail                               
+------+-------------------+--------------------------------------------------------------------
+ heap | scrollable cursor | the heap plan can scan backward, so the cursor would be scrollable
 (1 row)
 
 SAVEPOINT a;
 FETCH 2 FROM c;
- id |   b    
-----+--------
-  1 | mirror
-  2 | mirror
+ id |  b   
+----+------
+  1 | heap
+  2 | heap
 (2 rows)
 
 ROLLBACK TO a;
 INSERT INTO qt.w VALUES (3);
 FETCH 2 FROM c;
- id |   b    
-----+--------
-  3 | mirror
-  4 | mirror
+ id |  b   
+----+------
+  3 | heap
+  4 | heap
 (2 rows)
 
 COMMIT;
 BEGIN;
 DECLARE hc CURSOR WITH HOLD FOR SELECT id, b FROM qt.h ORDER BY id;
 :side
-  side  | reason |           detail           
---------+--------+----------------------------
- mirror | routed | quicksilver.route = mirror
+ side |      reason       |                               detail                               
+------+-------------------+--------------------------------------------------------------------
+ heap | scrollable cursor | the heap plan can scan backward, so the cursor would be scrollable
 (1 row)
 
 SAVEPOINT a;
 RELEASE a;
 COMMIT;
 FETCH 2 FROM hc;
- id |   b    
-----+--------
-  1 | mirror
-  2 | mirror
+ id |  b   
+----+------
+  1 | heap
+  2 | heap
 (2 rows)
 
 CLOSE hc;
 DECLARE hc CURSOR WITH HOLD FOR SELECT id, b FROM qt.h ORDER BY id;
 FETCH 2 FROM hc;
- id |   b    
-----+--------
-  1 | mirror
-  2 | mirror
+ id |  b   
+----+------
+  1 | heap
+  2 | heap
 (2 rows)
 
 CLOSE hc;
