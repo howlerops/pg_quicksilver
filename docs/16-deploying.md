@@ -631,6 +631,52 @@ Guaranteed QoS and cannot get the PostgreSQL Pod evicted, and `GOMEMLIMIT` is
 quantity under 128Mi is refused. `kubectl top` at readiness shows the steady
 figure, not the peak.
 
+### Sizing `sidecarMemory` for several tables
+
+The rule above is for one table. With several tables in one sidecar, the peak
+is not their sum. A base rewrite is the largest single cost, and it is per
+table, so the sidecar runs **one base rewrite at a time** for the whole
+process (`QS_MAX_CONCURRENT_REWRITES`, default 1). Another table waits for its
+next tick and merges its deltas meanwhile, which keeps its file count bounded.
+Row groups are also capped at 32 MiB of values (`QS_ROW_GROUP_BYTES`), because
+a reader decodes a row group whole.
+
+Measured, four tables in one sidecar, DuckLake on, four concurrent writers for
+10 minutes with a TRUNCATE and an `ADD COLUMN` on the way, and `qs-verify`
+MATCH plus lake-equals-heap at every minute:
+
+| table | rows at start | rows at 10 min (final build) | row width |
+|---|---|---|---|
+| `ev_uuid` (uuid key, text) | 2,000 | 90,347 | about 50 bytes |
+| `ledger` (numeric, timestamptz) | 2,000 | 118,929 | about 50 bytes |
+| `wide_text` (12 text columns) | 2,000 | 77,010 | about 5 KB |
+| `lookup` (small, truncated once) | 50 | 279 | about 50 bytes |
+
+The row counts vary from run to run with the writers' timing: the baseline run
+ended with 124,073, 177,162, 113,591 and 297.
+
+| build | peak VmHWM | RSS p50 / p95 |
+|---|---|---|
+| before the fix (three rewrites overlapped) | 1,369 MB | 299 / 1,369 MB |
+| rewrites one at a time, row groups by rows only | 2,146 MB | 498 / 981 MB |
+| rewrites one at a time, row groups capped at 32 MiB | 490 MB | 207 / 357 MB |
+| the same, under a 1 GiB cgroup limit (`GOMEMLIMIT` 858 MB) | 861 MB | 264 / 458 MB |
+
+The 1 GiB run completed with no OOM kill, and every check was MATCH in each
+build. Without the 32 MiB cap, the `wide_text` row group alone was 370 MB of
+decoded text, and the rewrite that read it was the peak, whatever the number
+of tables.
+
+**What to use.** For this mix, the default `1Gi` is enough, with the sidecar
+at 861 MB at its highest under the limit. Size for the largest single table
+with the one-table rule above, and do not add the tables together. The one-table
+rule's bytes per row was measured on narrow rows and does not carry over to rows
+of several KB: a row group is capped at 32 MiB, but the rewrite's decoding
+overhead on top of it was not measured separately. The measurements here do not
+cover more than four tables, rows wider than 5 KB, or tables above about 180,000
+rows each. Run your
+own shape before you lower the limit.
+
 ## Verifying the mirror
 
 ```
