@@ -273,7 +273,13 @@ func TestRestartCollectsOrphansAndKeepsLiveAndInFlight(t *testing.T) {
 	oldDelta := write("delta/000900.parquet", old)            // an Apply that crashed before its manifest
 	oldVector := write("dv/000900.000000001.dv.parquet", old) // and its vector
 	oldTmp := write("dv/000901.000000001.dv.parquet.tmp", old)
-	young := write("base/000902.parquet", time.Now()) // unnamed, but inside the grace
+	// Unnamed and inside the grace: a file some manifest ONCE named (its number
+	// is below the manifest's sequence), which a reader may still hold.
+	young := write("base/000000.parquet", time.Now())
+	// Unnamed, inside the grace, and numbered ABOVE the manifest's sequence: no
+	// manifest ever named it, no reader holds it, and its name is one this
+	// process will write. Never adopted — see the invariant in publish.go.
+	neverNamed := write("base/000902.parquet", time.Now())
 
 	// The restart: a new Table over the same directory, nothing carried over.
 	re, err := New(root, "public", "r", "id", tbl.Columns, tbl.Order)
@@ -302,7 +308,7 @@ func TestRestartCollectsOrphansAndKeepsLiveAndInFlight(t *testing.T) {
 
 	applyR(t, re, "0/5", rChange(changestream.OpInsert, 9001, "new", 1))
 
-	for _, f := range []string{oldDelta, oldVector, oldTmp} {
+	for _, f := range []string{oldDelta, oldVector, oldTmp, neverNamed} {
 		if _, err := os.Stat(f); err == nil {
 			t.Errorf("orphan %s survived the restart", filepath.Base(f))
 		}

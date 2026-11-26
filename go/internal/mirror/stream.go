@@ -230,6 +230,11 @@ func (t *Table) newParquetWriter(path string, cols []string, durable bool) (*par
 	}
 	schema := t.arrowSchemaFor(cols)
 
+	// A detached table is a rewrite's private copy; BeginCompaction claimed
+	// its output for it.
+	if !t.detached {
+		t.claim(path)
+	}
 	f, err := os.Create(path)
 	if err != nil {
 		return nil, err

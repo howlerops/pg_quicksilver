@@ -32,12 +32,14 @@ package mirror
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/apache/arrow-go/v18/arrow"
@@ -162,6 +164,10 @@ type Table struct {
 	// goroutine touches this field.
 	compacting *Compaction
 
+	// aborting counts rewrites that were abandoned and have not yet finished
+	// and removed their output. See AbortCompaction and Close.
+	aborting sync.WaitGroup
+
 	// detached marks the private copy a background rewrite works from
 	// (rewriteSnapshot). It shares a directory with the real table and nothing
 	// else, and must never write the manifest: its State is a fragment.
@@ -199,6 +205,54 @@ type Table struct {
 	// pub is the published snapshot and the files waiting out their grace
 	// after leaving the manifest. See publish.go.
 	pub *publisher
+
+	// ahead is set while State describes something no manifest has committed:
+	// from the start of an Apply, or of a Snapshot that keeps the previous
+	// contents readable, until its manifest is written. A Halt raised meanwhile
+	// patches the manifest on disk rather than saving this one.
+	//
+	// broken is what ahead becomes when that Apply or Snapshot fails: memory
+	// is now ahead of the disk for good. The Table refuses to write a manifest
+	// or apply again, and the caller reopens it with New — which a process
+	// that stops on the error does anyway. Halt still works, on the disk.
+	ahead  bool
+	broken bool
+
+	// rebuilding, when set, is why the published snapshot refuses while a
+	// re-snapshot runs. It is never written to the manifest. See Snapshot.
+	rebuilding string
+}
+
+// ErrNeedsReopen is returned by a Table whose Apply or Snapshot failed part-way.
+// Its in-memory manifest describes files and positions no manifest on disk
+// names, so nothing may be saved from it; open the table again with New.
+var ErrNeedsReopen = errors.New("mirror table is ahead of its manifest after a failed write and must be reopened")
+
+// Close releases what a Table holds outside the heap: the timer that unlinks
+// retired files, a rewrite in flight and the mapped key index. The Table must
+// not be used afterwards. Files still inside their grace are collected by the
+// next process to open the table.
+//
+// A rewrite in flight is WAITED for, here and nowhere else — one this Table
+// was still running, and any it abandoned earlier whose goroutine has yet to
+// remove its output. The Table that replaces this one starts from the same
+// manifest and therefore the same sequence number, so its first rewrite
+// writes the very path this one is writing; two writers on one file, or this
+// one's cleanup unlinking the other's output, is the path-reuse hazard of
+// publish.go from a different direction.
+func (t *Table) Close() {
+	if t == nil {
+		return
+	}
+	t.AbortCompaction()
+	t.aborting.Wait()
+	if t.pub != nil {
+		t.pub.stop()
+	}
+	t.index.close()
+	t.index, t.patch = nil, nil
+	t.resetDead()
+	t.broken = true
 }
 
 func New(root, schema, table, key string, cols map[string]string, order []string) (*Table, error) {
@@ -535,6 +589,9 @@ func (t *Table) saveState() error {
 	if t.detached {
 		return nil
 	}
+	if t.broken {
+		return ErrNeedsReopen
+	}
 	b, err := json.MarshalIndent(t.State, "", "  ")
 	if err != nil {
 		return err
@@ -579,9 +636,17 @@ func (t *Table) Evolve(cols map[string]string, order []string, missing map[strin
 // saving it would publish a third of a transaction on the way to refusing the
 // rest. So the halt is added to the manifest that is on disk, which still
 // describes the mirror as it was before the transaction began.
+//
+// The same holds AFTER that Apply has returned its error, which is when the
+// sidecar records the halt a second time to be sure it is durable: the memory
+// of a failed Apply is no more committed for the Apply being over. `ahead`
+// covers both, and a Snapshot that has not yet replaced the manifest.
+//
+// Either way the halt is published, and the files the manifest names are left
+// exactly where they are; see publishManifest.
 func (t *Table) Halt(reason string) error {
 	t.State.Halted = reason
-	if t.deferDead == nil || t.detached {
+	if t.detached || !t.ahead {
 		return t.saveState()
 	}
 	var onDisk State
@@ -600,7 +665,10 @@ func (t *Table) Halt(reason string) error {
 	if err := writeFileAtomic(t.statePath(), b); err != nil {
 		return err
 	}
-	return syncDir(t.Dir)
+	if err := syncDir(t.Dir); err != nil {
+		return err
+	}
+	return t.publishManifest(&onDisk, reason)
 }
 
 // Halted reports the reason this mirror is out of service, or "".
@@ -774,16 +842,29 @@ func (a *applyRun) reset() {
 // previous manifest describing a mirror that is entirely still there; the
 // delta files written so far are named by nothing, and removeOrphanDeltas
 // collects them on the first Apply after the restart.
-func (t *Table) Apply(txns []changestream.Transaction) (ApplyStats, error) {
-	stats, err := t.apply(txns)
-	t.deferDead = nil
-	if err != nil {
-		// Memory is ahead of the manifest in ways that are not worth unwinding
-		// one by one: the caller stops on an Apply error, and what it restarts
-		// from is the disk. The dead sets are the one thing a retry in this
-		// process would silently trust.
-		t.resetDead()
+func (t *Table) Apply(txns []changestream.Transaction) (stats ApplyStats, err error) {
+	if t.broken {
+		return ApplyStats{}, ErrNeedsReopen
 	}
+	t.ahead = true
+	ok := false
+	defer func() {
+		t.deferDead = nil
+		if ok {
+			t.ahead = false
+			return
+		}
+		// Memory is ahead of the manifest in ways that are not worth unwinding
+		// one by one: the caller stops on an Apply error (or keeps the table
+		// only as a halted one), and what it restarts from is the disk. So the
+		// Table says so, rather than trusting every later caller to remember:
+		// see broken. It stays `ahead`, so a Halt recorded now patches the
+		// manifest on disk.
+		t.resetDead()
+		t.broken = true
+	}()
+	stats, err = t.apply(txns)
+	ok = err == nil
 	return stats, err
 }
 
@@ -859,9 +940,9 @@ func (t *Table) apply(txns []changestream.Transaction) (ApplyStats, error) {
 	if err := t.saveState(); err != nil {
 		return ApplyStats{}, err
 	}
-	for _, p := range a.doomed {
-		_ = os.Remove(p)
-	}
+	// Through the grace, not unlinked: the snapshot published a moment ago
+	// names these, and a reader that started on it is entitled to finish.
+	t.discard(a.doomed)
 	a.stats.AppliedLSN = last
 	return a.stats, nil
 }
@@ -917,12 +998,7 @@ func (a *applyRun) add(c changestream.Change) error {
 // by earlier chunks of this same transaction: TRUNCATE supersedes those too.
 func (a *applyRun) truncate() {
 	t := a.t
-	for _, sub := range []string{"base", "delta", "dv", "index"} {
-		entries, _ := os.ReadDir(filepath.Join(t.Dir, sub))
-		for _, e := range entries {
-			a.doomed = append(a.doomed, filepath.Join(t.Dir, sub, e.Name()))
-		}
-	}
+	a.doomed = append(a.doomed, t.allFiles()...)
 	t.forgetFiles()
 	t.deferDead = map[fileID]*deadSet{}
 	a.stats = ApplyStats{}
@@ -1382,7 +1458,7 @@ func (t *Table) markDead(byFile map[fileID][]int) error {
 		// goroutine may open the instant it appears, and a truncate-then-write
 		// leaves a window where it parses as nothing — which reads as "nothing
 		// is dead" and undoes every delete in the file.
-		if err := writeDV(t.dvPathGen(rel, gen), merged); err != nil {
+		if err := t.writeDV(t.dvPathGen(rel, gen), merged); err != nil {
 			// The set in memory is now ahead of anything on disk. Drop it, so
 			// the next caller reloads what the manifest actually names.
 			t.forgetDead(rel)
@@ -1447,16 +1523,57 @@ func (t *Table) forgetFiles() {
 // harmless, and AbortCompaction removes it again when the goroutine ends in
 // case it was created after this ran.
 func (t *Table) removeAllFiles() {
+	for _, path := range t.allFiles() {
+		t.discardOne(path)
+	}
+}
+
+// allFiles lists every data file, vector and index on disk right now.
+func (t *Table) allFiles() []string {
+	var out []string
 	for _, sub := range []string{"base", "delta", "dv", "index"} {
 		entries, _ := os.ReadDir(filepath.Join(t.Dir, sub))
 		for _, e := range entries {
-			if sub == "index" {
-				_ = os.Remove(filepath.Join(t.Dir, sub, e.Name()))
-				continue
-			}
-			t.retire(filepath.Join(t.Dir, sub, e.Name()))
+			out = append(out, filepath.Join(t.Dir, sub, e.Name()))
 		}
 	}
+	return out
+}
+
+// discard removes files listed EARLIER (allFiles) now that a manifest which
+// replaces them is durable. Data files and vectors are retired, so they
+// outlive the snapshot that named them by the grace; an index is read by
+// nobody but this process and is unlinked.
+//
+// Anything the manifest names NOW is skipped. The list was taken before the
+// replacement was written, and a name on it can have been written again since
+// (a crash's leftover at the next sequence number is the usual one).
+func (t *Table) discard(paths []string) {
+	keep := map[string]bool{}
+	for _, rel := range t.manifestFiles() {
+		keep[filepath.Join(t.Dir, rel)] = true
+	}
+	for _, b := range t.State.BaseFiles {
+		keep[t.kidxPath(b)] = true
+	}
+	for _, path := range paths {
+		if !keep[path] {
+			t.discardOne(path)
+		}
+	}
+}
+
+func (t *Table) discardOne(path string) {
+	sub := filepath.Base(filepath.Dir(path))
+	// An index is read by nobody but this process. And a file no manifest can
+	// have named — a failed Apply's chunks, swept up here by a rebuild — has no
+	// reader to wait for and a name the next write will take: it is never
+	// handed to the publisher. See the invariant in publish.go.
+	if sub == "index" || t.neverNamed(sub, filepath.Base(path)) {
+		_ = os.Remove(path)
+		return
+	}
+	t.retire(path)
 }
 
 // Compact folds base + deltas into one base file with deletion vectors applied,

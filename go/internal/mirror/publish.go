@@ -53,6 +53,39 @@ package mirror
 // bound: past it the OLDEST retirements go early, which turns a slow reader's
 // query into "file not found, re-read the snapshot" rather than the volume
 // into a full one. A full volume stops the mirror; a re-read does not.
+//
+// THE INVARIANT a deferred unlink has to keep, stated once:
+//
+//	A deadline belongs to a FILE, never to a path. When it fires it may
+//	unlink only the very file it was set for, and only if no manifest or
+//	published snapshot names that path. A path that has been written again,
+//	or named again, is out of the publisher's hands for good.
+//
+// It matters because paths ARE reused: a data file is named by a sequence
+// number that advances only when a manifest is written, so whatever a crash
+// left above the manifest's sequence (the chunks of a half-applied
+// transaction, the output of a rewrite that never swapped, a vector
+// generation whose manifest never landed) is written again, name for name, by
+// the replay. A deadline held against the path then deleted the replay's
+// file: the durable manifest named files that were gone, with applied_lsn
+// already past them.
+//
+// Three things hold it, none dependent on the order in which a restart
+// happens to publish and apply:
+//
+//  1. No deadline is ever taken on a file no manifest can have named
+//     (neverNamed): sweep and discard unlink those on the spot. Nothing can
+//     be reading one, and they are exactly the paths that get reused. This
+//     removes the source; it is not what the invariant rests on.
+//  2. Every creation of a data file or vector goes through Table.claim, which
+//     cancels whatever deadline stands against the path.
+//  3. drop re-checks at the moment of the unlink: the path is not named, and
+//     the file there is still the one the deadline was taken on (same inode,
+//     same mtime, same size as recorded when its clock started).
+//
+// TestRandomInterleavingsAgainstAModel passes with any ONE of the three and
+// nothing else, and fails with none. 2 and 3 are the two that do not depend
+// on having recognised the file for what it is.
 
 import (
 	"encoding/json"
@@ -60,6 +93,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -91,7 +125,9 @@ type Published struct {
 	// GraceSeconds is how long the files below outlive this snapshot once a
 	// newer one replaces it — the budget of a query that starts on it now.
 	GraceSeconds float64 `json:"retire_grace_seconds"`
-	// Halted is why this mirror must not be served. SQL then raises it.
+	// Halted is why this mirror must not be served. SQL then raises it. It is
+	// the manifest's halt, or — for the length of a re-snapshot whose previous
+	// contents could not be kept — rebuildingReason.
 	Halted string `json:"halted,omitempty"`
 	// Files are relative to the table directory. SQL names them by the
 	// absolute path the WRITER sees, as ViewSQL always has.
@@ -122,6 +158,9 @@ func readPublished(dir string) (*Published, error) {
 type retired struct {
 	size     int64
 	deadline time.Time
+	// id is the file the deadline was taken on, as it was when its clock
+	// started (after stamp set its mtime). drop unlinks nothing else.
+	id os.FileInfo
 }
 
 // publisher is the per-table state behind publishing and retirement. Its lock
@@ -145,6 +184,7 @@ type publisher struct {
 	maxBytes int64
 	now      func() time.Time
 	manual   bool // tests: no timer, reap only when told
+	closed   bool // Table.Close: no timer is armed again
 }
 
 func (t *Table) publisher() *publisher {
@@ -180,20 +220,23 @@ func (p *publisher) load(dir string) {
 }
 
 // manifestFiles lists what the manifest in State names, relative to Dir.
-func (t *Table) manifestFiles() []string {
+func (t *Table) manifestFiles() []string { return t.filesOf(&t.State) }
+
+// filesOf lists what a manifest names, relative to Dir.
+func (t *Table) filesOf(st *State) []string {
 	var out []string
 	add := func(rel string) {
 		out = append(out, rel)
-		if gen := t.State.DVGen[dvStem(rel)]; gen != 0 {
+		if gen := st.DVGen[dvStem(rel)]; gen != 0 {
 			if dv := t.dvPathGenAny(rel, gen); dv != "" {
 				out = append(out, filepath.Join("dv", filepath.Base(dv)))
 			}
 		}
 	}
-	for _, b := range t.State.BaseFiles {
+	for _, b := range st.BaseFiles {
 		add(filepath.Join("base", b))
 	}
-	for _, d := range t.State.DeltaFiles {
+	for _, d := range st.DeltaFiles {
 		add(filepath.Join("delta", d))
 	}
 	return out
@@ -214,30 +257,58 @@ func haltedSQL(qualified, reason string) string {
 		" is halted and must not be served: "+reason)
 }
 
+// rebuildingReason is what a reader is told while a re-snapshot runs whose
+// previous contents could not be kept on disk beside the new ones. It is
+// published in Halted — "why this must not be served" — so that every reader
+// that honours a halt honours this, and it never reaches the manifest.
+const rebuildingReason = "the table is being rebuilt from a snapshot and its previous " +
+	"contents were too large to keep meanwhile (QS_RETIRE_MAX_BYTES); retry when it completes"
+
 // publish writes the snapshot of the manifest saveState has just made durable.
-// Only saveState calls it; see the top of the file for why that is enough.
+// Only saveState and Halt's on-disk patch call it; see the top of the file for
+// why that is enough.
 func (t *Table) publish() error {
+	refusal := t.State.Halted
+	if refusal == "" {
+		refusal = t.rebuilding
+	}
+	return t.publishManifest(&t.State, refusal)
+}
+
+// publishManifest publishes st, which is the manifest now on disk. refusal,
+// when set, is why it must not be served.
+//
+// A refusing snapshot names no files and PROTECTS all of them: what the
+// manifest names stays exactly where it is. A halted table's files are the
+// evidence an operator comes to look at, and the basis of every reader still
+// inside the grace of the snapshot the halt replaced; a halt says "do not
+// serve this", not "this may be deleted". For the same reason a refusing
+// publish never runs the restart sweep — as a process's first publish it
+// would otherwise find every file unnamed and unlink all that are older than
+// the grace.
+func (t *Table) publishManifest(st *State, refusal string) error {
 	p := t.publisher()
 	p.load(t.Dir)
 
 	pub := Published{
 		Table:        t.Qualified,
 		Seq:          p.seq + 1,
-		AppliedLSN:   t.State.AppliedLSN,
+		AppliedLSN:   st.AppliedLSN,
 		PublishedAt:  p.now().UTC(),
 		GraceSeconds: p.grace.Seconds(),
 		Files:        []string{},
 	}
-	if h := t.Halted(); h != "" {
-		pub.Halted = h
-		pub.SQL = haltedSQL(t.Qualified, h)
+	protect := t.filesOf(st)
+	if refusal != "" {
+		pub.Halted = refusal
+		pub.SQL = haltedSQL(t.Qualified, refusal)
 	} else {
 		sql, err := t.ViewSQL()
 		if err != nil {
 			return fmt.Errorf("publish snapshot: %w", err)
 		}
 		pub.SQL = sql
-		pub.Files = append(pub.Files, t.manifestFiles()...)
+		pub.Files = append(pub.Files, protect...)
 	}
 	b, err := json.MarshalIndent(pub, "", "  ")
 	if err != nil {
@@ -250,8 +321,8 @@ func (t *Table) publish() error {
 		return fmt.Errorf("publish snapshot: %w", err)
 	}
 
-	named := make(map[string]bool, len(pub.Files))
-	for _, f := range pub.Files {
+	named := make(map[string]bool, len(protect))
+	for _, f := range protect {
 		named[filepath.Join(t.Dir, f)] = true
 	}
 	inflight := ""
@@ -263,9 +334,9 @@ func (t *Table) publish() error {
 	defer p.mu.Unlock()
 	p.seq = pub.Seq
 	p.supersede(named)
-	if !p.swept {
+	if !p.swept && refusal == "" {
 		p.swept = true
-		p.sweep(t.Dir, inflight)
+		p.sweep(t.Dir, inflight, t.neverNamed)
 	}
 	p.reap()
 	p.enforceCap()
@@ -288,6 +359,21 @@ func (p *publisher) supersede(named map[string]bool) {
 			p.stamp(path, r, now)
 		}
 	}
+	// Every OTHER file the replaced snapshot named and this one does not has
+	// stopped being named at this moment too, retired or not, and its mtime
+	// has to say so: that is the only thing a restart's sweep can judge it
+	// by. Not all of them are retired here and now. A superseded vector
+	// generation is kept for one further write; the files a swap or a merge
+	// replaces are retired a few lines after the manifest that drops them; and
+	// the first publish of a restarted process drops files that process never
+	// held at all. Left with the mtime of the day they were written, a restart
+	// inside their grace unlinked them on the spot — the files of the snapshot
+	// every reader was on.
+	for path := range p.named {
+		if !named[path] && p.pending[path] == nil {
+			_ = os.Chtimes(path, now, now)
+		}
+	}
 	p.named = named
 	for path := range p.cols {
 		if !named[path] {
@@ -301,6 +387,24 @@ func (p *publisher) supersede(named map[string]bool) {
 func (p *publisher) stamp(path string, r *retired, now time.Time) {
 	r.deadline = now.Add(p.grace)
 	_ = os.Chtimes(path, now, now)
+	// The mtime is part of the file's identity, so it is read back.
+	if fi, err := os.Lstat(path); err == nil {
+		r.id = fi
+	}
+}
+
+// claim takes a path back from the publisher because a file is about to be
+// written there. Whatever deadline stood against the path was for a file that
+// is being replaced, and must not fall on the new one. Every creation of a
+// data file or a vector calls it; see the invariant at the top of this file.
+func (t *Table) claim(path string) {
+	p := t.publisher()
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if r := p.pending[path]; r != nil {
+		p.bytes -= r.size
+		delete(p.pending, path)
+	}
 }
 
 // retire is how a file leaves the mirror. Every removal of something a
@@ -322,7 +426,7 @@ func (t *Table) retire(path string) {
 		_ = os.Remove(path)
 		return
 	}
-	r := &retired{size: fi.Size()}
+	r := &retired{size: fi.Size(), id: fi}
 	if !named {
 		// Already superseded, at some moment no later than this one.
 		p.stamp(path, r, p.now())
@@ -344,8 +448,12 @@ func (p *publisher) reap() {
 	}
 }
 
+// drop ends a retirement, and unlinks the file only if the invariant at the
+// top of this file allows it: the path is not named, and what is there now is
+// the file the deadline was taken on. Anything else at that path was written
+// after the deadline was set and belongs to whoever wrote it.
 func (p *publisher) drop(path string, r *retired) {
-	if !p.named[path] {
+	if !p.named[path] && sameFileAs(path, r.id) {
 		_ = os.Remove(path)
 	}
 	p.bytes -= r.size
@@ -379,7 +487,7 @@ func (p *publisher) enforceCap() {
 // arm makes sure something will come back for the earliest deadline, so that
 // an idle table still gives its disk back. Called with mu held.
 func (p *publisher) arm() {
-	if p.manual || p.timer != nil {
+	if p.manual || p.closed || p.timer != nil {
 		return
 	}
 	var first time.Time
@@ -395,6 +503,9 @@ func (p *publisher) arm() {
 		p.mu.Lock()
 		defer p.mu.Unlock()
 		p.timer = nil
+		if p.closed {
+			return
+		}
 		p.reap()
 		p.arm()
 	})
@@ -406,6 +517,11 @@ func (p *publisher) arm() {
 // A file is garbage when no manifest names it and it is older than the grace
 // period; one that is younger is adopted and unlinked when it reaches that
 // age. Age is mtime, which stamp set to the moment the file was superseded.
+//
+// That is for files a manifest ONCE named. A file none ever can have
+// (neverNamed) is what a crash left half-made: no reader holds it, so it has
+// no grace to wait out, and its name is the next one this process will write.
+// It is unlinked here and never adopted — see the invariant at the top.
 //
 // Two kinds of file are unnamed and NOT garbage, and this is how each is told
 // apart:
@@ -426,7 +542,7 @@ func (p *publisher) arm() {
 //
 // It runs once per process. Files orphaned later by a failed Apply are left
 // for the next restart, which a failed Apply normally is.
-func (p *publisher) sweep(dir, inflight string) {
+func (p *publisher) sweep(dir, inflight string, neverNamed func(sub, name string) bool) {
 	now := p.now()
 	for _, sub := range []string{"base", "delta", "dv"} {
 		entries, _ := os.ReadDir(filepath.Join(dir, sub))
@@ -443,13 +559,69 @@ func (p *publisher) sweep(dir, inflight string) {
 				continue
 			}
 			deadline := info.ModTime().Add(p.grace)
-			if !deadline.After(now) {
+			if !deadline.After(now) || neverNamed(sub, e.Name()) {
 				_ = os.Remove(path)
 				continue
 			}
-			p.pending[path] = &retired{size: info.Size(), deadline: deadline}
+			p.pending[path] = &retired{size: info.Size(), deadline: deadline, id: info}
 			p.bytes += info.Size()
 		}
+	}
+}
+
+// sameFileAs reports whether the file at path is still the one id describes.
+// The inode alone is not enough — a filesystem hands a freed inode number
+// straight back out — so the mtime and size recorded with it must match too.
+func sameFileAs(path string, id os.FileInfo) bool {
+	if id == nil {
+		return false
+	}
+	fi, err := os.Lstat(path)
+	return err == nil && os.SameFile(fi, id) &&
+		fi.ModTime().Equal(id.ModTime()) && fi.Size() == id.Size()
+}
+
+// neverNamed reports whether a file under sub ("base", "delta" or "dv") is one
+// no manifest of this table can ever have named, judged against the manifest
+// in State — which, where sweep calls this, is the one just made durable.
+//
+// Names are sequence numbers and the manifest holds the highest it has
+// committed, so a data file numbered above it was written by something that
+// did not reach its manifest. A vector is the same one level down: its
+// generation is above the one the manifest names for its data file, or its
+// data file is itself above the sequence.
+func (t *Table) neverNamed(sub, name string) bool {
+	switch sub {
+	case "base", "delta":
+		n, err := strconv.Atoi(trimParquet(name))
+		return err == nil && n > t.State.Seq
+	case "dv":
+		gen := dvGenOf(name)
+		i := strings.Index(name, ".")
+		if gen < 0 || i < 0 {
+			return false
+		}
+		stem := name[:i]
+		if n, err := strconv.Atoi(stem); err == nil && n > t.State.Seq {
+			return true
+		}
+		live := contains(t.State.BaseFiles, stem+".parquet") ||
+			contains(t.State.DeltaFiles, stem+".parquet")
+		return live && gen > t.State.DVGen[stem]
+	}
+	return false
+}
+
+// stop ends the publisher's background work. Files still waiting out their
+// grace are left for the next process's sweep, which is what they would have
+// been left for had this one died.
+func (p *publisher) stop() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.closed = true
+	if p.timer != nil {
+		p.timer.Stop()
+		p.timer = nil
 	}
 }
 

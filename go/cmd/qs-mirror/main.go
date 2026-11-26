@@ -456,6 +456,15 @@ func runMirror(ctx context.Context, log *slog.Logger, o options, h *health.Healt
 	}
 
 	tables := map[string]*mirror.Table{}
+	// Every way out of here abandons these Tables: supervise calls runMirror
+	// again and that opens new ones. Left open, each kept its key index mapped
+	// and a timer that would go on unlinking files in a directory the new
+	// Table now owns.
+	defer func() {
+		for _, t := range tables {
+			t.Close()
+		}
+	}()
 	for _, qualified := range o.tables {
 		schema, name, ok := strings.Cut(qualified, ".")
 		if !ok {

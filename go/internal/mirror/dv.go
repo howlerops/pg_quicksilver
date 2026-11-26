@@ -97,6 +97,14 @@ func writeDV(path string, positions []int) error {
 	return nil
 }
 
+// writeDV is writeDV for a path in this table: the path is claimed first, so a
+// deadline standing against an earlier file of the same name (a generation a
+// crashed Apply wrote and the replay writes again) cannot fall on this one.
+func (t *Table) writeDV(path string, positions []int) error {
+	t.claim(path)
+	return writeDV(path, positions)
+}
+
 // writeDVFile writes the vector and fsyncs it before returning.
 func writeDVFile(path string, positions []int) (err error) {
 	f, err := os.Create(path)

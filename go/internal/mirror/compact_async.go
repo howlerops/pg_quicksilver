@@ -107,6 +107,9 @@ func (t *Table) BeginCompaction() *Compaction {
 	if len(c.files) == 0 {
 		return nil
 	}
+	// Claimed here, on the apply goroutine: the rewrite writes through a
+	// detached copy of the table, which has no publisher to claim from.
+	t.claim(filepath.Join(t.Dir, "base", c.name))
 
 	// The file list is captured; everything below reads immutable files.
 	// The column shapes are captured too, and not read through t.State: the
@@ -344,7 +347,11 @@ func (t *Table) AbortCompaction() {
 		return
 	}
 	t.compacting = nil
+	// Counted, so that Close can wait: this unlinks a PATH, later, and the
+	// Table that replaces a closed one may be writing that path by then.
+	t.aborting.Add(1)
 	go func() {
+		defer t.aborting.Done()
 		<-c.done
 		_ = os.Remove(filepath.Join(t.Dir, "base", c.name))
 		c.index.close()
@@ -419,7 +426,7 @@ func (t *Table) FinishCompaction() (int, error) {
 
 	dead := dvSorted(deadSet)
 	if len(dead) > 0 {
-		if err := writeDV(t.dvPathGen(newRel, 1), dead); err != nil {
+		if err := t.writeDV(t.dvPathGen(newRel, 1), dead); err != nil {
 			return 0, err
 		}
 		if t.State.DVGen == nil {

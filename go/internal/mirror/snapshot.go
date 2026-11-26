@@ -25,17 +25,99 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 
 	"github.com/jackc/pgx/v5"
 )
 
 // Snapshot replaces the mirror's contents with the table's current rows and
 // sets applied_lsn to the LSN the caller should stream from.
+//
+// What a reader sees WHILE it runs is decided by beginSnapshot, and is never
+// an empty table: that is a state the source did not have.
 func (t *Table) Snapshot(ctx context.Context, conn *pgx.Conn, atLSN string) (int, error) {
-	if err := t.truncate(); err != nil {
+	old, err := t.beginSnapshot()
+	if err != nil {
 		return 0, err
 	}
+	kept := t.ahead
+	n, err := t.snapshotRows(ctx, conn, atLSN)
+	if err != nil {
+		if kept {
+			// The manifest on disk is still the previous one and State is not.
+			t.broken = true
+		}
+		return 0, err
+	}
+	// The previous contents, now that the manifest which replaces them is
+	// durable and published: through the grace, like any superseded file.
+	t.discard(old)
+	return n, nil
+}
 
+// beginSnapshot empties the mirror in memory and decides what stands in for
+// it until the new contents are published. It returns the files to discard
+// once they are.
+//
+// The first statement of a snapshot used to be truncate(), whose manifest
+// write published an EMPTY, servable snapshot at the old applied_lsn — and
+// that stood for as long as the bootstrap or re-snapshot took. Readiness does
+// not cover it: readiness is one bit per Pod, false during a first bootstrap
+// only, while a re-snapshot of one table (resume.go, a rebuild) runs on a Pod
+// that may be serving the others, and a reader of snapshot.json consults no
+// probe at all.
+//
+// So one of two things happens instead, and which is a question of disk:
+//
+// KEEP. The previous contents stay on disk, named by the manifest and by the
+// published snapshot, until the new base file is complete; nothing is written
+// here at all. A reader goes on getting the previous table — old, and whole —
+// and a crash leaves that same manifest, exactly as it was. This costs the
+// old files beside the new one for the length of the snapshot, which is the
+// kind of holding RetireMaxBytes exists to bound, so it is done only when
+// everything on disk fits under that cap. A first bootstrap has nothing on
+// disk and takes this path trivially: nothing is published until there is a
+// table to publish.
+//
+// REFUSE. Otherwise the empty manifest is written and the files released
+// first, as before, because a volume that fills stops every table — but the
+// snapshot published with it refuses, like a halted one (rebuildingReason),
+// until the new contents replace it.
+func (t *Table) beginSnapshot() (old []string, err error) {
+	if t.broken {
+		return nil, ErrNeedsReopen
+	}
+	old = t.allFiles()
+	if t.canHold(old) {
+		t.forgetFiles()
+		t.ahead = true
+		return old, nil
+	}
+	t.rebuilding = rebuildingReason
+	return nil, t.truncate()
+}
+
+// canHold reports whether the files listed may stay on disk while their
+// replacement is written: whether they fit under RetireMaxBytes. The list is
+// the whole directory, so it already counts what is waiting out a grace.
+func (t *Table) canHold(paths []string) bool {
+	max := t.publisher().maxBytes
+	if max <= 0 {
+		return true
+	}
+	var held int64
+	for _, path := range paths {
+		if filepath.Base(filepath.Dir(path)) == "index" {
+			continue
+		}
+		if fi, err := os.Lstat(path); err == nil {
+			held += fi.Size()
+		}
+	}
+	return held <= max
+}
+
+func (t *Table) snapshotRows(ctx context.Context, conn *pgx.Conn, atLSN string) (int, error) {
 	sel := ""
 	for i, c := range t.Order {
 		if i > 0 {
@@ -153,5 +235,13 @@ func (t *Table) Snapshot(ctx context.Context, conn *pgx.Conn, atLSN string) (int
 	t.State.BaseRows = n
 	t.State.DeltaRows = 0
 	t.State.AppliedLSN = atLSN
-	return n, t.saveState()
+	return n, t.finishSnapshot()
+}
+
+// finishSnapshot writes the manifest of the new contents, which is also what
+// ends whatever beginSnapshot left standing for them.
+func (t *Table) finishSnapshot() error {
+	t.rebuilding = ""
+	t.ahead = false
+	return t.saveState()
 }

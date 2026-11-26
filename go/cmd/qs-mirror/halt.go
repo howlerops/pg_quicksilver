@@ -96,6 +96,13 @@ func haltOrFail(log *slog.Logger, h *health.Health, qualified string, t *mirror.
 	// memory and not on disk is undone by the next restart, which then resumes
 	// a table that is missing whatever was discarded while it was "halted". So
 	// it is written again here, and failing to write it IS a process error.
+	//
+	// "Again" is safe only because Table.Halt knows the Apply failed: it adds
+	// the halt to the manifest ON DISK, the last one that Apply's predecessor
+	// committed, and does not save the Table's memory — which names the failed
+	// transaction's chunks with none of their tombstones. The Table is not
+	// used for anything else from here on: every loop steps over a halted
+	// table, and it would refuse (mirror.ErrNeedsReopen) if one did not.
 	if herr := t.Halt(reason); herr != nil {
 		return fmt.Errorf("%s must halt but the halt cannot be made durable: %w (halt reason: %s)",
 			qualified, herr, reason)

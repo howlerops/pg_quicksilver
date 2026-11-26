@@ -18,6 +18,7 @@ import (
 	"path/filepath"
 	"sort"
 	"testing"
+	"time"
 
 	"github.com/howlerops/pg_quicksilver/go/internal/changestream"
 )
@@ -375,6 +376,7 @@ func TestChunkedApplyCrashLeavesPreviousMirror(t *testing.T) {
 func TestChunkedApplyTruncateInsideTransaction(t *testing.T) {
 	withChunk(t, 2)
 	tbl := racyTable(t)
+	clk := manualGrace(tbl, time.Minute)
 	before := seed(t, tbl)
 	ops := []changestream.Change{
 		insR("400", "doomed", "1"), insR("401", "doomed", "1"), updR("1", "doomed", "1"),
@@ -395,6 +397,10 @@ func TestChunkedApplyTruncateInsideTransaction(t *testing.T) {
 		t.Fatalf("after: %s", d)
 	}
 	checkInvariants(t, tbl, "after truncate")
+	// The truncated files outlive the snapshot that named them by the grace
+	// (TestTruncateInsideApplyKeepsTheGrace), and no longer.
+	clk.at = clk.at.Add(2 * time.Minute)
+	reapNow(tbl)
 	for _, sub := range []string{"base", "delta"} {
 		entries, _ := os.ReadDir(filepath.Join(tbl.Dir, sub))
 		for _, e := range entries {

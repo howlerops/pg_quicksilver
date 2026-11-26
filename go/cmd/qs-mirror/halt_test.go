@@ -111,7 +111,20 @@ func TestANaNHaltsOneTableAndTheOtherApplies(t *testing.T) {
 		t.Error("a halted table produced a view")
 	}
 
-	// A rebuild puts it back, and the request is spent.
+	// The Table whose Apply failed is good for nothing but the halt: its memory
+	// holds the refused transaction, and it will not write a manifest from it.
+	if err := tables["public.b"].ClearHalt(); !errors.Is(err, mirror.ErrNeedsReopen) {
+		t.Fatalf("a table whose Apply failed wrote its manifest: %v", err)
+	}
+	if mirror.HaltedOnDisk(root, "public", "b") == "" {
+		t.Fatal("the refused write cleared the halt on disk")
+	}
+
+	// A rebuild puts it back, and the request is spent. It happens at a start
+	// (runMirror reads the marker when it opens the tables), so on a Table
+	// opened from the disk, as here.
+	tables["public.b"].Close()
+	tables["public.b"] = newTable(t, root, "b")
 	marker := filepath.Join(tables["public.b"].Dir, rebuildMarker)
 	if err := os.WriteFile(marker, nil, 0o644); err != nil {
 		t.Fatal(err)
