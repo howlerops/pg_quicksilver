@@ -54,8 +54,12 @@ BEGIN
     FOR r IN SELECT * FROM pg_event_trigger_ddl_commands() LOOP
         -- never log our own bookkeeping, or the log recurses
         IF r.schema_name IS DISTINCT FROM 'quicksilver' THEN
-            INSERT INTO quicksilver.ddl_log(tag, object, statement)
-            VALUES (r.command_tag, r.object_identity, current_query());
+            -- The statement text is NOT stored. Nothing reads it: the barrier
+            -- needs only that a row arrived. And DDL can carry secrets (CREATE
+            -- SUBSCRIPTION ... CONNECTION, CREATE USER MAPPING ... OPTIONS),
+            -- which this table would then keep and publish.
+            INSERT INTO quicksilver.ddl_log(tag, object)
+            VALUES (r.command_tag, r.object_identity);
         END IF;
     END LOOP;
 END $$;

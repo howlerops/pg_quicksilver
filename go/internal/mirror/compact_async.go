@@ -38,6 +38,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
@@ -50,6 +51,8 @@ type Compaction struct {
 	name  string          // new base file name
 	err   error
 	done  chan struct{}
+	// cancel is shared with the rewrite's detached Table; see Table.cancelled.
+	cancel *atomic.Bool
 
 	// Built by the background goroutine, consumed by the swap.
 	index    *keyIndex // key -> position in the new base file
@@ -185,6 +188,8 @@ func (t *Table) BeginCompaction() *Compaction {
 	// rewrite). So the goroutine gets its own copy and never sees the Table the
 	// apply loop owns — inside it, t IS the copy.
 	snap, sizeHint := t.rewriteSnapshot(), t.State.BaseRows
+	c.cancel = new(atomic.Bool)
+	snap.cancelled = c.cancel
 
 	t.compacting = c
 	go func(t *Table) {
@@ -402,6 +407,9 @@ func (t *Table) AbortCompaction() {
 		return
 	}
 	t.compacting = nil
+	if c.cancel != nil {
+		c.cancel.Store(true)
+	}
 	// Counted, so that Close can wait: this unlinks a PATH, later, and the
 	// Table that replaces a closed one may be writing that path by then.
 	t.aborting.Add(1)

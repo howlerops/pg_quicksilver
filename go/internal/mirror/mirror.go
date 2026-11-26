@@ -40,6 +40,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/apache/arrow-go/v18/arrow"
@@ -199,6 +200,14 @@ type Table struct {
 	// (rewriteSnapshot). It shares a directory with the real table and nothing
 	// else, and must never write the manifest: its State is a fragment.
 	detached bool
+
+	// cancelled, on a detached copy, is set when the rewrite it serves has been
+	// abandoned. The read loops check it between row groups, so an abandoned
+	// rewrite stops within one row group instead of running to the end of the
+	// table — which mattered once rewrites were limited to one at a time
+	// process-wide: an abandoned rewrite of a large table kept the only slot,
+	// and every other table's compaction waited for work nobody wanted.
+	cancelled *atomic.Bool
 
 	// dead is each data file's dead set, by dvStem, as the manifest in State
 	// describes it. See dvcache.go. Only the apply goroutine touches it.

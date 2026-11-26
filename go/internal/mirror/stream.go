@@ -18,6 +18,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -717,6 +718,9 @@ func (t *Table) forEachRowsWant(path string, isDead func(int) bool, want []strin
 	md := rdr.MetaData()
 	start := 0
 	for g := 0; g < md.NumRowGroups(); g++ {
+		if t.cancelled != nil && t.cancelled.Load() {
+			return errRewriteAbandoned
+		}
 		n := int(md.RowGroup(g).NumRows())
 		if len(colIdx) == 0 {
 			// A file with none of the wanted columns still contributes rows.
@@ -806,3 +810,7 @@ func isNaN(v any) bool {
 	}
 	return false
 }
+
+// errRewriteAbandoned ends a background rewrite whose result nobody will use.
+// See Table.cancelled.
+var errRewriteAbandoned = errors.New("rewrite abandoned")

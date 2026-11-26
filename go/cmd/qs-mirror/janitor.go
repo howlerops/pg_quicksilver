@@ -109,6 +109,13 @@ type janitorInput struct {
 	MaxWAL         int64         // <= 0: no WAL rule
 	MaxInactive    time.Duration // <= 0: no inactivity rule
 	PhysicalPrefix string
+	// Cluster is this cluster's name. With it, a per-Pod slot is this
+	// cluster's only if the part after the base is "<cluster>_<ordinal>" (how
+	// CloudNativePG names instances), or the cut-and-hashed form of that.
+	// Without it the rule was "starts with base_", and a cluster named
+	// "quicksilver" then owned every slot of a cluster named "quicksilver_a"
+	// on the same server and dropped them as orphans.
+	Cluster string
 }
 
 type slotDecision struct {
@@ -191,7 +198,7 @@ func decideSlots(in janitorInput) []slotDecision {
 		if !s.Logical || s.Temporary {
 			continue
 		}
-		if s.Name != base && !strings.HasPrefix(s.Name, base+"_") {
+		if !janitorOwns(s.Name, base, in.Cluster) {
 			continue
 		}
 		d := slotDecision{Slot: s.Name}
@@ -330,7 +337,7 @@ func (j *janitor) run(ctx context.Context) error {
 		return nil
 	}
 
-	in := janitorInput{Base: j.o.slotBase, MaxWAL: maxSlotWAL,
+	in := janitorInput{Base: j.o.slotBase, Cluster: j.o.cluster, MaxWAL: maxSlotWAL,
 		MaxInactive: janitorAfter, PhysicalPrefix: janitorPhysicalPrefix}
 	in.Slots, err = j.readSlots(ctx, conn)
 	if err != nil {
@@ -506,4 +513,42 @@ func (j *janitor) Metrics() string {
 		fmt.Fprintf(&b, "quicksilver_slot_janitor_slots{rule=%q} %d\n", r, j.kept[r])
 	}
 	return b.String()
+}
+
+// janitorOwns reports whether a slot name can only be this cluster's: the
+// configured name itself (the slot every Pod shared before slots were per
+// Pod), or base + "_" + a Pod of this cluster. See janitorInput.Cluster.
+func janitorOwns(name, base, cluster string) bool {
+	if name == base {
+		return true
+	}
+	if !strings.HasPrefix(name, base+"_") {
+		return false
+	}
+	if cluster == "" {
+		// Not told which cluster this is (a run outside the plugin): the old,
+		// wider rule, because there is nothing narrower to apply.
+		return true
+	}
+	own := base + "_" + sanitiseSlotPart(cluster) + "_"
+	if strings.HasPrefix(name, own) {
+		rest := name[len(own):]
+		if rest == "" {
+			return false
+		}
+		for _, r := range rest {
+			if r < '0' || r > '9' {
+				return false
+			}
+		}
+		return true
+	}
+	// A name too long to fit was cut and given a hash of the Pod's real name;
+	// what is left of the Pod part is still a prefix of this cluster's form.
+	const hashTagLen = 9
+	if len(name) == maxSlotName {
+		kept := name[:maxSlotName-hashTagLen]
+		return strings.HasPrefix(own, kept) || strings.HasPrefix(kept, own)
+	}
+	return false
 }

@@ -246,3 +246,33 @@ func TestJanitorSwitchDefaultsOn(t *testing.T) {
 		}
 	}
 }
+
+// Two clusters on one server whose names differ by a suffix: the janitor of
+// "quicksilver" must not take "quicksilver_a"'s slots for its own orphans.
+func TestJanitorOwnsOnlyItsOwnClustersSlots(t *testing.T) {
+	for _, c := range []struct {
+		name, base, cluster string
+		want                bool
+	}{
+		{"quicksilver_app", "quicksilver_app", "app", true},        // the legacy shared slot
+		{"quicksilver_app_app_1", "quicksilver_app", "app", true},  // Pod app-1
+		{"quicksilver_app_app_12", "quicksilver_app", "app", true}, // Pod app-12
+		{"quicksilver_app_a", "quicksilver_app", "app", false},     // cluster "app_a"'s legacy slot
+		{"quicksilver_app_a_app_a_1", "quicksilver_app", "app", false},
+		{"quicksilver_app_app_a_1", "quicksilver_app", "app", false}, // not an ordinal
+		{"quicksilver_app_app_", "quicksilver_app", "app", false},
+		{"quicksilver_other_other_1", "quicksilver_app", "app", false},
+		{"custom_app_2", "custom", "app", true},
+		{"custom_x_2", "custom", "", true}, // cluster unknown: the wide rule
+	} {
+		if got := janitorOwns(c.name, c.base, c.cluster); got != c.want {
+			t.Errorf("janitorOwns(%q, %q, %q) = %v, want %v", c.name, c.base, c.cluster, got, c.want)
+		}
+	}
+	// A name cut to 63 bytes with a hash tag is still recognised by its prefix.
+	long := "quicksilver_" + strings.Repeat("c", 40)
+	cut := podSlotName(long, strings.Repeat("c", 40)+"-3")
+	if len(cut) != maxSlotName || !janitorOwns(cut, long, strings.Repeat("c", 40)) {
+		t.Errorf("cut name %q (len %d) not recognised as this cluster's", cut, len(cut))
+	}
+}
