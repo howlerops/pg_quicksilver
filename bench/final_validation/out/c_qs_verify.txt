@@ -1,0 +1,12 @@
+public.orders:   missing from mirror: id=30694039312
+public.customers: MATCH
+public.qs_types: MATCH
+ex.t_num: MATCH
+ex.t_str: MATCH
+ex.t_time: MATCH
+ex.t_doc: MATCH
+ex.customers: MATCH
+ex.orders: MATCH
+fv.events: MATCH
+fv.accounts: MATCH
+fv.lookup: MATCH

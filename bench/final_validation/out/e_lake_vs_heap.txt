@@ -1,0 +1,14 @@
+public.orders: EQUAL heap=228447 lake=228447 
+public.customers: EQUAL heap=10000 lake=10000 
+public.qs_types: EQUAL heap=20005 lake=20005 
+ex.t_num: EQUAL heap=2015 lake=2015 
+ex.t_str: EQUAL heap=2007 lake=2007 
+ex.t_time: EQUAL heap=2016 lake=2016 
+ex.t_doc: EQUAL heap=1007 lake=1007 
+ex.customers: EQUAL heap=300 lake=300 
+ex.orders: EQUAL heap=3000 lake=3000 
+fv.events: EQUAL heap=202100 lake=202100 
+fv.accounts: EQUAL heap=250402 lake=250402 
+fv.lookup: EQUAL heap=1060 lake=1060 
+tables 12 different 0
+lake_vs_heap exit 0

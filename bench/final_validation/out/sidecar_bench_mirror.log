@@ -1,0 +1,78 @@
+time=2026-11-26T22:26:03.642Z level=INFO msg="memory sizing" limit_bytes=14338371584 limit_source="cgroup v1 memory.limit_in_bytes (own cgroup)" max_tick_changes=250000 max_pending_changes=1000000 gomemlimit_set=true gomemlimit_bytes=11470697264
+time=2026-11-26T22:26:03.643Z level=INFO msg="quicksilver mirror starting" cluster=qsbench pod=qsbench-1 mode=shadow ingest=logical tables="[public.orders public.customers]" slo=30s slot=qs_bench_qsbench_1 configured_slot=qs_bench
+time=2026-11-26T22:26:03.662Z level=INFO msg="ducklake publishing on" catalog=/var/lib/postgresql/qsfinal/bench/mirror/_ducklake/catalog.sqlite format=1.1 retention=1m0s attach="ATTACH 'ducklake:sqlite:/var/lib/postgresql/qsfinal/bench/mirror/_ducklake/catalog.sqlite' AS \"lake\" (READ_ONLY);"
+time=2026-11-26T22:26:03.663Z level=INFO msg="slot janitor on: when this instance is the primary it drops this cluster's Quicksilver slots that nothing will consume again" slots="qs_bench and qs_bench_*" interval=1m0s wal_limit_bytes=4294967296 inactive_limit=6h0m0s off="QS_SLOT_JANITOR=off"
+time=2026-11-26T22:26:03.907Z level=INFO msg="pg_quicksilver registry brought to the mirrored tables" schema=quicksilver_mirror created="[public.customers public.orders]" unchanged=0 dropped=[] lake=/var/lib/postgresql/qsfinal/bench/mirror/_ducklake/catalog.sqlite
+time=2026-11-26T22:26:03.928Z level=INFO msg="new replication slot; bootstrapping by snapshot" at=0/F703EB48
+time=2026-11-26T22:26:49.131Z level=INFO msg="snapshot complete" table=public.orders rows=10000000 seconds=45.203277575
+time=2026-11-26T22:26:50.579Z level=INFO msg="snapshot complete" table=public.customers rows=500000 seconds=1.4479503089999999
+time=2026-11-26T22:26:50.588Z level=INFO msg="key index built" table=public.customers keys=500000 seconds=0.007960118
+time=2026-11-26T22:26:50.754Z level=INFO msg="key index built" table=public.orders keys=10000000 seconds=0.16553922
+time=2026-11-26T22:29:45.167Z level=INFO msg="memory sizing" limit_bytes=14338371584 limit_source="cgroup v1 memory.limit_in_bytes (own cgroup)" max_tick_changes=250000 max_pending_changes=1000000 gomemlimit_set=true gomemlimit_bytes=11470697264
+time=2026-11-26T22:29:45.167Z level=INFO msg="quicksilver mirror starting" cluster=qsbench pod=qsbench-1 mode=shadow ingest=logical tables="[public.orders public.customers]" slo=30s slot=qs_bench_qsbench_1 configured_slot=qs_bench
+time=2026-11-26T22:29:45.171Z level=INFO msg="ducklake publishing on" catalog=/var/lib/postgresql/qsfinal/bench/mirror/_ducklake/catalog.sqlite format=1.1 retention=1m0s attach="ATTACH 'ducklake:sqlite:/var/lib/postgresql/qsfinal/bench/mirror/_ducklake/catalog.sqlite' AS \"lake\" (READ_ONLY);"
+time=2026-11-26T22:29:45.172Z level=INFO msg="slot janitor on: when this instance is the primary it drops this cluster's Quicksilver slots that nothing will consume again" slots="qs_bench and qs_bench_*" interval=1m0s wal_limit_bytes=4294967296 inactive_limit=6h0m0s off="QS_SLOT_JANITOR=off"
+time=2026-11-26T22:29:45.330Z level=INFO msg="pg_quicksilver registry brought to the mirrored tables" schema=quicksilver_mirror created=[] unchanged=2 dropped=[] lake=/var/lib/postgresql/qsfinal/bench/mirror/_ducklake/catalog.sqlite
+time=2026-11-26T22:29:45.341Z level=INFO msg="resuming from the existing slot" slot=qs_bench_qsbench_1 confirmed=0/F7126168
+time=2026-11-26T22:29:45.355Z level=INFO msg="key index built" table=public.customers keys=500000 seconds=0.013096526
+time=2026-11-26T22:29:45.633Z level=INFO msg="key index built" table=public.orders keys=10000000 seconds=0.277915364
+time=2026-11-26T22:29:46.619Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=297 apply_ms=296 confirm_ms=1
+time=2026-11-26T22:29:47.444Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=822 apply_ms=820 confirm_ms=1
+time=2026-11-26T22:29:50.545Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=3097 apply_ms=3095 confirm_ms=1
+time=2026-11-26T22:29:54.678Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=4130 apply_ms=4127 confirm_ms=1
+time=2026-11-26T22:29:57.305Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=2625 apply_ms=2623 confirm_ms=1
+time=2026-11-26T22:29:59.164Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=1859 apply_ms=1834 evolve_ms=12 confirm_ms=10 head_lsn_ms=1
+time=2026-11-26T22:30:29.241Z level=INFO msg="compaction started" table=public.orders why=idle base_rows=10000000 delta_rows=700000
+2026/11/26 22:30:29 INFO rewrite clustering table=public.orders column=created_at why="row-group ranges overlap on 2.6% of pairs over 153 groups (id 100.0%, tenant_id 100.0%, customer_id 100.0%)"
+2026/11/26 22:31:32 INFO clustered rewrite table=public.orders column=created_at rows=10000000 delta_rows=700000 unordered=0 scan_seconds=1.920419584 buckets=24 spill_seconds=6.122745154 load_seconds=2.518133948 sorted=false seconds=63.595231215
+time=2026-11-26T22:31:35.210Z level=INFO msg=compacted table=public.orders rows=10000000 seconds=65.788976278
+time=2026-11-26T22:31:35.221Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=381 finish_compaction_ms=370
+time=2026-11-26T22:43:09.773Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=416 apply_ms=414
+time=2026-11-26T22:45:24.678Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=373 apply_ms=372
+time=2026-11-26T22:45:25.439Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=354 apply_ms=352 confirm_ms=1
+time=2026-11-26T22:45:26.202Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=329 apply_ms=328
+time=2026-11-26T22:45:26.890Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=281 apply_ms=280
+time=2026-11-26T22:45:27.521Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=280 apply_ms=278 confirm_ms=1
+time=2026-11-26T22:45:28.078Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=241 apply_ms=240
+time=2026-11-26T22:45:28.641Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=237 apply_ms=236
+time=2026-11-26T22:45:29.175Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=229 apply_ms=228
+time=2026-11-26T22:45:29.711Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=222 apply_ms=220 confirm_ms=1
+time=2026-11-26T22:45:32.691Z level=INFO msg="merged deltas" table=public.orders rows=40000 seconds=0.157193329
+time=2026-11-26T22:45:32.691Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=289 merge_deltas_ms=157 apply_ms=130 confirm_ms=1
+time=2026-11-26T22:45:35.560Z level=INFO msg="merged deltas" table=public.orders rows=75000 seconds=0.291446444
+time=2026-11-26T22:45:35.560Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=404 merge_deltas_ms=291 apply_ms=112
+time=2026-11-26T22:45:38.100Z level=INFO msg="merged deltas" table=public.orders rows=110000 seconds=0.412332044
+time=2026-11-26T22:45:38.100Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=482 merge_deltas_ms=412 apply_ms=68
+time=2026-11-26T22:46:02.129Z level=INFO msg="memory sizing" limit_bytes=1073741824 limit_source="cgroup v1 memory.limit_in_bytes (own cgroup)" max_tick_changes=89478 max_pending_changes=357912 gomemlimit_set=true gomemlimit_bytes=858993456
+time=2026-11-26T22:46:02.131Z level=INFO msg="quicksilver mirror starting" cluster=qsbench pod=qsbench-1 mode=shadow ingest=logical tables="[public.orders public.customers]" slo=30s slot=qs_bench_qsbench_1 configured_slot=qs_bench
+time=2026-11-26T22:46:02.162Z level=INFO msg="ducklake publishing on" catalog=/var/lib/postgresql/qsfinal/bench/mirror/_ducklake/catalog.sqlite format=1.1 retention=1m0s attach="ATTACH 'ducklake:sqlite:/var/lib/postgresql/qsfinal/bench/mirror/_ducklake/catalog.sqlite' AS \"lake\" (READ_ONLY);"
+time=2026-11-26T22:46:02.162Z level=INFO msg="slot janitor on: when this instance is the primary it drops this cluster's Quicksilver slots that nothing will consume again" slots="qs_bench and qs_bench_*" interval=1m0s wal_limit_bytes=4294967296 inactive_limit=6h0m0s off="QS_SLOT_JANITOR=off"
+time=2026-11-26T22:46:02.211Z level=INFO msg="pg_quicksilver registry brought to the mirrored tables" schema=quicksilver_mirror created=[] unchanged=2 dropped=[] lake=/var/lib/postgresql/qsfinal/bench/mirror/_ducklake/catalog.sqlite
+time=2026-11-26T22:46:02.227Z level=WARN msg="not resuming this table from the slot; re-snapshotting it" table=public.customers why="the table was added to a slot that already exists and has never been snapshotted" slot=qs_bench_qsbench_1 at=2/DB15B08
+time=2026-11-26T22:46:03.656Z level=INFO msg="snapshot complete" table=public.customers rows=500000 seconds=1.429336923
+time=2026-11-26T22:46:03.656Z level=WARN msg="not resuming this table from the slot; re-snapshotting it" table=public.orders why="the table was added to a slot that already exists and has never been snapshotted" slot=qs_bench_qsbench_1 at=2/DB15B08
+time=2026-11-26T22:46:51.680Z level=INFO msg="snapshot complete" table=public.orders rows=10155000 seconds=48.023562536
+time=2026-11-26T22:46:51.681Z level=INFO msg="resuming from the existing slot" slot=qs_bench_qsbench_1 confirmed=2/DB0AB98
+time=2026-11-26T22:46:51.692Z level=INFO msg="key index built" table=public.customers keys=500000 seconds=0.010042965
+time=2026-11-26T22:46:51.840Z level=INFO msg="key index built" table=public.orders keys=10155000 seconds=0.148179611
+time=2026-11-26T22:49:20.857Z level=INFO msg="memory sizing" limit_bytes=1073741824 limit_source="cgroup v1 memory.limit_in_bytes (own cgroup)" max_tick_changes=89478 max_pending_changes=357912 gomemlimit_set=true gomemlimit_bytes=858993456
+time=2026-11-26T22:49:20.858Z level=INFO msg="quicksilver mirror starting" cluster=qsbench pod=qsbench-1 mode=shadow ingest=logical tables="[public.orders public.customers]" slo=30s slot=qs_bench_qsbench_1 configured_slot=qs_bench
+time=2026-11-26T22:49:20.861Z level=INFO msg="ducklake publishing on" catalog=/var/lib/postgresql/qsfinal/bench/mirror/_ducklake/catalog.sqlite format=1.1 retention=1m0s attach="ATTACH 'ducklake:sqlite:/var/lib/postgresql/qsfinal/bench/mirror/_ducklake/catalog.sqlite' AS \"lake\" (READ_ONLY);"
+time=2026-11-26T22:49:20.861Z level=INFO msg="slot janitor on: when this instance is the primary it drops this cluster's Quicksilver slots that nothing will consume again" slots="qs_bench and qs_bench_*" interval=1m0s wal_limit_bytes=4294967296 inactive_limit=6h0m0s off="QS_SLOT_JANITOR=off"
+time=2026-11-26T22:49:20.975Z level=INFO msg="pg_quicksilver registry brought to the mirrored tables" schema=quicksilver_mirror created=[] unchanged=2 dropped=[] lake=/var/lib/postgresql/qsfinal/bench/mirror/_ducklake/catalog.sqlite
+time=2026-11-26T22:49:20.982Z level=INFO msg="resuming from the existing slot" slot=qs_bench_qsbench_1 confirmed=2/9AA6EE38
+time=2026-11-26T22:49:20.994Z level=INFO msg="key index built" table=public.customers keys=500000 seconds=0.010598993
+time=2026-11-26T22:49:21.182Z level=INFO msg="key index built" table=public.orders keys=10155000 seconds=0.187551385
+time=2026-11-26T22:49:22.330Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=344 apply_ms=340 confirm_ms=2
+time=2026-11-26T22:49:22.979Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=648 apply_ms=646 confirm_ms=1
+time=2026-11-26T22:49:24.046Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=1064 apply_ms=1057 confirm_ms=6
+time=2026-11-26T22:49:24.932Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=883 apply_ms=882 confirm_ms=1
+time=2026-11-26T22:49:25.812Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=879 apply_ms=878 confirm_ms=1
+time=2026-11-26T22:49:26.744Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=930 apply_ms=928 confirm_ms=1
+time=2026-11-26T22:49:27.858Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=1113 apply_ms=1110 confirm_ms=2
+time=2026-11-26T22:49:28.811Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=952 apply_ms=950 confirm_ms=1
+time=2026-11-26T22:49:29.703Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=892 apply_ms=890
+time=2026-11-26T22:49:30.141Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=436 apply_ms=430 evolve_ms=4 confirm_ms=1
+time=2026-11-26T22:50:00.200Z level=INFO msg="compaction started" table=public.orders why=idle base_rows=10155000 delta_rows=700000
+2026/11/26 22:50:00 INFO rewrite clustering table=public.orders column=none why="no column is clustered: the least overlapping is created_at, on 90% of row-group pairs"
+time=2026-11-26T22:50:44.488Z level=INFO msg=compacted table=public.orders rows=10155000 seconds=44.210163667

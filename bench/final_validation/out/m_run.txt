@@ -1,0 +1,11 @@
+mirror4 sidecar stopped
+standby3 reloaded
+mirror5 pid 21018
+mirror5 ready
+== m_temporal_off
+qs-verify: 12 MATCH, 0 other
+lake_vs_heap exit 1
+different 0
+  [agg_status] kind=qualifying routed_to_mirror=True
+  [agg_events_amount] kind=qualifying routed_to_mirror=True
+  [agg_accounts] kind=qualifying routed_to_mirror=True

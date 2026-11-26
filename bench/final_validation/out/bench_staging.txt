@@ -1,0 +1,25 @@
+ setseed 
+---------
+ 
+(1 row)
+
+Time: 9.946 ms
+Time: 1.070 ms
+Time: 5330.799 ms (00:05.331)
+Time: 705.274 ms
+Time: 898.179 ms
+Time: 504.776 ms
+Time: 51.897 ms
+Time: 42.865 ms
+Time: 55.724 ms
+Time: 121.228 ms
+Time: 156.951 ms
+ kind | count  | count 
+------+--------+-------
+ d    | 100000 |   200
+ p    | 100000 |   200
+ s    | 500000 |   200
+(3 rows)
+
+Time: 238.914 ms
+Time: 2.655 ms

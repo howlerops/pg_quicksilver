@@ -1,0 +1,12 @@
+isolation: read committed
+standby (in recovery): True
+--- BEGIN; aggregate with no writes
+plan: ['Custom Scan (QuicksilverRoute)', 'Quicksilver: mirror', 'Quicksilver Reason: 86147 rows from mirrored tables, over 50000']
+routed_to_mirror: True | rows: [('138964', '625257223.50')] heap: [('138964', '625257223.50')] EQUAL
+--- SAVEPOINT open, then the aggregate
+plan: ['Quicksilver: heap (inside a transaction block)', 'Quicksilver Detail: in a subtransaction (savepoint): pg_duckdb refuses']
+routed_to_mirror: False | rows: [('138964', '625257223.50')] EQUAL
+--- INSERT in the same block (standby refuses it)
+refused: cannot execute INSERT in a read-only transaction
+first half (routed inside a block with no writes): PASS
+second half (not routed after a write, sees the row): NOT EXERCISED on a read-only standby

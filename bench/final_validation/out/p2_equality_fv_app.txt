@@ -1,0 +1,33 @@
+{
+ "statements": 1142,
+ "routed_to_mirror": 276,
+ "stayed_on_heap": 866,
+ "routed_identical": 276,
+ "routed_same_error": 0,
+ "routed_different": 0,
+ "heap_different": 0,
+ "heap_reasons": [
+  [
+   "reads no mirrored table",
+   757
+  ],
+  [
+   "construct not on the allowlist",
+   75
+  ],
+  [
+   "cheap on the heap",
+   32
+  ],
+  [
+   "reads a relation with no usable mirror",
+   1
+  ],
+  [
+   "mirror is not fresh enough",
+   1
+  ]
+ ],
+ "server": "PostgreSQL 17.12 (Ubuntu 17.12-1.pgdg24.04+1) on x86_64-pc-linux-gnu, compiled by gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0, 64-bit",
+ "settings": []
+}

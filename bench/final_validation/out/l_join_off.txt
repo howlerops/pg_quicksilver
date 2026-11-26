@@ -1,0 +1,6 @@
+[probe0] plan: Custom Scan (QuicksilverRoute) | Quicksilver: mirror | Quicksilver Reason: 281214 rows from mirrored tables, over 50000
+[probe0] last_decision: heap / quicksilver.route = heap
+[probe0] rows routed=1 heap=1 EQUAL
+[probe0] routed_to_mirror=True
+
+problems 0

@@ -1,0 +1,33 @@
+1. fv.lines on the primary (5800 is gone; promoted primary is 5801)
+2. sidecar3 restarted with join domains
+mirror3 pid 16619
+mirror3 ready
+join_domains rows (primary 5801, standby 5806): 2 / 0
+fv.events|id|ev|__qs_d_id
+fv.lines|event_id|ev|__qs_d_event_id
+--- EXPLAIN with join domains (standby 5806)
+              ->  Parallel Hash Join
+                    Hash Cond: (l.event_id = e.id)
+                    ->  Parallel Hash
+Quicksilver: heap (reads a relation with no usable mirror)
+Quicksilver Detail: also reads a relation that is not registered
+probe exit 0
+[probe0] plan: Quicksilver: heap (mirror is not fresh enough) | Quicksilver Detail: fv.lines: no applied LSN has been reported
+[probe0] last_decision: heap / quicksilver.route = heap
+[probe0] rows routed=1 heap=1 EQUAL
+[probe0] routed_to_mirror=False
+
+problems 0
+--- sidecar3 with QS_JOIN_DOMAINS unset
+mirror3 pid 16735
+mirror3 ready
+join_domains rows after restart without the variable: 0
+Quicksilver: heap (mirror is not fresh enough)
+Quicksilver Detail: fv.lines: mirror is at 0/38035490, this node is at 0/380C4A80 (587248 WAL bytes behind; quicksilver.max_lag = 0 routes only a mirror that has caught up)
+probe exit 0
+[probe0] plan: Quicksilver: heap (reads a relation with no usable mirror) | Quicksilver Detail: also reads a relation that is not registered
+[probe0] last_decision: heap / quicksilver.route = heap
+[probe0] rows routed=1 heap=1 EQUAL
+[probe0] routed_to_mirror=False
+
+problems 0

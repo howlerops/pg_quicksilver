@@ -12,25 +12,28 @@ faster for scans and aggregates.
 
 ## What it's worth
 
-![Speedup against the PostgreSQL heap, by columns touched and table size](docs/img/projection-benefit.svg)
+Measured on 2026-11-26 with the system as it now runs: a primary, a hot standby, and the
+sidecar publishing a DuckLake that the routing extension reads from inside PostgreSQL.
+10,000,000 orders and 500,000 customers, best of five warm runs, every answer checked equal
+to the heap's. Full table, earlier runs and caveats: **[METRICS.md §0](METRICS.md)**.
 
-Same node, same page cache, best of 3, every answer checked against the heap before its
-timing was believed. Full method and caveats: **[docs/36](docs/36-does-the-projection-pay.md)**.
+### Fresh after the load, 10M orders
 
-### At 5.88M rows, 20-column fact table
-
-| query | columns read | heap | mirror | |
+| query | heap (standby) | routed through the extension | DuckDB reading the lake directly | heap ÷ routed |
 |---|---:|---:|---:|---:|
-| `GROUP BY` region | 2 | 734 ms | 58 ms | **12.7×** |
-| `sum(amount)` | 1 | 538 ms | 48 ms | **11.2×** |
-| filter + aggregate | 2 | 480 ms | 54 ms | **8.9×** |
-| `count(*)` | 0 | 249 ms | 33 ms | **7.5×** |
-| sum of 5 columns | 5 | 717 ms | 109 ms | **6.6×** |
-| touch 10 columns | 10 | 1103 ms | 263 ms | **4.2×** |
-| touch all 19 | 19 | 2843 ms | 1421 ms | **2.0×** |
-| **point lookup by key** | 1 | **2 ms** | **40 ms** | **0.06×** |
+| `GROUP BY status` | 590.7 ms | 36.4 ms | 48.2 ms | **16.2×** |
+| `sum(amount)` | 498.3 ms | 30.2 ms | 48.4 ms | **16.5×** |
+| `count(*)` | 251.9 ms | 8.5 ms | 2.8 ms | **29.6×** |
+| filter on a month + aggregate | 66.6 ms | 20.4 ms | 17.5 ms | **3.3×** |
+| revenue by month, join to customers | 3,739 ms | 3,845 ms (heap) | 3,211 ms | 1.0× |
+| point lookup by key | 0.1 ms | 0.2 ms (heap) | 23.4 ms | stays on the heap |
 
-**Storage: 3.2× smaller**, at every scale tested (2936 MiB of heap → 916 MiB of Parquet).
+After the change workload (700k updated, deleted or inserted rows, 3.6 GB of WAL) the heap's
+`count(*)` went to 1,539 ms; the routed one stayed at 7.5 ms. The table is in METRICS §0 for that
+state and for the state after the mirror's own compaction.
+
+The earlier 5.88M-row table, measured against the view-era mirror, is kept as history in
+**[docs/36](docs/36-does-the-projection-pay.md)**.
 
 The case for whoever signs the invoice: **replace 8 read replicas with 3**, with those 3
 still counting toward HA. Break-even analytical share is **`f ≈ 1/R`** — 13.3% at 8 replicas,
@@ -41,30 +44,29 @@ it doesn't hold.
 
 ### Three things that table says
 
-**1. The win tracks what you let it skip.** 11.2× at one column, 4.2× at ten, 2.0× at
-nineteen. The mechanism is bytes not read, so a query that reads everything gets almost
-nothing — the 2× left over is what encoding and vectorised execution are worth alone. There
-is no single "how much faster"; there is a function of your query.
+**1. The routed win is what the extension lets through.** Aggregates the extension routes run
+16 to 30 times faster than the heap; the filtered aggregate 3×. The join and the point lookup are
+not routed, so they are not faster: the join needs `date_trunc(text, timestamptz)`, which the
+allowlist does not name, and the lookup is cheap on the heap by design. Routing is per statement,
+and the answer is the heap's whichever side runs it.
 
-**2. It needs the data to outgrow memory.** The same aggregate, as the heap grows against
-1 GB of `shared_buffers`:
+**2. The heap degrades with churn; the mirror does not.** After 700k changes the heap's `count(*)`
+went from 252 ms to 1.5 s and the routed one held at 7.5 ms. Across the three states measured, every
+routed aggregate took between 7.5 and 72 ms (the slowest was measured while the mirror was compacting).
+A commit is visible on the standby in a median of 174 ms (p95 396 ms, 30 commits of 5,000 rows).
 
-| live rows | heap size | heap | mirror | |
-|---:|---:|---:|---:|---:|
-| 490 K | 245 MiB | 46.9 ms | 24.3 ms | 1.9× |
-| 1.96 M | 979 MiB | 207.4 ms | 31.3 ms | 6.6× |
-| 5.88 M | 2936 MiB | 537.5 ms | 48.0 ms | **11.2×** |
+**3. A columnar read is not a lookup.** Read directly with DuckDB, a point lookup takes 24 ms against
+the heap's 0.1 ms. That is why the routed path keeps key lookups on the heap, and why
+`mode: takeover` still sits behind an explicit acknowledgement. The earlier "16× worse" figure was the
+view-era number and is history.
 
-Below the crossover both sides read from RAM and the advantage nearly vanishes. At 490 K
-rows four of nine queries fail to clear 2× and `count(*)` is *slower*.
-
-**3. It is ~16× worse at point lookups**, and degrades with scale — an index probe is
-O(log n), the mirror's fixed cost is not. That is why `mode: takeover` sits behind an
-explicit acknowledgement rather than being the default.
-
-> Every timing above is a **warm cache on both sides**, which is the case that flatters a
-> column store *least*: the row store's handicap is bytes, and bytes already in RAM are
-> nearly free. For cold or I/O-bound workloads these are closer to a floor than a ceiling.
+> Every timing above is a **warm cache on both sides**, the case that flatters a column store
+> least. For cold or I/O-bound workloads these are closer to a floor than a ceiling.
+>
+> One host, 4 vCPU, with a second Quicksilver stack running alongside, so the load stayed near 2 to 4
+> during the timed runs. Ratios are the figure to read; the absolute milliseconds are not a quiet-host
+> measurement. Part 4 repeated the sync, the drain and the rewrite under a 1 GiB memory limit: all
+> completed, with no OOM kill, and the limit was reached in each one.
 
 ---
 

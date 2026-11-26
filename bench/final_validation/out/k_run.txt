@@ -1,0 +1,29 @@
+1. standby3 from the primary (5801), slot qs_s3
+basebackup ok
+standby3 started on 5806
+   in recovery: t
+2. sidecar3 (slot qs_int3, mirror /var/lib/postgresql/qsfinal/mirror3)
+   sidecar3 pid 9677
+{"ready":true,"reason":"lag 0.1s within SLO 30.0s","applied_lsn":"","head_lsn":"","lag_bytes":0,"lag_seconds":0.118365703,"compaction_backlog":0,"diverged":false,"bootstrapped":true,"verified_seconds_
+
+3. concurrent writes: two writers against the primary, and reads on both standbys meanwhile
+writer a exit 1
+writer b exit 0
+4. active logical slots on the primary
+qs_int2_qsint_3|logical|t|t
+qs_int3_qsint_4|logical|t|t
+distinct active logical slots: 2
+5. both mirrors against the primary
+== k_standby2
+qs-verify: 12 MATCH, 0 other
+tables 12 different 0
+lake_vs_heap exit 0
+different 0
+== k_standby3
+qs-verify: 12 MATCH, 0 other
+tables 12 different 0
+lake_vs_heap exit 0
+different 0
+  [agg_status] kind=qualifying routed_to_mirror=True
+  [agg_events_amount] kind=qualifying routed_to_mirror=True
+  [agg_accounts] kind=qualifying routed_to_mirror=True
