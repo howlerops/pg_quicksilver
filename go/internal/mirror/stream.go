@@ -510,6 +510,40 @@ func (pw *parquetWriter) Close() error {
 func (t *Table) forEachRowGroup(path string, dead map[int]bool, cols []string,
 	fn func(rows []map[string]any, firstPos int) error,
 ) error {
+	var isDead func(int) bool
+	if len(dead) > 0 {
+		isDead = func(p int) bool { return dead[p] }
+	}
+	return t.forEachRowGroupLive(path, isDead, cols, fn)
+}
+
+// forEachRowGroupLive is forEachRowGroup for a caller that holds the dead
+// positions as something other than a map — a rewrite of a base file with two
+// million of them holds a bitmap, which is 1.25 MB where the map was 74.
+// isDead may be nil.
+func (t *Table) forEachRowGroupLive(path string, isDead func(int) bool, cols []string,
+	fn func(rows []map[string]any, firstPos int) error,
+) error {
+	return t.forEachRows(path, isDead, cols, 0, fn)
+}
+
+// rowChunk is how many rows a streaming reader holds as Go maps at a time.
+const rowChunk = 4096
+
+// forEachRows is forEachRowGroupLive that hands a row group over in pieces of
+// at most chunk rows (0: whole), each with the position of the first row OF
+// THE ROW GROUP.
+//
+// A row group decoded to Arrow is compact — about 250 bytes a row on the orders
+// shape. The same rows as Go maps are over a kilobyte each, so a caller that
+// only passes rows along (a rewrite, a delta merge) held 80 MB of maps per
+// 65,536-row group for no reason but that they were made all at once. In
+// pieces it holds 5. The slice is reused from one piece to the next: fn may
+// keep the rows, not the slice.
+func (t *Table) forEachRows(path string, isDead func(int) bool, cols []string, chunk int,
+	fn func(rows []map[string]any, firstPos int) error,
+) error {
+	dead := func(p int) bool { return isDead != nil && isDead(p) }
 	want, fill := cols, false
 	if want == nil {
 		want, fill = t.Order, true
@@ -561,7 +595,7 @@ func (t *Table) forEachRowGroup(path string, dead map[int]bool, cols []string,
 			// A file with none of the wanted columns still contributes rows.
 			rows := make([]map[string]any, 0, n)
 			for i := 0; i < n; i++ {
-				if dead[start+i] {
+				if dead(start + i) {
 					continue
 				}
 				rows = append(rows, t.fillMissing(map[string]any{}, want, fill))
@@ -578,9 +612,13 @@ func (t *Table) forEachRowGroup(path string, dead map[int]bool, cols []string,
 		if err != nil {
 			return err
 		}
-		rows := make([]map[string]any, 0, n)
+		room := n
+		if chunk > 0 && chunk < n {
+			room = chunk
+		}
+		rows := make([]map[string]any, 0, room)
 		for i := 0; i < int(tbl.NumRows()); i++ {
-			if dead[start+i] {
+			if dead(start + i) {
 				continue
 			}
 			m := make(map[string]any, len(want))
@@ -592,6 +630,14 @@ func (t *Table) forEachRowGroup(path string, dead map[int]bool, cols []string,
 				m[name] = v
 			}
 			rows = append(rows, t.fillMissing(m, want, fill))
+			if chunk > 0 && len(rows) >= chunk {
+				if err := fn(rows, start); err != nil {
+					tbl.Release()
+					return err
+				}
+				clear(rows)
+				rows = rows[:0]
+			}
 		}
 		tbl.Release()
 		if len(rows) > 0 {

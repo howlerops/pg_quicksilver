@@ -11,10 +11,14 @@ package mirror
 // with and without the index file — and compared after every step.
 
 import (
+	"encoding/binary"
 	"fmt"
+	"hash/crc32"
 	"math/rand"
 	"os"
 	"path/filepath"
+	"slices"
+	"strings"
 	"testing"
 
 	"github.com/howlerops/pg_quicksilver/go/internal/changestream"
@@ -108,6 +112,65 @@ func kidxTable(t testing.TB, uuid bool) *Table {
 	if uuid {
 		typ = "uuid"
 	}
+	return kidxTableOf(t, typ)
+}
+
+// modelTextKey is the i-th key of a text-keyed model: every shape of byte
+// string a key column can hand over, chosen to be hard on an index that finds
+// keys by a hash of them. All distinct.
+func modelTextKey(i int) string {
+	n := fmt.Sprint(i)
+	switch i % 8 {
+	case 0:
+		if i == 0 {
+			return "" // the empty key is a key
+		}
+		return "k" + n
+	case 1:
+		// Two hundred bytes in common, different only at the very end.
+		return strings.Repeat("p", 200) + n
+	case 2:
+		// Arbitrary bytes, NUL and 0xff among them, of every short length.
+		b := make([]byte, 1+i%40)
+		for j := range b {
+			b[j] = byte(mix64(uint64(i)*131 + uint64(j)))
+		}
+		return string(b) + "\x00" + n
+	case 3:
+		return testUUID(i) // canonical: held as 128 bits in memory, as text on disk
+	case 4:
+		return strings.ToUpper(testUUID(i)) // not canonical: a different key from its lower case
+	case 5:
+		// What an integer column would have parsed, and what it would not.
+		return []string{"", "0", "-", "+", "00"}[i/8%5] + n + []string{"", ".0", " ", "e0"}[i/40%4]
+	case 6:
+		// Each a prefix of the next.
+		return "q" + n + strings.Repeat("\x00", i/8%7)
+	}
+	if i < 64 {
+		return strings.Repeat(n+"/", 20_000) // a hundred kilobytes and more
+	}
+	return strings.Repeat("z", 300) + n
+}
+
+// weakKidxHash makes collisions ordinary: fourteen bits of hash, so a universe
+// of sixty thousand keys puts about four on every sort key.
+func weakKidxHash(s string) kkey {
+	h := uint64(14695981039346656037)
+	for i := 0; i < len(s); i++ {
+		h = (h ^ uint64(s[i])) * 1099511628211
+	}
+	return kkey{hi: mix64(h) >> 50 << 50, lo: uint64(len(s) & 1)}
+}
+
+func withKidxHash(t testing.TB, h func(string) kkey) {
+	old := kidxHash
+	kidxHash = h
+	t.Cleanup(func() { kidxHash = old })
+}
+
+func kidxTableOf(t testing.TB, typ string) *Table {
+	t.Helper()
 	cols := map[string]string{"id": typ, "v": "text", "n": "bigint"}
 	tbl, err := New(t.TempDir(), "public", "r", "id", cols, []string{"id", "v", "n"})
 	if err != nil {
@@ -445,23 +508,45 @@ func TestKidxModel(t *testing.T) {
 	if testing.Short() {
 		rounds = 4
 	}
-	for _, uuid := range []bool{false, true} {
-		name := "int64"
-		if uuid {
-			name = "uuid"
-		}
-		t.Run(name, func(t *testing.T) {
+	for _, v := range []struct {
+		name, typ string
+		kind      int
+		key       func(int) string
+		hash      func(string) kkey
+	}{
+		{"int64", "bigint", kidxInt, func(i int) string { return modelKeyText(false, i) }, nil},
+		{"uuid", "uuid", kidxUUID, func(i int) string { return modelKeyText(true, i) }, nil},
+		// Keys of any length: every byte string, found by hash and confirmed
+		// by comparison. Once with the real hash and once with one so weak
+		// that every lookup meets other keys' records on the way.
+		{"text", "text", kidxBytes, modelTextKey, nil},
+		{"text, colliding", "text", kidxBytes, modelTextKey, weakKidxHash},
+		{"varchar of uuids", "character varying", kidxBytes, func(i int) string { return modelKeyText(true, i) }, nil},
+	} {
+		uuid := v.typ == "uuid"
+		t.Run(v.name, func(t *testing.T) {
+			if v.hash != nil {
+				withKidxHash(t, v.hash)
+			}
 			m := &kidxModel{
-				t: t, tbl: kidxTable(t, uuid), uuid: uuid,
+				t: t, tbl: kidxTableOf(t, v.typ), uuid: uuid,
 				rng: rand.New(rand.NewSource(20261125)), x: newKeyIndex(0), o: newOracle(),
 			}
+			seen := map[string]bool{}
 			for i := 0; i < universe; i++ {
-				s := modelKeyText(uuid, i)
+				s := v.key(i)
+				if seen[s] {
+					t.Fatalf("the universe holds %q twice", s)
+				}
+				seen[s] = true
 				m.texts = append(m.texts, s)
 				m.keys = append(m.keys, m.tbl.keyOfString(s))
 			}
-			if w := kidxWidth(m.keys[0]); (uuid && w != 16) || (!uuid && w != 8) {
-				t.Fatalf("key %s has width %d", m.keys[0], w)
+			if got := m.tbl.kidxKind(); got != v.kind {
+				t.Fatalf("a %s key is indexed as kind %d, want %d", v.typ, got, v.kind)
+			}
+			if _, _, ok := kidxKeyOf(v.kind, m.keys[1]); !ok {
+				t.Fatalf("key %q is not one its own table's index holds", m.keys[1])
 			}
 			m.newDelta()
 			for r := 0; r < rounds; r++ {
@@ -494,6 +579,9 @@ func TestKidxModel(t *testing.T) {
 			m.checkAll("at the end")
 			if m.x.disk == nil || m.x.live == 0 || m.dead.n == 0 {
 				t.Fatal("the model never exercised the on-disk index")
+			}
+			if n := len(m.x.strs) + len(m.x.uuids) + len(m.x.nums); n+m.x.live != m.x.len() || m.x.disk.kind != v.kind {
+				t.Fatalf("%d keys in memory and %d in the file do not make %d", n, m.x.live, m.x.len())
 			}
 			t.Logf("%d steps, %d keys live, %d in the base file", m.step, m.x.len(), m.x.live)
 			m.x.close()
@@ -541,13 +629,15 @@ func TestKidxNeverTrusted(t *testing.T) {
 	if !DiskIndex {
 		t.Skip("QS_DISK_INDEX=0")
 	}
-	for _, uuid := range []bool{false, true} {
-		name := "int64"
-		if uuid {
-			name = "uuid"
-		}
+	for _, name := range []string{"int64", "uuid", "text"} {
+		uuid := name != "int64"
 		t.Run(name, func(t *testing.T) {
 			tbl := kidxTable(t, uuid)
+			if name == "text" {
+				// The same keys, in a column that holds them as bytes: the
+				// file has a heap, and the heap is checked like the records.
+				tbl = kidxTableOf(t, "text")
+			}
 			root := filepath.Dir(tbl.Dir)
 			reopen := func() *Table {
 				n, err := New(root, "public", "r", "id", tbl.Columns, tbl.Order)
@@ -651,6 +741,8 @@ func TestKidxNeverTrusted(t *testing.T) {
 				}
 			}
 			rec := len(good) - kidxHeader
+			v1 := append([]byte(nil), good...)
+			copy(v1, kidxMagicV1)
 			cases := []struct {
 				name string
 				do   func()
@@ -669,6 +761,12 @@ func TestKidxNeverTrusted(t *testing.T) {
 				{"flipped byte in the base size", flip(48)},
 				{"flipped byte in the checksum", flip(64)},
 				{"flipped magic", flip(0)},
+				{"flipped byte in the key kind", flip(8)},
+				{"flipped byte in the heap length", flip(72)},
+				{"flipped byte in the heap checksum", flip(68)},
+				{"flipped last byte", flip(len(good) - 1)},
+				{"the previous format's magic", write(v1)},
+				{"a file of the previous format", write(kidxV1File(t, tbl, base))},
 				{"the previous base file's index", write(previous)},
 				{"garbage", write([]byte("this is not an index file, but it is at least as long as a header should be...."))},
 				{"base file replaced under the same name", func() {
@@ -713,10 +811,59 @@ func TestKidxNeverTrusted(t *testing.T) {
 	}
 }
 
-// TestKidxTextKeysStayInMemory is the stated limit: a key that is neither an
-// integer nor a UUID has no index file, and a table that mixes UUID-shaped text
-// with other text keeps the odd keys in memory and never reuses its file.
-func TestKidxTextKeysStayInMemory(t *testing.T) {
+// kidxV1File is the index of a base file exactly as the previous release wrote
+// it: QSKIDX01, a 72-byte header, records of key | position | digest, every
+// checksum right. What this binary must do with one is rebuild it.
+func kidxV1File(t testing.TB, tbl *Table, base string) []byte {
+	t.Helper()
+	path := filepath.Join(tbl.Dir, "base", base)
+	var recs []krec
+	err := tbl.forEachRowGroup(path, nil, []string{tbl.Key}, func(rows []map[string]any, first int) error {
+		for i, r := range rows {
+			k := tbl.keyOf(r[tbl.Key])
+			if kidxWidth(k) == 0 {
+				k = rowKey{num: int64(mix64(uint64(first + i))), lo: 1, isUUID: true}
+			}
+			recs = append(recs, krec{k: toKKey(k), pos: uint32(first + i)})
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	slices.SortFunc(recs, krecCmp)
+	width, kind := 16, kidxUUID
+	if tbl.numericKey {
+		width, kind = 8, kidxInt
+	}
+	bind, err := kidxBindFor(path, baseID(base), uint64(len(recs)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := make([]byte, 72)
+	var buf [kidxMaxRec]byte
+	for _, r := range recs {
+		putRec(buf[:], kind, r)
+		out = append(out, buf[:width+12]...)
+	}
+	le := binary.LittleEndian
+	copy(out, kidxMagicV1)
+	le.PutUint32(out[8:], uint32(width))
+	le.PutUint64(out[16:], uint64(len(recs)))
+	le.PutUint64(out[24:], bind.rows)
+	le.PutUint64(out[40:], bind.seq)
+	le.PutUint64(out[48:], bind.size)
+	le.PutUint64(out[56:], uint64(bind.mtime))
+	le.PutUint32(out[64:], crc32.Checksum(out[72:], crcTable))
+	le.PutUint32(out[68:], crc32.Checksum(out[:68], crcTable))
+	return out
+}
+
+// TestKidxTextKeys: a key that is neither an integer nor a uuid used to have no
+// index file at all, and a table that mixed UUID-shaped text with other text
+// rebuilt at every start. Both are in the file now, as their bytes, and the
+// file is reused.
+func TestKidxTextKeys(t *testing.T) {
 	if !DiskIndex {
 		t.Skip("QS_DISK_INDEX=0")
 	}
@@ -743,15 +890,13 @@ func TestKidxTextKeysStayInMemory(t *testing.T) {
 	if _, err := tbl.Compact(); err != nil {
 		t.Fatal(err)
 	}
-	if tbl.index.disk != nil {
-		t.Fatal("a text-keyed table got an on-disk index")
-	}
-	if m, _ := filepath.Glob(filepath.Join(tbl.Dir, "index", "*")); len(m) != 0 {
-		t.Fatalf("a text-keyed table left %v", m)
+	if d := tbl.index.disk; d == nil || d.kind != kidxBytes || d.n != 500 || len(tbl.index.strs) != 0 {
+		t.Fatalf("a text-keyed table: disk=%+v, %d keys in memory", d, len(tbl.index.strs))
 	}
 
-	// Now mostly UUID-shaped text, and a few that are not.
-	ch = nil
+	// Now UUID-shaped text as well, the empty key, and a long one.
+	long := strings.Repeat("long/", 50_000)
+	ch = []changestream.Change{ins(""), ins(long), ins(long + "x")}
 	for i := 0; i < 500; i++ {
 		ch = append(ch, ins(testUUID(i)))
 	}
@@ -763,27 +908,128 @@ func TestKidxTextKeysStayInMemory(t *testing.T) {
 	kidxApply(t, tbl, &lsn, []changestream.Change{
 		{Op: changestream.OpDelete, Schema: "public", Table: "r", Key: del},
 		{Op: changestream.OpDelete, Schema: "public", Table: "r", Key: map[string]any{"id": testUUID(9)}},
+		{Op: changestream.OpDelete, Schema: "public", Table: "r", Key: map[string]any{"id": long}},
 	})
 	want := indexDump(t, tbl)
-	if len(want) != 998 || tbl.index.disk == nil || len(tbl.index.strs) != 499 {
-		t.Fatalf("mixed table: %d keys, disk=%v, %d in memory", len(want), tbl.index.disk != nil, len(tbl.index.strs))
+	if n := len(tbl.index.strs) + len(tbl.index.uuids); len(want) != 1000 || tbl.index.disk == nil || n != 0 {
+		t.Fatalf("mixed table: %d keys, disk=%v, %d in memory", len(want), tbl.index.disk != nil, n)
+	}
+	for _, k := range []string{"", long + "x", "key-8", testUUID(8)} {
+		if _, ok := want[k]; !ok {
+			t.Fatalf("key %.20q is not in the index", k)
+		}
+	}
+	for _, k := range []string{long, long[:len(long)-1], "key-7", testUUID(9), strings.ToUpper(testUUID(8)), "key-8\x00", " "} {
+		if _, ok := tbl.index.get(tbl.keyOfString(k)); ok {
+			t.Fatalf("key %.20q is in the index", k)
+		}
 	}
 	tbl.index.close()
 	before := kidxRebuilds.Load()
 	again := open()
 	got := indexDump(t, again)
-	if kidxRebuilds.Load() != before+1 {
-		t.Fatal("an index file that does not hold every key of its base file was reused")
+	if kidxRebuilds.Load() != before {
+		t.Fatal("the index of a text-keyed table was rebuilt at start")
 	}
 	if len(got) != len(want) {
 		t.Fatalf("after restart %d keys, want %d", len(got), len(want))
 	}
 	for k, v := range want {
 		if got[k] != v {
-			t.Fatalf("after restart key %s at %q, want %q", k, got[k], v)
+			t.Fatalf("after restart key %.20q at %q, want %q", k, got[k], v)
 		}
 	}
 	again.index.close()
+}
+
+// TestKidxOneHashForEveryKey: a hash that says the same thing about every key
+// leaves the bytes to do all the work. The index must still give each key its
+// own row, across fence boundaries, through a rewrite and after a restart.
+func TestKidxOneHashForEveryKey(t *testing.T) {
+	if !DiskIndex {
+		t.Skip("QS_DISK_INDEX=0")
+	}
+	withKidxHash(t, func(string) kkey { return kkey{hi: 7, lo: 7} })
+	defer func(n int) { kidxRunRecords = n }(kidxRunRecords)
+	kidxRunRecords = 100
+	tbl := kidxTableOf(t, "text")
+	base := "000001.parquet"
+	keys := make([]string, 700)
+	rows := make([]map[string]any, 0, len(keys)+50)
+	for i := range keys {
+		keys[i] = modelTextKey(i + 64)
+		rows = append(rows, map[string]any{"id": keys[i], "v": "x", "n": "1"})
+	}
+	// Fifty of them twice: the later copy is the live one.
+	for i := 0; i < 50; i++ {
+		rows = append(rows, map[string]any{"id": keys[i*7], "v": "y", "n": "2"})
+	}
+	if err := tbl.writeParquet(filepath.Join(tbl.Dir, "base", base), rows); err != nil {
+		t.Fatal(err)
+	}
+	build := func() (*keyIndex, []int) {
+		kb := tbl.newKidxBuilder(base, len(rows), true)
+		for i, r := range rows {
+			if err := kb.add(tbl.keyOfString(r["id"].(string)), int32(i), 0, false); err != nil {
+				t.Fatal(err)
+			}
+		}
+		x, dups, extra, err := kb.finish()
+		if err != nil || len(extra) != 0 {
+			t.Fatal(err, extra)
+		}
+		return x, dups
+	}
+	x, dups := build()
+	slices.Sort(dups)
+	if len(dups) != 50 {
+		t.Fatalf("%d superseded copies found, want 50", len(dups))
+	}
+	for i, p := range dups {
+		if p != i*7 {
+			t.Fatalf("superseded copy %d is position %d, want %d", i, p, i*7)
+		}
+	}
+	x.markGone(dups)
+	check := func(x *keyIndex) {
+		t.Helper()
+		if x.disk == nil || x.disk.n != len(rows) || x.len() != len(keys) {
+			t.Fatalf("index holds %d keys, want %d", x.len(), len(keys))
+		}
+		for i, k := range keys {
+			want := int32(i)
+			if i%7 == 0 && i/7 < 50 {
+				want = int32(len(keys) + i/7)
+			}
+			if l, ok := x.get(tbl.keyOfString(k)); !ok || l.Pos != want {
+				t.Fatalf("key %d: %+v,%v, want position %d", i, l, ok, want)
+			}
+			if _, ok := x.get(tbl.keyOfString(k + "?")); ok {
+				t.Fatalf("a key that was never written was found")
+			}
+		}
+		n := 0
+		x.each(func(k rowKey, l loc) { n++ })
+		if n != len(keys) {
+			t.Fatalf("each gave %d keys, want %d", n, len(keys))
+		}
+	}
+	check(x)
+	x.close()
+	// And from the file, as a start loads it.
+	tbl.State.BaseFiles = []string{base}
+	dead := &deadSet{}
+	for _, p := range dups {
+		dead.add(p)
+	}
+	tbl.dead = map[string]*deadSet{dvStem(base): dead}
+	before := kidxRebuilds.Load()
+	y, err := tbl.baseIndex(base)
+	if err != nil || kidxRebuilds.Load() != before {
+		t.Fatalf("the file did not load: %v", err)
+	}
+	check(y)
+	y.close()
 }
 
 // TestKidxDigestsDoNotSurviveRestart: a digest in the file was true when the
@@ -861,12 +1107,13 @@ func TestKidxSearch(t *testing.T) {
 	}
 	for name, gen := range shapes {
 		for _, n := range []int{1, 7, 64, 65, 5000} {
-			tbl := kidxTable(t, false)
 			keys := make([]rowKey, n)
 			for i := range keys {
 				keys[i] = gen(i)
 			}
-			tbl.numericKey = keys[0].isNum
+			// The column's type decides what the file holds: these are the two
+			// fixed-width kinds, whose record is the key.
+			tbl := kidxTable(t, keys[0].isUUID)
 			base := "000001.parquet"
 			if err := os.WriteFile(filepath.Join(tbl.Dir, "base", base), []byte("x"), 0o644); err != nil {
 				t.Fatal(err)
