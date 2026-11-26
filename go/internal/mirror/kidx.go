@@ -41,16 +41,48 @@ package mirror
 // the name alone binds nothing, and why every writer of a base file removes
 // the index of that name before it starts.
 //
-// WHAT IT DOES NOT COVER. Fixed-width keys only: an integer primary key
-// (8 bytes) or a UUID (16). A table keyed by any other text keeps the in-memory
-// maps exactly as before, and a table that mixes UUID-shaped and other text
-// keys holds the odd ones in memory and rebuilds its file at every start.
-// A table with more than one base file (nothing writes one today) also keeps
-// the old path. QS_DISK_INDEX=0 turns all of this off.
+// KEYS OF ANY LENGTH. An integer primary key is its 8 bytes and a uuid its 16,
+// and those two are the file's fast path: the record IS the key. Every other
+// key type — text, varchar, numeric, anything pgoutput prints — is held as the
+// exact bytes PostgreSQL printed. Its record is sorted by the first 128 bits of
+// the key's SHA-256 and carries the offset of the key itself in a HEAP that
+// follows the records:
+//
+//	header | records: hash(16) pos(4) digest(8) heap offset(8) | heap: uvarint length, bytes
+//
+// The hash only says where to look. A record is the key's only if the bytes in
+// the heap are the key's bytes, compared in full, so two keys with one hash
+// (which SHA-256 makes a curiosity, and which the tests force by swapping the
+// hash for one of a few bits) are two records that each answer for themselves.
+// The heap is in row order, which is the order the builder meets the keys in,
+// so it is written as they arrive and never sorted.
+//
+// THE FORMAT HAS A VERSION, in the magic. QSKIDX01 was the fixed-width file of
+// the previous release; this one writes QSKIDX02, whose header also says which
+// kind of key it holds and how long the heap is. A file of another version is
+// not an index as far as this binary is concerned: it is removed and rebuilt,
+// exactly like a damaged one, and an older binary does the same with ours.
+//
+// IT IS NEVER WRITTEN IN PLACE. A mapped file that shrinks is a SIGBUS on the
+// next lookup past its new end, so nothing in this package opens an index for
+// writing under its own name: a build writes a temporary and renames it, a
+// removal unlinks, and both leave an existing mapping looking at the old inode.
+// The mapping is made from the very descriptor that was verified (or written),
+// and the file's size is read again after it is mapped. What that does NOT
+// cover is another program truncating the file afterwards: the kernel offers
+// no way to hold a size, and that is a fault.
+//
+// WHAT IT DOES NOT COVER. A key that is not of its table's kind — text that
+// will not parse in an integer column, which PostgreSQL could not have stored —
+// is held in memory and makes the file rebuild at every start. A table with
+// more than one base file (nothing writes one today) keeps the maps.
+// QS_DISK_INDEX=0 turns all of this off.
 
 import (
 	"bufio"
+	"bytes"
 	"container/heap"
+	"crypto/sha256"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -61,6 +93,7 @@ import (
 	"runtime"
 	"slices"
 	"sync/atomic"
+	"unsafe"
 
 	"github.com/apache/arrow-go/v18/parquet/file"
 )
@@ -71,18 +104,88 @@ import (
 var DiskIndex = os.Getenv("QS_DISK_INDEX") != "0"
 
 const (
-	kidxMagic  = "QSKIDX01"
-	kidxHeader = 72
+	kidxMagic = "QSKIDX02"
+	// kidxMagicV1 is the fixed-width file of the previous release: recognised,
+	// so that it can be said plainly why it is rebuilt, and never read.
+	kidxMagicV1 = "QSKIDX01"
+	kidxHeader  = 88
 	// kidxFence is how many records one in-memory fence key stands for: eight
 	// bytes of heap per 64 rows, 1.25 MB at ten million, and a search under one
 	// fence stays inside half a page of the file.
 	kidxFence = 64
 )
 
+// The kinds of key a file holds. Zero is "none": the index is in memory only.
+const (
+	kidxInt   = 1 // int64, 8 bytes, sign bit flipped
+	kidxUUID  = 2 // 16 bytes
+	kidxBytes = 3 // any bytes: 16 bytes of hash, and the key in the heap
+)
+
+// kidxKeyWidth is the bytes of sort key in a record of each kind.
+func kidxKeyWidth(kind int) int {
+	if kind == kidxInt {
+		return 8
+	}
+	return 16
+}
+
+// kidxRecSize is the bytes in a record: the sort key, the position, the digest
+// and, for a key held in the heap, where.
+func kidxRecSize(kind int) int {
+	n := kidxKeyWidth(kind) + 12
+	if kind == kidxBytes {
+		n += 8
+	}
+	return n
+}
+
+const kidxMaxRec = 36
+
+// kidxHash is the sort key of a variable-length key: the first 128 bits of its
+// SHA-256. A variable so that a test can make collisions ordinary.
+var kidxHash = func(s string) kkey {
+	h := sha256.Sum256(unsafe.Slice(unsafe.StringData(s), len(s)))
+	return kkey{hi: binary.BigEndian.Uint64(h[:]), lo: binary.BigEndian.Uint64(h[8:])}
+}
+
+// kidxKind is the kind of key this table's base index holds.
+func (t *Table) kidxKind() int {
+	switch {
+	case t.numericKey:
+		return kidxInt
+	case arrowType(t.Columns[t.Key]) == uuidArrowType:
+		return kidxUUID
+	}
+	return kidxBytes
+}
+
+// kidxKeyOf is a key in the form a file of this kind sorts by. text is the
+// key's own bytes, for the kind that compares them. ok is false for a key the
+// kind cannot hold.
+func kidxKeyOf(kind int, k rowKey) (kk kkey, text string, ok bool) {
+	switch kind {
+	case kidxInt:
+		return toKKey(k), "", k.isNum
+	case kidxUUID:
+		return toKKey(k), "", k.isUUID
+	case kidxBytes:
+		if k.isNum {
+			return kkey{}, "", false
+		}
+		text = k.String()
+		return kidxHash(text), text, true
+	}
+	return kkey{}, "", false
+}
+
 // kidxRunRecords is how many records the builder sorts in memory before it
-// spills a run to disk: 32 bytes each, so 32 MB. A variable so a test can make
-// a small table take the merge path.
-var kidxRunRecords = 1 << 20
+// spills a run to disk: 40 bytes each, so 10 MB. It was a million, and 40 MB
+// is a sixth of the sidecar's default memory limit, held for the whole of a
+// snapshot and of every rewrite; a run a quarter the size costs four times the
+// runs to merge, each a 64 KB reader. A variable so a test can make a small
+// table take the merge path.
+var kidxRunRecords = 1 << 18
 
 // kidxRebuilds counts index files that were missing, stale or corrupt and were
 // rebuilt from the base file. Tests read it to prove a bad file was detected.
@@ -99,6 +202,7 @@ func (a kkey) less(b kkey) bool { return a.hi < b.hi || (a.hi == b.hi && a.lo < 
 type krec struct {
 	k    kkey
 	hash uint64
+	off  uint64 // of the key in the heap, for kidxBytes
 	pos  uint32
 }
 
@@ -143,13 +247,6 @@ func toKKey(k rowKey) kkey {
 	return kkey{hi: uint64(k.num), lo: k.lo}
 }
 
-func fromKKey(width int, k kkey) rowKey {
-	if width == 8 {
-		return rowKey{num: int64(k.hi ^ (1 << 63)), isNum: true}
-	}
-	return rowKey{num: int64(k.hi), lo: k.lo, isUUID: true}
-}
-
 // kidxBind is what ties an index file to one base file.
 type kidxBind struct {
 	seq   uint64 // the base file's sequence number, i.e. its name
@@ -170,18 +267,28 @@ func kidxBindFor(parquetPath string, id fileID, rows uint64) (kidxBind, error) {
 }
 
 type kidxHdr struct {
-	width   int
+	kind    int
 	records uint64
 	extras  uint64
 	bind    kidxBind
-	crc     uint32
+	crc     uint32 // of the records
+	heapCrc uint32
+	heapLen uint64
 }
 
+// The header, little-endian:
+//
+//	 0 magic            8 kind (u32)       12 key width (u32)
+//	16 records         24 base rows        32 keys not in the file
+//	40 base sequence   48 base size        56 base mtime
+//	64 records crc     68 heap crc         72 heap length
+//	80 zero            84 crc of the 84 bytes before it
 func (h kidxHdr) encode() []byte {
 	b := make([]byte, kidxHeader)
 	copy(b, kidxMagic)
 	le := binary.LittleEndian
-	le.PutUint32(b[8:], uint32(h.width))
+	le.PutUint32(b[8:], uint32(h.kind))
+	le.PutUint32(b[12:], uint32(kidxKeyWidth(h.kind)))
 	le.PutUint64(b[16:], h.records)
 	le.PutUint64(b[24:], h.bind.rows)
 	le.PutUint64(b[32:], h.extras)
@@ -189,54 +296,72 @@ func (h kidxHdr) encode() []byte {
 	le.PutUint64(b[48:], h.bind.size)
 	le.PutUint64(b[56:], uint64(h.bind.mtime))
 	le.PutUint32(b[64:], h.crc)
-	le.PutUint32(b[68:], crc32.Checksum(b[:68], crcTable))
+	le.PutUint32(b[68:], h.heapCrc)
+	le.PutUint64(b[72:], h.heapLen)
+	le.PutUint32(b[84:], crc32.Checksum(b[:84], crcTable))
 	return b
 }
 
+var errKidxOldVersion = errors.New("kidx: written by a previous version of the format")
+
 func decodeKidxHdr(b []byte) (kidxHdr, error) {
+	if len(b) >= 8 && string(b[:8]) == kidxMagicV1 {
+		return kidxHdr{}, errKidxOldVersion
+	}
 	if len(b) < kidxHeader || string(b[:8]) != kidxMagic {
 		return kidxHdr{}, errors.New("kidx: not an index file")
 	}
 	le := binary.LittleEndian
-	if le.Uint32(b[68:]) != crc32.Checksum(b[:68], crcTable) {
+	if le.Uint32(b[84:]) != crc32.Checksum(b[:84], crcTable) {
 		return kidxHdr{}, errors.New("kidx: header checksum")
 	}
 	h := kidxHdr{
-		width:   int(le.Uint32(b[8:])),
+		kind:    int(le.Uint32(b[8:])),
 		records: le.Uint64(b[16:]),
 		extras:  le.Uint64(b[32:]),
 		crc:     le.Uint32(b[64:]),
+		heapCrc: le.Uint32(b[68:]),
+		heapLen: le.Uint64(b[72:]),
 	}
 	h.bind = kidxBind{
 		rows: le.Uint64(b[24:]), seq: le.Uint64(b[40:]),
 		size: le.Uint64(b[48:]), mtime: int64(le.Uint64(b[56:])),
 	}
-	if h.width != 8 && h.width != 16 {
-		return kidxHdr{}, errors.New("kidx: key width")
+	if h.kind < kidxInt || h.kind > kidxBytes || int(le.Uint32(b[12:])) != kidxKeyWidth(h.kind) {
+		return kidxHdr{}, errors.New("kidx: key kind")
+	}
+	if h.kind != kidxBytes && h.heapLen != 0 {
+		return kidxHdr{}, errors.New("kidx: a heap on fixed-width keys")
 	}
 	return h, nil
 }
 
-func putRec(b []byte, width int, r krec) {
+func putRec(b []byte, kind int, r krec) {
 	binary.BigEndian.PutUint64(b, r.k.hi)
 	o := 8
-	if width == 16 {
+	if kind != kidxInt {
 		binary.BigEndian.PutUint64(b[8:], r.k.lo)
 		o = 16
 	}
 	binary.LittleEndian.PutUint32(b[o:], r.pos)
 	binary.LittleEndian.PutUint64(b[o+4:], r.hash)
+	if kind == kidxBytes {
+		binary.LittleEndian.PutUint64(b[o+12:], r.off)
+	}
 }
 
-func getRec(b []byte, width int) (r krec) {
+func getRec(b []byte, kind int) (r krec) {
 	r.k.hi = binary.BigEndian.Uint64(b)
 	o := 8
-	if width == 16 {
+	if kind != kidxInt {
 		r.k.lo = binary.BigEndian.Uint64(b[8:])
 		o = 16
 	}
 	r.pos = binary.LittleEndian.Uint32(b[o:])
 	r.hash = binary.LittleEndian.Uint64(b[o+4:])
+	if kind == kidxBytes {
+		r.off = binary.LittleEndian.Uint64(b[o+12:])
+	}
 	return r
 }
 
@@ -249,6 +374,13 @@ type kidxScan struct {
 	fence  []uint64
 	dups   []int // the lower position of each pair of equal keys
 	maxPos uint32
+	maxOff uint64
+	// same says whether two records with one sort key hold one key. It is set
+	// where the sort key is a hash; nil means they do. noDups is for a reader,
+	// which has no use for the answer.
+	same   func(a, b krec) (bool, error)
+	noDups bool
+	group  []krec // the records since the sort key last changed
 }
 
 func (s *kidxScan) note(r krec) error {
@@ -256,9 +388,23 @@ func (s *kidxScan) note(r krec) error {
 		if c := krecCmp(s.prev, r); c >= 0 {
 			return errors.New("kidx: records out of order")
 		}
-		if s.prev.k == r.k {
+	}
+	switch {
+	case s.noDups:
+	case s.same == nil:
+		if s.n > 0 && s.prev.k == r.k {
 			s.dups = append(s.dups, int(s.prev.pos))
 		}
+	default:
+		if s.n > 0 && s.prev.k != r.k {
+			if err := s.endGroup(); err != nil {
+				return err
+			}
+		}
+		s.group = append(s.group, r)
+	}
+	if r.off > s.maxOff {
+		s.maxOff = r.off
 	}
 	if s.n%kidxFence == 0 {
 		s.fence = append(s.fence, r.k.hi)
@@ -271,16 +417,39 @@ func (s *kidxScan) note(r krec) error {
 	return nil
 }
 
+// endGroup settles a run of records that share a sort key: each one whose key
+// appears again further on is a superseded copy. With a real hash the run is
+// one record, or the copies of one key; it is only ever long under a collision.
+func (s *kidxScan) endGroup() error {
+	g := s.group
+	for i := 0; i < len(g)-1; i++ {
+		for j := i + 1; j < len(g); j++ {
+			eq, err := s.same(g[i], g[j])
+			if err != nil {
+				return err
+			}
+			if eq {
+				s.dups = append(s.dups, int(g[i].pos))
+				break
+			}
+		}
+	}
+	s.group = s.group[:0]
+	return nil
+}
+
 // diskIndex is one index file, mapped.
 type diskIndex struct {
 	file  fileID // the base file it indexes
 	path  string
-	width int
+	kind  int
+	width int // bytes of sort key in a record
 	rec   int // bytes per record
 	n     int
 	rows  int // physical rows in the base file
 	data  []byte
 	recs  []byte
+	heap  []byte   // the keys themselves, for kidxBytes
 	fence []uint64 // the top half of every kidxFence-th key
 	unmap func()
 	// noHash says the digests in the file are not to be believed: the index
@@ -307,7 +476,46 @@ func (d *diskIndex) close() {
 		return
 	}
 	d.unmap()
-	d.unmap, d.data, d.recs, d.n = nil, nil, nil, 0
+	d.unmap, d.data, d.recs, d.heap, d.n = nil, nil, nil, nil, 0
+}
+
+// keyBytes is the key record i stands for, out of the heap. The offset came
+// from a file whose checksum held, and is checked all the same: a wrong one
+// must be a key that matches nothing, not a read past the mapping.
+func (d *diskIndex) keyBytes(i int) ([]byte, bool) {
+	off := binary.LittleEndian.Uint64(d.recs[i*d.rec+d.width+12:])
+	if off >= uint64(len(d.heap)) {
+		return nil, false
+	}
+	n, w := binary.Uvarint(d.heap[off:])
+	if w <= 0 || n > uint64(len(d.heap))-off-uint64(w) {
+		return nil, false
+	}
+	at := off + uint64(w)
+	return d.heap[at : at+n], true
+}
+
+// holds reports whether record i is the record of this key, given that its sort
+// key already matched. For a fixed-width key that is the whole question.
+func (d *diskIndex) holds(i int, text string) bool {
+	if d.kind != kidxBytes {
+		return true
+	}
+	b, ok := d.keyBytes(i)
+	return ok && string(b) == text
+}
+
+// rowKeyAt is the key of record i in the form the rest of the index uses.
+func (d *diskIndex) rowKeyAt(i int) rowKey {
+	switch d.kind {
+	case kidxInt:
+		return rowKey{num: int64(d.keyAt(i).hi ^ (1 << 63)), isNum: true}
+	case kidxUUID:
+		k := d.keyAt(i)
+		return rowKey{num: int64(k.hi), lo: k.lo, isUUID: true}
+	}
+	b, _ := d.keyBytes(i)
+	return keyStringFor(false, string(b))
 }
 
 func (d *diskIndex) keyAt(i int) kkey {
@@ -455,23 +663,26 @@ func (d *diskIndex) search(k kkey) int {
 }
 
 // openKidx maps the index of one base file if, and only if, it is the index of
-// THAT file and is intact. Any error means "rebuild".
-func openKidx(path, parquetPath string, id fileID, width int) (*diskIndex, error) {
+// THAT file, of this kind of key, and intact. Any error means "rebuild".
+func openKidx(path, parquetPath string, id fileID, kind int) (*diskIndex, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, err
 	}
 	defer f.Close()
 	hb := make([]byte, kidxHeader)
-	if _, err := io.ReadFull(f, hb); err != nil {
+	if n, _ := io.ReadFull(f, hb); n < kidxHeader {
+		if _, err := decodeKidxHdr(hb[:n]); errors.Is(err, errKidxOldVersion) {
+			return nil, err
+		}
 		return nil, errors.New("kidx: short header")
 	}
 	h, err := decodeKidxHdr(hb)
 	if err != nil {
 		return nil, err
 	}
-	if h.width != width {
-		return nil, errors.New("kidx: key width is not this table's")
+	if h.kind != kind {
+		return nil, errors.New("kidx: key kind is not this table's")
 	}
 	if h.extras != 0 {
 		return nil, errors.New("kidx: not every key of the base file is in it")
@@ -487,19 +698,19 @@ func openKidx(path, parquetPath string, id fileID, width int) (*diskIndex, error
 	if h.bind != want || h.records != want.rows {
 		return nil, errors.New("kidx: describes a different base file")
 	}
-	rec := width + 12
+	rec := kidxRecSize(kind)
 	st, err := f.Stat()
 	if err != nil {
 		return nil, err
 	}
-	if uint64(st.Size()) != kidxHeader+h.records*uint64(rec) {
+	if h.heapLen > 1<<56 || uint64(st.Size()) != kidxHeader+h.records*uint64(rec)+h.heapLen {
 		return nil, errors.New("kidx: wrong length")
 	}
 
 	// One sequential pass, by read and not through the mapping: it checks the
 	// checksum and the order and collects the fence, and it leaves the pages in
 	// the page cache without leaving them mapped into this process.
-	var scan kidxScan
+	scan := kidxScan{noDups: true}
 	scan.fence = make([]uint64, 0, int(h.records)/kidxFence+1)
 	crc := uint32(0)
 	buf := make([]byte, rec*(1<<15))
@@ -510,7 +721,7 @@ func openKidx(path, parquetPath string, id fileID, width int) (*diskIndex, error
 		}
 		crc = crc32.Update(crc, crcTable, buf[:n*rec])
 		for i := 0; i < n; i++ {
-			if err := scan.note(getRec(buf[i*rec:], width)); err != nil {
+			if err := scan.note(getRec(buf[i*rec:], kind)); err != nil {
 				return nil, err
 			}
 		}
@@ -522,26 +733,72 @@ func openKidx(path, parquetPath string, id fileID, width int) (*diskIndex, error
 	if h.records > 0 && uint64(scan.maxPos) >= h.bind.rows {
 		return nil, errors.New("kidx: position beyond the base file")
 	}
-	return mapKidx(path, id, width, int(h.records), int(h.bind.rows), scan.fence)
+	if kind == kidxBytes {
+		if h.records > 0 && scan.maxOff >= h.heapLen {
+			return nil, errors.New("kidx: key beyond the heap")
+		}
+		crc = 0
+		for left := h.heapLen; left > 0; {
+			n := int(min(left, uint64(len(buf))))
+			if _, err := io.ReadFull(f, buf[:n]); err != nil {
+				return nil, errors.New("kidx: short read")
+			}
+			crc = crc32.Update(crc, crcTable, buf[:n])
+			left -= uint64(n)
+		}
+		if crc != h.heapCrc {
+			return nil, errors.New("kidx: heap checksum")
+		}
+	}
+	// Mapped from the descriptor that was just read, not from the name again:
+	// the name can have been given to another file since.
+	return mapKidx(f, path, id, kind, int(h.records), int(h.bind.rows), h.heapLen, scan.fence)
 }
 
-func mapKidx(path string, id fileID, width, n, rows int, fence []uint64) (*diskIndex, error) {
-	d := &diskIndex{file: id, path: path, width: width, rec: width + 12, n: n, rows: rows, fence: fence}
+// mapKidx maps an index through a descriptor of it that the caller has read or
+// written every byte of.
+//
+// The size is read AGAIN once the mapping exists. A file that was cut short
+// between the pass that checked it and this point would map without complaint
+// and fault on the first lookup past its end; here that is an error, the
+// mapping is dropped, and the caller rebuilds. See the top of this file for
+// what is still not covered afterwards.
+func mapKidx(f *os.File, path string, id fileID, kind, n, rows int, heapLen uint64, fence []uint64) (*diskIndex, error) {
+	d := &diskIndex{
+		file: id, path: path, kind: kind, width: kidxKeyWidth(kind), rec: kidxRecSize(kind),
+		n: n, rows: rows, fence: fence,
+	}
 	d.memo = make([]kidxMemo, 1<<kidxMemoBits)
 	if n == 0 {
 		d.unmap = func() {}
 		return d, nil
 	}
-	data, unmap, err := mapFile(path, kidxHeader+n*d.rec)
+	size := kidxHeader + n*d.rec + int(heapLen)
+	data, unmap, err := mapFile(f, size)
 	if err != nil {
 		return nil, err
 	}
-	d.data, d.recs, d.unmap = data, data[kidxHeader:], unmap
+	if afterKidxMap != nil {
+		afterKidxMap(path)
+	}
+	if st, err := f.Stat(); err != nil || st.Size() != int64(size) {
+		unmap()
+		return nil, errKidxResized
+	}
+	d.data, d.unmap = data, unmap
+	d.recs = data[kidxHeader : kidxHeader+n*d.rec]
+	d.heap = data[kidxHeader+n*d.rec:]
 	// Every swap site closes the index it replaces. This is for the one that
 	// forgets: a mapping of an unlinked file holds its blocks until it goes.
 	runtime.SetFinalizer(d, (*diskIndex).close)
 	return d, nil
 }
+
+var errKidxResized = errors.New("kidx: the file changed size while it was being mapped")
+
+// afterKidxMap is for tests: called between the mapping and the second look at
+// the file's size, which is the window that look exists for.
+var afterKidxMap func(path string)
 
 func parquetRows(path string) (int64, error) {
 	rdr, err := file.OpenParquetFile(path, false)
@@ -574,15 +831,22 @@ func (t *Table) dropKidx(baseName string) {
 // pointer-free slice and the runs merged, so its memory is the run, not the
 // table.
 //
-// A key that has no fixed width (see kidxWidth) cannot go in the file and is
-// held in an ordinary keyIndex instead — which, for a table keyed by text, is
-// all of them, and is exactly what there was before.
+// A key that is not of the table's kind (kidxKeyOf) cannot go in the file and
+// is held in an ordinary keyIndex instead. With QS_DISK_INDEX=0 that is every
+// key, and is exactly what there was before the file existed.
+//
+// A key of any length goes to the heap as it arrives: a temporary beside the
+// index, appended to in row order, copied behind the records at the end.
 type kidxBuilder struct {
 	t       *Table
 	name    string // base file name
 	id      fileID
-	width   int // 0: build in memory only
+	kind    int // 0: build in memory only
 	path    string
+	heapF   *os.File
+	heapW   *bufio.Writer
+	heapLen uint64
+	heapCrc uint32
 	recs    []krec
 	runs    []string
 	records int
@@ -604,10 +868,7 @@ func (t *Table) newKidxBuilder(name string, hint int, keepExtras bool) *kidxBuil
 	b := &kidxBuilder{t: t, name: name, id: baseID(name), keepExtras: keepExtras, hint: hint}
 	t.dropKidx(name)
 	if DiskIndex {
-		b.width = 16
-		if t.numericKey {
-			b.width = 8
-		}
+		b.kind = t.kidxKind()
 		b.path = t.kidxPath(name)
 	}
 	if keepExtras {
@@ -621,14 +882,15 @@ func (t *Table) newKidxBuilder(name string, hint int, keepExtras bool) *kidxBuil
 // is written regardless, and the caller's dead set decides.
 func (b *kidxBuilder) add(k rowKey, pos int32, hash uint64, dead bool) error {
 	b.rows++
-	if b.width == 0 || kidxWidth(k) != b.width {
+	kk, text, ok := kidxKeyOf(b.kind, k)
+	if !ok {
 		b.nExtras++
 		if dead {
 			b.deadExtras++
 			return nil
 		}
 		if b.keepExtras {
-			if b.width == 0 && b.extras.hint == 0 {
+			if b.kind == 0 && b.extras.hint == 0 {
 				b.extras.hint = b.hint
 			}
 			if prev, ok := b.extras.get(k); ok {
@@ -641,12 +903,78 @@ func (b *kidxBuilder) add(k rowKey, pos int32, hash uint64, dead bool) error {
 	if b.recs == nil {
 		b.recs = make([]krec, 0, min(max(b.hint, 1024), kidxRunRecords))
 	}
-	b.recs = append(b.recs, krec{k: toKKey(k), hash: hash, pos: uint32(pos)})
+	r := krec{k: kk, hash: hash, pos: uint32(pos)}
+	if b.kind == kidxBytes {
+		off, err := b.heapAdd(text)
+		if err != nil {
+			return err
+		}
+		r.off = off
+	}
+	b.recs = append(b.recs, r)
 	b.records++
 	if len(b.recs) >= kidxRunRecords {
 		return b.spill()
 	}
 	return nil
+}
+
+// heapAdd appends one key to the heap and returns where it went.
+func (b *kidxBuilder) heapAdd(text string) (uint64, error) {
+	if b.heapF == nil {
+		if err := os.MkdirAll(filepath.Dir(b.path), 0o755); err != nil {
+			return 0, err
+		}
+		// ".tmp": the sweep of index/ leaves a build in flight its temporaries
+		// by that name (publish.go), and dropKidx removes them by it.
+		f, err := os.CreateTemp(filepath.Dir(b.path), filepath.Base(b.path)+".tmpheap*")
+		if err != nil {
+			return 0, err
+		}
+		b.heapF, b.heapW = f, bufio.NewWriterSize(f, 1<<20)
+	}
+	var lb [binary.MaxVarintLen64]byte
+	n := binary.PutUvarint(lb[:], uint64(len(text)))
+	off := b.heapLen
+	b.heapCrc = crc32.Update(b.heapCrc, crcTable, lb[:n])
+	b.heapCrc = crc32.Update(b.heapCrc, crcTable, unsafe.Slice(unsafe.StringData(text), len(text)))
+	if _, err := b.heapW.Write(lb[:n]); err != nil {
+		return 0, err
+	}
+	if _, err := b.heapW.WriteString(text); err != nil {
+		return 0, err
+	}
+	b.heapLen += uint64(n + len(text))
+	return off, nil
+}
+
+// heapKey reads one key back out of the heap being built.
+func (b *kidxBuilder) heapKey(off uint64) ([]byte, error) {
+	var lb [binary.MaxVarintLen64]byte
+	m, err := b.heapF.ReadAt(lb[:], int64(off))
+	if m == 0 && err != nil {
+		return nil, err
+	}
+	n, w := binary.Uvarint(lb[:m])
+	if w <= 0 || off+uint64(w)+n > b.heapLen {
+		return nil, errors.New("kidx: heap offset")
+	}
+	key := make([]byte, n)
+	if n > 0 {
+		if _, err := b.heapF.ReadAt(key, int64(off)+int64(w)); err != nil {
+			return nil, err
+		}
+	}
+	return key, nil
+}
+
+func (b *kidxBuilder) closeHeap() {
+	if b.heapF != nil {
+		name := b.heapF.Name()
+		_ = b.heapF.Close()
+		_ = os.Remove(name)
+		b.heapF, b.heapW = nil, nil
+	}
 }
 
 func (b *kidxBuilder) spill() error {
@@ -661,10 +989,10 @@ func (b *kidxBuilder) spill() error {
 	}
 	b.runs = append(b.runs, p)
 	w := bufio.NewWriterSize(f, 1<<20)
-	rec := b.width + 12
-	var buf [28]byte
+	rec := kidxRecSize(b.kind)
+	var buf [kidxMaxRec]byte
 	for _, r := range b.recs {
-		putRec(buf[:], b.width, r)
+		putRec(buf[:], b.kind, r)
 		if _, err := w.Write(buf[:rec]); err != nil {
 			f.Close()
 			return err
@@ -680,6 +1008,7 @@ func (b *kidxBuilder) spill() error {
 
 func (b *kidxBuilder) abort() {
 	b.recs = nil
+	b.closeHeap()
 	if b.path != "" {
 		b.t.dropKidx(b.name)
 	}
@@ -721,7 +1050,7 @@ func (b *kidxBuilder) finish() (x *keyIndex, recDups, extraDups []int, err error
 		x = newKeyIndex(0)
 	}
 	x.deadExtras = b.deadExtras
-	if b.width == 0 || b.records == 0 || (!b.keepExtras && b.nExtras > 0) {
+	if b.kind == 0 || b.records == 0 || (!b.keepExtras && b.nExtras > 0) {
 		b.abort()
 		return x, nil, b.extraDups, nil
 	}
@@ -729,7 +1058,13 @@ func (b *kidxBuilder) finish() (x *keyIndex, recDups, extraDups []int, err error
 		if err != nil {
 			b.abort()
 		}
+		b.closeHeap()
 	}()
+	if b.heapW != nil {
+		if err := b.heapW.Flush(); err != nil {
+			return nil, nil, nil, err
+		}
+	}
 	bind, err := kidxBindFor(filepath.Join(b.t.Dir, "base", b.name), b.id, uint64(b.rows))
 	if err != nil {
 		return nil, nil, nil, err
@@ -750,16 +1085,27 @@ func (b *kidxBuilder) finish() (x *keyIndex, recDups, extraDups []int, err error
 	if _, err := w.Write(make([]byte, kidxHeader)); err != nil {
 		return nil, nil, nil, err
 	}
-	rec := b.width + 12
+	rec := kidxRecSize(b.kind)
 	var scan kidxScan
+	if b.kind == kidxBytes {
+		// Two records with one hash are one key only if the bytes say so.
+		scan.same = func(x, y krec) (bool, error) {
+			kx, err := b.heapKey(x.off)
+			if err != nil {
+				return false, err
+			}
+			ky, err := b.heapKey(y.off)
+			return bytes.Equal(kx, ky), err
+		}
+	}
 	scan.fence = make([]uint64, 0, b.records/kidxFence+1)
 	crc := uint32(0)
-	var buf [28]byte
+	var buf [kidxMaxRec]byte
 	emit := func(r krec) error {
 		if err := scan.note(r); err != nil {
 			return err
 		}
-		putRec(buf[:], b.width, r)
+		putRec(buf[:], b.kind, r)
 		crc = crc32.Update(crc, crcTable, buf[:rec])
 		_, err := w.Write(buf[:rec])
 		return err
@@ -782,16 +1128,16 @@ func (b *kidxBuilder) finish() (x *keyIndex, recDups, extraDups []int, err error
 				return nil, nil, nil, err
 			}
 			defer rf.Close()
-			rr := &runReader{r: bufio.NewReaderSize(rf, 1<<18), f: rf, left: kidxRunRecords}
+			rr := &runReader{r: bufio.NewReaderSize(rf, 1<<16), f: rf, left: kidxRunRecords}
 			if _, err := io.ReadFull(rr.r, buf[:rec]); err != nil {
 				return nil, nil, nil, err
 			}
-			rr.cur = getRec(buf[:], b.width)
+			rr.cur = getRec(buf[:], b.kind)
 			rr.left--
 			*h = append(*h, rr)
 		}
 		heap.Init(h)
-		var rb [28]byte
+		var rb [kidxMaxRec]byte
 		for h.Len() > 0 || ti < len(tail) {
 			if h.Len() == 0 || (ti < len(tail) && krecCmp(tail[ti], (*h)[0].cur) < 0) {
 				if err := emit(tail[ti]); err != nil {
@@ -811,31 +1157,48 @@ func (b *kidxBuilder) finish() (x *keyIndex, recDups, extraDups []int, err error
 			if _, err := io.ReadFull(rr.r, rb[:rec]); err != nil {
 				return nil, nil, nil, err
 			}
-			rr.cur = getRec(rb[:], b.width)
+			rr.cur = getRec(rb[:], b.kind)
 			rr.left--
 			heap.Fix(h, 0)
 		}
 	}
 	b.recs = nil
+	if scan.same != nil {
+		if err := scan.endGroup(); err != nil {
+			return nil, nil, nil, err
+		}
+	}
+	// The heap goes behind the records, as it was written: in row order.
+	if b.heapF != nil {
+		if _, err := io.Copy(w, io.NewSectionReader(b.heapF, 0, int64(b.heapLen))); err != nil {
+			return nil, nil, nil, err
+		}
+	}
 	if err := w.Flush(); err != nil {
 		return nil, nil, nil, err
 	}
-	hdr := kidxHdr{width: b.width, records: uint64(b.records), extras: uint64(b.nExtras), bind: bind, crc: crc}
+	hdr := kidxHdr{
+		kind: b.kind, records: uint64(b.records), extras: uint64(b.nExtras), bind: bind,
+		crc: crc, heapCrc: b.heapCrc, heapLen: b.heapLen,
+	}
 	if _, err := f.WriteAt(hdr.encode(), 0); err != nil {
 		return nil, nil, nil, err
 	}
 	// Not fsynced. It is derived data with a checksum: a file torn by a crash
 	// fails the check and is rebuilt, which costs what a start cost before.
-	if err := f.Close(); err != nil {
-		return nil, nil, nil, err
-	}
+	//
+	// Renamed into place, never written there: an index of this name may be
+	// mapped, by this process or by another that opened the same table.
 	if err := os.Rename(tmp, b.path); err != nil {
+		_ = os.Remove(tmp)
 		return nil, nil, nil, err
 	}
 	for _, p := range b.runs {
 		_ = os.Remove(p)
 	}
-	d, err := mapKidx(b.path, b.id, b.width, b.records, b.rows, scan.fence)
+	// Mapped through the descriptor it was written through, which is closed on
+	// return: a mapping does not need it.
+	d, err := mapKidx(f, b.path, b.id, b.kind, b.records, b.rows, b.heapLen, scan.fence)
 	if err != nil {
 		return nil, nil, nil, err
 	}
@@ -853,13 +1216,9 @@ func (t *Table) baseIndex(base string) (*keyIndex, error) {
 	if err != nil {
 		return nil, err
 	}
-	width := 16
-	if t.numericKey {
-		width = 8
-	}
 	parquetPath := filepath.Join(t.Dir, rel)
 	if DiskIndex {
-		if d, err := openKidx(t.kidxPath(base), parquetPath, id, width); err == nil {
+		if d, err := openKidx(t.kidxPath(base), parquetPath, id, t.kidxKind()); err == nil {
 			d.noHash = true
 			x := newKeyIndex(0)
 			x.attach(d)
