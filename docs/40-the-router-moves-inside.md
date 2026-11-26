@@ -36,6 +36,11 @@ has written nothing is routed by default (`quicksilver.route_in_transaction =
 safe`); and the routed numbers under concurrent writes to the mirrored table are
 no longer the zeros that the sections below report as history.
 
+**Ordinary roles** (2026-11-26, [Ordinary roles](#ordinary-roles)): on the
+patched pg_duckdb 1.2.2 build, a role that is a member of `duckdb.postgres_role`
+and holds neither file role is routed, and every other role stays on the heap.
+On stock pg_duckdb nothing changes for them.
+
 Getting there removed things from the list that the task's own sketch put on
 it. They are in [What the harness took off the list](#what-the-harness-took-off-the-list),
 and they are the most useful part of this document.
@@ -485,46 +490,95 @@ asked.
 - The registry, the allowlist, `register_mirror`, `report_applied_lsn` and
   `quicksilver.allow_unsafe` are refused to an ordinary role.
 
-**Roles that are not superusers are never routed.** This is the one part of
-the requirement that stock pg_duckdb 1.2.0 does not allow, measured on this
-cluster (`sql/unprivileged.sql`, which proves the heap answer for each case):
+**Roles that are not superusers are routed only on the confined build.** The
+rules, and what changed on 2026-11-26, are in [Ordinary roles](#ordinary-roles).
+On stock pg_duckdb 1.2.x such a role is answered from the heap, as it always
+was, and the reasons are the ones measured on this cluster (`sql/unprivileged.sql`):
+a role outside `duckdb.postgres_role` is refused DuckDB outright; a member
+gets a DuckDB with no local file system; and `pg_read_server_files` plus
+`pg_write_server_files` would give it the file system back, with `COPY` to and
+from any file the server can reach.
 
-- A role with `SELECT` on the heap table and no membership of
-  `duckdb.postgres_role`: pg_duckdb refuses DuckDB to it (`DuckDB execution is
-  not allowed because you have not been granted the duckdb.postgres_role`).
-  Running the mirror as the bootstrap superuser inside the router does not
-  help: the same refusal came back from pg_duckdb's planning call.
-- A member of `duckdb.postgres_role`: its DuckDB has no local file system
-  (`File system LocalFileSystem has been disabled by configuration`), with
-  `duckdb.enable_external_access = off` and `duckdb.allowed_directories` set to
-  the lake's directory. So it cannot read the lake either.
-- Granting `pg_read_server_files` and `pg_write_server_files` would give it the
-  file system back, and with it `COPY` from and to any file the server can
-  reach. That is not a setting an operator should take.
 
-The router therefore answers every role that is not a superuser from the heap
-(reason: "the role is not a superuser"), with the heap's rows, the heap's
-error and the heap's plan, and it never asks the mirror for them. A row that
-the mirror would have added, or hid, is never seen by such a role
-(`sql/permissions.sql` fabricates one to show it).
+## Ordinary roles
 
-What an operator would have to set, and what would still be missing:
+A role that is not a superuser is routed only when all of these hold. Otherwise
+it is answered from the heap, with the heap's rows, error and plan, and the
+reason is `the role is not a superuser (see docs/40)`.
+
+1. **The confined build.** `SHOW duckdb.confined_file_access` is `on`. The marker
+   is defined by `bench/patches/pg_duckdb-1.2.2-allowed-directories.patch`
+   (`PGC_INTERNAL`, always `on`). Stock pg_duckdb 1.2.2 does not define it, so
+   on the stock build no ordinary role is ever routed. The extension reads the
+   marker with `GetConfigOption`, not by searching the binary.
+2. **The lake is confined.** `duckdb.allowed_directories` is set, and the
+   catalog file of every lake in `quicksilver.lakes` resolves (`realpath`) to a
+   path inside one of its directories. A catalog that is not on this node is not
+   read, so that lake is not attached. (The lake's data files are DuckDB's to
+   confine: DuckDB refuses any file it may not read, and the statement is then
+   answered from the heap.)
+3. **The duckdb role.** The role is a member, with inheritance, of
+   `duckdb.postgres_role`, so pg_duckdb runs DuckDB for it.
+4. **No file role.** The role is a member of neither `pg_read_server_files` nor
+   `pg_write_server_files`. pg_duckdb's own stock test for unconfined file access
+   is membership of both (`AllowRawFileAccess`); a role holding either gets the
+   stock rules, which confine nothing, so it is refused here.
+
+Conditions 1, 3 and 4 and the setting part of 2 are cached per backend. The
+cache is dropped when a membership in `pg_auth_members` changes, and the
+current user and the two settings are compared with the cache at each use, so a
+`SET` of `duckdb.allowed_directories` is seen by the next statement. The lake
+check of 2 is made for each statement. A kept plan is checked again when it
+starts, so a role that has lost its membership since the plan was made is
+answered from the heap.
+
+**Every other rule still applies to such a role**, as it does to everybody:
+
+- `SELECT` on the heap table, and on every column the statement reads, is checked
+  by the executor before the mirror is asked (`no privilege on the heap table`).
+- A table with row-level security is never routed.
+- The allowlist, the cost gate, the freshness rule and the rest of the walk, as
+  in the sections above. A view owned by a role that may read the table is
+  answered as for any owner (`sql/unprivileged_confined.sql`).
+
+**What runs as whom.** For such a role the mirror's DuckDB statements (planning,
+execution, the `ATTACH` of the lake) run as the role itself, so the build's
+confinement is what applies to them. Superusers, and the reads of the registry,
+still run as the bootstrap superuser, as before. A statement cancelled by
+`statement_timeout` while routed is `57014`, as on the heap: pg_duckdb's own
+`XX000` "Query cancelled" is translated (`sql/errors.sql`).
+
+**Operator settings**, from `bench/patches/README.md` and `validate/real/setup.sh`:
 
 ```
 shared_preload_libraries = 'pg_duckdb,pg_quicksilver'
-duckdb.enable_external_access = off           # as validate/real/setup.sh sets it
-duckdb.allowed_directories = '<the lake directory>'
-duckdb.postgres_role = '<a role no application role is a member of>'
+duckdb.enable_external_access = off           # the patch turns it off for the role's DuckDB anyway
+duckdb.allowed_directories = '<the lake directory>/'   # superuser-only
+duckdb.postgres_role = '<the duckdb role>'    # postmaster context: a restart to change it
 ```
 
-These are the settings of the confined configuration `setup.sh` runs. They
-keep the lake out of everybody else's reach, but on stock 1.2.0 they do not
-give a non-superuser the lake: the missing piece is a pg_duckdb build whose
-unprivileged DuckDB keeps the local file system and is confined to
-`duckdb.allowed_directories`. `bench/patches/pg_duckdb-1.2.2-allowed-directories.patch`
-does that for pg_duckdb 1.2.2 (its README has the reasons). The 1.2.0 measurements
-above predate it. Until the patched build is in use, non-superusers stay on the
-heap, and the extension needs no further change for them.
+with pg_duckdb 1.2.2 built from the patch. Nothing else is needed for routing;
+`quicksilver.route = auto` (or `shadow` first) per role or per database.
+
+**Read this before granting the duckdb role.** Membership in
+`duckdb.postgres_role` lets the role run DuckDB statements itself
+(`duckdb.query`, `duckdb.raw_query`). On the confined build DuckDB may read any
+file under `duckdb.allowed_directories`, and the lake directory holds every
+mirrored table's files. So a member can read every mirrored table through DuckDB,
+whatever its SELECT privileges are, and rows the heap has deleted for as long as
+the lake keeps them. This was measured: a member with no privilege on any table
+read the mirror file of `customers` with `read_parquet` and counted its 10,000
+rows. Routing does not cause this, and its rules do not prevent it, because they
+cover the mirror path only. Condition 3 needs the membership, so the role must be
+one that may read every mirrored table. The `duckdb.postgres_role` advice in the
+stock-era text above ("a role no application role is a member of") holds only for
+the stock build.
+
+**On the stock build** nothing changes for ordinary roles: the first condition
+fails, and they are answered from the heap. `sql/unprivileged.sql` gives the same
+expected output on both builds. `sql/unprivileged_confined.sql` runs on the
+confined build only: on stock it prints one line, and its own expected output
+(`expected/unprivileged_confined_1.out`) is what is compared.
 
 ## What is still not routed, and why
 
@@ -1093,7 +1147,8 @@ try to attach (the attempt fails, slowly) unless
 - A real Kubernetes Pod: the plugin's new parameters are unit-tested, and the
   `postgres` image target was written and not built (no Docker daemon here).
 - More than one standby, each with its own sidecar, reconciling one registry;
-  a failover; a non-superuser reading a real mirror.
+  a failover. (A non-superuser reading a real mirror is validated on the
+  confined build only; see [Ordinary roles](#ordinary-roles).)
 - An instance with no route to DuckDB's extension repository.
 - Strict freshness on a primary beyond the regression tests: the primary has
   no mirror in production, and the runs that route there vouch for the LSN by
