@@ -1060,6 +1060,14 @@ and 500k orders, both tables complete): the uuid join takes 30.1 ms and the
 companion join 8.4 ms, the same 500,000 rows and the same sum. The companions
 add 1.09 MB to the orders base file (+12.6%) and about 2 KB to customers.
 
+With the extension (pg_quicksilver, docs/40 "Join keys") the sidecar also
+keeps `quicksilver.join_domains` on the primary: one row per complete member
+column, and the mirror relation exposes its companion. A join between two
+members of one domain is then compared on the companions when the statement
+is routed. A column that stops being complete (its domain passes
+QS_JOIN_DOMAIN_MAX_KEYS, or it leaves QS_JOIN_DOMAINS) loses its row at the
+next tick, and its joins go back to comparing the uuid columns.
+
 Not verified: a crash of the whole host, as opposed to the fsync failures the
 tests inject; joins from engines other than DuckDB; domains across more than
 two tables in production volume.

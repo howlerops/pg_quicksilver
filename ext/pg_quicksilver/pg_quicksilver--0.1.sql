@@ -58,6 +58,7 @@ CREATE TABLE quicksilver.lakes (
     catalog  text NOT NULL CHECK (catalog LIKE '/%')
 );
 
+
 -- ---------------------------------------------------------------- allowlist
 -- What the mirror is known to answer exactly as PostgreSQL does. This is data:
 -- a statement is routed only if every construct in its typed query tree has a
@@ -320,3 +321,27 @@ INSERT INTO quicksilver.allowlist (kind, ident, collation_rule, options, verifie
   ('window', 'rank()', 'none', '{}', 'validate/widen.py: 5 statements routed and identical, both locales'),
   ('window', 'row_number()', 'none', '{}', 'validate/widen.py: 4 statements routed and identical, both locales');
 -- END widened by validate/widen.py
+
+-- The join domain objects are last in this script on purpose: CREATE EXTENSION
+-- assigns object identifiers in order, so an object created after a new one gets
+-- a different identifier, and a query identifier (which hashes some of them)
+-- would change for installed statements that name one. Nothing above uses them.
+-- ---------------------------------------------------------------- join domains
+-- The uuid columns that are compared for equality across tables, and the
+-- companion column the sidecar keeps for each (docs/16, "Join domains"). Written
+-- by the sidecar on the primary, in step with the mirror relations: a row exists
+-- for a column only while every file of its table carries the companion and the
+-- mirror relation exposes it. A join is rewritten only where both sides are in
+-- the same domain (docs/40, "Join keys"). Optional: without this table there are
+-- no rewrites.
+CREATE TABLE quicksilver.join_domains (
+    heap         regclass NOT NULL,
+    column_name  name NOT NULL,
+    domain       name NOT NULL,
+    companion    name NOT NULL,
+    PRIMARY KEY (heap, column_name)
+);
+REVOKE ALL ON quicksilver.join_domains FROM PUBLIC;
+SELECT pg_catalog.pg_extension_config_dump('quicksilver.join_domains', '');
+CREATE TRIGGER join_domains_changed AFTER INSERT OR UPDATE OR DELETE OR TRUNCATE ON quicksilver.join_domains
+    FOR EACH STATEMENT EXECUTE FUNCTION quicksilver._changed();

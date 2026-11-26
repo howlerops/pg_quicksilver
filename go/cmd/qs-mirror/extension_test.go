@@ -19,7 +19,7 @@ func TestMirrorRelationNamesTheLakeTableAndNoFile(t *testing.T) {
 		{Name: "mood", Type: "ex.mood", TypeOID: 99999}, // an enum: not castable
 		{Name: "tags", Type: "text[]", TypeOID: 1009},   // an array: not castable
 	}
-	got := extViewSQL("quicksilver_mirror", "public", "orders", cols)
+	got := extViewSQL("quicksilver_mirror", "public", "orders", cols, nil)
 	want := `CREATE VIEW "quicksilver_mirror"."public.orders" AS
 SELECT (r['id'])::bigint AS "id",
        (r['amount'])::numeric(12,2) AS "amount",
@@ -35,11 +35,11 @@ FROM duckdb.query($qs$ SELECT * FROM lake."public"."orders" $qs$) r`
 	}
 	// Idempotence rests on the signature: the same columns give the same one,
 	// a changed column a different one.
-	if extSignature(got) != extSignature(extViewSQL("quicksilver_mirror", "public", "orders", cols)) {
+	if extSignature(got) != extSignature(extViewSQL("quicksilver_mirror", "public", "orders", cols, nil)) {
 		t.Error("the same definition signed differently")
 	}
 	cols[1].Type = "numeric(14,2)"
-	if extSignature(got) == extSignature(extViewSQL("quicksilver_mirror", "public", "orders", cols)) {
+	if extSignature(got) == extSignature(extViewSQL("quicksilver_mirror", "public", "orders", cols, nil)) {
 		t.Error("a changed column type did not change the signature, so the relation would not be re-created at a DDL barrier")
 	}
 	if !strings.HasPrefix(extSignature(got), extViewComment) {

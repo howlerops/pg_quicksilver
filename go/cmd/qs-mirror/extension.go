@@ -103,6 +103,11 @@ type extLink struct {
 	present   bool
 	saidWhy   string
 	lastHalt  string
+	// lastJoins is the join domain columns the last observe saw complete, and
+	// haveJoins says the primary has quicksilver.join_domains (an extension
+	// older than it has none, and the mirror then carries no companions).
+	lastJoins string
+	haveJoins bool
 
 	// what the last report said, for the tests and for /metrics
 	reported map[string]string
@@ -176,6 +181,87 @@ func (e *extLink) observe(tables map[string]*mirror.Table) {
 		// a halted table leaves the registry, a rebuilt one returns: at the next tick, not the next retry
 		e.lastHalt, e.dirty, e.checkedAt = s, true, time.Time{}
 	}
+	// A join domain column becoming complete (or stopping) changes the registry
+	// the same way: its companion is exposed, or it is not, at the next tick.
+	if s := joinSig(joinsWanted(tables)); s != e.lastJoins {
+		e.lastJoins, e.dirty, e.checkedAt = s, true, time.Time{}
+	}
+}
+
+// extJoin is a join domain column the mirror exposes: the heap column, its
+// domain, and the companion the lake declares for it. Only complete columns
+// are here: the lake declares a companion only for those.
+type extJoin struct {
+	Column, Domain, Companion string
+}
+
+// joinsWanted is the complete join domain columns of every table that is not
+// halted, by qualified name, in column order.
+func joinsWanted(tables map[string]*mirror.Table) map[string][]extJoin {
+	out := map[string][]extJoin{}
+	for q, t := range tables {
+		if t.Halted() != "" {
+			continue
+		}
+		for _, dc := range t.DomainColumns() {
+			if dc.Complete {
+				out[q] = append(out[q], extJoin{Column: dc.Column, Domain: dc.Domain, Companion: dc.Companion})
+			}
+		}
+	}
+	return out
+}
+
+// joinSig is a string that changes when joinsWanted's answer does.
+func joinSig(w map[string][]extJoin) string {
+	names := make([]string, 0, len(w))
+	for q := range w {
+		names = append(names, q)
+	}
+	sort.Strings(names)
+	var b strings.Builder
+	for _, q := range names {
+		b.WriteString(q)
+		for _, j := range w[q] {
+			fmt.Fprintf(&b, "|%s,%s,%s", j.Column, j.Domain, j.Companion)
+		}
+		b.WriteString("\n")
+	}
+	return b.String()
+}
+
+// filterJoins keeps the join columns that the heap table still has.
+func filterJoins(joins []extJoin, cols []extColumn) []extJoin {
+	var out []extJoin
+	for _, j := range joins {
+		for _, c := range cols {
+			if c.Name == j.Column {
+				out = append(out, j)
+				break
+			}
+		}
+	}
+	return out
+}
+
+// joinRowsChange is what quicksilver.join_domains must lose and gain for one
+// heap table: the columns whose rows are not wanted any more, and the rows
+// that are new or different. A row that is already right is neither.
+func joinRowsChange(have map[string]extJoin, want []extJoin) (del []string, put []extJoin) {
+	wanted := map[string]bool{}
+	for _, j := range want {
+		wanted[j.Column] = true
+		if h, ok := have[j.Column]; !ok || h != j {
+			put = append(put, j)
+		}
+	}
+	for c := range have {
+		if !wanted[c] {
+			del = append(del, c)
+		}
+	}
+	sort.Strings(del)
+	return del, put
 }
 
 // The pump brackets every tick with these. Between pumpBusy and pumpIdle a
@@ -496,7 +582,12 @@ const extMirrorRole = "quicksilver_mirror_reader"
 
 // extViewSQL is the mirror relation: the heap's column names, in the heap's
 // order, cast to the heap's types, over the lake table by name.
-func extViewSQL(mirrorSchema, heapSchema, heapTable string, cols []extColumn) string {
+//
+// joins are the companions (docs/16, "Join domains"), exposed after the heap's
+// columns as bigint under their own names. Nothing reads them by position: the
+// substitution maps heap columns by attribute number, and a whole-row reference
+// is never routed (docs/40, "Join keys"). With none, the view is what it was.
+func extViewSQL(mirrorSchema, heapSchema, heapTable string, cols []extColumn, joins []extJoin) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "CREATE VIEW %s.%s AS\nSELECT ", extQuote(mirrorSchema), extQuote(extViewName(heapSchema+"."+heapTable)))
 	for i, c := range cols {
@@ -508,6 +599,9 @@ func extViewSQL(mirrorSchema, heapSchema, heapTable string, cols []extColumn) st
 			typ = "text"
 		}
 		fmt.Fprintf(&b, "(r['%s'])::%s AS %s", strings.ReplaceAll(c.Name, "'", "''"), typ, extQuote(c.Name))
+	}
+	for _, j := range joins {
+		fmt.Fprintf(&b, ",\n       (r['%s'])::bigint AS %s", strings.ReplaceAll(j.Companion, "'", "''"), extQuote(j.Companion))
 	}
 	fmt.Fprintf(&b, "\nFROM duckdb.query($qs$ SELECT * FROM %s.%s.%s $qs$) r",
 		extLakeAlias, extQuote(heapSchema), extQuote(heapTable))
@@ -536,12 +630,14 @@ func (e *extLink) reconcile(ctx context.Context, conn *pgx.Conn, tables map[stri
 		return
 	}
 	e.checkedAt = time.Now()
-	var have, haveLakes bool
+	var have, haveLakes, haveJoins bool
 	if err := conn.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM pg_extension WHERE extname = $1),
-		to_regclass('quicksilver.lakes') IS NOT NULL`, extName).Scan(&have, &haveLakes); err != nil {
+		to_regclass('quicksilver.lakes') IS NOT NULL,
+		to_regclass('quicksilver.join_domains') IS NOT NULL`, extName).Scan(&have, &haveLakes, &haveJoins); err != nil {
 		e.log.Warn("could not ask the primary whether pg_quicksilver is installed", "err", err)
 		return
 	}
+	e.haveJoins = haveJoins
 	e.present = have && haveLakes
 	switch {
 	case !have:
@@ -564,7 +660,13 @@ func (e *extLink) reconcile(ctx context.Context, conn *pgx.Conn, tables map[stri
 			desired[q] = true
 		}
 	}
-	if err := e.sync(ctx, conn, desired); err != nil {
+	joins := joinsWanted(tables)
+	if len(joins) > 0 && !e.haveJoins {
+		e.say("nojoins", "pg_quicksilver has no quicksilver.join_domains (an older extension): the join domain "+
+			"companions are not exposed; joins are compared on their uuid columns")
+		joins = nil
+	}
+	if err := e.sync(ctx, conn, desired, joins); err != nil {
 		e.log.Warn("could not bring pg_quicksilver's registry to the mirrored tables; will retry",
 			"err", err, "retry_in", extRetry)
 		return
@@ -579,7 +681,7 @@ func (e *extLink) markDirty() {
 	}
 }
 
-func (e *extLink) sync(ctx context.Context, conn *pgx.Conn, desired map[string]bool) error {
+func (e *extLink) sync(ctx context.Context, conn *pgx.Conn, desired map[string]bool, joins map[string][]extJoin) error {
 	// DuckDB's ducklake and sqlite extensions, which pg_duckdb then loads in
 	// every backend of every instance. Not in the transaction below: this is
 	// DuckDB's doing, and a failure (no way out to the extension repository,
@@ -665,9 +767,19 @@ func (e *extLink) sync(ctx context.Context, conn *pgx.Conn, desired map[string]b
 			return err
 		}
 		if len(cols) == 0 {
-			continue // the table is gone on the source; the pump will say so
+			// The table is gone on the source; the pump will say so. Its join rows go with it.
+			if e.haveJoins {
+				if _, err := e.dropJoins(ctx, tx, schema, table, nil); err != nil {
+					return err
+				}
+			}
+			continue
 		}
-		viewSQL := extViewSQL(e.schema, schema, table, cols)
+		want := filterJoins(joins[q], cols)
+		if !e.haveJoins {
+			want = nil
+		}
+		viewSQL := extViewSQL(e.schema, schema, table, cols, want)
 		sig := extSignature(viewSQL)
 		var haveSig *string
 		var registered, foreign *bool
@@ -687,6 +799,15 @@ func (e *extLink) sync(ctx context.Context, conn *pgx.Conn, desired map[string]b
 				"this sidecar's; leaving it alone", "table", q)
 			continue
 		}
+		// The registry first: a companion the view is about to stop exposing has
+		// its row deleted before the view changes (docs/40, "Join keys"). The
+		// rows that are new or different are written once the view is made.
+		var put []extJoin
+		if e.haveJoins {
+			if put, err = e.dropJoins(ctx, tx, schema, table, want); err != nil {
+				return err
+			}
+		}
 		rel := extQuote(e.schema) + "." + extQuote(view)
 		// A view made before its owner was the mirror role is handed over, kept or not.
 		// Only when the owner is not the mirror role already (see the schema above:
@@ -703,6 +824,9 @@ func (e *extLink) sync(ctx context.Context, conn *pgx.Conn, desired map[string]b
 			}
 		}
 		if haveSig != nil && *haveSig == sig && registered != nil && *registered {
+			if err := e.putJoins(ctx, tx, schema, table, put); err != nil {
+				return err
+			}
 			kept = append(kept, q)
 			continue
 		}
@@ -729,6 +853,9 @@ func (e *extLink) sync(ctx context.Context, conn *pgx.Conn, desired map[string]b
 			ON CONFLICT (heap) DO UPDATE SET mirror = EXCLUDED.mirror`, schema, table, e.schema, view); err != nil {
 			return fmt.Errorf("%s: register: %w", q, err)
 		}
+		if err := e.putJoins(ctx, tx, schema, table, put); err != nil {
+			return err
+		}
 		made = append(made, q)
 	}
 
@@ -754,6 +881,13 @@ func (e *extLink) sync(ctx context.Context, conn *pgx.Conn, desired map[string]b
 	}
 	var dropped []string
 	for _, g := range drop {
+		// Its join rows first, then the view that exposes the companions (docs/40).
+		if e.haveJoins {
+			if _, err := tx.Exec(ctx, `DELETE FROM quicksilver.join_domains j USING quicksilver.mirrors m
+				WHERE m.mirror = $1::oid AND j.heap = m.heap`, g.oid); err != nil {
+				return err
+			}
+		}
 		if _, err := tx.Exec(ctx, `DELETE FROM quicksilver.mirrors WHERE mirror = $1::oid`, g.oid); err != nil {
 			return err
 		}
@@ -770,6 +904,62 @@ func (e *extLink) sync(ctx context.Context, conn *pgx.Conn, desired map[string]b
 		e.log.Info("pg_quicksilver registry brought to the mirrored tables", "schema", e.schema,
 			"created", made, "unchanged", len(kept), "dropped", dropped,
 			"lake", lakeCatalogPath(e.o))
+	}
+	return nil
+}
+
+// joinRowsOf is what quicksilver.join_domains holds for one heap table, by column.
+func joinRowsOf(ctx context.Context, tx pgx.Tx, schema, table string) (map[string]extJoin, error) {
+	rows, err := tx.Query(ctx, `
+		SELECT column_name::text, domain::text, companion::text
+		  FROM quicksilver.join_domains
+		 WHERE heap = to_regclass(format('%I.%I', $1::text, $2::text))`, schema, table)
+	if err != nil {
+		return nil, err
+	}
+	have := map[string]extJoin{}
+	for rows.Next() {
+		var j extJoin
+		if err := rows.Scan(&j.Column, &j.Domain, &j.Companion); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		have[j.Column] = j
+	}
+	rows.Close()
+	return have, rows.Err()
+}
+
+// dropJoins deletes the rows of a heap table that the view will not expose
+// any more, and returns the rows still to write once the view is made.
+// Nothing is written when nothing differs: the registry's trigger tells every
+// backend to reread it, and a sync that changes nothing must not do that.
+func (e *extLink) dropJoins(ctx context.Context, tx pgx.Tx, schema, table string, want []extJoin) ([]extJoin, error) {
+	have, err := joinRowsOf(ctx, tx, schema, table)
+	if err != nil {
+		return nil, err
+	}
+	del, put := joinRowsChange(have, want)
+	if len(del) > 0 {
+		if _, err := tx.Exec(ctx, `DELETE FROM quicksilver.join_domains
+			WHERE heap = to_regclass(format('%I.%I', $1::text, $2::text)) AND column_name = ANY($3::text[])`,
+			schema, table, del); err != nil {
+			return nil, fmt.Errorf("%s.%s: join domains: %w", schema, table, err)
+		}
+	}
+	return put, nil
+}
+
+// putJoins writes the rows dropJoins returned, once the view exposes them.
+func (e *extLink) putJoins(ctx context.Context, tx pgx.Tx, schema, table string, put []extJoin) error {
+	for _, j := range put {
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO quicksilver.join_domains AS d (heap, column_name, domain, companion)
+			VALUES (to_regclass(format('%I.%I', $1::text, $2::text)), $3::text, $4::text, $5::text)
+			ON CONFLICT (heap, column_name) DO UPDATE SET domain = EXCLUDED.domain, companion = EXCLUDED.companion`,
+			schema, table, j.Column, j.Domain, j.Companion); err != nil {
+			return fmt.Errorf("%s.%s.%s: join domain: %w", schema, table, j.Column, err)
+		}
 	}
 	return nil
 }

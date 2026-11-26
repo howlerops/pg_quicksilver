@@ -20,8 +20,10 @@ STOCK=${STOCK:-/usr/lib/postgresql/17}
 SECS=${1:-300}
 export PG=$CA/bin
 [ "$($PG/pg_config --configure | grep -c enable-cassert)" = 1 ] || { echo "$CA is not a cassert build" >&2; exit 1; }
-cp "$STOCK/lib/pg_duckdb.so" "$STOCK/lib/libduckdb.so" "$CA/lib/" || exit 1
-cp /usr/share/postgresql/17/extension/pg_duckdb* "$CA/share/extension/" || exit 1
+# DUCK_LIB and DUCK_SHARE: where the pg_duckdb build to test lives (the patched
+# pair of the private tree, or the stock package by default).
+cp "${DUCK_LIB:-$STOCK/lib}/pg_duckdb.so" "${DUCK_LIB:-$STOCK/lib}/libduckdb.so" "$CA/lib/" || exit 1
+cp "${DUCK_SHARE:-/usr/share/postgresql/17/extension}"/pg_duckdb* "$CA/share/extension/" || exit 1
 B=${BASE:-/var/lib/postgresql/qsint}-cabuild    # beside the cluster, never a shared path
 rm -rf "$B"; mkdir -p "$B"
 cp -r "$HERE"/../../{pg_quicksilver.c,pg_quicksilver.control,pg_quicksilver--0.1.sql,Makefile,sql,expected} "$B/"
