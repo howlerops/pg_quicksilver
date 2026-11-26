@@ -72,6 +72,7 @@ var catalogDDL = []string{
 
 	`CREATE TABLE qs_mirror_table(table_name VARCHAR PRIMARY KEY, table_id BIGINT, next_column_id BIGINT, manifest_seq BIGINT, applied_lsn VARCHAR, refusal VARCHAR, snapshot_id BIGINT, published_at VARCHAR)`,
 	`CREATE TABLE qs_mirror_file(data_file_id BIGINT PRIMARY KEY, table_id BIGINT, rel VARCHAR, dv_gen BIGINT)`,
+	watermarkDDL, // watermark.go
 
 	// The reader's lookups are all "rows of this table live at snapshot S".
 	`CREATE INDEX qs_idx_data_file ON ducklake_data_file(table_id, end_snapshot)`,
@@ -178,6 +179,10 @@ func (c *catalog) init(ctx context.Context, dataPath string) error {
 	if err := c.db.QueryRowContext(ctx,
 		`SELECT count(*) FROM sqlite_master WHERE name = 'qs_mirror_table'`).Scan(&n); err != nil || n == 0 {
 		return errors.New("ducklake catalog was not created by qs-mirror and will not be written to")
+	}
+	// A catalog made before the watermark was carried here gains its table.
+	if _, err := c.db.ExecContext(ctx, watermarkDDL); err != nil {
+		return fmt.Errorf("ducklake catalog: %w", err)
 	}
 	// The mirror may have been moved; file paths in the catalog are relative.
 	_, err := c.db.ExecContext(ctx,
@@ -637,7 +642,13 @@ func expireBefore(ctx context.Context, q queryer, keep int64, now string) (int64
 
 // TableState is where the lake stands for one mirror table.
 type TableState struct {
-	AppliedLSN  string
+	// AppliedLSN is how far the lake table has applied: the LSN of the
+	// manifest it was published from, or the mirror watermark's when that
+	// speaks for a table standing at exactly that manifest (watermark.go).
+	AppliedLSN string
+	// ManifestLSN is the applied_lsn of the manifest it was published from:
+	// the table's last change.
+	ManifestLSN string
 	ManifestSeq int64
 	Snapshot    int64
 	Refusal     string
@@ -661,6 +672,10 @@ func ReadTable(ctx context.Context, catalogPath, schema, table string) (TableSta
 		return st, fmt.Errorf("%s.%s has not been published to this lake", schema, table)
 	}
 	st.AppliedLSN, st.Refusal, st.PublishedAt = lsn.String, refusal.String, at.String
+	st.ManifestLSN = st.AppliedLSN
+	if err == nil {
+		st.AppliedLSN = effectiveLSN(ctx, db, schema+"."+table, st.ManifestLSN)
+	}
 	return st, err
 }
 
@@ -672,12 +687,20 @@ func AttachSQL(catalogPath, alias string) string {
 		strings.ReplaceAll(catalogPath, "'", "''"), quoteIdent(alias))
 }
 
-// FreshnessSQL is the query a reader gates on: the LSN the lake table stands
-// at, and why it is refused if it is. It reads the catalog database DuckLake
-// attaches beside the lake.
+// FreshnessSQL is the query a reader gates on: the LSN the lake table has
+// applied through, and why it is refused if it is. It reads the catalog
+// database DuckLake attaches beside the lake.
+//
+// applied_lsn is the EFFECTIVE one: the mirror's watermark where it speaks
+// for the manifest this table was published from, so that a table nothing
+// has written to is not reported as stale (watermark.go). manifest_lsn, the
+// last column, is the LSN of that manifest: the table's last change.
 func FreshnessSQL(alias, schema, table string) string {
-	return fmt.Sprintf("SELECT applied_lsn, manifest_seq, snapshot_id, refusal FROM %s.qs_mirror_table WHERE table_name = '%s';",
-		quoteIdent("__ducklake_metadata_"+alias), strings.ReplaceAll(schema+"."+table, "'", "''"))
+	meta := quoteIdent("__ducklake_metadata_" + alias)
+	return fmt.Sprintf("SELECT coalesce(w.applied_lsn, t.applied_lsn) AS applied_lsn, t.manifest_seq, t.snapshot_id, t.refusal, "+
+		"t.applied_lsn AS manifest_lsn FROM %s.qs_mirror_table t LEFT JOIN %s.qs_mirror_watermark w "+
+		"ON w.table_name = t.table_name AND w.manifest_lsn = t.applied_lsn WHERE t.table_name = '%s';",
+		meta, meta, strings.ReplaceAll(schema+"."+table, "'", "''"))
 }
 
 func quoteIdent(s string) string { return `"` + strings.ReplaceAll(s, `"`, `""`) + `"` }

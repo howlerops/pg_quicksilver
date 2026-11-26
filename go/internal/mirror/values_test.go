@@ -420,16 +420,16 @@ func TestRepresentableValuesAreStillAccepted(t *testing.T) {
 // anything that is not exactly that text stays a string.
 func TestUUIDKeysAreCompactAndLossless(t *testing.T) {
 	const u = "a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11"
-	k := keyFor(false, u)
+	k := keyFor(keyText, u)
 	if !k.isUUID || k.str != "" || k.String() != u {
 		t.Fatalf("keyFor(%q) = %+v, String %q", u, k, k.String())
 	}
-	if k != keyStringFor(false, u) || k != keyFor(true, u) {
+	if k != keyStringFor(keyText, u) || k != keyFor(keyInt, u) {
 		t.Error("the same UUID produced different keys by different routes")
 	}
 	for _, s := range []string{"00000000-0000-0000-0000-000000000000", "ffffffff-ffff-ffff-ffff-ffffffffffff",
 		"01234567-89ab-cdef-0123-456789abcdef", costUUID(1), costUUID(123456789)} {
-		if got := keyFor(false, s); !got.isUUID || got.String() != s {
+		if got := keyFor(keyText, s); !got.isUUID || got.String() != s {
 			t.Errorf("round trip of %q gave %+v / %q", s, got, got.String())
 		}
 	}
@@ -442,7 +442,7 @@ func TestUUIDKeysAreCompactAndLossless(t *testing.T) {
 		"a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a1g", "a0eebc99-9c0b-4ef8-bb6d6-bb9bd380a11", "a0eebc99-9c0b-4ef8-bb6d--bb9bd380a11",
 		"-0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11", "",
 	} {
-		got := keyFor(false, s)
+		got := keyFor(keyText, s)
 		if got.isUUID || got.String() != s {
 			t.Errorf("%q is not canonical UUID text but became %+v (String %q)", s, got, got.String())
 		}
@@ -454,12 +454,12 @@ func TestUUIDKeysAreCompactAndLossless(t *testing.T) {
 
 	x := newKeyIndex(4)
 	x.set(k, loc{File: 3, Pos: 7})
-	x.set(keyFor(false, "plain"), loc{File: 3, Pos: 8})
-	x.set(keyFor(true, "9"), loc{File: 3, Pos: 9})
+	x.set(keyFor(keyText, "plain"), loc{File: 3, Pos: 8})
+	x.set(keyFor(keyInt, "9"), loc{File: 3, Pos: 9})
 	if x.len() != 3 || x.strs[u] != (loc{}) || len(x.uuids) != 1 {
 		t.Fatalf("index holds nums=%d uuids=%d strs=%d", len(x.nums), len(x.uuids), len(x.strs))
 	}
-	if l, ok := x.get(keyFor(false, u)); !ok || l.Pos != 7 {
+	if l, ok := x.get(keyFor(keyText, u)); !ok || l.Pos != 7 {
 		t.Errorf("get = %+v, %v", l, ok)
 	}
 	var got []string

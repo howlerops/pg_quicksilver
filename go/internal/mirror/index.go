@@ -207,62 +207,218 @@ func formatUUID(hi, lo uint64) string {
 	return string(b[:])
 }
 
-// keyOf converts a raw key value — text from pgoutput, an int64 or a 16-byte
-// uuid from Parquet — into the table's key form.
-func (t *Table) keyOf(v any) rowKey { return keyFor(t.numericKey, v) }
+// keyMode is which identity a table's primary key has, decided once from the
+// column's declared type.
+//
+//	keyText     the bytes PostgreSQL prints (a uuid among them, held as 128 bits)
+//	keyInt      an int64
+//	keyDecimal  the numeric VALUE, as canonNumeric spells it
+//
+// The third exists because a PostgreSQL numeric key is unique by value and not
+// by display scale: the source cannot hold both 1.5 and 1.50, but it prints
+// whichever was stored, and a file an earlier binary wrote as DECIMAL(38,9)
+// gives the same key back as 1.500000000. Comparing those as text left an old
+// row beside every update of such a key. So the key of a numeric column is its
+// value in one spelling, whatever spelling arrives, and it is made HERE, in
+// keyFor, which is the only place a rowKey is made from a value: the index and
+// its file on disk, the delta maps, the merge's dedupe, carry-forward and both
+// rewrites all take their keys from it. The rows themselves keep the spelling
+// they were written with; only their identity is canonical.
+type keyMode uint8
+
+const (
+	keyText keyMode = iota
+	keyInt
+	keyDecimal
+)
+
+// keyModeOf is the key identity of a column of this PostgreSQL type.
+func keyModeOf(pgType string) keyMode {
+	if isIntegerType(arrowType(pgType)) {
+		return keyInt
+	}
+	if _, _, _, isNumeric := numericSpec(pgType); isNumeric {
+		return keyDecimal
+	}
+	return keyText
+}
+
+func (t *Table) keyMode() keyMode {
+	switch {
+	case t.numericKey:
+		return keyInt
+	case t.decimalKey:
+		return keyDecimal
+	}
+	return keyText
+}
+
+// keyOf converts a raw key value — text from pgoutput, an int64, a decimal or a
+// 16-byte uuid from Parquet — into the table's key form.
+func (t *Table) keyOf(v any) rowKey { return keyFor(t.keyMode(), v) }
 
 // keyFor is keyOf without a Table, so the background compactor can build keys
-// from a flag captured before it started rather than reading a live field.
-func keyFor(numeric bool, v any) rowKey {
+// from a mode captured before it started rather than reading a live field.
+func keyFor(mode keyMode, v any) rowKey {
 	switch x := v.(type) {
 	case nil:
 		return rowKey{}
 	case int64:
-		if numeric {
+		if mode == keyInt {
 			return rowKey{num: x, isNum: true}
 		}
+		// The decimal text of an integer is already canonical.
 		return rowKey{str: strconv.FormatInt(x, 10)}
 	case int32:
-		return keyFor(numeric, int64(x))
+		return keyFor(mode, int64(x))
 	case int:
-		return keyFor(numeric, int64(x))
+		return keyFor(mode, int64(x))
 	case string:
-		return keyStringFor(numeric, x)
+		return keyStringFor(mode, x)
 	case uuidValue:
 		// A uuid from a file that stores it as 16 bytes. The same key as its
 		// text, which is how it arrives from pgoutput and from an older file.
 		hi, lo := x.halves()
 		return rowKey{num: int64(hi), lo: lo, isUUID: true}
+	case decimalValue:
+		return keyStringFor(mode, x.String())
 	case float64:
 		// As PostgreSQL prints it, which is how the same key arrives from
 		// pgoutput: fmt's 1e+06 is not the text of 1000000.
-		return keyStringFor(numeric, pgFloat(x, 64))
+		return keyStringFor(mode, pgFloat(x, 64))
 	case float32:
-		return keyStringFor(numeric, pgFloat(float64(x), 32))
+		return keyStringFor(mode, pgFloat(float64(x), 32))
 	default:
-		return keyStringFor(numeric, fmt.Sprint(x))
+		return keyStringFor(mode, fmt.Sprint(x))
 	}
 }
 
 // keyOfString is keyOf for a value already known to be text.
 //
-// A numeric key column whose text will not parse falls back to the string form
+// An integer key column whose text will not parse falls back to the string form
 // rather than erroring. That is a value PostgreSQL could not have stored in an
 // integer column, so it should not arise; if it somehow does, a key that fails
 // to match is visible as a divergence, whereas a panic in the apply loop takes
-// the mirror down.
-func (t *Table) keyOfString(s string) rowKey { return keyStringFor(t.numericKey, s) }
+// the mirror down. A numeric column's text that is not a number is kept as it
+// is, for the same reason.
+func (t *Table) keyOfString(s string) rowKey { return keyStringFor(t.keyMode(), s) }
 
-func keyStringFor(numeric bool, s string) rowKey {
-	if numeric {
+func keyStringFor(mode keyMode, s string) rowKey {
+	switch mode {
+	case keyInt:
 		if n, err := strconv.ParseInt(s, 10, 64); err == nil {
 			return rowKey{num: n, isNum: true}
 		}
+	case keyDecimal:
+		// Never a uuid, and never an int64: one form per table is what lets
+		// the file on disk hold every key.
+		return rowKey{str: canonNumeric(s)}
 	}
 	if hi, lo, ok := parseUUID(s); ok {
 		return rowKey{num: int64(hi), lo: lo, isUUID: true}
 	}
 	return rowKey{str: s}
+}
+
+// canonNumericMaxShift bounds the zeros an exponent may make canonNumeric
+// write. PostgreSQL's numeric holds at most 131072 digits before the point and
+// 16383 after it, so nothing the source can store is refused.
+const canonNumericMaxShift = 1 << 18
+
+// canonNumeric is the one spelling of a numeric value: no plus sign, no leading
+// zeros, no trailing fractional zeros, no exponent, zero as "0" whatever its
+// sign or scale. NaN and the infinities, which PostgreSQL's numeric has, are
+// "NaN", "Infinity" and "-Infinity". Text that is not a number comes back
+// unchanged.
+//
+//	1.50  1.500000000  +1.5  01.5  15e-1  0.15E1   ->  1.5
+//	7.0   7.  007  7e0  0.7e+1                      ->  7
+//	-0  0.00  -0.0  0e5                             ->  0
+func canonNumeric(s string) string {
+	// The common key is a plain integer, already canonical: no allocation.
+	if n := len(s); n > 0 && n < 40 && (s[0] != '0' || n == 1) {
+		plain := true
+		for i := 0; i < n; i++ {
+			if s[i] < '0' || s[i] > '9' {
+				plain = false
+				break
+			}
+		}
+		if plain {
+			return s
+		}
+	}
+	in := strings.TrimSpace(s)
+	neg := false
+	if in != "" && (in[0] == '+' || in[0] == '-') {
+		neg = in[0] == '-'
+		in = in[1:]
+	}
+	switch strings.ToLower(in) {
+	case "nan":
+		return "NaN" // PostgreSQL has one NaN, and it has no sign
+	case "infinity", "inf":
+		if neg {
+			return "-Infinity"
+		}
+		return "Infinity"
+	}
+	mant, exp := in, 0
+	if i := strings.IndexAny(in, "eE"); i >= 0 {
+		e, err := strconv.Atoi(in[i+1:])
+		if err != nil || e > canonNumericMaxShift || e < -canonNumericMaxShift {
+			return s
+		}
+		mant, exp = in[:i], e
+	}
+	ip, fp := mant, ""
+	if i := strings.IndexByte(mant, '.'); i >= 0 {
+		ip, fp = mant[:i], mant[i+1:]
+	}
+	if ip == "" && fp == "" {
+		return s
+	}
+	for i := 0; i < len(ip); i++ {
+		if ip[i] < '0' || ip[i] > '9' {
+			return s
+		}
+	}
+	for i := 0; i < len(fp); i++ {
+		if fp[i] < '0' || fp[i] > '9' {
+			return s
+		}
+	}
+	// Every digit, and where the point falls among them. Zeros that carry no
+	// value go first, so that an exponent on zero is not a shift at all.
+	point := len(ip) + exp
+	digits := ip + fp
+	lead := 0
+	for lead < len(digits) && digits[lead] == '0' {
+		lead++
+	}
+	digits, point = digits[lead:], point-lead
+	digits = strings.TrimRight(digits, "0")
+	if digits == "" {
+		return "0"
+	}
+	var b strings.Builder
+	if neg {
+		b.WriteByte('-')
+	}
+	switch {
+	case point <= 0:
+		b.WriteString("0.")
+		b.WriteString(strings.Repeat("0", -point))
+		b.WriteString(digits)
+	case point >= len(digits):
+		b.WriteString(digits)
+		b.WriteString(strings.Repeat("0", point-len(digits)))
+	default:
+		b.WriteString(digits[:point])
+		b.WriteByte('.')
+		b.WriteString(digits[point:])
+	}
+	return b.String()
 }
 
 // keyIndex maps keys to locations, with the integer and UUID keys held

@@ -180,11 +180,11 @@ func TestValueCostIndexMemory(t *testing.T) {
 		runtime.KeepAlive(x)
 	}
 	for _, n := range []int{1_000_000, 4_000_000} {
-		run("int64 keys", n, func(i int) rowKey { return keyFor(true, int64(i)) })
-		run("uuid keys", n, func(i int) rowKey { return keyFor(false, costUUID(i)) })
+		run("int64 keys", n, func(i int) rowKey { return keyFor(keyInt, int64(i)) })
+		run("uuid keys", n, func(i int) rowKey { return keyFor(keyText, costUUID(i)) })
 		// The same 36 bytes with one character no UUID has, so it takes the
 		// string path: what a UUID key cost before it had a form of its own.
-		run("36-byte text keys", n, func(i int) rowKey { return keyFor(false, "g"+costUUID(i)[1:]) })
+		run("36-byte text keys", n, func(i int) rowKey { return keyFor(keyText, "g"+costUUID(i)[1:]) })
 	}
 }
 

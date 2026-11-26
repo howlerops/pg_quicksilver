@@ -7,9 +7,12 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/howlerops/pg_quicksilver/go/internal/mirror"
 )
 
 // LSNSource says how far the mirror has applied. The router compares that with
@@ -50,9 +53,31 @@ func lsnFromJSON(b []byte) (uint64, error) {
 
 // fileLSN reads applied_lsn from a JSON file: a table's state.json in the
 // mirror directory has exactly that field.
+//
+// For a table's state.json that field is no longer the whole answer. A table
+// nothing has written to keeps its manifest, and so its applied_lsn, where its
+// last change left them; that it has applied everything since is recorded once
+// for all such tables in the mirror root's watermark.json. Reading the
+// manifest alone made a quiet table look further behind with every commit to
+// any OTHER table, until the gate refused it. So a path of the form
+// <root>/<schema>.<table>/state.json is answered with the table's effective
+// applied LSN (mirror.EffectiveAppliedLSN, where the rule is written); any
+// other JSON file is read as before.
 type fileLSN struct{ path string }
 
 func (f fileLSN) AppliedLSN(context.Context) (uint64, error) {
+	if dir := filepath.Dir(f.path); filepath.Base(f.path) == "state.json" {
+		if schema, table, ok := strings.Cut(filepath.Base(dir), "."); ok {
+			lsn, err := mirror.EffectiveAppliedLSN(filepath.Dir(dir), schema, table)
+			if err != nil {
+				return 0, err
+			}
+			if lsn == "" {
+				return 0, fmt.Errorf("%s: no applied_lsn", f.path)
+			}
+			return ParseLSN(lsn)
+		}
+	}
 	b, err := os.ReadFile(f.path)
 	if err != nil {
 		return 0, err

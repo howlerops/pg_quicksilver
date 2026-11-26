@@ -265,3 +265,139 @@ func TestBeforeConfirmRunsFirstAndCanRefuse(t *testing.T) {
 		t.Fatalf("hook saw %v with the position at %v", seen, at)
 	}
 }
+
+// sBlock is one Stream Start..Stop block of n inserts for xid, ids from first.
+func sBlock(xid uint32, firstSegment bool, first, n int) []pgproto3.BackendMessage {
+	p := [][]byte{streamStart(xid, firstSegment)}
+	if firstSegment {
+		p = append(p, sRelation(xid))
+	}
+	for i := 0; i < n; i++ {
+		p = append(p, sInsert(xid, first+i))
+	}
+	return xl(append(p, streamStop())...)
+}
+
+// feedAll hands every message to the receiver and returns once it has read
+// the last of them.
+func feedAll(t *testing.T, f *fakeConn, msgs []pgproto3.BackendMessage) {
+	t.Helper()
+	want := f.received.Load() + int64(len(msgs))
+	stop := feed(f, msgs)
+	defer stop()
+	waitFor(t, "the receiver to read what was fed", func() bool { return f.received.Load() >= want })
+}
+
+func budgetStream(t *testing.T) (*Streaming, *fakeConn) {
+	f := &fakeConn{msgs: make(chan pgproto3.BackendMessage), t: t}
+	s := newStreaming(f, map[string]bool{"public.events": true})
+	s.MaxBufferedChanges = 0
+	s.StatusInterval = 5 * time.Millisecond
+	s.SpoolDir = t.TempDir()
+	s.SpoolThresholdChanges = 5
+	s.SpoolMaxBytes = -1
+	s.run(context.Background())
+	t.Cleanup(func() { _ = s.Close(context.Background()) })
+	return s, f
+}
+
+// Three transactions the server streams at once, each two fifths of the
+// budget. Together they pass it while none has committed; this failed with a
+// SpoolBudgetError, and a restart would have replayed the same interleaving
+// into the same error for ever. None of them is too large: the receiver reads
+// on, and when the first commits it is a transaction a confirmation gives
+// back, so the receiver pauses there until the applier has drained it.
+func TestStreamedTransactionsThatOnlyTogetherPassTheBudgetAreDrainedNotFailed(t *testing.T) {
+	s, f := budgetStream(t)
+	feedAll(t, f, sBlock(7, true, 1000, 100))
+	one := s.SpoolBytes()
+	if one <= 0 {
+		t.Fatal("a streamed transaction counted no bytes")
+	}
+	budget := one*5/2 + 1
+	setBudget(s, budget)
+
+	feedAll(t, f, sBlock(8, true, 2000, 100))
+	// The third takes the total past the budget, and every byte is in flight.
+	feedAll(t, f, sBlock(9, true, 3000, 100))
+	if got := s.SpoolBytes(); got < budget {
+		t.Fatalf("%d spool bytes, and the test needs them over the budget of %d", got, budget)
+	}
+	// It did not fail, did not pause on nothing, and still reads.
+	feedAll(t, f, sBlock(9, false, 3100, 20))
+	if got, err := s.Transactions(context.Background()); err != nil || len(got) != 0 {
+		t.Fatalf("three open transactions over the budget together: %v, %d handed out", err, len(got))
+	}
+	if s.SpoolPaused() {
+		t.Fatal("paused with nothing a confirmation could give back: nothing would ever wake it")
+	}
+
+	// One commits. Now a Confirm frees bytes, so it waits for one.
+	feedAll(t, f, xl(streamCommit(8, 0x800)))
+	waitFor(t, "the receiver to pause on the committed transaction", s.SpoolPaused)
+	at := f.received.Load()
+	stop := feed(f, sBlock(9, false, 3200, 10))
+	time.Sleep(40 * time.Millisecond)
+	if got := f.received.Load(); got != at {
+		t.Fatalf("read %d more messages while a drainable transaction held the spool over its budget", got-at)
+	}
+	got := drain(t, s, 1)
+	if n := len(ids(t, got[0])); n != 100 {
+		t.Fatalf("the committed transaction arrived with %d changes", n)
+	}
+	if err := s.Confirm(context.Background(), got[0].NextLSN); err != nil {
+		t.Fatal(err)
+	}
+	// Under the budget again: the block that was waiting is read.
+	waitFor(t, "the receiver to resume after the confirm", func() bool { return f.received.Load() >= at+12 })
+	stop()
+	if s.SpoolPaused() {
+		t.Fatal("still paused after the confirm")
+	}
+
+	feedAll(t, f, xl(streamCommit(7, 0x900), streamCommit(9, 0xA00)))
+	rest := drain(t, s, 2)
+	if a, b := len(ids(t, rest[0])), len(ids(t, rest[1])); a != 100 || b != 130 {
+		t.Fatalf("the other two arrived with %d and %d changes, want 100 and 130", a, b)
+	}
+	if err := s.Confirm(context.Background(), rest[1].NextLSN); err != nil {
+		t.Fatal(err)
+	}
+	if got := s.SpoolBytes(); got != 0 || len(spoolFiles(t, s.SpoolDir)) != 0 {
+		t.Fatalf("everything confirmed, and %d bytes in %d files remain", got, len(spoolFiles(t, s.SpoolDir)))
+	}
+}
+
+// The failure that remains: among several open transactions, ONE has by itself
+// reached the budget. No draining of the others makes room for it, and the
+// error says which bytes are its own.
+func TestOneStreamedTransactionAmongSeveralStillFailsWhenItAloneIsTheBudget(t *testing.T) {
+	s, f := budgetStream(t)
+	feedAll(t, f, sBlock(7, true, 1000, 100))
+	one := s.SpoolBytes()
+	budget := one*3/2 + 1
+	setBudget(s, budget)
+	// Two open, over the budget together, neither alone: not a failure.
+	feedAll(t, f, sBlock(8, true, 2000, 100))
+	if _, err := s.Transactions(context.Background()); err != nil {
+		t.Fatalf("two transactions that each fit: %v", err)
+	}
+	stop := feed(f, sBlock(8, false, 2100, 100))
+	defer stop()
+	var err error
+	waitFor(t, "the stream to fail", func() bool {
+		_, err = s.Transactions(context.Background())
+		return err != nil
+	})
+	var be *SpoolBudgetError
+	if !errors.As(err, &be) {
+		t.Fatalf("failed with %v, want a *SpoolBudgetError", err)
+	}
+	if be.Budget != budget || be.Open != 2 || be.Spooled < budget || be.Spooled > budget+64 ||
+		be.Total < be.Spooled+one || be.Total > be.Spooled+one+64 {
+		t.Fatalf("%+v, with one=%d budget=%d", be, one, budget)
+	}
+	if !strings.Contains(err.Error(), "2 transactions were arriving at once") {
+		t.Errorf("the error does not mention the others: %v", err)
+	}
+}

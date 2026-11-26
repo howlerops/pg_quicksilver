@@ -676,7 +676,7 @@ type clusterRewrite struct {
 	t       *Table
 	col     string
 	cls     int
-	numeric bool
+	numeric keyMode
 	hashing bool
 	overlay map[rowKey]map[string]any
 	kb      *kidxBuilder
@@ -1199,7 +1199,7 @@ var afterSpill func(*clusterRewrite)
 // base stream on col. It returns the number of rows written.
 func (t *Table) rewriteClustered(col string, baseRels, deltaRels []string,
 	deadOf func(string) func(int) bool, overlay map[rowKey]map[string]any,
-	numeric, hashing bool, kb *kidxBuilder, w *parquetWriter, sortAll bool,
+	numeric keyMode, hashing bool, kb *kidxBuilder, w *parquetWriter, sortAll bool,
 ) (int, error) {
 	clusteredRewrites.Add(1)
 	start := time.Now()

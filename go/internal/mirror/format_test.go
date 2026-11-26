@@ -2,6 +2,7 @@ package mirror
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -182,18 +183,15 @@ func TestLegacyFormatColumnsNamesOnlyWhatCannotBeRepaired(t *testing.T) {
 	}
 }
 
-// An unconstrained numeric PRIMARY KEY across the upgrade. The old binary
-// stored it as DECIMAL(38,9); this one stores the text PostgreSQL prints. Do
-// the two compare equal in the key index? For a key without trailing zeros,
-// yes. For one the source prints with them (1.50, 7.0), NO: the decimal lost
-// the display scale, the file gives back 1.5, the stream says 1.50, and the
-// update lands beside the row it should have replaced.
-//
-// That cannot be repaired from the files (the scale is gone), so it is
-// flagged: LegacyFormatColumns names the key column for a rebuild. This test
-// pins both halves — the damage, so that it is not mistaken for fixed, and
-// the flag.
-func TestLegacyNumericPrimaryKeyIsFlaggedBecauseKeysDoNotCompareEqual(t *testing.T) {
+// A numeric primary key is unique by VALUE: the source cannot hold both 1.5
+// and 1.50. An earlier binary stored an unconstrained numeric as
+// DECIMAL(38,9), which gives the key the source prints as 1.50 back as
+// 1.500000000, and the stream sends 1.50. This test once pinned the defect
+// that followed (an update left the old row beside the new one) and the rule
+// that flagged such tables for a rebuild. The key is now the canonical numeric
+// value wherever one is made, so the update finds its row and nothing is
+// flagged.
+func TestLegacyNumericPrimaryKeyComparesByValueAndNeedsNoRebuild(t *testing.T) {
 	defer func(prev string) { NumericScale = prev }(NumericScale)
 	NumericScale = ""
 	cols := map[string]string{"k": "numeric", "v": "text"}
@@ -214,16 +212,11 @@ func TestLegacyNumericPrimaryKeyIsFlaggedBecauseKeysDoNotCompareEqual(t *testing
 			tbl.Close()
 		})
 		tbl, _ := New(dir, "public", "nk", "k", cols, order)
-
-		// The flag, before a single change is applied.
-		got := legacyColumns(t, tbl)
-		if len(got) != 1 || got[0].Column != "k" || got[0].Remedy != "rebuild" ||
-			!strings.Contains(got[0].Problem, "primary key") || !strings.Contains(got[0].Problem, "1.50") {
-			t.Fatalf("compacted=%v: the legacy numeric key is not flagged: %+v", compacted, got)
+		if got := legacyColumns(t, tbl); len(got) != 0 {
+			t.Fatalf("compacted=%v: a legacy numeric key is flagged for a rebuild it does not need: %+v", compacted, got)
 		}
 
-		// The damage it warns of: every key is updated once, as the stream
-		// would send it.
+		// Every key is updated once, as the stream would send it.
 		for i, k := range keys {
 			tapply(t, tbl, 100+i, typedChange(changestream.OpUpdate, "nk", map[string]any{"k": k, "v": "new"}))
 		}
@@ -237,15 +230,20 @@ func TestLegacyNumericPrimaryKeyIsFlaggedBecauseKeysDoNotCompareEqual(t *testing
 				stale[fmt.Sprint(r["k"])] = true
 			}
 		}
-		// 12345 and 0.000000001 found their rows; 1.50 and 7.0 did not.
-		if len(rows) != 6 || !stale["1.5"] || !stale["7"] || len(stale) != 2 {
-			t.Fatalf("compacted=%v: %d live rows for 4 keys, stale %v. If this is now 4 and none, the keys "+
-				"compare equal and the rule in format.go can go", compacted, len(rows), stale)
+		if len(rows) != 4 || len(stale) != 0 {
+			t.Fatalf("compacted=%v: %d live rows for 4 keys, stale %v", compacted, len(rows), stale)
+		}
+		// And a delete in yet another spelling of each key finds it too.
+		for i, k := range []string{"1.5", "12345.0", "1e-9", "+07"} {
+			tapply(t, tbl, 200+i, typedChange(changestream.OpDelete, "nk", map[string]any{"k": k}))
+		}
+		if rows, _ := tbl.Live(); len(rows) != 0 {
+			t.Fatalf("compacted=%v: %d rows survive a delete of every key: %v", compacted, len(rows), rows)
 		}
 		tbl.Close()
 	}
 
-	// A numeric key this binary wrote is text on both sides, and is not flagged.
+	// A numeric key this binary wrote behaves the same.
 	fresh, _ := New(t.TempDir(), "public", "nk", "k", cols, order)
 	defer fresh.Close()
 	tapply(t, fresh, 1, typedChange(changestream.OpInsert, "nk", map[string]any{"k": "1.50", "v": "old"}))
@@ -255,5 +253,55 @@ func TestLegacyNumericPrimaryKeyIsFlaggedBecauseKeysDoNotCompareEqual(t *testing
 	}
 	if got := legacyColumns(t, fresh); len(got) != 0 {
 		t.Fatalf("a current numeric key is flagged: %+v", got)
+	}
+}
+
+// A table flagged because of a legacy base stops being flagged when a TRUNCATE
+// inside an Apply removes that base: the flag is a statement about the files
+// the manifest names, and none of them is legacy any more. The rows the same
+// transaction inserts after the TRUNCATE came from the stream, and neither
+// they nor a later rewrite of them inherit the dead file's version.
+func TestTruncateInAnApplyClearsTheLegacyFlag(t *testing.T) {
+	dir := t.TempDir()
+	withLegacyWriter(func() {
+		tbl, _ := New(dir, "public", "r", "id", fmtCols, fmtOrder)
+		applyR(t, tbl, "0/1", rChange(changestream.OpInsert, 1, "ab", 1), rChange(changestream.OpInsert, 2, "cd", 2))
+		if _, err := tbl.Compact(); err != nil {
+			t.Fatal(err)
+		}
+		tbl.Close()
+	})
+	for _, refill := range []bool{false, true} {
+		sub := filepath.Join(t.TempDir(), "m")
+		if err := os.CopyFS(sub, os.DirFS(dir)); err != nil {
+			t.Fatal(err)
+		}
+		tbl := fmtTable(t, sub)
+		if got := legacyColumns(t, tbl); len(got) != 1 || got[0].Column != "v" {
+			t.Fatalf("the legacy base is not flagged to begin with: %+v", got)
+		}
+		changes := []changestream.Change{{Op: changestream.OpTruncate, Schema: "public", Table: "r"}}
+		if refill {
+			changes = append(changes, rChange(changestream.OpInsert, 7, "xy   ", 7))
+		}
+		applyR(t, tbl, "0/5", changes...)
+		if got := legacyColumns(t, tbl); len(got) != 0 {
+			t.Fatalf("refill=%v: flagged after the TRUNCATE removed every legacy file: %+v (%s)", refill, got, versions(tbl))
+		}
+		if refill {
+			if got := versions(tbl); got != fmt.Sprintf("delta=%d", WriterFormatVersion) {
+				t.Fatalf("the rows after the TRUNCATE inherited the dead file's version: %s", got)
+			}
+			swapCompaction(t, tbl)
+			if got := versions(tbl); got != fmt.Sprintf("base=%d", WriterFormatVersion) {
+				t.Fatalf("after rewriting them: %s", got)
+			}
+		}
+		// It is the manifest that says so, not this process's memory.
+		tbl.Close()
+		tbl = fmtTable(t, sub)
+		if got := legacyColumns(t, tbl); len(got) != 0 {
+			t.Fatalf("refill=%v: flagged again after a restart: %+v", refill, got)
+		}
 	}
 }

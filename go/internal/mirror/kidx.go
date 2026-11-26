@@ -120,7 +120,17 @@ const (
 	kidxInt   = 1 // int64, 8 bytes, sign bit flipped
 	kidxUUID  = 2 // 16 bytes
 	kidxBytes = 3 // any bytes: 16 bytes of hash, and the key in the heap
+	// kidxDecimal is kidxBytes whose keys are numeric values in their one
+	// canonical spelling (canonNumeric). It is a kind of its own so that a
+	// file written for a numeric key column before keys were canonical, which
+	// is a kidxBytes file holding 1.50 and 1.500000000 as PostgreSQL or an old
+	// DECIMAL printed them, is not this table's kind: it fails the kind check
+	// at load and is rebuilt from the key column, like any stale index.
+	kidxDecimal = 4
 )
+
+// kidxHeaped is whether a kind keeps its keys in the heap.
+func kidxHeaped(kind int) bool { return kind == kidxBytes || kind == kidxDecimal }
 
 // kidxKeyWidth is the bytes of sort key in a record of each kind.
 func kidxKeyWidth(kind int) int {
@@ -134,7 +144,7 @@ func kidxKeyWidth(kind int) int {
 // and, for a key held in the heap, where.
 func kidxRecSize(kind int) int {
 	n := kidxKeyWidth(kind) + 12
-	if kind == kidxBytes {
+	if kidxHeaped(kind) {
 		n += 8
 	}
 	return n
@@ -154,6 +164,8 @@ func (t *Table) kidxKind() int {
 	switch {
 	case t.numericKey:
 		return kidxInt
+	case t.decimalKey:
+		return kidxDecimal
 	case arrowType(t.Columns[t.Key]) == uuidArrowType:
 		return kidxUUID
 	}
@@ -169,7 +181,7 @@ func kidxKeyOf(kind int, k rowKey) (kk kkey, text string, ok bool) {
 		return toKKey(k), "", k.isNum
 	case kidxUUID:
 		return toKKey(k), "", k.isUUID
-	case kidxBytes:
+	case kidxBytes, kidxDecimal:
 		if k.isNum {
 			return kkey{}, "", false
 		}
@@ -327,10 +339,10 @@ func decodeKidxHdr(b []byte) (kidxHdr, error) {
 		rows: le.Uint64(b[24:]), seq: le.Uint64(b[40:]),
 		size: le.Uint64(b[48:]), mtime: int64(le.Uint64(b[56:])),
 	}
-	if h.kind < kidxInt || h.kind > kidxBytes || int(le.Uint32(b[12:])) != kidxKeyWidth(h.kind) {
+	if h.kind < kidxInt || h.kind > kidxDecimal || int(le.Uint32(b[12:])) != kidxKeyWidth(h.kind) {
 		return kidxHdr{}, errors.New("kidx: key kind")
 	}
-	if h.kind != kidxBytes && h.heapLen != 0 {
+	if !kidxHeaped(h.kind) && h.heapLen != 0 {
 		return kidxHdr{}, errors.New("kidx: a heap on fixed-width keys")
 	}
 	return h, nil
@@ -345,7 +357,7 @@ func putRec(b []byte, kind int, r krec) {
 	}
 	binary.LittleEndian.PutUint32(b[o:], r.pos)
 	binary.LittleEndian.PutUint64(b[o+4:], r.hash)
-	if kind == kidxBytes {
+	if kidxHeaped(kind) {
 		binary.LittleEndian.PutUint64(b[o+12:], r.off)
 	}
 }
@@ -359,7 +371,7 @@ func getRec(b []byte, kind int) (r krec) {
 	}
 	r.pos = binary.LittleEndian.Uint32(b[o:])
 	r.hash = binary.LittleEndian.Uint64(b[o+4:])
-	if kind == kidxBytes {
+	if kidxHeaped(kind) {
 		r.off = binary.LittleEndian.Uint64(b[o+12:])
 	}
 	return r
@@ -498,7 +510,7 @@ func (d *diskIndex) keyBytes(i int) ([]byte, bool) {
 // holds reports whether record i is the record of this key, given that its sort
 // key already matched. For a fixed-width key that is the whole question.
 func (d *diskIndex) holds(i int, text string) bool {
-	if d.kind != kidxBytes {
+	if !kidxHeaped(d.kind) {
 		return true
 	}
 	b, ok := d.keyBytes(i)
@@ -515,7 +527,10 @@ func (d *diskIndex) rowKeyAt(i int) rowKey {
 		return rowKey{num: int64(k.hi), lo: k.lo, isUUID: true}
 	}
 	b, _ := d.keyBytes(i)
-	return keyStringFor(false, string(b))
+	if d.kind == kidxDecimal {
+		return rowKey{str: string(b)} // canonical when it was written
+	}
+	return keyStringFor(keyText, string(b))
 }
 
 func (d *diskIndex) keyAt(i int) kkey {
@@ -733,7 +748,7 @@ func openKidx(path, parquetPath string, id fileID, kind int) (*diskIndex, error)
 	if h.records > 0 && uint64(scan.maxPos) >= h.bind.rows {
 		return nil, errors.New("kidx: position beyond the base file")
 	}
-	if kind == kidxBytes {
+	if kidxHeaped(kind) {
 		if h.records > 0 && scan.maxOff >= h.heapLen {
 			return nil, errors.New("kidx: key beyond the heap")
 		}
@@ -904,7 +919,7 @@ func (b *kidxBuilder) add(k rowKey, pos int32, hash uint64, dead bool) error {
 		b.recs = make([]krec, 0, min(max(b.hint, 1024), kidxRunRecords))
 	}
 	r := krec{k: kk, hash: hash, pos: uint32(pos)}
-	if b.kind == kidxBytes {
+	if kidxHeaped(b.kind) {
 		off, err := b.heapAdd(text)
 		if err != nil {
 			return err
@@ -1087,7 +1102,7 @@ func (b *kidxBuilder) finish() (x *keyIndex, recDups, extraDups []int, err error
 	}
 	rec := kidxRecSize(b.kind)
 	var scan kidxScan
-	if b.kind == kidxBytes {
+	if kidxHeaped(b.kind) {
 		// Two records with one hash are one key only if the bytes say so.
 		scan.same = func(x, y krec) (bool, error) {
 			kx, err := b.heapKey(x.off)

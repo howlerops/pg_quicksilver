@@ -422,6 +422,9 @@ type GlobalStats struct {
 	UnlinkedFiles, UnlinkedBytes int64
 	CatalogBytes, WALBytes       int64
 	P50Seconds, P95Seconds       float64
+	// WatermarkSyncs counts copies of the mirror's watermark into the
+	// catalog: transactions that publish no snapshot.
+	WatermarkSyncs int64
 }
 
 func (p *Publisher) statsFor(q string) *TableStats {
