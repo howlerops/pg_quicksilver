@@ -3,9 +3,10 @@
 -- or its schema. The mirror's rows say 'mirror' (and include a row the heap
 -- does not have), so a leak would show.
 --
--- The roles are members of qs_duck (duckdb.postgres_role in validate/setup.sh):
--- pg_duckdb refuses to run for anyone else. The fabricated mirror reads no
--- file, which stock pg_duckdb would refuse a non-superuser.
+-- The roles are not superusers and are not members of qs_duck. Stock pg_duckdb
+-- gives such a role no local file system and refuses DuckDB to it, so nothing
+-- they run is routed (unprivileged.sql): every answer here is the heap's, and
+-- the mirror's rows must never appear. The fabricated mirror reads no file.
 \set last 'SELECT side, reason FROM quicksilver.last_decision();'
 SET client_min_messages = warning;
 CREATE SCHEMA qt;
@@ -56,15 +57,15 @@ GRANT SELECT (id, a, b) ON qt.h TO qs_t_col;
 \set last 'SELECT side, reason FROM quicksilver.last_decision();'
 SET quicksilver.route = mirror;
 SELECT b, count(*) FROM qt.h GROUP BY b;
-   b    | count 
---------+-------
- mirror |     4
+  b   | count 
+------+-------
+ heap |     3
 (1 row)
 
 :last
-  side  | reason 
---------+--------
- mirror | routed
+ side |                  reason                   
+------+-------------------------------------------
+ heap | the role is not a superuser (see docs/40)
 (1 row)
 
 SELECT count(*) FROM qtm.h;
@@ -103,18 +104,17 @@ ERROR:  permission denied for table h
 \set last 'SELECT side, reason FROM quicksilver.last_decision();'
 SET quicksilver.route = mirror;
 SELECT id, a, b FROM qt.h ORDER BY id;
- id | a  |   b    
-----+----+--------
-  1 | 10 | mirror
-  2 | 20 | mirror
-  3 | 30 | mirror
-  4 | 40 | mirror
-(4 rows)
+ id | a  |  b   
+----+----+------
+  1 | 10 | heap
+  2 | 20 | heap
+  3 | 30 | heap
+(3 rows)
 
 :last
-  side  | reason 
---------+--------
- mirror | routed
+ side |                  reason                   
+------+-------------------------------------------
+ heap | the role is not a superuser (see docs/40)
 (1 row)
 
 SELECT id, secret FROM qt.h ORDER BY id;
@@ -138,9 +138,9 @@ SET quicksilver.route = mirror;
 SET ROLE qs_t_all;
 PREPARE p AS SELECT b, count(*) FROM qt.h GROUP BY b;
 EXECUTE p;
-   b    | count 
---------+-------
- mirror |     4
+  b   | count 
+------+-------
+ heap |     3
 (1 row)
 
 RESET ROLE;
@@ -154,9 +154,9 @@ RESET ROLE;
 GRANT SELECT ON qt.h TO qs_t_all;
 SET ROLE qs_t_all;
 EXECUTE p;
-   b    | count 
---------+-------
- mirror |     4
+  b   | count 
+------+-------
+ heap |     3
 (1 row)
 
 RESET ROLE;

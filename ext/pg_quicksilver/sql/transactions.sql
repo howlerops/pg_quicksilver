@@ -44,7 +44,7 @@ BEGIN;
 SELECT b, count(*) FROM qt.h GROUP BY b;
 :last
 INSERT INTO qt.h VALUES (6, 60, 'heap');
--- the mirror cannot see this transaction's own write: the price of opting in
+-- a transaction that has written is the heap's from then on: the mirror cannot see its own write
 SELECT b, count(*) FROM qt.h GROUP BY b;
 SELECT id, b FROM qt.h WHERE id = 6 FOR UPDATE;
 ROLLBACK;

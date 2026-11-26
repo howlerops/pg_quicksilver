@@ -129,7 +129,6 @@ static char *qs_min_applied_lsn_str = NULL;
 static XLogRecPtr qs_min_applied_lsn = InvalidXLogRecPtr;
 static bool qs_allow_unsafe = false;
 static bool qs_route_in_xact = true;
-static bool qs_route_unpriv = true;
 static int	qs_wait_max_ms = 1000;
 static double qs_wait_fraction = 0.5;
 static double qs_cost_unit_ms = 0.002;
@@ -185,7 +184,7 @@ static const char *const qs_reason_names[QR_NREASONS] = {
 	"the mirror returns a different column type",
 	"registry changed while planning",
 	"mirror failed at execution; answered from the heap",
-	"this role may not be given the mirror",
+	"the role is not a superuser (see docs/40)",
 };
 
 /* ---------------------------------------------------------------- shared memory */
@@ -1131,111 +1130,26 @@ qs_elev_end(QsElev *e)
 		SetUserIdAndSecContext(e->uid, e->sec);
 }
 
-/* Is `path` inside one of the comma-separated directories? */
-static bool
-qs_path_under(const char *path, const char *dirs)
-{
-	const char *d = dirs;
-
-	if (path[0] != '/' || strstr(path, "/../") != NULL)
-		return false;
-	while (*d)
-	{
-		const char *end = strchr(d, ',');
-		size_t		len;
-
-		if (end == NULL)
-			end = d + strlen(d);
-		while (d < end && isspace((unsigned char) *d))
-			d++;
-		len = end - d;
-		while (len > 0 && isspace((unsigned char) d[len - 1]))
-			len--;
-		while (len > 1 && d[len - 1] == '/')
-			len--;
-		if (len > 1 && d[0] == '/' && strncmp(path, d, len) == 0 && path[len] == '/')
-			return true;
-		d = *end ? end + 1 : end;
-	}
-	return false;
-}
-
 /*
  * May a session that is not a superuser's be answered from the mirror?
  *
- * Only where the DuckDB this extension starts for it is confined and the
- * session cannot reach that DuckDB by itself:
- *
- *   duckdb.enable_external_access = off and duckdb.allowed_directories set,
- *   every registered lake inside one of those directories: the instance,
- *   which outlives the statement, can read the lake and nothing else on the
- *   server, and cannot be reconfigured (measured; docs/40);
- *
- *   none of the roles this session is or can go back to is a member of
- *   duckdb.postgres_role: pg_duckdb then refuses it every entry point, so the
- *   only DuckDB statements run in this backend are the ones written here.
+ * No. With stock pg_duckdb 1.2.0 a role that is not a superuser gets no local
+ * file system from its DuckDB (measured: "File system LocalFileSystem has been
+ * disabled by configuration", with duckdb.enable_external_access = off and
+ * duckdb.allowed_directories set). Its DuckDB therefore cannot read the lake,
+ * and pg_duckdb refuses a role that is not a member of duckdb.postgres_role
+ * outright. Membership would open DuckDB to the role, which can then run any
+ * statement it likes and would see every mirrored table, whatever it may read
+ * from the heap. So the statement stays on the heap, which answers it exactly.
+ * docs/40 says what an operator would need, and why that is not enough.
  */
-static bool
-qs_unprivileged_ok(char *why, size_t whylen)
-{
-	const char *ext = GetConfigOption("duckdb.enable_external_access", true, false);
-	const char *dirs = GetConfigOption("duckdb.allowed_directories", true, false);
-	const char *role = GetConfigOption("duckdb.postgres_role", true, false);
-	ListCell   *lc;
-
-	if (!qs_route_unpriv)
-	{
-		strlcpy(why, "quicksilver.route_unprivileged is off: only superusers are routed", whylen);
-		return false;
-	}
-	if (ext == NULL || dirs == NULL)
-	{
-		strlcpy(why, "this pg_duckdb has no duckdb.allowed_directories: its DuckDB cannot be confined to the lake", whylen);
-		return false;
-	}
-	if (strcmp(ext, "off") != 0)
-	{
-		strlcpy(why, "duckdb.enable_external_access is on: a DuckDB started for this role could read any file the server can", whylen);
-		return false;
-	}
-	if (dirs[0] == '\0')
-	{
-		strlcpy(why, "duckdb.allowed_directories is empty: DuckDB could not read the lake", whylen);
-		return false;
-	}
-	foreach(lc, qs_lakes)
-	{
-		QsLake	   *lake = (QsLake *) lfirst(lc);
-
-		if (!qs_path_under(lake->catalog, dirs))
-		{
-			snprintf(why, whylen, "lake \"%s\" is not inside duckdb.allowed_directories", lake->alias);
-			return false;
-		}
-	}
-	if (role != NULL && role[0] != '\0')
-	{
-		Oid			roleid = get_role_oid(role, true);
-
-		if (OidIsValid(roleid) &&
-			(is_member_of_role_nosuper(GetUserId(), roleid) ||
-			 is_member_of_role_nosuper(GetOuterUserId(), roleid) ||
-			 is_member_of_role_nosuper(GetSessionUserId(), roleid)))
-		{
-			snprintf(why, whylen, "this session's role is a member of duckdb.postgres_role (%s): it could read the lake's files itself, whatever it may read from the heap", role);
-			return false;
-		}
-	}
-	return true;
-}
-
-/* The mirror for this session at all? Superusers always; anybody else as above. */
 static bool
 qs_mirror_allowed(char *why, size_t whylen)
 {
 	if (superuser())
 		return true;
-	return qs_unprivileged_ok(why, whylen);
+	strlcpy(why, "only superusers are routed: stock pg_duckdb gives DuckDB's local file system to superusers only", whylen);
+	return false;
 }
 
 /*
@@ -5185,12 +5099,6 @@ _PG_init(void)
 							 "Where PostgreSQL would raise \"integer out of range\", the mirror may return an answer instead: "
 							 "its optimizer can rewrite the expression so that the overflow never happens.",
 							 &qs_tolerate_lost_errors, false, PGC_USERSET, 0, NULL, NULL, NULL);
-	DefineCustomBoolVariable("quicksilver.route_unprivileged",
-							 "Route statements of roles that are not superusers, where pg_duckdb is confined to the lake.",
-							 "Needs duckdb.enable_external_access = off, duckdb.allowed_directories covering every registered lake, "
-							 "and a role that is not a member of duckdb.postgres_role. The mirror side then runs as the bootstrap superuser, "
-							 "after the heap table's privileges have been checked for the role.",
-							 &qs_route_unpriv, true, PGC_SUSET, 0, NULL, NULL, NULL);
 	DefineCustomIntVariable("quicksilver.negative_cache_ttl",
 							"Seconds a statement the mirror failed on stays on the heap without asking again.", NULL,
 							&qs_negative_ttl, 60, 0, 86400, PGC_USERSET, GUC_UNIT_S, NULL, NULL, NULL);

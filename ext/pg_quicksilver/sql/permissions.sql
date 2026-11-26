@@ -3,9 +3,10 @@
 -- or its schema. The mirror's rows say 'mirror' (and include a row the heap
 -- does not have), so a leak would show.
 --
--- The roles are members of qs_duck (duckdb.postgres_role in validate/setup.sh):
--- pg_duckdb refuses to run for anyone else. The fabricated mirror reads no
--- file, which stock pg_duckdb would refuse a non-superuser.
+-- The roles are not superusers and are not members of qs_duck. Stock pg_duckdb
+-- gives such a role no local file system and refuses DuckDB to it, so nothing
+-- they run is routed (unprivileged.sql): every answer here is the heap's, and
+-- the mirror's rows must never appear. The fabricated mirror reads no file.
 \set last 'SELECT side, reason FROM quicksilver.last_decision();'
 SET client_min_messages = warning;
 CREATE SCHEMA qt;

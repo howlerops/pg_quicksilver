@@ -66,7 +66,7 @@ SELECT b FROM qt.stale ORDER BY id;
 SELECT side, reason, left(detail, 60) AS detail FROM quicksilver.last_decision();
  side |            reason            |                            detail                            
 ------+------------------------------+--------------------------------------------------------------
- heap | the mirror could not plan it | (PGDuckDB/CreatePlan) Prepared query returned an error: IO E
+ heap | the mirror could not plan it | (PGDuckDB/CreatePlan) Prepared query returned an error: Perm
 (1 row)
 
 -- remembered for negative_cache_ttl, so the mirror is not asked again each time
@@ -86,7 +86,7 @@ SELECT b FROM qt.stale ORDER BY id;
 SELECT side, reason, right(detail, 12) AS detail_ends FROM quicksilver.last_decision();
  side |            reason            | detail_ends  
 ------+------------------------------+--------------
- heap | the mirror could not plan it | ECT (r.id)::
+ heap | the mirror could not plan it | 1: SELECT b 
 (1 row)
 
 -- republishing is DDL on the mirror, which forgets it
@@ -138,10 +138,19 @@ SELECT id, b FROM qt.h ORDER BY id;
 -- EXPLAIN ANALYZE is the exception: pg_duckdb does not run the statement in the
 -- executor then but inside DuckDB's own EXPLAIN ANALYZE, where nothing can be caught
 EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) SELECT id, a, b FROM qt.h WHERE id > 0;
-ERROR:  (PGDuckDB/Duckdb_ExplainCustomScan_Cpp) Conversion Error: Could not convert string 'thirty' to INT32 when casting from source column a
+                                                                        QUERY PLAN                                                                         
+-----------------------------------------------------------------------------------------------------------------------------------------------------------
+ Custom Scan (QuicksilverRoute) (actual rows=3 loops=1)
+   Quicksilver: heap (mirror failed at execution; answered from the heap)
+   Quicksilver Detail: (PGDuckDB/Duckdb_ExecCustomScan_Cpp) Conversion Error: Could not convert string 'thirty' to INT32 when casting from source column a
+   ->  Bitmap Heap Scan on h (actual rows=3 loops=1)
+         Recheck Cond: (id > 0)
+         Heap Blocks: exact=1
+         ->  Bitmap Index Scan on h_pkey (actual rows=3 loops=1)
+               Index Cond: (id > 0)
+ Quicksilver: heap (mirror failed at execution; answered from the heap)
+(9 rows)
 
-LINE 1: EXPLAIN ANALYZE  SELECT id, a, b FROM (SELECT m.id, m.a, m.b FROM (SELECT...
-                    ^^^^^^^^^^^^^^^^^^
 SELECT mirror, heap, fallbacks FROM quicksilver.decision_stats WHERE fallbacks > 0 ORDER BY fallbacks DESC LIMIT 1;
  mirror | heap | fallbacks 
 --------+------+-----------

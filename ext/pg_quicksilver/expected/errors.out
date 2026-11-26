@@ -239,6 +239,95 @@ SELECT n FROM qt.slow;
 (1 row)
 
 SET quicksilver.route = mirror;
+-- ---------------------------------------------------------------- the mirror fails after rows have left the server
+-- The mirror has 2,000,000 rows and its own cast cannot take the value in row
+-- 1,800,000. DuckDB finds out after it has started returning rows, and pg_duckdb
+-- then ends the result WITHOUT an error (its stream just stops; so does a
+-- statement on the mirror relation with no router at all). The router asks
+-- DuckDB whether it finished. While the answer fits in work_mem nothing has
+-- been sent: the heap (200,000 rows here) answers, all of it, once.
+CREATE TABLE qt.big (id int PRIMARY KEY, a int);
+INSERT INTO qt.big SELECT g, g FROM generate_series(1, 200000) g;
+CREATE VIEW qtm.big AS SELECT r['id']::int AS id, r['a']::int AS a
+  FROM duckdb.query($$ SELECT i::int AS id, CASE WHEN i = 1800000 THEN 'x' ELSE i::varchar END AS a FROM range(1, 2000001) t(i) $$) r;
+SELECT quicksilver.register_mirror('qt.big', 'qtm.big', 1000000000000);
+ register_mirror 
+-----------------
+ 
+(1 row)
+
+SELECT quicksilver.report_applied_lsn('qt.big', pg_current_wal_lsn());
+ report_applied_lsn 
+--------------------
+ 
+(1 row)
+
+SET work_mem = '256MB';
+-- pg_duckdb alone, on the mirror relation: rows, then nothing, and no error
+\o /tmp/qs_regress/stream.out
+SELECT id, a FROM qtm.big;
+\o
+\! awk 'NF { n++ } END { print ((n > 0 && n < 1800000) ? "some rows, fewer than 1800000" : n " rows") ", and no error above" }' /tmp/qs_regress/stream.out
+some rows, fewer than 1800000, and no error above
+\set VERBOSITY terse
+\set FETCH_COUNT 5000
+\t on
+\o /tmp/qs_regress/stream.out
+SELECT id, a FROM qt.big;
+\o
+:last
+ heap | mirror failed at execution; answered from the heap | the mirror's result ended early: DuckDB 
+
+\! awk 'NF { n++ } END { print n " rows received" }' /tmp/qs_regress/stream.out
+200000 rows received
+-- Past work_mem the rows are streamed, and the error comes after some of them.
+-- The client gets it as an error: the statement fails, the rows it had been
+-- sent are fewer than the answer and none of them twice (no second attempt on
+-- the heap behind them), and the decision still says "mirror".
+SET work_mem = '64kB';
+\o /tmp/qs_regress/stream.out
+SELECT id, a FROM qt.big;
+ERROR:  the mirror failed after rows had been returned
+\o
+\! awk 'NF { n[$1]++; r++ } END { d = 0; for (k in n) if (n[k] > 1) d++; print ((r > 200000 && r < 1800000) ? "more rows than the heap has, fewer than 1800000" : r " rows") ", " d " received twice" }' /tmp/qs_regress/stream.out
+more rows than the heap has, fewer than 1800000, 0 received twice
+:last
+ mirror | routed | quicksilver.route = mirror
+
+-- the same in a transaction block: there the answer is taken whole before the
+-- first row, however large, so the heap can still answer; and the block goes on
+BEGIN;
+\o /tmp/qs_regress/stream.out
+SELECT id, a FROM qt.big;
+\o
+:last
+ heap | mirror failed at execution; answered from the heap | the mirror's result ended early: DuckDB 
+
+\! awk 'NF { n++ } END { print n " rows received" }' /tmp/qs_regress/stream.out
+200000 rows received
+SAVEPOINT s;
+RELEASE s;
+COMMIT;
+\unset FETCH_COUNT
+\t off
+-- the session's DuckDB was left holding the result the error interrupted; the next
+-- routed statement finds it replaced, and is routed
+SELECT count(*) FROM public.customers;
+ count 
+-------
+ 10000
+(1 row)
+
+:last
+  side  | reason |           detail           
+--------+--------+----------------------------
+ mirror | routed | quicksilver.route = mirror
+(1 row)
+
+RESET work_mem;
+\set VERBOSITY default
+DROP TABLE qt.big;
+DROP VIEW qtm.big;
 -- ---------------------------------------------------------------- the applied-LSN table gives entries back
 -- More registrations than it holds (1024), one after another: every other one
 -- is unregistered, the rest have their table dropped under the registry row.
@@ -259,7 +348,7 @@ END $$;
 SELECT quicksilver.prune();
  prune 
 -------
-   550
+   551
 (1 row)
 
 -- and a table registered after all that is reported and routed
