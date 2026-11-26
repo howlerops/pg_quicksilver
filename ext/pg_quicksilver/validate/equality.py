@@ -12,7 +12,7 @@ The exactness tables hold 2,000 rows each, so for them the cost gate is opened
 (min_cost = min_rows = 0); statements over the 1M-row tables run with the
 default thresholds.
 
-    equality.py [--port 5541] [--out results.json] [--fuzz]
+    equality.py [--port 5541] [--user postgres] [--out results.json] [--fuzz]
 
 Exit status 1 if any routed statement differs from the heap.
 """
@@ -63,8 +63,8 @@ def run(conn, sql):
         return {"error": e.sqlstate, "message": (e.diag.message_primary or "")[:200]}
 
 
-def connect(port, settings):
-    c = psycopg.connect(f"host=/tmp port={port} dbname=app user=postgres", autocommit=True)
+def connect(port, settings, user="postgres"):
+    c = psycopg.connect(f"host=/tmp port={port} dbname=app user={user}", autocommit=True)
     c.execute("SET search_path = ex, public")
     c.execute("SET TimeZone = 'America/New_York'")
     for s in settings:
@@ -75,6 +75,7 @@ def connect(port, settings):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--port", type=int, default=int(os.environ.get("PPORT", 5541)))
+    ap.add_argument("--user", default="postgres", help="the role both sessions run as (an ordinary role routes only on the confined build, docs/40)")
     ap.add_argument("--out", default=os.path.join(HERE, "results", "equality.json"))
     ap.add_argument("--extra", action="append", default=[], help="another corpus file")
     ap.add_argument("--set", action="append", default=[], metavar="NAME=VALUE", help="a setting for the routing session")
@@ -90,8 +91,8 @@ def main():
     for f in args.extra:
         corpus += [(i, s, os.path.basename(f)) for i, s in load(f)]
 
-    heap = connect(args.port, ["SET quicksilver.route = heap"])
-    auto = connect(args.port, ["SET quicksilver.route = auto"] + ["SET %s = '%s'" % tuple(x.split("=", 1)) for x in args.set])
+    heap = connect(args.port, ["SET quicksilver.route = heap"], args.user)
+    auto = connect(args.port, ["SET quicksilver.route = auto"] + ["SET %s = '%s'" % tuple(x.split("=", 1)) for x in args.set], args.user)
     results, reasons, bad = [], collections.Counter(), []
     n = collections.Counter()
     for sid, sql, src in corpus:
