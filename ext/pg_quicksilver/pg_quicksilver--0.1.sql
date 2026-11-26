@@ -201,6 +201,18 @@ REVOKE ALL ON FUNCTION quicksilver.register_mirror(regclass, regclass, bigint),
     quicksilver.report_applied_lsn(regclass, pg_lsn), quicksilver.reset(),
     quicksilver.attach_lakes() FROM PUBLIC;
 
+-- The metadata that describes other sessions and the cluster: the mirrors,
+-- their names and LSNs, and the counters every session shares. A view runs its
+-- function with the view owner's rights, so the views are closed the same way.
+-- quicksilver.last_decision() stays public: it reads this session's own last
+-- statement and nothing else.
+REVOKE ALL ON FUNCTION quicksilver.mirror_status(), quicksilver.unsafe_constructs(text),
+    quicksilver.decisions(), quicksilver.reasons(), quicksilver.allowlist_problems() FROM PUBLIC;
+REVOKE ALL ON quicksilver.decision_stats, quicksilver.reason_stats FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION quicksilver.mirror_status(), quicksilver.unsafe_constructs(text),
+    quicksilver.decisions(), quicksilver.reasons(), quicksilver.allowlist_problems() TO pg_monitor;
+GRANT SELECT ON quicksilver.decision_stats, quicksilver.reason_stats TO pg_monitor;
+
 -- ---------------------------------------------------------------- seed
 -- Small on purpose. Every row was verified by ext/pg_quicksilver/validate/
 -- equality.py: statements built from these constructs returned byte-identical
