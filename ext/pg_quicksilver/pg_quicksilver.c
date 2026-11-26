@@ -46,6 +46,7 @@
 #include "funcapi.h"
 #include "mb/pg_wchar.h"
 #include "miscadmin.h"
+#include "pgstat.h"
 #include "nodes/extensible.h"
 #include "nodes/makefuncs.h"
 #include "nodes/nodeFuncs.h"
@@ -55,16 +56,20 @@
 #include "parser/parse_func.h"
 #include "parser/parse_relation.h"
 #include "parser/parsetree.h"
+#include "storage/condition_variable.h"
 #include "storage/ipc.h"
 #include "storage/lmgr.h"
 #include "storage/lwlock.h"
 #include "storage/proc.h"
 #include "storage/shmem.h"
 #include "port/atomics.h"
+#include "tcop/cmdtag.h"
+#include "tcop/pquery.h"
 #include "tcop/tcopprot.h"
 #include "tcop/utility.h"
 #include "utils/acl.h"
 #include "utils/array.h"
+#include "utils/backend_status.h"
 #include "utils/builtins.h"
 #include "utils/datum.h"
 #include "utils/fmgroids.h"
@@ -77,6 +82,8 @@
 #include "utils/numeric.h"
 #include "utils/pg_locale.h"
 #include "utils/pg_lsn.h"
+#include "utils/portal.h"
+#include "utils/wait_event.h"
 #include "utils/plancache.h"
 #include "utils/regproc.h"
 #include "utils/rel.h"
@@ -117,11 +124,15 @@ static int	qs_route = QS_ROUTE_OFF;
 static double qs_min_cost = 10000.0;
 static double qs_min_rows = 50000.0;
 static int	qs_max_lag_kb = 0;
-static int	qs_fresh_wait_ms = 20;
+static int	qs_fresh_wait_ms = 0;
 static char *qs_min_applied_lsn_str = NULL;
 static XLogRecPtr qs_min_applied_lsn = InvalidXLogRecPtr;
 static bool qs_allow_unsafe = false;
-static bool qs_route_in_xact = false;
+static bool qs_route_in_xact = true;
+static bool qs_route_unpriv = true;
+static int	qs_wait_max_ms = 1000;
+static double qs_wait_fraction = 0.5;
+static double qs_cost_unit_ms = 0.002;
 static bool qs_prefer_custom = true;
 static bool qs_fallback = true;
 static bool qs_log_decisions = false;
@@ -151,6 +162,7 @@ typedef enum
 	QR_OUTPUT_MISMATCH,
 	QR_REGISTRY_CHANGED,
 	QR_FALLBACK,
+	QR_UNCONFINED,
 	QR_NREASONS
 } QsReason;
 
@@ -162,7 +174,7 @@ static const char *const qs_reason_names[QR_NREASONS] = {
 	"inside a function or nested statement",
 	"inside a transaction block",
 	"transaction isolation is not READ COMMITTED",
-	"scrollable or holdable cursor",
+	"scrollable cursor",
 	"reads a relation with no usable mirror",
 	"cheap on the heap",
 	"construct not on the allowlist",
@@ -173,6 +185,7 @@ static const char *const qs_reason_names[QR_NREASONS] = {
 	"the mirror returns a different column type",
 	"registry changed while planning",
 	"mirror failed at execution; answered from the heap",
+	"this role may not be given the mirror",
 };
 
 /* ---------------------------------------------------------------- shared memory */
@@ -212,6 +225,7 @@ typedef struct QsShared
 	LWLock	   *lock;
 	pg_atomic_uint64 reasons[QR_NREASONS];
 	pg_atomic_uint64 dropped;
+	ConditionVariable reported;	/* an applied LSN was reported: wakes statements waiting for their mirror */
 } QsShared;
 
 static QsShared *qs_shared = NULL;
@@ -320,7 +334,28 @@ typedef struct QsLake
 static List *qs_lakes = NIL;	/* QsLake, in qs_cache_cxt */
 static bool qs_lakes_attached = false;	/* in this backend, for this load of the registry */
 static TimestampTz qs_attach_retry_at = 0;
-static bool qs_attach_for_all = false;
+
+/*
+ * pg_duckdb's own state, as far as this extension has to know it.
+ *
+ * qs_duck_foreign: something other than this extension has used DuckDB in the
+ * current transaction (a statement pg_duckdb planned itself, a function of
+ * its schema, a CALL). Its DuckDB transaction is not ours to end, and its
+ * lake snapshot is not one a freshness check approved: no routing until the
+ * transaction is over.
+ *
+ * qs_attach_open: a lake was attached inside a DuckDB transaction that has not
+ * committed yet; if the PostgreSQL transaction aborts, the attachment is gone.
+ *
+ * qs_mirror_live: mirror nodes started and not ended. An abort with one live
+ * leaves DuckDB's connection holding an open result, and every later statement
+ * is refused ("connection has an open result"): qs_duck_dirty asks for the
+ * instance to be recycled before the mirror is asked again.
+ */
+static bool qs_duck_foreign = false;
+static bool qs_attach_open = false;
+static int	qs_mirror_live = 0;
+static bool qs_duck_dirty = false;
 static HTAB *qs_mirror_hash = NULL;
 static HTAB *qs_allow_hash = NULL;
 static HTAB *qs_name_hash = NULL;
@@ -369,6 +404,7 @@ static QsPin *qs_pins = NULL;
 
 /* the plan whose freshness was decided when it was made, in this transaction; used once */
 static void *qs_gated_plan = NULL;
+static double qs_gated_waited_ms = 0;
 static LocalTransactionId qs_gated_lxid = InvalidLocalTransactionId;
 
 typedef struct QsLast
@@ -1049,13 +1085,322 @@ qs_load_lakes(Snapshot snap)
 	table_close(rel, AccessShareLock);
 }
 
+/* ---------------------------------------------------------------- pg_duckdb, on behalf of somebody else */
+
+static bool qs_mirror_error_ok(ErrorData *ed);
+
+/*
+ * The mirror side runs as the bootstrap superuser, and only the mirror side.
+ *
+ * Stock pg_duckdb gives DuckDB to superusers and to members of
+ * duckdb.postgres_role, and it gives the local file system to superusers
+ * only. A member of that role can also run any DuckDB statement it likes
+ * (duckdb.query, duckdb.raw_query), and DuckDB knows nothing of PostgreSQL's
+ * privileges: with the lake attached it would read every mirrored table,
+ * whatever it may read from the heap. So the application's role is given
+ * nothing: no membership, no privilege on a mirror relation. The statement
+ * DuckDB runs for it is one this extension wrote, after the executor's own
+ * check of the heap table's privileges, out of constructs on the allowlist;
+ * nothing of the user's is evaluated by PostgreSQL in between (the mirror
+ * statement holds allowlisted pg_catalog objects only, and DuckDB evaluates
+ * them). The identity is switched around each call into pg_duckdb and
+ * switched back before a row is returned.
+ */
+typedef struct QsElev
+{
+	bool		on;
+	Oid			uid;
+	int			sec;
+} QsElev;
+
+static inline void
+qs_elev_begin(QsElev *e)
+{
+	e->on = !superuser();
+	if (e->on)
+	{
+		GetUserIdAndSecContext(&e->uid, &e->sec);
+		SetUserIdAndSecContext(BOOTSTRAP_SUPERUSERID, e->sec | SECURITY_LOCAL_USERID_CHANGE);
+	}
+}
+
+static inline void
+qs_elev_end(QsElev *e)
+{
+	if (e->on)
+		SetUserIdAndSecContext(e->uid, e->sec);
+}
+
+/* Is `path` inside one of the comma-separated directories? */
+static bool
+qs_path_under(const char *path, const char *dirs)
+{
+	const char *d = dirs;
+
+	if (path[0] != '/' || strstr(path, "/../") != NULL)
+		return false;
+	while (*d)
+	{
+		const char *end = strchr(d, ',');
+		size_t		len;
+
+		if (end == NULL)
+			end = d + strlen(d);
+		while (d < end && isspace((unsigned char) *d))
+			d++;
+		len = end - d;
+		while (len > 0 && isspace((unsigned char) d[len - 1]))
+			len--;
+		while (len > 1 && d[len - 1] == '/')
+			len--;
+		if (len > 1 && d[0] == '/' && strncmp(path, d, len) == 0 && path[len] == '/')
+			return true;
+		d = *end ? end + 1 : end;
+	}
+	return false;
+}
+
+/*
+ * May a session that is not a superuser's be answered from the mirror?
+ *
+ * Only where the DuckDB this extension starts for it is confined and the
+ * session cannot reach that DuckDB by itself:
+ *
+ *   duckdb.enable_external_access = off and duckdb.allowed_directories set,
+ *   every registered lake inside one of those directories: the instance,
+ *   which outlives the statement, can read the lake and nothing else on the
+ *   server, and cannot be reconfigured (measured; docs/40);
+ *
+ *   none of the roles this session is or can go back to is a member of
+ *   duckdb.postgres_role: pg_duckdb then refuses it every entry point, so the
+ *   only DuckDB statements run in this backend are the ones written here.
+ */
+static bool
+qs_unprivileged_ok(char *why, size_t whylen)
+{
+	const char *ext = GetConfigOption("duckdb.enable_external_access", true, false);
+	const char *dirs = GetConfigOption("duckdb.allowed_directories", true, false);
+	const char *role = GetConfigOption("duckdb.postgres_role", true, false);
+	ListCell   *lc;
+
+	if (!qs_route_unpriv)
+	{
+		strlcpy(why, "quicksilver.route_unprivileged is off: only superusers are routed", whylen);
+		return false;
+	}
+	if (ext == NULL || dirs == NULL)
+	{
+		strlcpy(why, "this pg_duckdb has no duckdb.allowed_directories: its DuckDB cannot be confined to the lake", whylen);
+		return false;
+	}
+	if (strcmp(ext, "off") != 0)
+	{
+		strlcpy(why, "duckdb.enable_external_access is on: a DuckDB started for this role could read any file the server can", whylen);
+		return false;
+	}
+	if (dirs[0] == '\0')
+	{
+		strlcpy(why, "duckdb.allowed_directories is empty: DuckDB could not read the lake", whylen);
+		return false;
+	}
+	foreach(lc, qs_lakes)
+	{
+		QsLake	   *lake = (QsLake *) lfirst(lc);
+
+		if (!qs_path_under(lake->catalog, dirs))
+		{
+			snprintf(why, whylen, "lake \"%s\" is not inside duckdb.allowed_directories", lake->alias);
+			return false;
+		}
+	}
+	if (role != NULL && role[0] != '\0')
+	{
+		Oid			roleid = get_role_oid(role, true);
+
+		if (OidIsValid(roleid) &&
+			(is_member_of_role_nosuper(GetUserId(), roleid) ||
+			 is_member_of_role_nosuper(GetOuterUserId(), roleid) ||
+			 is_member_of_role_nosuper(GetSessionUserId(), roleid)))
+		{
+			snprintf(why, whylen, "this session's role is a member of duckdb.postgres_role (%s): it could read the lake's files itself, whatever it may read from the heap", role);
+			return false;
+		}
+	}
+	return true;
+}
+
+/* The mirror for this session at all? Superusers always; anybody else as above. */
+static bool
+qs_mirror_allowed(char *why, size_t whylen)
+{
+	if (superuser())
+		return true;
+	return qs_unprivileged_ok(why, whylen);
+}
+
+/*
+ * Run one statement in this backend's DuckDB (duckdb.raw_query), as the
+ * bootstrap superuser. An error DuckDB raised is swallowed and reported as
+ * false; anything else is rethrown.
+ */
+static bool
+qs_duck_raw(const char *sql)
+{
+	Oid			argtypes[1] = {TEXTOID};
+	Oid			fn;
+	MemoryContext old = CurrentMemoryContext;
+	int			save_nestlevel;
+	bool		save_busy = qs_busy;
+	bool		ok = true;
+	QsElev		elev;
+
+	qs_elev_begin(&elev);
+	fn = LookupFuncName(list_make2(makeString("duckdb"), makeString("raw_query")), 1, argtypes, true);
+	if (!OidIsValid(fn))
+	{
+		qs_elev_end(&elev);
+		return false;			/* pg_duckdb is not in this database */
+	}
+	save_nestlevel = NewGUCNestLevel();
+	qs_busy = true;
+	PG_TRY();
+	{
+		/* raw_query reports its result as a NOTICE */
+		(void) set_config_option("client_min_messages", "warning", PGC_SUSET, PGC_S_SESSION,
+								 GUC_ACTION_SAVE, true, 0, false);
+		(void) set_config_option("log_min_messages", "warning", PGC_SUSET, PGC_S_SESSION,
+								 GUC_ACTION_SAVE, true, 0, false);
+		OidFunctionCall1(fn, CStringGetTextDatum(sql));
+	}
+	PG_CATCH();
+	{
+		ErrorData  *ed;
+
+		MemoryContextSwitchTo(old);
+		ed = CopyErrorData();
+		if (!qs_mirror_error_ok(ed))
+		{
+			AtEOXact_GUC(true, save_nestlevel);
+			qs_busy = save_busy;
+			qs_elev_end(&elev);
+			PG_RE_THROW();
+		}
+		FlushErrorState();
+		FreeErrorData(ed);
+		ok = false;
+	}
+	PG_END_TRY();
+	qs_busy = save_busy;
+	AtEOXact_GUC(true, save_nestlevel);
+	qs_elev_end(&elev);
+	return ok;
+}
+
+/*
+ * Would a DuckDB transaction opened now outlive the statement? In a
+ * transaction block, an implicit one (several statements in one message, a
+ * pipeline) included: PostgreSQL only ends it later, and pg_duckdb only ends
+ * DuckDB's when PostgreSQL does.
+ */
+static bool
+qs_in_block(void)
+{
+	return IsInTransactionBlock(true);
+}
+
+/*
+ * End the DuckDB transaction pg_duckdb opened for a statement of ours.
+ *
+ * pg_duckdb keeps one DuckDB transaction open from the first DuckDB statement
+ * in a transaction block to the block's end, and while it is open it raises
+ * an error from its subtransaction callback when a SAVEPOINT is taken (the
+ * transaction is then aborted) or a PL/pgSQL exception block is entered (the
+ * session is then lost: the error is raised where PostgreSQL cannot take
+ * one). A routed read needs none of that: it has read, and holds nothing. So
+ * its DuckDB transaction is ended with the statement, and what follows in the
+ * block (a savepoint, a write, another routed read, which then reads a new
+ * snapshot of the lake as a READ COMMITTED statement reads a new snapshot of
+ * the heap) finds DuckDB idle.
+ *
+ * Returns false if DuckDB's transaction turns out to have been invalidated:
+ * see below. `failed` says the caller already knows (DuckDB raised an error),
+ * and the transaction is only rolled back.
+ */
+static bool
+qs_duck_end(bool failed)
+{
+	bool		ok = !failed;
+
+	if (qs_duck_foreign)
+		return true;			/* not ours to end */
+
+	/*
+	 * Did the statement DuckDB ran last finish? pg_duckdb streams a result,
+	 * and when DuckDB fails after the first rows (a value it cannot cast in
+	 * row 150,000, a data file that has gone) the stream just ends: no error
+	 * is raised, the rows so far look like the whole answer. (Stock pg_duckdb
+	 * 1.2.0, with no router involved; errors.sql has the statement.) What
+	 * DuckDB does do is invalidate its transaction, and the next statement in
+	 * it is refused. So one is sent: if it is refused, the result that came
+	 * before it was cut short.
+	 */
+	if (ok)
+		ok = qs_duck_raw("SELECT 1");
+	if (!ok || !qs_duck_raw("COMMIT"))
+		(void) qs_duck_raw("ROLLBACK");
+	if (ok)
+		qs_attach_open = false;
+	else if (qs_attach_open)
+	{
+		qs_lakes_attached = false;
+		qs_attach_open = false;
+	}
+	/* what the next statement reads is decided by its own freshness check */
+	qs_xact_pinned = false;
+	qs_npins = 0;
+	return ok;
+}
+
+/* A DuckDB connection left holding an open result by an abort is replaced. */
+static void
+qs_duck_recycle(void)
+{
+	Oid			fn;
+	QsElev		elev;
+	bool		save_busy = qs_busy;
+
+	if (!qs_duck_dirty)
+		return;
+	qs_duck_dirty = false;
+	qs_elev_begin(&elev);
+	fn = LookupFuncName(list_make2(makeString("duckdb"), makeString("recycle_ddb")), 0, NULL, true);
+	if (OidIsValid(fn))
+	{
+		qs_busy = true;
+		PG_TRY();
+		{
+			OidFunctionCall0(fn);
+		}
+		PG_FINALLY();
+		{
+			qs_busy = save_busy;
+			qs_elev_end(&elev);
+		}
+		PG_END_TRY();
+	}
+	else
+		qs_elev_end(&elev);
+	qs_lakes_attached = false;
+	qs_attach_retry_at = 0;
+}
+
 /*
  * Attach every registered lake whose catalog file is on this node, in this
  * backend's DuckDB. Idempotent (ATTACH IF NOT EXISTS, READ_ONLY) and never an
  * error: a lake that cannot be attached leaves its mirror relations
- * unplannable, which is "heap". It runs as the session's user, so that
- * whatever pg_duckdb decides about that user it decides here too. Returns how
- * many lakes are attached, or -1 if one of them is not.
+ * unplannable, which is "heap". Returns how many lakes are attached, or -1 if
+ * one of them is not. The caller has established that this session may be
+ * given the mirror (qs_mirror_allowed).
  */
 static int
 qs_attach_lakes(bool force)
@@ -1064,9 +1409,6 @@ qs_attach_lakes(bool force)
 	int			n = 0;
 	bool		failed = false;
 	bool		refused = false;
-	Oid			argtypes[1] = {TEXTOID};
-	Oid			fn;
-	MemoryContext old = CurrentMemoryContext;
 
 	if (qs_lakes == NIL)
 		return 0;
@@ -1074,26 +1416,11 @@ qs_attach_lakes(bool force)
 		return list_length(qs_lakes);
 	if (!force && qs_attach_retry_at != 0 && GetCurrentTimestamp() < qs_attach_retry_at)
 		return -1;
-
-	/*
-	 * Stock pg_duckdb gives a role that is not a superuser a DuckDB with the
-	 * local file system turned off: the ATTACH cannot work, and failing takes
-	 * seconds. Such a session is not routed to a lake (the heap answers); a
-	 * build that lets the role read the mirror's directory says so with
-	 * quicksilver.attach_lakes_for_all.
-	 */
-	if (!superuser() && !qs_attach_for_all)
-		return -1;
-	fn = LookupFuncName(list_make2(makeString("duckdb"), makeString("raw_query")), 1, argtypes, true);
-	if (!OidIsValid(fn))
-		return -1;				/* pg_duckdb is not in this database */
 	foreach(lc, qs_lakes)
 	{
 		QsLake	   *lake = (QsLake *) lfirst(lc);
 		struct stat sb;
 		StringInfoData sql;
-		int			save_nestlevel;
-		bool		save_busy = qs_busy;
 
 		if (stat(lake->catalog, &sb) != 0)
 		{
@@ -1104,42 +1431,18 @@ qs_attach_lakes(bool force)
 		appendStringInfo(&sql, "ATTACH IF NOT EXISTS %s AS %s (READ_ONLY)",
 						 quote_literal_cstr(psprintf("ducklake:sqlite:%s", lake->catalog)),
 						 quote_identifier(lake->alias));
-		save_nestlevel = NewGUCNestLevel();
-		qs_busy = true;
-		PG_TRY();
-		{
-			/* raw_query reports its result as a NOTICE */
-			(void) set_config_option("client_min_messages", "warning", PGC_USERSET, PGC_S_SESSION,
-									 GUC_ACTION_SAVE, true, 0, false);
-			OidFunctionCall1(fn, CStringGetTextDatum(sql.data));
+		if (qs_duck_raw(sql.data))
 			n++;
-		}
-		PG_CATCH();
-		{
-			ErrorData  *ed;
-
-			MemoryContextSwitchTo(old);
-			ed = CopyErrorData();
-			if (!qs_mirror_error_ok(ed))
-			{
-				AtEOXact_GUC(true, save_nestlevel);
-				qs_busy = save_busy;
-				PG_RE_THROW();
-			}
-			FlushErrorState();
-			failed = true;
-			refused = true;
-		}
-		PG_END_TRY();
-		qs_busy = save_busy;
-		AtEOXact_GUC(true, save_nestlevel);
+		else
+			failed = refused = true;
 	}
 	qs_lakes_attached = !failed;
+	if (n > 0)
+		qs_attach_open = true;
 	/* a lake that is not there is asked about again, but not by every statement */
 	/*
-	 * ... and one DuckDB refused (its file system is turned off in this
-	 * session, say) is not going to be accepted a few seconds later, and the
-	 * refusal itself can take seconds.
+	 * ... and one DuckDB refused is not going to be accepted a few seconds
+	 * later, and the refusal itself can take seconds.
 	 */
 	qs_attach_retry_at = failed ? TimestampTzPlusMilliseconds(GetCurrentTimestamp(), refused ? 300000 : 5000) : 0;
 	return failed ? -1 : n;
@@ -1863,6 +2166,13 @@ qs_walk_rte(Query *q, RangeTblEntry *rte, QsWalk *w)
 				break;
 			}
 		case RTE_SUBQUERY:
+			/*
+			 * A security_barrier view promises that no predicate of the
+			 * caller's is evaluated on a row the view hides. DuckDB makes no
+			 * such promise about the statement it is given.
+			 */
+			if (rte->security_barrier)
+				qs_add(w, "feature", "security_barrier", "a security_barrier view: the mirror may evaluate a predicate before the barrier");
 			qs_need(w, "feature", "subquery_in_from");
 			if (rte->lateral)
 				qs_need(w, "feature", "lateral");
@@ -2403,6 +2713,18 @@ qs_xact_cb(XactEvent event, void *arg)
 			qs_npins = 0;
 			qs_gated_plan = NULL;
 			qs_gated_lxid = InvalidLocalTransactionId;
+			qs_duck_foreign = false;
+			if (event == XACT_EVENT_ABORT)
+			{
+				/* DuckDB rolled back with us: an attachment made in this transaction is gone */
+				if (qs_attach_open)
+					qs_lakes_attached = false;
+				/* and a mirror node that was never ended has left its result open */
+				if (qs_mirror_live > 0)
+					qs_duck_dirty = true;
+			}
+			qs_attach_open = false;
+			qs_mirror_live = 0;
 			break;
 		default:
 			break;
@@ -2410,25 +2732,122 @@ qs_xact_cb(XactEvent event, void *arg)
 }
 
 /*
+ * How long a statement may wait for its mirror, in milliseconds.
+ *
+ * Waiting is worth something only in proportion to what routing saves, and
+ * what routing saves is bounded by what the heap plan would have taken. So
+ * the wait is bounded by a fraction of that (quicksilver.freshness_wait_fraction
+ * of the plan's cost, turned into time by quicksilver.cost_unit_ms, which is
+ * deliberately low: an under-estimate of the heap waits less) and by an
+ * absolute cap (quicksilver.freshness_wait_max). A statement that is cheap
+ * on the heap does not wait; one that would take seconds waits long enough
+ * for a mirror that is a few hundred milliseconds behind.
+ * quicksilver.freshness_wait is a floor, for a session that wants a wait
+ * whatever the cost.
+ */
+static int
+qs_wait_budget(double cost)
+{
+	double		ms = (double) qs_fresh_wait_ms;
+
+	if (qs_wait_fraction > 0 && qs_wait_max_ms > 0 && cost > 0)
+	{
+		double		est = cost * qs_cost_unit_ms * qs_wait_fraction;
+
+		if (est > (double) qs_wait_max_ms)
+			est = (double) qs_wait_max_ms;
+		if (est > ms)
+			ms = est;
+	}
+	return (int) ms;
+}
+
+static double qs_waited_ms = 0;	/* by the last qs_gate */
+
+/*
+ * Is recovery on this standby standing still because of somebody's query?
+ *
+ * The startup process says what it is waiting for like any other process:
+ * a heavyweight lock (an ACCESS EXCLUSIVE lock taken on the primary, against
+ * the ACCESS SHARE lock a reader holds), a buffer pin, or the end of the
+ * grace period it gives the queries whose snapshots stop it from replaying a
+ * cleanup record. Its PGPROC is found once (through the backend status
+ * array, which knows which process is the startup process) and looked at
+ * without a lock: a stale read costs one more turn of the loop.
+ */
+static bool
+qs_recovery_blocked(void)
+{
+	static PGPROC *startup = NULL;
+	static int	startup_pid = 0;
+	uint32		w;
+
+	if (startup == NULL || startup->pid != startup_pid)
+	{
+		int			n = pgstat_fetch_stat_numbackends();
+		int			i;
+
+		startup = NULL;
+		for (i = 1; i <= n; i++)
+		{
+			LocalPgBackendStatus *be = pgstat_get_local_beentry_by_index(i);
+
+			if (be && be->backendStatus.st_backendType == B_STARTUP)
+			{
+				startup_pid = be->backendStatus.st_procpid;
+				startup = AuxiliaryPidGetProc(startup_pid);
+				break;
+			}
+		}
+		pgstat_clear_backend_activity_snapshot();
+		if (startup == NULL)
+			return false;
+	}
+	w = startup->wait_event_info;
+	return (w & 0xFF000000) == PG_WAIT_LOCK || (w & 0xFF000000) == PG_WAIT_BUFFERPIN ||
+		w == WAIT_EVENT_RECOVERY_CONFLICT_SNAPSHOT || w == WAIT_EVENT_RECOVERY_CONFLICT_TABLESPACE;
+}
+
+/*
  * Are these mirrors (heap OIDs) fresh enough for a statement that can see up
  * to `now` on this node? Returns -1 if so, else the reason with `why` filled.
  *
- * A mirror that is behind is given quicksilver.freshness_wait to catch up,
- * but only while the transaction's lake snapshot is not fixed yet: after
- * that, what the sidecar reports is no longer about what would be read.
- * `reload` is for a caller that holds no pointer into the registry cache.
+ * A mirror that is behind is given qs_wait_budget(cost) to catch up, but only
+ * while the transaction's lake snapshot is not fixed yet: after that, what
+ * the sidecar reports is no longer about what would be read. `reload` is for
+ * a caller that holds no pointer into the registry cache.
+ *
+ * The wait sleeps on a condition variable that quicksilver.report_applied_lsn
+ * broadcasts, so it ends with the report that satisfies it and reads the
+ * newest position there is; it is interruptible (cancel, statement_timeout,
+ * a recovery conflict all end it).
+ *
+ * It is made while the statement holds what a statement holds: its snapshot
+ * and its relation locks. On a standby both can stand in the way of replay.
+ * Two things bound that. The budget is a fraction of what the statement would
+ * have held them for on the heap anyway. And the wait is given up as soon as
+ * the startup process is seen waiting for a lock, a buffer pin or a
+ * conflicting snapshot: whoever is in its way, this statement stops being a
+ * candidate at once and goes on to the heap, where it ends like any other.
  */
 static int
-qs_gate(List *heaps, XLogRecPtr now, bool reload, char *why, size_t whylen)
+qs_gate(List *heaps, XLogRecPtr now, bool reload, double cost, char *why, size_t whylen)
 {
-	TimestampTz deadline = 0;
+	static uint32 wait_event = 0;
+	TimestampTz start = 0;
+	int			budget = -1;
+	bool		sleeping = false;
+	int			state;
 
+	qs_waited_ms = 0;
 	for (;;)
 	{
 		ListCell   *lc;
-		int			state = -1;
 		bool		can_wait = !qs_xact_pinned;
+		TimestampTz ts;
+		long		elapsed;
 
+		state = -1;
 		if (reload)
 			qs_ensure_loaded();
 		foreach(lc, heaps)
@@ -2451,15 +2870,36 @@ qs_gate(List *heaps, XLogRecPtr now, bool reload, char *why, size_t whylen)
 			if (state >= 0)
 				break;
 		}
-		if (state < 0 || !can_wait || qs_fresh_wait_ms <= 0)
-			return state;
-		if (deadline == 0)
-			deadline = TimestampTzPlusMilliseconds(GetCurrentTimestamp(), qs_fresh_wait_ms);
-		else if (GetCurrentTimestamp() >= deadline)
-			return state;
-		CHECK_FOR_INTERRUPTS();
-		pg_usleep(500L);
+		if (state < 0 || !can_wait || qs_shared == NULL)
+			break;
+		ts = GetCurrentTimestamp();
+		if (budget < 0)
+		{
+			budget = qs_wait_budget(cost);
+			if (budget <= 0)
+				break;
+			if (wait_event == 0)
+				wait_event = WaitEventExtensionNew("QuicksilverFreshness");
+			start = ts;
+			/* registered before the next look, so that no report is missed */
+			ConditionVariablePrepareToSleep(&qs_shared->reported);
+			sleeping = true;
+			continue;
+		}
+		elapsed = (long) ((ts - start) / 1000);
+		qs_waited_ms = (double) (ts - start) / 1000.0;
+		if (elapsed >= budget)
+			break;
+		if (RecoveryInProgress() && qs_recovery_blocked())
+		{
+			strlcat(why, "; not waiting: recovery on this standby is waiting on a conflict", whylen);
+			break;
+		}
+		(void) ConditionVariableTimedSleep(&qs_shared->reported, Min((long) budget - elapsed, 5L), wait_event);
 	}
+	if (sleeping)
+		ConditionVariableCancelSleep();
+	return state;
 }
 
 /* ---------------------------------------------------------------- the session's state */
@@ -2481,13 +2921,22 @@ qs_state_blocks(const char **detail)
 		*detail = "in a subtransaction (savepoint): pg_duckdb refuses";
 		return QR_XACT_BLOCK;
 	}
-	if (IsTransactionBlock() && !qs_route_in_xact)
-	{
-		*detail = "a later SAVEPOINT would abort it; see quicksilver.route_in_transaction";
-		return QR_XACT_BLOCK;
-	}
+
+	/*
+	 * REPEATABLE READ and SERIALIZABLE read one snapshot for the whole
+	 * transaction. The lake has snapshots of its own, taken when the sidecar
+	 * publishes, and none of them is the transaction's: a routed read there
+	 * could show a commit that the transaction's next heap read does not.
+	 * READ COMMITTED takes a new snapshot for every statement, and a routed
+	 * statement reads a lake snapshot that has reached everything visible
+	 * when the statement started (strict freshness), in a DuckDB transaction
+	 * of its own: the same rule, statement by statement.
+	 */
 	if (IsolationUsesXactSnapshot())
+	{
+		*detail = "the mirror cannot read the transaction's snapshot";
 		return QR_ISOLATION;
+	}
 
 	/*
 	 * A transaction that has an xid has written, or is about to: the mirror
@@ -2498,6 +2947,19 @@ qs_state_blocks(const char **detail)
 	{
 		*detail = "the transaction has written; the mirror cannot see its uncommitted changes";
 		return QR_XACT_BLOCK;
+	}
+	if (qs_in_block())
+	{
+		if (!qs_route_in_xact)
+		{
+			*detail = "quicksilver.route_in_transaction is off";
+			return QR_XACT_BLOCK;
+		}
+		if (qs_duck_foreign)
+		{
+			*detail = "the transaction has used DuckDB directly: its DuckDB transaction is not the router's to end";
+			return QR_XACT_BLOCK;
+		}
 	}
 	return -1;
 }
@@ -2691,7 +3153,15 @@ typedef struct QsScanState
 	bool		mirror_failed;	/* the mirror raised an error (as opposed to not being asked) */
 	int			heap_reason;
 	bool		buf_done;		/* the buffer has been handed out */
-	bool		mirror_done;	/* the mirror returned its last row while buffering */
+	bool		mirror_done;	/* the mirror returned its last row */
+	bool		explain_only;	/* EXPLAIN without ANALYZE: the mirror node only describes itself */
+	bool		eager;			/* in a transaction block: the mirror's whole answer is taken at start */
+	bool		streamed;		/* rows were passed on while the mirror was still running */
+	bool		timing;
+	uint64		mirror_rows;
+	instr_time	mirror_time;
+	double		waited_ms;
+	char	   *mirror_plan_text;
 } QsScanState;
 
 static bool
@@ -2995,135 +3465,11 @@ qs_to_heap(QsScanState *st, QsReason reason, const char *msg)
 	st->heap_reason = reason;
 	qs_in_begin = true;
 	st->fallback = line;
-	/* the mirror's node is still ended, but no longer shown: EXPLAIN would run it again */
-	st->css.custom_ps = list_make1(st->heap_ps);
 	st->buf_done = true;
 	if (!IsTransactionBlock() && st->mirror_failed)
 		qs_cache_negative(st->queryid, QR_MIRROR_PLAN_FAILED, msg, qs_negative_ttl);
 	qs_record(st->queryid, false, reason, msg, NIL, 0, 0);
 	qs_in_begin = false;
-}
-
-static void
-qs_begin_scan(CustomScanState *node, EState *estate, int eflags)
-{
-	QsScanState *st = (QsScanState *) node;
-	CustomScan *cs = (CustomScan *) node->ss.ps.plan;
-	List	   *attnos = (List *) linitial(cs->custom_private);
-	List	   *convs = (List *) lsecond(cs->custom_private);
-	ListCell   *la,
-			   *lc;
-	int			i = 0;
-	MemoryContext old = CurrentMemoryContext;
-
-	st->can_fallback = qs_fallback;
-	st->mirror_plan = (Plan *) linitial(cs->custom_plans);
-	st->heap_plan = (Plan *) lsecond(cs->custom_plans);
-	st->eflags = eflags;
-	st->natts = list_length(attnos);
-	st->heap_attno = palloc(sizeof(AttrNumber) * Max(st->natts, 1));
-	st->conv = palloc(sizeof(int) * Max(st->natts, 1));
-	forboth(la, attnos, lc, convs)
-	{
-		st->heap_attno[i] = lfirst_int(la);
-		st->conv[i] = lfirst_int(lc);
-		if (st->conv[i] == QCONV_MIRROR_TYPE)
-			st->can_fallback = false;
-		i++;
-	}
-	st->reason = strVal(lthird(cs->custom_private));
-	st->queryid = strtou64(strVal(lfourth(cs->custom_private)), NULL, 10);
-	st->side = 0;
-
-	/* the heap side is initialised first: it is the one that must always work */
-	st->heap_ps = ExecInitNode(st->heap_plan, estate, eflags);
-
-	/*
-	 * The plan may be older than this execution. What can have changed
-	 * without the plan being thrown away is the session (a transaction block,
-	 * a savepoint, the routing mode) and the mirror's freshness.
-	 */
-	{
-		const char *why = NULL;
-		char		stale[QS_DETAIL_LEN];
-		int			state = qs_state_blocks(&why);
-
-		if (state >= 0 && why == NULL)
-			why = "";
-		if (state < 0 && qs_route != QS_ROUTE_AUTO && qs_route != QS_ROUTE_MIRROR)
-		{
-			state = QR_MODE_HEAP;
-			why = "quicksilver.route no longer asks for the mirror";
-		}
-		if (why == NULL)
-		{
-			/*
-			 * Freshness. A plan made a moment ago in this transaction was
-			 * checked when it was made, before the lake snapshot it reads was
-			 * fixed, and what has been reported since is not about that
-			 * snapshot. Any other plan (kept from an earlier transaction, or
-			 * run a second time in this one) is checked now, against the
-			 * position this execution can see: with a wait if the lake has
-			 * not been touched in this transaction, and from what was pinned
-			 * if it has.
-			 */
-			bool		gated = qs_xact_pinned && qs_gated_plan == (void *) cs &&
-				qs_gated_lxid == MyProc->vxid.lxid;
-
-			qs_gated_plan = NULL;
-			if (!gated)
-			{
-				state = qs_gate((List *) list_nth(cs->custom_private, 4), qs_current_lsn(), true, stale, sizeof(stale));
-				if (state >= 0)
-					why = stale;
-				else
-					qs_pin();
-			}
-		}
-		if (why)
-		{
-			if (!st->can_fallback && !qs_fallback)
-				why = NULL;		/* the user asked for the mirror's errors, not the heap */
-			else if (!st->can_fallback)
-				ereport(ERROR,
-						(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-						 errmsg("a plan made with quicksilver.allow_unsafe cannot be answered from the heap"),
-						 errdetail("%s", why)));
-		}
-		if (why)
-		{
-			qs_to_heap(st, state, why);
-			node->custom_ps = list_make1(st->heap_ps);
-			st->buf_slot = MakeSingleTupleTableSlot(node->ss.ss_ScanTupleSlot->tts_tupleDescriptor, &TTSOpsMinimalTuple);
-			return;
-		}
-	}
-	qs_pin();
-	(void) qs_attach_lakes(false);
-	PG_TRY();
-	{
-		st->mirror_ps = ExecInitNode(st->mirror_plan, estate, eflags);
-	}
-	PG_CATCH();
-	{
-		ErrorData  *ed;
-
-		MemoryContextSwitchTo(old);
-		ed = CopyErrorData();
-		if (!st->can_fallback || !qs_mirror_error_ok(ed))
-			PG_RE_THROW();
-		FlushErrorState();
-		st->mirror_ps = NULL;
-		st->mirror_failed = true;
-		qs_lakes_attached = false;
-		qs_to_heap(st, QR_FALLBACK, ed->message);
-	}
-	PG_END_TRY();
-	st->buf_slot = MakeSingleTupleTableSlot(node->ss.ss_ScanTupleSlot->tts_tupleDescriptor, &TTSOpsMinimalTuple);
-	if (st->mirror_ps)
-		node->custom_ps = list_make2(st->mirror_ps, st->heap_ps);
-	else
-		node->custom_ps = list_make1(st->heap_ps);
 }
 
 /* One row of the mirror's, as the heap would have typed it. */
@@ -3146,73 +3492,374 @@ qs_convert(QsScanState *st, TupleTableSlot *child, TupleTableSlot *slot, bool fr
 	ExecStoreVirtualTuple(slot);
 }
 
+/*
+ * Every call into pg_duckdb's node is made as the bootstrap superuser (see
+ * QsElev) and, under EXPLAIN ANALYZE, with the portal's command tag turned
+ * into SELECT: pg_duckdb looks at that tag to decide whether to run the
+ * statement or DuckDB's own EXPLAIN ANALYZE of it, which returns no rows and
+ * runs it a second time to be described. An explained statement is run the
+ * way it would have been run, once, and its rows are counted here.
+ */
+typedef struct QsCall
+{
+	QsElev		elev;
+	bool		swapped;
+} QsCall;
+
+static inline void
+qs_call_begin(QsScanState *st, QsCall *c)
+{
+	c->swapped = !st->explain_only && ActivePortal != NULL && ActivePortal->commandTag == CMDTAG_EXPLAIN;
+	if (c->swapped)
+		ActivePortal->commandTag = CMDTAG_SELECT;
+	qs_elev_begin(&c->elev);
+}
+
+static inline void
+qs_call_end(QsCall *c)
+{
+	qs_elev_end(&c->elev);
+	if (c->swapped && ActivePortal != NULL)
+		ActivePortal->commandTag = CMDTAG_EXPLAIN;
+}
+
+/*
+ * The mirror has said everything, or is not wanted any more: end its node,
+ * and DuckDB's transaction with it. False if DuckDB did not finish the
+ * statement (qs_duck_end), which matters to a caller that took "no more rows"
+ * for the end of the answer.
+ */
+static bool
+qs_mirror_finish(QsScanState *st)
+{
+	if (st->mirror_ps)
+	{
+		QsCall		call;
+
+		qs_call_begin(st, &call);
+		ExecEndNode(st->mirror_ps);
+		qs_call_end(&call);
+		st->mirror_ps = NULL;
+		if (qs_mirror_live > 0)
+			qs_mirror_live--;
+	}
+	return qs_duck_end(false);
+}
+
+/* The mirror raised an error DuckDB made: forget its node and let the heap answer. */
+static void
+qs_mirror_failed(QsScanState *st, const char *message)
+{
+	if (st->buf)
+		tuplestore_end(st->buf);
+	st->buf = NULL;
+	st->mirror_failed = true;
+	st->mirror_done = false;
+	st->mirror_rows = 0;
+
+	/*
+	 * The node threw: it is not ended (ExecEndNode on it would run
+	 * pg_duckdb's end-of-scan on a state its own error path has already
+	 * cleaned up). What it allocated in PostgreSQL goes with the query's
+	 * memory context, as it would on an abort.
+	 */
+	if (st->mirror_ps && qs_mirror_live > 0)
+		qs_mirror_live--;
+	st->mirror_ps = NULL;
+	(void) qs_duck_end(true);
+	qs_to_heap(st, QR_FALLBACK, message);
+}
+
+#define QS_CUT_SHORT "the mirror's result ended early: DuckDB failed after it had started returning rows, and pg_duckdb raised no error"
+
+/*
+ * Make pg_duckdb open an explicit DuckDB transaction for what follows.
+ *
+ * It does when it believes the statement is not a top-level one, and it
+ * believes that from the moment its planner hook has planned anything for
+ * PostgreSQL in this transaction. That is every statement the router has
+ * just planned (the heap plan went through that hook), but not a plan kept
+ * from an earlier transaction: for that one pg_duckdb would run the mirror's
+ * statement in DuckDB's autocommit mode, where a failure leaves nothing
+ * behind for qs_duck_end to find. Its hook is given a statement of no
+ * consequence to plan. (Sending DuckDB a BEGIN instead is no good: where a
+ * transaction is already open it fails, and the failure invalidates it.)
+ */
+static void
+qs_duck_explicit(void)
+{
+	Query	   *q;
+
+	if (prev_planner_hook == NULL)
+		return;
+	q = makeNode(Query);
+	q->commandType = CMD_SELECT;
+	q->querySource = QSRC_ORIGINAL;
+	q->canSetTag = true;
+	q->targetList = list_make1(makeTargetEntry((Expr *) makeConst(INT4OID, -1, InvalidOid, sizeof(int32),
+																   Int32GetDatum(1), false, true),
+											   1, pstrdup("one"), false));
+	q->jointree = makeFromExpr(NIL, NULL);
+	(void) prev_planner_hook(q, "SELECT 1", 0, NULL);
+}
+
+static bool
+qs_mirror_start(QsScanState *st, EState *estate)
+{
+	MemoryContext old = CurrentMemoryContext;
+	QsCall		call;
+	instr_time	t0,
+				t1;
+
+	INSTR_TIME_SET_CURRENT(t0);
+
+	qs_duck_explicit();
+	qs_call_begin(st, &call);
+	PG_TRY();
+	{
+		st->mirror_ps = ExecInitNode(st->mirror_plan, estate, st->eflags);
+		qs_mirror_live++;
+	}
+	PG_CATCH();
+	{
+		ErrorData  *ed;
+
+		qs_call_end(&call);
+		MemoryContextSwitchTo(old);
+		ed = CopyErrorData();
+		if (!st->can_fallback || !qs_mirror_error_ok(ed))
+			PG_RE_THROW();
+		FlushErrorState();
+		st->mirror_ps = NULL;
+		qs_lakes_attached = false;
+		qs_mirror_failed(st, ed->message);
+		return false;
+	}
+	PG_END_TRY();
+	qs_call_end(&call);
+	INSTR_TIME_SET_CURRENT(t1);
+	INSTR_TIME_ACCUM_DIFF(st->mirror_time, t1, t0);
+	return true;
+}
+
+/*
+ * Take the mirror's rows and hold them back.
+ *
+ * Nothing has been returned yet, so nothing has reached the client: if the
+ * mirror fails anywhere in this stretch (a value it cannot represent, a file
+ * that went away, an overflow PostgreSQL would also report) the heap answers
+ * the whole statement and the client never knows.
+ *
+ * Outside a transaction block the stretch ends when the rows no longer fit
+ * in work_mem: the rest is streamed, and an error after that point is the
+ * client's to see, as an error, with no retry on the heap behind it (the
+ * rows already sent cannot be taken back, and sending the heap's as well
+ * would send some twice).
+ *
+ * In a transaction block (`all`) the mirror is read to its end here, however
+ * large the answer (the tuplestore goes to a temporary file past work_mem),
+ * and its node and DuckDB's transaction are ended before the first row is
+ * returned: the client may send anything next (a SAVEPOINT, a write), with a
+ * cursor or a suspended portal still open over these rows, and pg_duckdb must
+ * be idle when it does.
+ */
+static void
+qs_mirror_drain(QsScanState *st, bool all)
+{
+	TupleTableSlot *slot = st->css.ss.ss_ScanTupleSlot;
+	MemoryContext old = CurrentMemoryContext;
+	QsCall		call;
+	instr_time	t0,
+				t1;
+
+	INSTR_TIME_SET_CURRENT(t0);
+	qs_call_begin(st, &call);
+	PG_TRY();
+	{
+		MemoryContext qcxt = MemoryContextSwitchTo(st->css.ss.ps.state->es_query_cxt);
+
+		st->buf = tuplestore_begin_heap(false, false, work_mem);
+		tuplestore_set_eflags(st->buf, st->eflags & EXEC_FLAG_REWIND);
+		MemoryContextSwitchTo(qcxt);
+		for (;;)
+		{
+			TupleTableSlot *child = ExecProcNode(st->mirror_ps);
+
+			if (TupIsNull(child))
+			{
+				st->mirror_done = true;
+				break;
+			}
+			st->mirror_rows++;
+			qs_convert(st, child, slot, true);
+			tuplestore_puttupleslot(st->buf, slot);
+			if (!all && (!st->can_fallback || !tuplestore_in_memory(st->buf)))
+				break;
+			CHECK_FOR_INTERRUPTS();
+		}
+		st->side = 1;
+	}
+	PG_CATCH();
+	{
+		ErrorData  *ed;
+
+		qs_call_end(&call);
+		MemoryContextSwitchTo(old);
+		ed = CopyErrorData();
+		if (!st->can_fallback || !qs_mirror_error_ok(ed))
+			PG_RE_THROW();
+		FlushErrorState();
+		qs_mirror_failed(st, ed->message);
+		INSTR_TIME_SET_CURRENT(t1);
+		INSTR_TIME_ACCUM_DIFF(st->mirror_time, t1, t0);
+		return;
+	}
+	PG_END_TRY();
+	qs_call_end(&call);
+	ExecClearTuple(slot);
+
+	/*
+	 * "No more rows" is the end of the answer only if DuckDB agrees. Nothing
+	 * has been returned yet, so if it does not, the heap answers.
+	 */
+	if (st->mirror_done && !qs_mirror_finish(st))
+	{
+		if (!st->can_fallback)
+			ereport(ERROR,
+					(errcode(ERRCODE_EXTERNAL_ROUTINE_EXCEPTION),
+					 errmsg("%s", QS_CUT_SHORT)));
+		qs_mirror_failed(st, QS_CUT_SHORT);
+	}
+	INSTR_TIME_SET_CURRENT(t1);
+	INSTR_TIME_ACCUM_DIFF(st->mirror_time, t1, t0);
+}
+
+static void
+qs_begin_scan(CustomScanState *node, EState *estate, int eflags)
+{
+	QsScanState *st = (QsScanState *) node;
+	CustomScan *cs = (CustomScan *) node->ss.ps.plan;
+	List	   *attnos = (List *) linitial(cs->custom_private);
+	List	   *convs = (List *) lsecond(cs->custom_private);
+	ListCell   *la,
+			   *lc;
+	int			i = 0;
+
+	st->can_fallback = qs_fallback;
+	st->mirror_plan = (Plan *) linitial(cs->custom_plans);
+	st->heap_plan = (Plan *) lsecond(cs->custom_plans);
+	st->eflags = eflags;
+	st->explain_only = (eflags & EXEC_FLAG_EXPLAIN_ONLY) != 0;
+	st->timing = estate->es_instrument != 0;
+	INSTR_TIME_SET_ZERO(st->mirror_time);
+	st->natts = list_length(attnos);
+	st->heap_attno = palloc(sizeof(AttrNumber) * Max(st->natts, 1));
+	st->conv = palloc(sizeof(int) * Max(st->natts, 1));
+	forboth(la, attnos, lc, convs)
+	{
+		st->heap_attno[i] = lfirst_int(la);
+		st->conv[i] = lfirst_int(lc);
+		if (st->conv[i] == QCONV_MIRROR_TYPE)
+			st->can_fallback = false;
+		i++;
+	}
+	st->reason = strVal(lthird(cs->custom_private));
+	st->queryid = strtou64(strVal(lfourth(cs->custom_private)), NULL, 10);
+	st->side = 0;
+
+	/* the heap side is initialised first: it is the one that must always work */
+	st->heap_ps = ExecInitNode(st->heap_plan, estate, eflags);
+	/* the mirror's node is never shown to EXPLAIN as a child: see qs_explain_scan */
+	node->custom_ps = list_make1(st->heap_ps);
+	st->buf_slot = MakeSingleTupleTableSlot(node->ss.ss_ScanTupleSlot->tts_tupleDescriptor, &TTSOpsMinimalTuple);
+
+	/*
+	 * The plan may be older than this execution. What can have changed
+	 * without the plan being thrown away is the session (its role, a
+	 * transaction block, a savepoint, the routing mode) and the mirror's
+	 * freshness.
+	 */
+	{
+		const char *why = NULL;
+		char		stale[QS_DETAIL_LEN];
+		int			state = qs_state_blocks(&why);
+
+		if (state >= 0 && why == NULL)
+			why = "";
+		if (state < 0 && qs_route != QS_ROUTE_AUTO && qs_route != QS_ROUTE_MIRROR)
+		{
+			state = QR_MODE_HEAP;
+			why = "quicksilver.route no longer asks for the mirror";
+		}
+		if (why == NULL && !qs_mirror_allowed(stale, sizeof(stale)))
+		{
+			state = QR_UNCONFINED;
+			why = stale;
+		}
+		if (why == NULL)
+		{
+			/*
+			 * Freshness. A plan made a moment ago in this transaction was
+			 * checked when it was made, before DuckDB was asked anything
+			 * about it. Any other plan (kept from an earlier transaction, or
+			 * run a second time in this one) is checked now, against the
+			 * position this execution can see: with a wait if the lake has
+			 * not been touched in this transaction, and from what was pinned
+			 * if it has.
+			 */
+			bool		gated = qs_gated_plan == (void *) cs && qs_gated_lxid == MyProc->vxid.lxid;
+
+			qs_gated_plan = NULL;
+			if (!gated)
+			{
+				state = qs_gate((List *) list_nth(cs->custom_private, 4), qs_current_lsn(), true,
+								cs->scan.plan.total_cost, stale, sizeof(stale));
+				if (state >= 0)
+					why = stale;
+				st->waited_ms = qs_waited_ms;
+			}
+			else
+				st->waited_ms = qs_gated_waited_ms;
+		}
+		if (why)
+		{
+			if (!st->can_fallback && !qs_fallback)
+				why = NULL;		/* the user asked for the mirror's errors, not the heap */
+			else if (!st->can_fallback)
+				ereport(ERROR,
+						(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+						 errmsg("a plan made with quicksilver.allow_unsafe cannot be answered from the heap"),
+						 errdetail("%s", why)));
+		}
+		if (why)
+		{
+			qs_to_heap(st, state, why);
+			return;
+		}
+	}
+	qs_pin();
+	qs_duck_recycle();
+	(void) qs_attach_lakes(false);
+	st->eager = !st->explain_only && qs_in_block();
+	if (!qs_mirror_start(st, estate))
+		return;
+	if (st->eager)
+		qs_mirror_drain(st, true);
+}
+
 static TupleTableSlot *
 qs_exec_scan(CustomScanState *node)
 {
 	QsScanState *st = (QsScanState *) node;
 	TupleTableSlot *slot = node->ss.ss_ScanTupleSlot;
 	TupleTableSlot *child;
+	QsCall		call;
+	instr_time	t0,
+				t1;
 
 	CHECK_FOR_INTERRUPTS();
 	if (st->side == 0)
-	{
-		MemoryContext old = CurrentMemoryContext;
-
-		/*
-		 * Nothing has been returned yet, so nothing has reached the client.
-		 * The mirror's rows are held back while they fit in work_mem: if it
-		 * fails anywhere in that stretch (a value it cannot represent, a
-		 * file that went away, an overflow PostgreSQL would also report) the
-		 * heap answers the whole statement and the client never knows. A
-		 * result larger than work_mem is streamed from there on, and an
-		 * error after that point is the client's to see.
-		 */
-		PG_TRY();
-		{
-			MemoryContext qcxt = MemoryContextSwitchTo(st->css.ss.ps.state->es_query_cxt);
-
-			st->buf = tuplestore_begin_heap(false, false, work_mem);
-			MemoryContextSwitchTo(qcxt);
-			for (;;)
-			{
-				child = ExecProcNode(st->mirror_ps);
-				if (TupIsNull(child))
-				{
-					st->mirror_done = true;
-					break;
-				}
-				qs_convert(st, child, slot, true);
-				tuplestore_puttupleslot(st->buf, slot);
-				if (!st->can_fallback || !tuplestore_in_memory(st->buf))
-					break;
-				CHECK_FOR_INTERRUPTS();
-			}
-			st->side = 1;
-		}
-		PG_CATCH();
-		{
-			ErrorData  *ed;
-
-			MemoryContextSwitchTo(old);
-			ed = CopyErrorData();
-			if (!st->can_fallback || !qs_mirror_error_ok(ed))
-				PG_RE_THROW();
-			FlushErrorState();
-			if (st->buf)
-				tuplestore_end(st->buf);
-			st->buf = NULL;
-			st->mirror_failed = true;
-			/*
-			 * The node threw: it is not ended (ExecEndNode on it would run
-			 * pg_duckdb's end-of-scan on a state its own error path has
-			 * already cleaned up). What it allocated in PostgreSQL goes with
-			 * the query's memory context, as it would on an abort.
-			 */
-			st->mirror_ps = NULL;
-			qs_to_heap(st, QR_FALLBACK, ed->message);
-		}
-		PG_END_TRY();
-	}
+		qs_mirror_drain(st, false);
 
 	if (st->side == 2)
 	{
@@ -3230,12 +3877,42 @@ qs_exec_scan(CustomScanState *node)
 	}
 	if (st->mirror_done)
 		return ExecClearTuple(slot);
+
+	/*
+	 * Streaming: rows have left the server. An error from here on is not
+	 * caught (there is no PG_TRY around this call): it ends the statement as
+	 * an error, after the rows already sent and with nothing after them.
+	 */
+	st->streamed = true;
+	if (st->timing)
+		INSTR_TIME_SET_CURRENT(t0);
+	qs_call_begin(st, &call);
 	child = ExecProcNode(st->mirror_ps);
+	qs_call_end(&call);
+	if (st->timing)
+	{
+		INSTR_TIME_SET_CURRENT(t1);
+		INSTR_TIME_ACCUM_DIFF(st->mirror_time, t1, t0);
+	}
 	if (TupIsNull(child))
 	{
 		st->mirror_done = true;
+
+		/*
+		 * The stream has ended. If DuckDB did not finish the statement, the
+		 * rows the client holds are not the answer, and it must be told.
+		 */
+		if (!qs_mirror_finish(st))
+			ereport(ERROR,
+					(errcode(ERRCODE_EXTERNAL_ROUTINE_EXCEPTION),
+					 errmsg("the mirror failed after rows had been returned"),
+					 errdetail("DuckDB did not finish the statement, and pg_duckdb ended its result without an error. "
+							   "The " UINT64_FORMAT " rows already sent are not the whole answer; nothing was sent twice.",
+							   st->mirror_rows),
+					 errhint("Run the statement again: SET quicksilver.route = heap answers it from the heap.")));
 		return ExecClearTuple(slot);
 	}
+	st->mirror_rows++;
 	qs_convert(st, child, slot, true);
 	return slot;
 }
@@ -3252,7 +3929,7 @@ qs_end_scan(CustomScanState *node)
 		ExecDropSingleTupleTableSlot(st->buf_slot);
 	st->buf_slot = NULL;
 	if (st->mirror_ps)
-		ExecEndNode(st->mirror_ps);
+		(void) qs_mirror_finish(st);
 	if (st->heap_ps)
 		ExecEndNode(st->heap_ps);
 }
@@ -3266,25 +3943,89 @@ qs_rescan(CustomScanState *node)
 		ExecReScan(st->heap_ps);
 	else if (st->side == 1)
 	{
-		if (st->mirror_done && st->buf)
+		if (st->mirror_done && st->buf && (st->eflags & EXEC_FLAG_REWIND))
 		{
 			/* everything the mirror said is still here */
 			tuplestore_rescan(st->buf);
 			st->buf_done = false;
 		}
-		else
+		else if (st->mirror_ps)
 		{
+			QsCall		call;
+
 			if (st->buf)
 				tuplestore_end(st->buf);
 			st->buf = NULL;
 			st->buf_done = false;
 			st->mirror_done = false;
+			st->mirror_rows = 0;
 			st->side = 0;
+			qs_call_begin(st, &call);
 			ExecReScan(st->mirror_ps);
+			qs_call_end(&call);
 		}
+		else
+			ereport(ERROR,
+					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+					 errmsg("a statement answered from the mirror cannot be scanned again")));
 	}
 }
 
+/*
+ * DuckDB's plan for the mirror's statement, as pg_duckdb describes it. Only
+ * under EXPLAIN without ANALYZE, where the mirror node was prepared as an
+ * EXPLAIN and running it describes instead of executes. Asked for once.
+ */
+static void
+qs_explain_mirror_plan(QsScanState *st, List *ancestors, ExplainState *es)
+{
+	if (st->mirror_plan_text == NULL)
+	{
+		CustomScanState *child = (CustomScanState *) st->mirror_ps;
+		ExplainState *tmp = NewExplainState();
+		MemoryContext old = CurrentMemoryContext;
+		QsCall		call;
+		char	   *text;
+
+		qs_call_begin(st, &call);
+		PG_TRY();
+		{
+			child->methods->ExplainCustomScan(child, ancestors, tmp);
+		}
+		PG_CATCH();
+		{
+			ErrorData  *ed;
+
+			qs_call_end(&call);
+			MemoryContextSwitchTo(old);
+			ed = CopyErrorData();
+			if (!qs_mirror_error_ok(ed))
+				PG_RE_THROW();
+			FlushErrorState();
+			resetStringInfo(tmp->str);
+			appendStringInfo(tmp->str, "(not available: %s)", ed->message);
+			memset(&call, 0, sizeof(call));
+		}
+		PG_END_TRY();
+		qs_call_end(&call);
+		text = tmp->str->data;
+		if (strncmp(text, "DuckDB Execution Plan: ", 23) == 0)
+			text += 23;
+		while (*text == '\n')
+			text++;
+		while (strlen(text) > 0 && text[strlen(text) - 1] == '\n')
+			text[strlen(text) - 1] = '\0';
+		st->mirror_plan_text = MemoryContextStrdup(st->css.ss.ps.state->es_query_cxt, text);
+	}
+	ExplainPropertyText("Mirror Plan", psprintf("\n%s\n", st->mirror_plan_text), es);
+}
+
+/*
+ * Which side, why, and what the mirror did. pg_duckdb's node is not shown as
+ * a child: its own EXPLAIN output is produced by running the statement (again)
+ * under DuckDB's EXPLAIN, as whoever is asking, and after a real execution
+ * (EXPLAIN ANALYZE, auto_explain) that is an error or worse.
+ */
 static void
 qs_explain_scan(CustomScanState *node, List *ancestors, ExplainState *es)
 {
@@ -3295,6 +4036,24 @@ qs_explain_scan(CustomScanState *node, List *ancestors, ExplainState *es)
 		ExplainPropertyText("Quicksilver", "mirror", es);
 		if (es->costs || es->verbose)
 			ExplainPropertyText("Quicksilver Reason", st->reason, es);
+		if (st->explain_only)
+		{
+			if (st->mirror_ps && (es->costs || es->verbose))
+				qs_explain_mirror_plan(st, ancestors, es);
+		}
+		else if (es->analyze)
+		{
+			ExplainPropertyUInteger("Mirror Rows", NULL, st->mirror_rows, es);
+			ExplainPropertyText("Mirror Result",
+								st->eager ? "taken whole at start (transaction block)" :
+								st->streamed ? "streamed once past work_mem" : "held back until complete", es);
+			if (es->timing)
+			{
+				ExplainPropertyFloat("Mirror Time", "ms", INSTR_TIME_GET_MILLISEC(st->mirror_time), 3, es);
+				if (st->waited_ms > 0)
+					ExplainPropertyFloat("Mirror Freshness Wait", "ms", st->waited_ms, 3, es);
+			}
+		}
 	}
 	else
 	{
@@ -3368,6 +4127,7 @@ qs_decide(Query *orig, PlannedStmt *heap, const char *query_string, int cursorOp
 	MemoryContext old;
 	int			state;
 	const char *state_detail;
+	QsElev		elev;
 	List	   *mirror_relids = NIL;
 	List	   *heap_relids = NIL;
 
@@ -3383,7 +4143,7 @@ qs_decide(Query *orig, PlannedStmt *heap, const char *query_string, int cursorOp
 		QS_HEAP(QR_NOT_PLAIN_SELECT, NULL, NIL);
 	if ((state = qs_state_blocks(&state_detail)) >= 0)
 		QS_HEAP(state, state_detail, NIL);
-	if (cursorOptions & (CURSOR_OPT_SCROLL | CURSOR_OPT_HOLD))
+	if (cursorOptions & CURSOR_OPT_SCROLL)
 		QS_HEAP(QR_CURSOR, NULL, NIL);
 	if (qs_is_duckdb_scan(heap->planTree))
 		QS_HEAP(QR_NOT_MIRRORED, "the statement is not a heap statement", NIL);
@@ -3493,6 +4253,10 @@ qs_decide(Query *orig, PlannedStmt *heap, const char *query_string, int cursorOp
 	if (!ExecCheckPermissions(heap->rtable, heap->permInfos, false))
 		QS_HEAP(QR_NO_PRIVILEGE, NULL, NIL);
 
+	/* and a role that is not a superuser is given the mirror only where DuckDB is confined */
+	if (!qs_mirror_allowed(detail, sizeof(detail)))
+		QS_HEAP(QR_UNCONFINED, detail, NIL);
+
 	/*
 	 * Freshness, now: planning the mirror's statement is what fixes the lake
 	 * snapshot it will read (see qs_pin), so the mirror has to have reached
@@ -3512,9 +4276,10 @@ qs_decide(Query *orig, PlannedStmt *heap, const char *query_string, int cursorOp
 		/* the position this statement can see is taken once, however often it is decided */
 		if (qs_decide_now == InvalidXLogRecPtr)
 			qs_decide_now = qs_current_lsn();
-		stale = qs_gate(heaps, qs_decide_now, false, detail, sizeof(detail));
+		stale = qs_gate(heaps, qs_decide_now, false, heap->planTree->total_cost, detail, sizeof(detail));
 		if (stale >= 0)
 			QS_HEAP(stale, detail, NIL);
+		qs_gated_waited_ms = qs_waited_ms;
 		qs_pin();
 	}
 
@@ -3525,9 +4290,9 @@ qs_decide(Query *orig, PlannedStmt *heap, const char *query_string, int cursorOp
 	 * of the registry this decision points into, a registry that moved under
 	 * it sends the decision round again (it does not attach twice).
 	 */
+	qs_duck_recycle();
 	if (!qs_lakes_attached && qs_lakes != NIL &&
-		(qs_attach_retry_at == 0 || GetCurrentTimestamp() >= qs_attach_retry_at) &&
-		(superuser() || qs_attach_for_all))
+		(qs_attach_retry_at == 0 || GetCurrentTimestamp() >= qs_attach_retry_at))
 	{
 		(void) qs_attach_lakes(false);
 		if (!qs_cache_valid)
@@ -3571,6 +4336,7 @@ qs_decide(Query *orig, PlannedStmt *heap, const char *query_string, int cursorOp
 	 */
 	old = CurrentMemoryContext;
 	qs_busy = true;
+	qs_elev_begin(&elev);
 	PG_TRY();
 	{
 		if (prev_planner_hook)
@@ -3583,6 +4349,8 @@ qs_decide(Query *orig, PlannedStmt *heap, const char *query_string, int cursorOp
 		ErrorData  *ed;
 
 		qs_busy = false;
+		qs_elev_end(&elev);
+		elev.on = false;
 		MemoryContextSwitchTo(old);
 		ed = CopyErrorData();
 		if (!qs_mirror_error_ok(ed))
@@ -3594,6 +4362,17 @@ qs_decide(Query *orig, PlannedStmt *heap, const char *query_string, int cursorOp
 	}
 	PG_END_TRY();
 	qs_busy = false;
+	qs_elev_end(&elev);
+
+	/*
+	 * In a transaction block pg_duckdb has opened a DuckDB transaction to
+	 * prepare this, and would keep it to the block's end. It is ended here:
+	 * the plan may never be executed, and the node prepares the statement
+	 * again when it starts, in a transaction of its own that begins after
+	 * the freshness check above and so reads at least what that approved.
+	 */
+	if (qs_in_block())
+		(void) qs_duck_end(false);
 	if (mplan == NULL)
 	{
 		/*
@@ -3646,6 +4425,19 @@ qs_decide(Query *orig, PlannedStmt *heap, const char *query_string, int cursorOp
 #undef QS_HEAP
 }
 
+/* Does the statement call a function of pg_duckdb's schema (duckdb.raw_query, duckdb.query, ...)? */
+static bool
+qs_duckfn_walker(Node *node, void *context)
+{
+	if (node == NULL)
+		return false;
+	if (IsA(node, FuncExpr) && get_func_namespace(((FuncExpr *) node)->funcid) == *(Oid *) context)
+		return true;
+	if (IsA(node, Query))
+		return query_tree_walker((Query *) node, qs_duckfn_walker, context, 0);
+	return expression_tree_walker(node, qs_duckfn_walker, context);
+}
+
 static PlannedStmt *
 qs_planner(Query *parse, const char *query_string, int cursorOptions, ParamListInfo boundParams)
 {
@@ -3661,14 +4453,6 @@ qs_planner(Query *parse, const char *query_string, int cursorOptions, ParamListI
 	{
 		qs_ensure_loaded();
 
-		/*
-		 * In a transaction block anything may touch the lake before a routed
-		 * statement does (a query on a mirror relation by name), and from
-		 * then on the block reads that snapshot. So a block's beliefs are
-		 * fixed at its first planned statement, whatever it is.
-		 */
-		if (qs_installed && !qs_xact_pinned && IsTransactionBlock())
-			qs_pin();
 		if (qs_installed && hash_get_num_entries(qs_mirror_hash) > 0)
 		{
 			QsRels		rels = {0, 0, NIL};
@@ -3685,10 +4469,26 @@ qs_planner(Query *parse, const char *query_string, int cursorOptions, ParamListI
 		installed = qs_installed;
 	}
 
+	/*
+	 * Somebody else using DuckDB in this transaction: a function of
+	 * pg_duckdb's schema here, or below a statement pg_duckdb plans itself.
+	 * See qs_duck_foreign.
+	 */
+	if (qs_route != QS_ROUTE_OFF && !qs_busy && !qs_duck_foreign && IsTransactionState() && qs_in_block())
+	{
+		Oid			nsp = get_namespace_oid("duckdb", true);
+
+		if (OidIsValid(nsp) && qs_duckfn_walker((Node *) parse, &nsp))
+			qs_duck_foreign = true;
+	}
+
 	if (prev_planner_hook)
 		heap = prev_planner_hook(parse, query_string, cursorOptions, boundParams);
 	else
 		heap = standard_planner(parse, query_string, cursorOptions, boundParams);
+	if (!qs_busy && heap->planTree &&
+		(qs_is_duckdb_scan(heap->planTree) || qs_is_duckdb_scan(outerPlan(heap->planTree))))
+		qs_duck_foreign = true;
 
 	/*
 	 * A plan that is kept (a prepared statement without parameters is planned
@@ -3783,6 +4583,9 @@ qs_ProcessUtility(PlannedStmt *pstmt, const char *queryString, bool readOnlyTree
 		IsA(stmt, DeclareCursorStmt) || IsA(stmt, PrepareStmt) || IsA(stmt, FetchStmt) ||
 		IsA(stmt, TransactionStmt) || IsA(stmt, VariableSetStmt);
 
+	if (IsA(stmt, CallStmt) && ((CallStmt *) stmt)->funcexpr &&
+		get_func_namespace(((CallStmt *) stmt)->funcexpr->funcid) == get_namespace_oid("duckdb", true))
+		qs_duck_foreign = true;
 	if (!transparent)
 		qs_nesting++;
 	PG_TRY();
@@ -3978,6 +4781,8 @@ qs_report_applied_lsn(PG_FUNCTION_ARGS)
 	}
 	if (!e)
 		ereport(ERROR, (errmsg("too many mirrored relations (%d)", QS_LSN_MAX)));
+	/* whoever is waiting for this mirror looks again now */
+	ConditionVariableBroadcast(&qs_shared->reported);
 	PG_RETURN_VOID();
 }
 
@@ -4040,9 +4845,13 @@ qs_mirror_status(PG_FUNCTION_ARGS)
 Datum
 qs_attach_lakes_sql(PG_FUNCTION_ARGS)
 {
+	if (!superuser())
+		ereport(ERROR,
+				(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
+				 errmsg("quicksilver.attach_lakes() is for superusers"),
+				 errdetail("It attaches the lakes in this session's DuckDB for a role that reads a mirror relation by name.")));
 	qs_ensure_loaded();
-	if (qs_installed)
-		qs_pin();
+	qs_duck_foreign = true;
 	PG_RETURN_INT32(qs_installed ? qs_attach_lakes(true) : 0);
 }
 
@@ -4291,6 +5100,7 @@ qs_shmem_startup(void)
 		for (int i = 0; i < QR_NREASONS; i++)
 			pg_atomic_init_u64(&qs_shared->reasons[i], 0);
 		pg_atomic_init_u64(&qs_shared->dropped, 0);
+		ConditionVariableInit(&qs_shared->reported);
 		qs_shared->lock = &(GetNamedLWLockTranche("pg_quicksilver"))->lock;
 	}
 	memset(&ctl, 0, sizeof(ctl));
@@ -4333,9 +5143,21 @@ _PG_init(void)
 							"that much WAL behind what the heap on this node would have answered.",
 							&qs_max_lag_kb, 0, 0, INT_MAX, PGC_USERSET, GUC_UNIT_KB, NULL, NULL, NULL);
 	DefineCustomIntVariable("quicksilver.freshness_wait",
-							"How long a routed statement waits for its mirror to reach the position the statement can see, before the heap answers.",
-							"0 does not wait.",
-							&qs_fresh_wait_ms, 20, 0, 60000, PGC_USERSET, GUC_UNIT_MS, NULL, NULL, NULL);
+							"The least a statement waits for its mirror to reach the position the statement can see, whatever it costs on the heap.",
+							"0 (the default) leaves the wait to quicksilver.freshness_wait_fraction and quicksilver.freshness_wait_max.",
+							&qs_fresh_wait_ms, 0, 0, 60000, PGC_USERSET, GUC_UNIT_MS, NULL, NULL, NULL);
+	DefineCustomRealVariable("quicksilver.freshness_wait_fraction",
+							 "A statement waits for its mirror for at most this fraction of the time its heap plan is estimated to take.",
+							 "The estimate is the plan's total cost times quicksilver.cost_unit_ms. 0 turns the proportional wait off.",
+							 &qs_wait_fraction, 0.5, 0.0, 1.0, PGC_USERSET, 0, NULL, NULL, NULL);
+	DefineCustomIntVariable("quicksilver.freshness_wait_max",
+							"The most a statement waits for its mirror under quicksilver.freshness_wait_fraction.", NULL,
+							&qs_wait_max_ms, 1000, 0, 60000, PGC_USERSET, GUC_UNIT_MS, NULL, NULL, NULL);
+	DefineCustomRealVariable("quicksilver.cost_unit_ms",
+							 "Milliseconds of heap execution per unit of planner cost, for the freshness wait.",
+							 "Set it low: an under-estimate of the heap makes a statement wait less. "
+							 "Measure it with EXPLAIN ANALYZE of the statements that matter (execution time / total cost) and take the smallest.",
+							 &qs_cost_unit_ms, 0.002, 0.0, 1000.0, PGC_USERSET, 0, NULL, NULL, NULL);
 	DefineCustomStringVariable("quicksilver.min_applied_lsn",
 							   "Route only to a mirror that has applied at least this LSN (read your writes).", NULL,
 							   &qs_min_applied_lsn_str, "", PGC_USERSET, 0,
@@ -4345,9 +5167,10 @@ _PG_init(void)
 							 "For generating and testing the allowlist only: answers may differ from the heap's.",
 							 &qs_allow_unsafe, false, PGC_SUSET, 0, NULL, NULL, NULL);
 	DefineCustomBoolVariable("quicksilver.route_in_transaction",
-							 "Route inside an explicit transaction block.",
-							 "pg_duckdb aborts a transaction that takes a SAVEPOINT after it has run a query.",
-							 &qs_route_in_xact, false, PGC_USERSET, 0, NULL, NULL, NULL);
+							 "Route inside a transaction block where that is safe.",
+							 "READ COMMITTED, no savepoint open, nothing written yet. The mirror's answer is taken whole when the statement starts "
+							 "and DuckDB's transaction is ended with it, so a later SAVEPOINT, write or EXPLAIN finds pg_duckdb idle.",
+							 &qs_route_in_xact, true, PGC_USERSET, 0, NULL, NULL, NULL);
 	DefineCustomBoolVariable("quicksilver.prefer_custom_plans",
 							 "Keep the plan cache planning routable prepared statements with their parameter values.", NULL,
 							 &qs_prefer_custom, true, PGC_USERSET, 0, NULL, NULL, NULL);
@@ -4362,10 +5185,12 @@ _PG_init(void)
 							 "Where PostgreSQL would raise \"integer out of range\", the mirror may return an answer instead: "
 							 "its optimizer can rewrite the expression so that the overflow never happens.",
 							 &qs_tolerate_lost_errors, false, PGC_USERSET, 0, NULL, NULL, NULL);
-	DefineCustomBoolVariable("quicksilver.attach_lakes_for_all",
-							 "Attach the registered lakes in sessions of roles that are not superusers too.",
-							 "Only useful with a pg_duckdb that lets such a role read the mirror's directory; stock pg_duckdb refuses, slowly.",
-							 &qs_attach_for_all, false, PGC_SUSET, 0, NULL, NULL, NULL);
+	DefineCustomBoolVariable("quicksilver.route_unprivileged",
+							 "Route statements of roles that are not superusers, where pg_duckdb is confined to the lake.",
+							 "Needs duckdb.enable_external_access = off, duckdb.allowed_directories covering every registered lake, "
+							 "and a role that is not a member of duckdb.postgres_role. The mirror side then runs as the bootstrap superuser, "
+							 "after the heap table's privileges have been checked for the role.",
+							 &qs_route_unpriv, true, PGC_SUSET, 0, NULL, NULL, NULL);
 	DefineCustomIntVariable("quicksilver.negative_cache_ttl",
 							"Seconds a statement the mirror failed on stays on the heap without asking again.", NULL,
 							&qs_negative_ttl, 60, 0, 86400, PGC_USERSET, GUC_UNIT_S, NULL, NULL, NULL);

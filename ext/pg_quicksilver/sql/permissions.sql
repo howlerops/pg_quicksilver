@@ -26,9 +26,9 @@ CREATE VIEW qtm.rls AS
 SELECT quicksilver.register_mirror('qt.rls', 'qtm.rls', 1000000000000);
 SELECT quicksilver.report_applied_lsn('qt.rls', pg_current_wal_lsn());
 
-CREATE ROLE qs_t_all LOGIN IN ROLE qs_duck;
-CREATE ROLE qs_t_none LOGIN IN ROLE qs_duck;
-CREATE ROLE qs_t_col LOGIN IN ROLE qs_duck;
+CREATE ROLE qs_t_all LOGIN;
+CREATE ROLE qs_t_none LOGIN;
+CREATE ROLE qs_t_col LOGIN;
 GRANT USAGE ON SCHEMA qt TO qs_t_all, qs_t_none, qs_t_col;
 GRANT SELECT ON qt.h, qt.rls TO qs_t_all;
 GRANT SELECT (id, a, b) ON qt.h TO qs_t_col;

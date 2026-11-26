@@ -15,7 +15,7 @@ start)
     QS_LOCAL_SOCKET_DIR=/tmp QS_LOCAL_PORT=$SPORT \
     QS_DATABASE=$DB QS_PGUSER=postgres QS_POD_NAME=qsint-2 \
     QS_HEALTH_ADDR=$HEALTH setsid $BASE/qs-mirror >> $BASE/mirror.log 2>&1 & echo \$! > $BASE/mirror.pid"
-  for _ in $(seq 1 600); do
+  for _ in $(seq 1 ${READY_TRIES:-600}); do
     [ "$(curl -s -o /dev/null -w '%{http_code}' "http://$HEALTH/readyz" 2>/dev/null)" = 200 ] && exit 0
     kill -0 "$(pid)" 2>/dev/null || { tail -5 "$BASE/mirror.log"; exit 1; }
     sleep 0.5

@@ -14,9 +14,9 @@ CREATE SCHEMA qtm;
 CREATE TABLE qt.h (id int PRIMARY KEY, a int, b text);
 INSERT INTO qt.h SELECT g, g * 10, 'heap' FROM generate_series(1, 3) g;
 -- the mirror is a file, as a lake's data file is
-SELECT duckdb.raw_query($$ COPY (SELECT * FROM (VALUES (1, 10, 'mirror'), (2, 20, 'mirror'), (3, 30, 'mirror')) t(id, a, b)) TO '/tmp/qs_regress_errors.parquet' $$);
+SELECT duckdb.raw_query($$ COPY (SELECT * FROM (VALUES (1, 10, 'mirror'), (2, 20, 'mirror'), (3, 30, 'mirror')) t(id, a, b)) TO '/tmp/qs_regress/errors.parquet' $$);
 CREATE VIEW qtm.h AS SELECT r['id']::int AS id, r['a']::int AS a, r['b']::text AS b
-  FROM duckdb.query($$ SELECT * FROM read_parquet('/tmp/qs_regress_errors.parquet') $$) r;
+  FROM duckdb.query($$ SELECT * FROM read_parquet('/tmp/qs_regress/errors.parquet') $$) r;
 SELECT quicksilver.register_mirror('qt.h', 'qtm.h', 1000000000000);
 SELECT quicksilver.report_applied_lsn('qt.h', pg_current_wal_lsn());
 SET quicksilver.route = mirror;
@@ -28,7 +28,7 @@ EXECUTE kept;
 -- the file is replaced by something that is not Parquet (no SQL unlinks a file;
 -- to the reader it is the same: the file its plan names cannot be read)
 SELECT lo_from_bytea(0, 'not a parquet file') AS lo \gset
-SELECT lo_export(:lo, '/tmp/qs_regress_errors.parquet');
+SELECT lo_export(:lo, '/tmp/qs_regress/errors.parquet');
 SELECT lo_unlink(:lo);
 -- outside a transaction block
 EXECUTE kept;
@@ -96,6 +96,65 @@ RESET statement_timeout;
 SET quicksilver.route = heap;
 SELECT n FROM qt.slow;
 SET quicksilver.route = mirror;
+
+-- ---------------------------------------------------------------- the mirror fails after rows have left the server
+-- The mirror has 2,000,000 rows and its own cast cannot take the value in row
+-- 1,800,000. DuckDB finds out after it has started returning rows, and pg_duckdb
+-- then ends the result WITHOUT an error (its stream just stops; so does a
+-- statement on the mirror relation with no router at all). The router asks
+-- DuckDB whether it finished. While the answer fits in work_mem nothing has
+-- been sent: the heap (200,000 rows here) answers, all of it, once.
+CREATE TABLE qt.big (id int PRIMARY KEY, a int);
+INSERT INTO qt.big SELECT g, g FROM generate_series(1, 200000) g;
+CREATE VIEW qtm.big AS SELECT r['id']::int AS id, r['a']::int AS a
+  FROM duckdb.query($$ SELECT i::int AS id, CASE WHEN i = 1800000 THEN 'x' ELSE i::varchar END AS a FROM range(1, 2000001) t(i) $$) r;
+SELECT quicksilver.register_mirror('qt.big', 'qtm.big', 1000000000000);
+SELECT quicksilver.report_applied_lsn('qt.big', pg_current_wal_lsn());
+SET work_mem = '256MB';
+-- pg_duckdb alone, on the mirror relation: rows, then nothing, and no error
+\o /tmp/qs_regress/stream.out
+SELECT id, a FROM qtm.big;
+\o
+\! awk 'NF { n++ } END { print ((n > 0 && n < 1800000) ? "some rows, fewer than 1800000" : n " rows") ", and no error above" }' /tmp/qs_regress/stream.out
+\set VERBOSITY terse
+\set FETCH_COUNT 5000
+\t on
+\o /tmp/qs_regress/stream.out
+SELECT id, a FROM qt.big;
+\o
+:last
+\! awk 'NF { n++ } END { print n " rows received" }' /tmp/qs_regress/stream.out
+-- Past work_mem the rows are streamed, and the error comes after some of them.
+-- The client gets it as an error: the statement fails, the rows it had been
+-- sent are fewer than the answer and none of them twice (no second attempt on
+-- the heap behind them), and the decision still says "mirror".
+SET work_mem = '64kB';
+\o /tmp/qs_regress/stream.out
+SELECT id, a FROM qt.big;
+\o
+\! awk 'NF { n[$1]++; r++ } END { d = 0; for (k in n) if (n[k] > 1) d++; print ((r > 200000 && r < 1800000) ? "more rows than the heap has, fewer than 1800000" : r " rows") ", " d " received twice" }' /tmp/qs_regress/stream.out
+:last
+-- the same in a transaction block: there the answer is taken whole before the
+-- first row, however large, so the heap can still answer; and the block goes on
+BEGIN;
+\o /tmp/qs_regress/stream.out
+SELECT id, a FROM qt.big;
+\o
+:last
+\! awk 'NF { n++ } END { print n " rows received" }' /tmp/qs_regress/stream.out
+SAVEPOINT s;
+RELEASE s;
+COMMIT;
+\unset FETCH_COUNT
+\t off
+-- the session's DuckDB was left holding the result the error interrupted; the next
+-- routed statement finds it replaced, and is routed
+SELECT count(*) FROM public.customers;
+:last
+RESET work_mem;
+\set VERBOSITY default
+DROP TABLE qt.big;
+DROP VIEW qtm.big;
 
 -- ---------------------------------------------------------------- the applied-LSN table gives entries back
 -- More registrations than it holds (1024), one after another: every other one
