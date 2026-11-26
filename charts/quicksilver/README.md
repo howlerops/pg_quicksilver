@@ -15,6 +15,10 @@ or from a checkout, which is what the tests and the e2e scripts use:
 helm install quicksilver charts/quicksilver --namespace cnpg-system
 ```
 
+`0.0.3` is the newest published version. The chart in the repository is
+`0.0.4`: it adds the PostgreSQL operand image for [routed reads](#routing-reads-the-operand-image),
+and it and its three images are published together when `v0.0.4` is tagged.
+
 **Do not install `0.0.2`.** In `0.0.2` the injected mirror sidecar binds
 `:9187`, the port CloudNativePG's instance manager needs. It is a native
 sidecar, so it starts first, wins the port, and the instance manager exits
@@ -117,8 +121,10 @@ log says why.
 | Key | Default | Notes |
 |---|---|---|
 | `operatorNamespace` | `cnpg-system` | must match where CNPG runs |
-| `image.plugin` | `ghcr.io/howlerops/pg_quicksilver-plugin:0.0.3` | |
-| `image.mirror` | `ghcr.io/howlerops/pg_quicksilver-mirror:0.0.3` | the sidecar the plugin injects |
+| `image.plugin` | `ghcr.io/howlerops/pg_quicksilver-plugin:0.0.4` | |
+| `image.mirror` | `ghcr.io/howlerops/pg_quicksilver-mirror:0.0.4` | the sidecar the plugin injects, unless a Cluster sets `sidecarImage` |
+| `image.postgres` | `ghcr.io/howlerops/pg_quicksilver-postgres:17-0.0.4` | the operand image for Clusters that route reads. **Nothing this chart installs runs it**: it goes in a Cluster's `spec.imageName`. It is a value so that the notes print it and the release publishes all three at one version |
+| `image.pullSecrets` | `[]` | for the plugin image only; see below |
 | `service.port` | `9090` | also published as the `cnpg.io/pluginPort` annotation |
 | `certManager.enabled` | `true` | issues both halves from a self-signed CA |
 | `certManager.issuerRef` | `{}` | set to reuse an existing Issuer or ClusterIssuer |
@@ -126,7 +132,26 @@ log says why.
 
 ## Using it
 
-Installing the chart does nothing on its own. A Cluster opts in:
+Installing the chart does nothing on its own. A Cluster opts in, and every
+plugin parameter is set there, on the Cluster, not in this chart's values:
+
+| Parameter | Default | |
+|---|---|---|
+| `tables` | required | `schema.table,…`, unquoted lowercase, single-column primary key |
+| `mode` | `shadow` | `off`, `shadow`, `takeover` (needs `acknowledgeOLTPRegression: "true"`) |
+| `freshnessSLO` | `30s` | in `takeover`, a mirror behind this leaves `-ro` |
+| `sidecarMemory` | `1Gi` | request and limit; 300 bytes per live row, see below |
+| `sidecarImage` | this chart's `image.mirror` | |
+| `ducklake` | `"false"` | also publish every table as a DuckLake table; required for routing |
+| `ducklakeRetention` | the sidecar's 5m | at least `10s`, and only with `ducklake` |
+| `serveWithHaltedTables` | `"false"` | keep the Pod ready with one table halted; safe with the extension |
+| `extension` | `auto` | `off` stops the sidecar touching `pg_quicksilver` |
+| `database`, `credentialsSecret`, `slotName`, `publication`, `mirrorPath`, `ingest` | | [docs/16](https://github.com/howlerops/pg_quicksilver/blob/main/docs/16-deploying.md#enabling-it-on-a-cluster) |
+
+They are strings: `ducklake: "true"`, with the quotes. An unknown parameter or
+a value of the wrong kind is refused at admission. `slotName` is a prefix:
+each instance Pod's sidecar has a replication slot of its own,
+`<slotName>_<pod name>`.
 
 ```yaml
 spec:
@@ -135,6 +160,65 @@ spec:
       parameters:
         tables: public.events
 ```
+
+### Routing reads: the operand image
+
+Mirroring needs nothing in PostgreSQL and keeps the stock CloudNativePG image.
+Routing reads to the mirror from inside PostgreSQL does, and four things have
+to agree. Each one fails quietly without the others.
+
+```yaml
+spec:
+  instances: 3
+  # 1. The operand image: CloudNativePG's PostgreSQL 17 with pg_duckdb 1.2.0,
+  #    pg_quicksilver and DuckDB's ducklake and sqlite extensions.
+  imageName: ghcr.io/howlerops/pg_quicksilver-postgres:17-0.0.4
+  postgresql:
+    # 2. Both, pg_duckdb FIRST. The other way round PostgreSQL does not start.
+    shared_preload_libraries: ["pg_duckdb", "pg_quicksilver"]
+    parameters:
+      max_slot_wal_keep_size: 4GB
+      # 3. Where that image keeps DuckDB's extensions. Without it pg_duckdb
+      #    looks under PGDATA, finds nothing, and downloads them, or cannot.
+      duckdb.extension_directory: /usr/lib/quicksilver/duckdb-extensions
+  plugins:
+    - name: quicksilver.howlerops.io
+      parameters:
+        tables: public.events,public.orders
+        ducklake: "true"                # 4. the lake is what gets routed to
+        serveWithHaltedTables: "true"
+```
+
+and once, in the mirrored database on the primary (or in
+`bootstrap.initdb.postInitApplicationSQL`):
+
+```sql
+CREATE EXTENSION pg_duckdb;
+CREATE EXTENSION pg_quicksilver;
+ALTER DATABASE app SET quicksilver.route = 'shadow';   -- records what would move; then 'auto'
+```
+
+[`examples/cluster-routed.yaml`](https://github.com/howlerops/pg_quicksilver/blob/main/examples/cluster-routed.yaml)
+is the whole Cluster with the reason for each line.
+
+- **The tag starts with `17`.** CloudNativePG reads the PostgreSQL version from
+  the front of the image tag. If you retag the image for your own registry,
+  keep that: `:0.0.4` would be read as PostgreSQL 0, and `:latest` is refused.
+- **One volume.** The mirror is beside PGDATA at
+  `/var/lib/postgresql/data/quicksilver` and the lake under it at
+  `_ducklake`. The lake is hard links to the mirror's files, so it cannot be
+  on another filesystem, and the sidecar refuses to start if it is.
+- **Only superuser sessions are routed.** Stock pg_duckdb gives nobody else a
+  DuckDB that can read local files; every other role is answered from the
+  heap, correctly. What it would take to change that is not validated and is
+  listed at the end of the example.
+- **A key lookup stays on the heap**, as does anything cheap, anything on the
+  primary, and anything the mirror has not caught up with. `EXPLAIN` says
+  which and why: `Quicksilver: mirror`, or `Quicksilver: heap (cheap on the
+  heap)`.
+- **Upgrading from 0.0.3.** That release used one slot named `slotName` for
+  every sidecar. The new sidecars never touch it, so drop
+  `quicksilver_<cluster>` by hand once they are running.
 
 ### Set `max_slot_wal_keep_size`. This is not optional.
 

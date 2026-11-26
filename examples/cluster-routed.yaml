@@ -1,0 +1,152 @@
+# A CloudNativePG Cluster with the mirror published as a DuckLake and reads
+# routed to it by pg_quicksilver, from inside PostgreSQL.
+#
+#   kubectl apply -f examples/cluster-routed.yaml
+#
+# examples/cluster-shadow.yaml is the Cluster that only mirrors, and it is the
+# one to start with: it keeps the stock PostgreSQL image. This one adds the
+# part that needs something IN the server.
+#
+#   DOES    everything cluster-shadow.yaml does, on every replica.
+#   DOES    publish each mirrored table as a DuckLake table (the mirror's own
+#           Parquet files, hard-linked; nothing is rewritten).
+#   DOES    answer a read from the mirror when every construct in the statement
+#           is on a verified list, the plan is expensive enough and the mirror
+#           has caught up, and from the heap otherwise (docs/40). A key lookup
+#           stays on the heap. On the primary, which has no mirror, everything
+#           does.
+#   DOES NOT route anything until a role or database sets quicksilver.route.
+#           This file sets it to `shadow` for the database, which routes
+#           nothing and records what would have moved.
+#   DOES NOT route for a role that is not a superuser. See the TODO at the end.
+#
+# Four things have to agree, and each fails quietly without the others:
+#
+#   1. imageName                  the operand image, which carries pg_duckdb,
+#                                 pg_quicksilver and DuckDB's two extensions
+#   2. shared_preload_libraries   both, pg_duckdb FIRST
+#   3. duckdb.extension_directory where that image keeps DuckDB's extensions
+#   4. ducklake: "true"           on the plugin, so there is a lake to route to
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: app
+spec:
+  # Three, so that there are two replicas and therefore two mirrors: -ro then
+  # still has a mirror behind it while one replica is restarted.
+  instances: 3
+
+  # (1) The operand image: the CloudNativePG PostgreSQL 17 image plus
+  # pg_duckdb 1.2.0, pg_quicksilver and DuckDB's ducklake and sqlite
+  # extensions. Built by deploy/Dockerfile (--target postgres) and published
+  # with the same version as the chart; charts/quicksilver/values.yaml names
+  # the same image as image.postgres, and CI fails if the two differ.
+  #
+  # The tag is <postgresql major>-<version>. CloudNativePG takes the
+  # PostgreSQL version from the front of the tag, so if you retag this image
+  # for your own registry, keep it starting with 17.
+  imageName: ghcr.io/howlerops/pg_quicksilver-postgres:17-0.0.4
+
+  # The sidecar's credentials. See cluster-shadow.yaml.
+  enableSuperuserAccess: true
+
+  storage:
+    size: 20Gi
+    # ONE volume, on purpose. The mirror lives beside PGDATA at
+    # /var/lib/postgresql/data/quicksilver and the lake under it at
+    # .../quicksilver/_ducklake. The lake is hard links to the mirror's files,
+    # so it has to be on the mirror's filesystem (the sidecar refuses to start
+    # otherwise), and PostgreSQL has to be able to read both, which it can
+    # because the sidecar shares this volume and runs as the same UID. Do not
+    # move mirrorPath to a second volume, and do not add walStorage and expect
+    # the mirror to follow it.
+
+  postgresql:
+    # (2) In this order. pg_quicksilver calls into pg_duckdb when it loads;
+    # the other way round PostgreSQL does not start.
+    shared_preload_libraries:
+      - pg_duckdb
+      - pg_quicksilver
+    parameters:
+      shared_buffers: 512MB
+
+      # Not optional, on any Cluster that names the plugin: without it a
+      # mirror that cannot keep up fills the primary's disk (docs/28). Each
+      # mirroring Pod has a slot of its own, so this bounds each of them.
+      max_slot_wal_keep_size: 4GB
+
+      # (3) Where the operand image keeps DuckDB's extensions. pg_duckdb's
+      # default is $PGDATA/pg_duckdb/extensions, which is on the volume and
+      # therefore empty: it would fetch them from extensions.duckdb.org the
+      # first time a backend routes, and an instance that cannot reach it
+      # stays on the heap without saying why. With this set nothing is
+      # fetched. The path is fixed by the image; it is also on the image as
+      # the label io.howlerops.quicksilver.duckdb-extension-directory.
+      duckdb.extension_directory: /usr/lib/quicksilver/duckdb-extensions
+
+  plugins:
+    - name: quicksilver.howlerops.io
+      enabled: true
+      parameters:
+        mode: shadow
+        tables: public.events,public.orders
+        freshnessSLO: 30s
+        database: app
+        credentialsSecret: app-superuser
+
+        # (4) Publish every mirrored table as a DuckLake table. Required for
+        # routing: the mirror relation is a view over the lake table, which
+        # is the one thing that survives a compaction unchanged.
+        ducklake: "true"
+        # How long a lake snapshot stays readable after a newer one replaced
+        # it; a routed statement that runs longer than this loses its files.
+        ducklakeRetention: 5m
+
+        # Keep a Pod ready while one of its tables is halted. Safe here and
+        # only here: with the extension a halted table is answered from the
+        # heap on that Pod, so a reader never gets a partial set of tables.
+        serveWithHaltedTables: "true"
+
+        # `auto` (the default) lets the sidecar register the mirror relations
+        # and report applied LSNs when pg_quicksilver is installed in the
+        # database. `off` leaves the extension alone.
+        extension: auto
+
+        # 300 bytes per live row across the mirrored tables, not less than
+        # 1Gi; cluster-shadow.yaml has the measurements.
+        sidecarMemory: 3Gi
+
+  bootstrap:
+    initdb:
+      database: app
+      owner: app
+      # Runs once, as the superuser, in the application database. The sidecar
+      # looks for pg_quicksilver there and does the rest: the schema
+      # quicksilver_mirror, one view per table, the registry, the lake's path.
+      # On a Cluster that already exists, run the same three statements on the
+      # primary by hand.
+      postInitApplicationSQL:
+        - CREATE EXTENSION IF NOT EXISTS pg_duckdb
+        - CREATE EXTENSION IF NOT EXISTS pg_quicksilver
+        # `shadow` first: nothing is routed, and quicksilver.reason_stats says
+        # what would have been. Change it to `auto` when that looks right.
+        - ALTER DATABASE app SET quicksilver.route = 'shadow'
+
+# TODO(non-superuser routing): NOT AVAILABLE with this image, and deliberately
+# not configured above.
+#
+# Stock pg_duckdb gives only a superuser a DuckDB that can read local files, so
+# only superuser sessions are routed; every other role is answered from the
+# heap, correctly, and says so in EXPLAIN. docs/40 ("What an image needs, now"
+# and "Not validated") lists a non-superuser reading a real mirror as not
+# validated. What it would take, none of which this file sets because none of
+# it has been run on a cluster:
+#
+#   - a pg_duckdb that confines a role to the mirror's directory
+#     (duckdb.allowed_directories; bench/patches has the patch for 1.1.1);
+#   - duckdb.postgres_role, naming the role whose members may use DuckDB;
+#   - quicksilver.attach_lakes_for_all = on, which tells the extension that
+#     the build above is what it is running on.
+#
+# Until docs/40 says that combination was validated, treat routing as a
+# superuser-only feature.

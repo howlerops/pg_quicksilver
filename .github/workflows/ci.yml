@@ -11,6 +11,26 @@
 # standby. They are separate jobs so that a missing PGDG package cannot be
 # mistaken for a broken mirror.
 #
+#   test         build, vet, every Go package's tests with -short
+#   ducklake     the DuckLake conformance tests against a real DuckDB
+#   full         every Go test, the heavy ones included, without -short
+#   flags-off    internal/mirror with each escape-hatch flag set
+#   race         -short tests of internal/... and cmd/... under the race detector
+#   race-mirror  the full internal/mirror suite under the race detector, in three shards
+#   cnpgi        the CNPG-I handshake against the operator's own code
+#   manifests    the chart and both example Clusters
+#   lint         the workflows, the Dockerfile and the scripts themselves
+#   images       all three images build; the operand image's build includes
+#                its own offline self-check
+#   integration  the suite against PostgreSQL 17, and bench/exactness's
+#                self-check
+#   extension    pg_quicksilver's regression tests against PostgreSQL 17 with
+#                pg_duckdb, and the cluster test's SQL against a real standby
+#   serving      the patched pg_duckdb, built and served through
+#
+# What none of them can do is start a Pod. That is cluster-e2e.yml, which runs
+# on a pull request when the change touches something that ends up in one.
+#
 # INCOMPLETE IS NOT A PASS. suite.sh exits 2 when a section could not run, and
 # this workflow preserves that distinction rather than flattening it to success
 # — a CI run that reports a skipped section as green is how a benchmark comes to
@@ -40,7 +60,62 @@ concurrency:
 jobs:
   # ---- 1. no database, no cluster -------------------------------------------
   test:
-    name: unit, race and vet
+    name: unit and vet
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go/go.mod
+          cache-dependency-path: go/go.sum
+
+      # The DuckLake tests read what the Go publisher wrote with the real
+      # reader, DuckDB, in a python process, and SKIP without it. A skipped
+      # conformance test is a green run that compared nothing, so the module is
+      # installed here and a later step checks that the tests really ran.
+      #
+      # Pinned: 2.0.1 is the DuckDB the catalog format (1.1) was verified
+      # against, and a newer DuckDB may want a newer catalog. Installed for
+      # every user because other jobs run their python under sudo, and
+      # --break-system-packages because the runner's python is the
+      # distribution's.
+      - name: python with duckdb
+        run: |
+          sudo -H python3 -m pip install --quiet --break-system-packages duckdb==2.0.1
+          python3 -c "import duckdb; print('duckdb', duckdb.__version__)"
+
+      - name: build
+        run: go -C go build ./...
+
+      - name: vet
+        run: go -C go vet ./...
+
+      # -short skips the heavy tests (the cost measurements, the model-based
+      # interleavings, the kidx model). They are not dropped: the `full` job
+      # below runs every test without -short, and `race-mirror` runs the mirror's
+      # tests under the race detector.
+      #
+      # -timeout is explicit everywhere in this file. go test's default is ten
+      # minutes PER PACKAGE, and internal/mirror is close enough to it that a
+      # busy runner turns a pass into "panic: test timed out after 10m0s" with
+      # a goroutine dump of whichever test happened to be running.
+      #
+      # QS_DUCKDB_PYTHON opts in the two tests of internal/mirror that evaluate
+      # a published snapshot in DuckDB; unset, they skip.
+      - name: test
+        env:
+          QS_DUCKDB_PYTHON: python3
+        run: go -C go test -short -count=1 -timeout 20m ./...
+
+  # ---- 1a. the DuckLake tests, against DuckDB ---------------------------------
+  # The DuckLake publisher against DuckDB itself: 1,500 random steps with a
+  # read-back after each, the upgrade paths, three concurrent readers. The
+  # check after the run is the one that matters: these four are the tests
+  # that skip when the reader cannot start (no python, no duckdb module, no
+  # route to DuckDB's extension repository), and "ok" is printed either way.
+  ducklake:
+    name: DuckLake conformance against DuckDB
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -50,31 +125,122 @@ jobs:
           go-version-file: go/go.mod
           cache-dependency-path: go/go.sum
 
-      - name: build
-        run: go -C go build ./...
+      # Pinned: 2.0.1 is the DuckDB the catalog format (1.1) was verified
+      # against, and a newer DuckDB may want a newer catalog. Installed for
+      # every user because other jobs run their python under sudo, and
+      # --break-system-packages because the runner's python is the
+      # distribution's.
+      - name: python with duckdb
+        run: |
+          sudo -H python3 -m pip install --quiet --break-system-packages duckdb==2.0.1
+          python3 -c "import duckdb; print('duckdb', duckdb.__version__)"
 
-      - name: vet
-        run: go -C go vet ./...
+      - name: DuckLake conformance against DuckDB
+        run: |
+          set -o pipefail
+          go -C go test ./internal/ducklake -count=1 -timeout 20m -v 2>&1 | tee /tmp/ducklake.log \
+            | grep -E '^(--- |ok|FAIL|PASS|panic:)|reader: python duckdb' | sort | uniq -c
+          for t in TestConformanceAgainstDuckDB TestConformanceUpgradeFromThePreviousWriter \
+                   TestWidenedColumnsReadAsOneValue TestConcurrentReaders; do
+            grep -q -- "^--- PASS: $t " /tmp/ducklake.log \
+              || { echo "::error::$t did not PASS (skipped, or absent): the lake was not compared with DuckDB"; exit 1; }
+          done
 
-      - name: test
-        run: go -C go test ./... -count=1
+  # ---- 1b. every test, heavy ones included --------------------------------------
+  # The unit job runs -short. This one runs everything else: the cost
+  # measurements, the model-based interleavings and the kidx model of
+  # internal/mirror, which -short skips. Without this job those tests would
+  # run only when somebody ran them by hand.
+  full:
+    name: full suite, without -short
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go/go.mod
+          cache-dependency-path: go/go.sum
+      - name: python with duckdb
+        run: |
+          sudo -H python3 -m pip install --quiet --break-system-packages duckdb==2.0.1
+          python3 -c "import duckdb; print('duckdb', duckdb.__version__)"
+      - name: test, every package, no -short
+        env:
+          QS_DUCKDB_PYTHON: python3
+        run: go -C go test ./... -count=1 -timeout 60m
 
-      # The race detector earns its runtime here specifically: the apply
-      # goroutine and the background compactor share a manifest, and the bugs
-      # that come from getting that wrong do not fail a test, they produce a
-      # mirror that answers with a superseded value.
-      - name: race
-        run: go -C go test ./internal/mirror ./cmd/qs-mirror -race -count=1
-
-      # The escape hatches have to keep working or they are not escape hatches.
-      # Each of these flags is the documented recovery from a halt or a
-      # regression, and a recovery path that only runs when someone remembers is
-      # not a recovery path.
-      - name: every feature flag off
+  # ---- 1c. the escape hatches ----------------------------------------------------
+  # The escape hatches have to keep working or they are not escape hatches.
+  # Each of these flags is the documented recovery from a halt or a
+  # regression, and a recovery path that only runs when someone remembers is
+  # not a recovery path.
+  flags-off:
+    name: every feature flag off
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go/go.mod
+          cache-dependency-path: go/go.sum
+      - name: test internal/mirror with every flag off
         run: |
           env QS_TEMPORAL_TYPES=0 QS_PARTIAL_DELTAS=0 QS_ELIDE_UNCHANGED=0 \
               QS_SNAPPY_DELTAS=1 QS_MAX_TICK_CHANGES=0 QS_MAX_MERGE_FILES=0 \
-              go -C go test ./internal/mirror -count=1
+              go -C go test ./internal/mirror -count=1 -timeout 20m
+
+  # ---- 1d. the race detector ---------------------------------------------------
+  # The race detector earns its runtime here specifically: the apply goroutine
+  # and the background compactor share a manifest, and the bugs that come from
+  # getting that wrong do not fail a test, they produce a mirror that answers
+  # with a superseded value. -short keeps this job to the fast tests; the full
+  # mirror suite under -race is race-mirror below.
+  race:
+    name: race (short)
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go/go.mod
+          cache-dependency-path: go/go.sum
+      - name: race
+        run: go -C go test -short -race -count=1 -timeout 30m ./internal/... ./cmd/...
+
+  # ---- 1e. the full mirror suite under the race detector, in shards ------------
+  # It also costs: go/internal/mirror under -race measured 610 s on two cores,
+  # past go test's default ten-minute timeout, which is how it "timed out once
+  # under load". Four tests are over half of that (TestCompactionCost 118 s,
+  # TestKidxModel 80 s, TestRandomInterleavingsAgainstAModel 75 s,
+  # TestCompactionRacesApplyClustered 58 s). Tests in one package run one after
+  # another, so the package is split across three jobs of about 225 s each.
+  #
+  # NOT by listing tests here. bench/scripts/go_test_shard.sh takes the list
+  # from `go test -list` when it runs, gives every name to exactly one shard,
+  # checks that before running anything, and fails a shard that ran fewer tests
+  # than it was given. A test added tomorrow is in a shard tomorrow.
+  # bench/scripts/race_test_weights.txt only balances them.
+  race-mirror:
+    name: race, full mirror (${{ matrix.shard }}/3)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go/go.mod
+          cache-dependency-path: go/go.sum
+      - name: who runs what
+        run: bash bench/scripts/go_test_shard.sh --plan ./internal/mirror 3
+      - name: race
+        run: bash bench/scripts/go_test_shard.sh ./internal/mirror ${{ matrix.shard }} 3 -race -count=1 -timeout 20m
 
   # ---- 2. the CNPG-I handshake, without Kubernetes --------------------------
   # A SEPARATE module on purpose: testing the handshake means importing the
@@ -91,7 +257,7 @@ jobs:
           go-version-file: go/fidelity/go.mod
           cache-dependency-path: go/fidelity/go.sum
       - name: test
-        run: go -C go/fidelity test ./... -count=1
+        run: go -C go/fidelity test ./... -count=1 -timeout 15m
 
   # ---- 3. what we would apply to a cluster, without a cluster ---------------
   manifests:
@@ -113,11 +279,85 @@ jobs:
       - name: helm lint
         run: helm lint charts/quicksilver
 
-      # kubeconform against the real Kubernetes schemas, and the example Cluster
-      # against CloudNativePG's published CRD. helm lint checks only that the
-      # templates render; neither of those is what it does.
+      # kubeconform against the real Kubernetes schemas, both example Clusters
+      # against CloudNativePG's published CRD, and the things that have to
+      # agree ACROSS files: the operand image the chart names is the one the
+      # routed example uses, its extension directory is the one the Dockerfile
+      # creates, and shared_preload_libraries is in the only order that starts.
+      # helm lint checks only that the templates render; none of that is what
+      # it does.
       - name: validate manifests
         run: bash bench/scripts/validate_manifests.sh
+
+  # ---- 3b. the things that check everything else ------------------------------
+  # A workflow file is code that only runs in production, and so is a
+  # Dockerfile. These are the linters that read them without running them.
+  lint:
+    name: workflows, Dockerfile and scripts
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # the scripts step compares against the base of a pull request
+          fetch-depth: 0
+
+      - name: install actionlint and hadolint
+        run: |
+          set -euo pipefail
+          curl -fsSL "https://github.com/rhysd/actionlint/releases/download/v1.7.7/actionlint_1.7.7_linux_amd64.tar.gz" \
+            | sudo tar -xz -C /usr/local/bin actionlint
+          curl -fsSLo /tmp/hadolint "https://github.com/hadolint/hadolint/releases/download/v2.14.0/hadolint-linux-x86_64"
+          echo "6bf226944684f56c84dd014e8b979d27425c0148f61b3bd99bcc6f39e9dc5a47  /tmp/hadolint" | sha256sum -c -
+          sudo install -m 0755 /tmp/hadolint /usr/local/bin/hadolint
+          actionlint --version | head -1; hadolint --version; shellcheck --version | sed -n 2p
+
+      # actionlint also runs shellcheck over every `run:` block.
+      - name: actionlint
+        run: actionlint
+
+      # cluster-e2e.yml lists the same paths under pull_request and under push.
+      # The list is the definition of "ends up in a Pod", and two copies of a
+      # definition drift.
+      - name: cluster-e2e's two path lists are one list
+        run: |
+          python3 - <<'PY'
+          import sys, yaml
+          on = yaml.safe_load(open(".github/workflows/cluster-e2e.yml"))[True]
+          pr, push = on["pull_request"]["paths"], on["push"]["paths"]
+          if pr != push:
+              print("::error::cluster-e2e.yml: pull_request.paths and push.paths differ:",
+                    sorted(set(pr) ^ set(push)))
+              sys.exit(1)
+          print(f"ok: {len(pr)} paths, identical")
+          PY
+
+      - name: hadolint
+        run: hadolint deploy/Dockerfile
+
+      # The scripts this change touches, and always the ones CI itself runs.
+      # Not every script in bench/: most of them predate the linter and are
+      # measurements somebody ran once, and a wall of old findings is how a
+      # linter gets switched off. SC2317 ("unreachable") is excluded because it
+      # fires on every function that is only called from a trap.
+      - name: shellcheck
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          set -euo pipefail
+          always="deploy/duckdb-extensions.sh bench/scripts/cluster_e2e.sh bench/scripts/cluster_e2e_selftest.sh
+                  bench/scripts/go_test_shard.sh bench/scripts/validate_manifests.sh bench/scripts/lib_slotname.sh
+                  bench/docker/cluster_kind.sh"
+          changed=""
+          if [ -n "$BASE_REF" ]; then
+            changed=$(git diff --name-only --diff-filter=AM "origin/$BASE_REF...HEAD" -- '*.sh' || true)
+          fi
+          # shellcheck disable=SC2086  # a list of paths, split on purpose
+          files=$(printf '%s\n' $always $changed | sort -u)
+          # shellcheck disable=SC2086
+          printf '  %s\n' $files
+          # shellcheck disable=SC2086
+          shellcheck -x -S warning -e SC2317 $files
 
   # ---- 4. the images build ---------------------------------------------------
   # Not pushed — built. A Dockerfile that has stopped building is something to
@@ -126,7 +366,7 @@ jobs:
   images:
     name: images build
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
       - uses: docker/setup-buildx-action@v3
@@ -147,6 +387,44 @@ jobs:
           target: mirror
           push: false
           cache-from: type=gha
+      # The PostgreSQL operand image: CloudNativePG's PostgreSQL 17 plus
+      # pg_duckdb, pg_quicksilver (compiled here with PGXS against the base
+      # image's own minor) and DuckDB's ducklake and sqlite extensions.
+      #
+      # This build is a test as well. Its last stage runs with the network
+      # OFF, as the postgres user, and has to preload both libraries, create
+      # both extensions and read back a DuckLake on a SQLite catalog before
+      # the image exists (deploy/duckdb-extensions.sh verify). `load: true` so
+      # that the finished image can be asked the same thing once more, the way
+      # a Pod will run it.
+      #
+      # Its own cache scope: the default one belongs to the two builds above,
+      # and mode=max from a different target would replace it.
+      - name: postgres (operand)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/Dockerfile
+          target: postgres
+          push: false
+          load: true
+          tags: pg_quicksilver-postgres:ci
+          cache-from: type=gha,scope=postgres
+          cache-to: type=gha,mode=max,scope=postgres
+      - name: the operand image, as a Pod will run it
+        run: |
+          set -euo pipefail
+          u=$(docker image inspect pg_quicksilver-postgres:ci --format '{{.Config.User}}')
+          [ "$u" = 26 ] || { echo "::error::the operand image runs as '$u', not CloudNativePG's 26"; exit 1; }
+          ep=$(docker image inspect pg_quicksilver-postgres:ci --format '{{json .Config.Entrypoint}}')
+          [ "$ep" = "null" ] || { echo "::error::the operand image sets an ENTRYPOINT ($ep)"; exit 1; }
+          docker image inspect pg_quicksilver-postgres:ci --format '{{json .Config.Labels}}'
+          echo "--- verified during the build, network off:"
+          docker run --rm --network=none pg_quicksilver-postgres:ci cat /usr/share/quicksilver/verified.txt
+          echo "--- and now: no network, read-only root filesystem, UID 26:"
+          docker run --rm --network=none --read-only --tmpfs /tmp \
+            -e PRELOAD=pg_duckdb,pg_quicksilver pg_quicksilver-postgres:ci \
+            qs-duckdb-extensions verify /usr/lib/quicksilver/duckdb-extensions
 
   # ---- 5. against a real PostgreSQL 17 --------------------------------------
   # The correctness sections need a primary, a standby and a logical slot, so
@@ -194,8 +472,10 @@ jobs:
           tar -xzf /tmp/kc.tar.gz -C /tmp kubeconform
           sudo install -m 0755 /tmp/kubeconform /usr/local/bin/kubeconform
 
+      # For every user: the suite and bench/exactness run their python under
+      # sudo, which does not see a module installed for the runner's user.
       - name: python deps
-        run: pip install --quiet duckdb psycopg[binary]
+        run: sudo -H python3 -m pip install --quiet --break-system-packages duckdb==2.0.1 "psycopg[binary]"
 
       # Correctness only. The performance sections are opt-in (FULL=1) because
       # a shared CI runner cannot produce a number worth publishing — and a
@@ -222,12 +502,171 @@ jobs:
           fi
           exit "$rc"
 
+      # bench/exactness asks how exactly the mirror, read through DuckDB,
+      # reproduces PostgreSQL, statement by statement. Its answer is only worth
+      # anything if the COMPARISON is right, and --selfcheck tests exactly
+      # that: the corpus against itself must be all exact, and pairs built to
+      # differ must be reported as differing. It still builds the real thing
+      # to do it: a primary, a standby and the sidecar under
+      # /var/lib/postgresql/qsexact, with qs-verify MATCH on every table.
+      #
+      # The full corpus run is not here: its result is a report somebody reads
+      # (bench/exactness/results), not a pass or a fail.
+      - name: bench/exactness, self-check
+        run: |
+          set -o pipefail
+          sudo -E env "PATH=$PATH" python3 bench/exactness/run.py --selfcheck 2>&1 | tee /tmp/exactness-selfcheck.log | tail -40
+          tail -1 /tmp/exactness-selfcheck.log | grep -q 'PASS$' \
+            || { echo "::error::bench/exactness --selfcheck did not end in PASS"; exit 1; }
+
       - name: logs
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: suite-logs
           path: /tmp/qs-suite/
+          if-no-files-found: ignore
+          retention-days: 7
+
+  # ---- 5b. the extension, inside a real PostgreSQL 17 --------------------------
+  # ext/pg_quicksilver is C that runs in the server, and the only test of it is
+  # the server: `make installcheck` is pg_regress against a primary with
+  # pg_duckdb and pg_quicksilver preloaded, a streaming standby, and the
+  # production sidecar publishing a DuckLake next to it (validate/real).
+  #
+  # WHERE pg_duckdb COMES FROM, because it is the one dependency with no
+  # obvious answer. pg_duckdb's own releases are container images, not
+  # packages; PGDG does not carry it; building it is DuckDB's build, an hour
+  # (the `serving` job below does that, for a patched 1.1.1, and caches it).
+  # 1.2.0 is what docs/40 was validated on, and it came from the apt
+  # repository this project's validation hosts use. It is fetched here as ONE
+  # file by URL with a SHA-256, rather than by adding that repository: nothing
+  # else is wanted from it, and a checksum pins harder than a signing key does.
+  # deploy/Dockerfile does the same with the Debian 12 build.
+  #
+  # ubuntu-24.04 and not ubuntu-latest: the package is the noble build, and
+  # `latest` moving to the next release should be a decision made here, with a
+  # new URL and checksum, not a red run on an unrelated pull request.
+  extension:
+    name: pg_quicksilver against PostgreSQL 17
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    env:
+      PG_DUCKDB_DEB_URL: https://repo.pigsty.io/apt/pgsql/noble/pool/main/p/pg-duckdb/postgresql-17-pg-duckdb_1.2.0-1PGSTY~noble_amd64.deb
+      PG_DUCKDB_DEB_SHA256: 540a1b0de3ea5f1bbd846303f625ae8ca5702bd52ad7431a901564308c363c51
+      DUCKDB_EXT_DIR: /usr/lib/quicksilver/duckdb-extensions
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go/go.mod
+          cache-dependency-path: go/go.sum
+
+      - name: install PostgreSQL 17 and its headers
+        run: |
+          sudo systemctl stop postgresql || true
+          curl -sS https://www.postgresql.org/media/keys/ACCC4CF8.asc \
+            | sudo gpg --dearmor -o /usr/share/keyrings/pgdg.gpg
+          echo "deb [signed-by=/usr/share/keyrings/pgdg.gpg] \
+            http://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" \
+            | sudo tee /etc/apt/sources.list.d/pgdg.list
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq postgresql-17 postgresql-server-dev-17
+          # The package starts a cluster on 5432 that nothing here uses.
+          sudo systemctl stop postgresql || true
+          /usr/lib/postgresql/17/bin/postgres --version
+
+      - name: install pg_duckdb 1.2.0
+        run: |
+          set -euo pipefail
+          curl -fsSLo /tmp/pg_duckdb.deb "$PG_DUCKDB_DEB_URL"
+          echo "$PG_DUCKDB_DEB_SHA256  /tmp/pg_duckdb.deb" | sha256sum -c -
+          sudo apt-get install -y -qq /tmp/pg_duckdb.deb
+          dpkg -s postgresql-17-pg-duckdb | grep -E '^(Package|Version)'
+          ls -la "$(/usr/lib/postgresql/17/bin/pg_config --pkglibdir)/pg_duckdb.so"
+
+      # with_llvm=no, as deploy/Dockerfile builds it: PGXS would otherwise
+      # want the exact clang the server packages were built with, to emit
+      # bitcode the JIT does not need for an extension.
+      - name: build and install pg_quicksilver
+        run: |
+          set -euo pipefail
+          make -C ext/pg_quicksilver with_llvm=no
+          sudo make -C ext/pg_quicksilver with_llvm=no install
+
+      # DuckDB's ducklake and sqlite extensions, carried the way the operand
+      # image carries them, by the same script: installed by pg_duckdb's own
+      # DuckDB into a directory, handed to root, and then proved sufficient
+      # with NO NETWORK (unshare -n) and no write access. This is
+      # deploy/Dockerfile's `RUN --network=none` without Docker, so the claim
+      # is tested on every push and not only when an image is built.
+      - name: DuckDB's extensions load with no network
+        run: |
+          set -euo pipefail
+          sudo install -d -o postgres -g postgres "$DUCKDB_EXT_DIR"
+          sudo install -m 0755 deploy/duckdb-extensions.sh /usr/local/bin/qs-duckdb-extensions
+          sudo -u postgres qs-duckdb-extensions install "$DUCKDB_EXT_DIR"
+          sudo chown -R root:root "$DUCKDB_EXT_DIR"
+          sudo unshare -n runuser -u postgres -- env PRELOAD=pg_duckdb,pg_quicksilver \
+            qs-duckdb-extensions verify "$DUCKDB_EXT_DIR"
+          # And the control: with no network and NO files it must fail, or the
+          # line above proved nothing about the network.
+          sudo install -d -o postgres -g postgres /tmp/empty-extensions
+          if sudo unshare -n runuser -u postgres -- qs-duckdb-extensions install /tmp/empty-extensions 2>&1 \
+               | tee /tmp/control.log >/dev/null; then
+            echo "::error::DuckDB installed an extension with the network unshared: the offline check above is not offline"
+            exit 1
+          fi
+          grep -m1 -i 'failed to download\|could not establish' /tmp/control.log
+
+      - name: python deps
+        run: sudo -H python3 -m pip install --quiet --break-system-packages duckdb==2.0.1 "psycopg[binary]"
+
+      # The cluster the regression tests need, built from nothing but
+      # configuration: the sidecar creates the mirror relations, the registry
+      # and the lake's attachment itself. DB_ROUTE=none because the tests set
+      # quicksilver.route themselves. EXTRA_CONF points the servers at the
+      # carried extensions, so this cluster never fetches them either.
+      - name: a primary, a standby, the sidecar and a DuckLake
+        run: |
+          sudo -E env "PATH=$PATH" DB_ROUTE=none \
+            EXTRA_CONF="duckdb.extension_directory = '$DUCKDB_EXT_DIR'" \
+            ext/pg_quicksilver/validate/real/setup.sh
+          sudo -E env "PATH=$PATH" ext/pg_quicksilver/validate/real/primary_report.sh
+
+      # pg_regress as the runner's user, over the socket in /tmp, as postgres.
+      - name: make installcheck
+        run: make -C ext/pg_quicksilver installcheck PPORT=5580
+
+      - name: regression diffs, if any
+        if: failure()
+        run: |
+          cat ext/pg_quicksilver/regression.diffs 2>/dev/null || true
+          sudo tail -50 /var/lib/postgresql/qsint/primary.log /var/lib/postgresql/qsint/mirror.log 2>/dev/null || true
+
+      - name: tear that cluster down
+        if: always()
+        run: sudo -E env "PATH=$PATH" ext/pg_quicksilver/validate/real/teardown.sh
+
+      # The cluster test's own SQL, where there is no cluster. Half of what
+      # bench/scripts/cluster_e2e.sh asserts is not about Kubernetes: which
+      # slots exist, what qs-verify prints, what EXPLAIN says about a routed
+      # read, what a halted table does to routing, whether REBUILD brings it
+      # back. This runs those sections, from that script, against a primary, a
+      # standby and the sidecar, with a kubectl that is a shim. A mistake in
+      # one of them is found here in a minute instead of in a forty-five
+      # minute cluster run that then looks like the product failing.
+      - name: the cluster test's SQL, against a real standby
+        run: sudo -E env "PATH=$PATH" DUCKDB_EXT_DIR="$DUCKDB_EXT_DIR" bash bench/scripts/cluster_e2e_selftest.sh
+
+      - name: logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: extension-logs
+          path: |
+            ext/pg_quicksilver/regression.diffs
+            ext/pg_quicksilver/results/
           if-no-files-found: ignore
           retention-days: 7
 

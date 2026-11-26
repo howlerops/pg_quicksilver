@@ -1,7 +1,7 @@
 # 16 — Deploying Quicksilver
 
 Everything in docs 01–15 is analysis or measurement. This is the part you can
-install. It covers the two images, the CNPG-I registration, the Cluster spec,
+install. It covers the three images, the CNPG-I registration, the Cluster spec,
 and — because it is the question that decides whether any of this was worth it —
 how to check that the mirror is telling the truth.
 
@@ -25,27 +25,45 @@ the bottom, and it is now a short list.
 
 ---
 
-## The two images
+## The images
 
 | Image | What it is | Where it runs |
 |---|---|---|
 | `pg_quicksilver-plugin` | the CNPG-I gRPC server | a Deployment in the **operator's** namespace |
-| `pg_quicksilver-mirror` | the sidecar that builds and serves the mirror | injected into every instance Pod |
+| `pg_quicksilver-mirror` | the sidecar that builds and serves the mirror, with `qs-verify` and `qs-query` beside it | injected into every instance Pod |
+| `pg_quicksilver-postgres` | CloudNativePG's PostgreSQL 17 with pg_duckdb, `pg_quicksilver` and DuckDB's `ducklake` and `sqlite` extensions | the Cluster's `imageName`, **only** for Clusters that route reads |
 
-Both come from one [`deploy/Dockerfile`](../deploy/Dockerfile) via `--target`.
+All three come from one [`deploy/Dockerfile`](../deploy/Dockerfile) via `--target`.
 
-The mirror image is **not** a PostgreSQL image. It ships two static binaries and
-no server, because it reaches PostgreSQL over the network and the local socket.
-That is what lets [docs/07](07-image-strategy.md) hold: the CNPG PostgreSQL image
-stays stock upstream and nothing here forks it.
+The mirror image is **not** a PostgreSQL image. It ships three static binaries
+(built with cgo off, into distroless) and no server, because it reaches
+PostgreSQL over the network and the local socket. That is what lets
+[docs/07](07-image-strategy.md) hold for a Cluster that only mirrors: its
+PostgreSQL image stays stock upstream. The third image is for the one feature
+that runs inside the server; [Routing reads](#routing-reads-with-pg_quicksilver)
+has what is in it and how it is checked.
 
 ```
-docker build --target plugin -t ghcr.io/howlerops/pg_quicksilver-plugin:0.0.3 .
-docker build --target mirror -t ghcr.io/howlerops/pg_quicksilver-mirror:0.0.3 .
+docker build --target plugin   -t ghcr.io/howlerops/pg_quicksilver-plugin:0.0.4      -f deploy/Dockerfile .
+docker build --target mirror   -t ghcr.io/howlerops/pg_quicksilver-mirror:0.0.4      -f deploy/Dockerfile .
+docker build --target postgres -t ghcr.io/howlerops/pg_quicksilver-postgres:17-0.0.4 -f deploy/Dockerfile .
 ```
 
-The sidecar image runs as UID 26, the UID the CNPG images use for `postgres`.
-Running it as anyone else produces mirror files the instance cannot read.
+**The operand image's tag starts with the PostgreSQL major, and has to.**
+CloudNativePG reads a Cluster's PostgreSQL version from the front of the image
+tag (`version.FromTag`, the regular expression `^(\d\.?)+`): `0.0.4` is read as
+PostgreSQL 0, and `dev` or `latest` is refused at admission with `invalid
+version tag`. So it is `17-<version>` everywhere, and
+`bench/scripts/validate_manifests.sh` fails a chart whose `image.postgres` does
+not parse as 17.
+
+The sidecar and operand images run as UID 26, the UID the CNPG images use for
+`postgres`. Running the sidecar as anyone else produces mirror files the
+instance cannot read.
+
+`0.0.3` is the newest **published** version and has only the first two images.
+The chart in this tree is `0.0.4`, which is not published until it is tagged
+(HANDOFF.md, *Cutting a release*).
 
 ---
 
@@ -438,28 +456,55 @@ sidecar does its half by itself when it finds the extension installed.
 | pg_duckdb | 1.2.0 is what was verified. It reads the mirror. |
 | `pg_quicksilver.so`, `pg_quicksilver.control`, `pg_quicksilver--0.1.sql` | built from `ext/pg_quicksilver` against the same PostgreSQL major (PGXS, `postgresql-server-dev-17`, nothing else) |
 
-`deploy/Dockerfile` has a target for it, on top of a CloudNativePG image:
+`deploy/Dockerfile` has a target for it, published as
+`ghcr.io/howlerops/pg_quicksilver-postgres:17-<version>`:
 
 ```
-docker build --target postgres -t registry.example/postgresql-quicksilver:17 \
-       --build-arg CNPG_BASE=ghcr.io/cloudnative-pg/postgresql:17-standard-bookworm .
+docker build --target postgres -t registry.example/pg_quicksilver-postgres:17-0.0.4 -f deploy/Dockerfile .
 ```
 
-It installs pg_duckdb from a package (`--build-arg PG_DUCKDB_DEB=`: a package
-name in a repository the base image knows, or a `.deb`) and builds the
-extension in a separate stage. By hand it is `make -C ext/pg_quicksilver &&
-make -C ext/pg_quicksilver install` on a machine with the server headers, and
-the three files above copied to `pg_config --pkglibdir` and `--sharedir`'s
-`extension/`. The target was written against the layout `make install` was
-seen to produce; it has not been built (docs/40, not validated).
+What the target does, and what is pinned (the `ARG`s at the top of the file):
+
+| | pinned to | |
+|---|---|---|
+| base | `ghcr.io/cloudnative-pg/postgresql:17.12-standard-bookworm` | by PostgreSQL **minor**: the extension is compiled against that minor's headers, installed at exactly the server's package version (PGDG, falling back to its archive suite) |
+| pg_duckdb | 1.2.0, one `.deb` by URL and SHA-256 | pg_duckdb publishes container images, not packages, and PGDG does not carry it. The image takes the Debian 12 (bookworm) build; the `extension` job in CI takes the Ubuntu 24.04 (noble) build of the same version, with its own URL and checksum. Each is fetched as one checksummed file rather than by adding the repository. Neither URL was reachable from the development host (HTTP 404), so the checksums are unverified until CI runs |
+| `pg_quicksilver` | this checkout | PGXS in a build stage (`with_llvm=no`), three files copied out |
+| DuckDB's `ducklake` and `sqlite` | whatever DuckDB 2.0.0's repository serves on the day of the build | installed by pg_duckdb's own DuckDB into `/usr/lib/quicksilver/duckdb-extensions`. DuckDB writes them 0600, so `install` makes them readable by everyone, and the directory is then copied root-owned. DuckDB decides the `v2.0.0/linux_amd64/` layout, so this stays right when the package moves |
+
+Nothing about CloudNativePG's contract changes: same base, UID 26, same `PATH`,
+no `ENTRYPOINT`, and nothing added outside `/usr`.
+
+**The build is also the test.** Its last stage runs
+[`deploy/duckdb-extensions.sh verify`](../deploy/duckdb-extensions.sh) under
+`RUN --network=none`, as UID 26: a scratch PostgreSQL with
+`shared_preload_libraries = 'pg_duckdb,pg_quicksilver'`, both extensions
+created, the statement the sidecar itself runs on a new cluster
+(`duckdb.install_extension`), and a DuckLake on a SQLite catalog written and
+read back. If any of that needs the network, or the `.so` does not load in
+that server, the image does not build. The transcript is in the image at
+`/usr/share/quicksilver/verified.txt`.
+
+By hand it is `make -C ext/pg_quicksilver && make -C ext/pg_quicksilver install`
+on a machine with the server headers, the three files above in `pg_config
+--pkglibdir` and `--sharedir`'s `extension/`, and `deploy/duckdb-extensions.sh
+install <dir>` as the `postgres` user.
+
+*Checked on the development host, without Docker* (Ubuntu 24.04, PostgreSQL 17.12, pg_duckdb 1.2.0): the Go commands of the build stage, as written, with `CGO_ENABLED=0`; the extension with PGXS and `DESTDIR` into a scratch directory, giving the layout the `COPY`s expect; `deploy/duckdb-extensions.sh install` as the `postgres` user, then `verify` under `unshare -n`, as `postgres`, against a root-owned directory, and the control that `install` **fails** under `unshare -n`. That check found a real defect: DuckDB's files were 0600, so the server could not open them after the copy to root. `install` now makes them readable (commit `48cc589`). `hadolint` passes. *Not checked until CI builds it:* the image itself, the `RUN --network=none` stages under BuildKit, the pinned CloudNativePG base (`17.12-standard-bookworm`, which needs the registry), and the pinned pg_duckdb packages.
 
 **The Cluster.**
 
+[`examples/cluster-routed.yaml`](../examples/cluster-routed.yaml) is the whole
+thing, with the reason for each line. The part that differs from a Cluster that
+only mirrors:
+
 ```yaml
 spec:
-  imageName: registry.example/postgresql-quicksilver:17
+  imageName: ghcr.io/howlerops/pg_quicksilver-postgres:17-0.0.4
   postgresql:
     shared_preload_libraries: ["pg_duckdb", "pg_quicksilver"]   # in this order
+    parameters:
+      duckdb.extension_directory: /usr/lib/quicksilver/duckdb-extensions
   plugins:
     - name: quicksilver.howlerops.io
       parameters:
@@ -472,7 +517,18 @@ spec:
 and once, on the primary: `CREATE EXTENSION pg_duckdb; CREATE EXTENSION
 pg_quicksilver;` in the mirrored database, and `quicksilver.route = auto` for
 the roles or the database that should be routed (`shadow` first:
-`quicksilver.reason_stats` then says what would have moved).
+`quicksilver.reason_stats` then says what would have moved). On a new Cluster
+`bootstrap.initdb.postInitApplicationSQL` does all three, which is what the
+example does.
+
+**The volume layout is one volume.** The mirror is at
+`/var/lib/postgresql/data/quicksilver` (`mirrorPath`'s default, beside PGDATA
+on the instance's PVC) and the lake at `quicksilver/_ducklake` under it. The
+lake is hard links, so it has to be on the mirror's filesystem
+(`go/internal/ducklake/publisher.go` refuses to start otherwise), and
+PostgreSQL has to read both, which it can because the sidecar shares the volume
+and the UID. `walStorage` or a tablespace on another volume changes none of
+this; moving `mirrorPath` to one would.
 
 | plugin parameter | default | sidecar setting | |
 |---|---|---|---|
@@ -495,10 +551,19 @@ attaches the lake in a session itself, only where the catalog file exists, so
 a primary (which has no mirror) is untouched and answers from the heap.
 
 - *DuckDB's extensions.* Every instance loads `ducklake` and `sqlite` when a
-  session first uses DuckDB. pg_duckdb keeps them under
-  `$PGDATA/pg_duckdb/extensions` and fetches them from DuckDB's extension
-  repository when they are not there. An instance that cannot reach it stays
-  on the heap. This was not tested without network access.
+  session first uses DuckDB. pg_duckdb's setting for where they are is
+  `duckdb.extension_directory`, and its default is
+  `$PGDATA/pg_duckdb/extensions`: on the volume, so empty on a new instance,
+  and filled by a download from `extensions.duckdb.org` the first time. An
+  instance that cannot reach it stays on the heap and does not say why. The
+  operand image carries both under `/usr/lib/quicksilver/duckdb-extensions`,
+  read-only, and **the Cluster has to name that directory** (above); the
+  sidecar's `duckdb.install_extension` then finds the files and fetches
+  nothing. Tested with no network: by the image build, and by CI's `extension`
+  job with `unshare -n`. The cluster test asserts that nothing was downloaded
+  into PGDATA. Leave the parameter out and it still works wherever the
+  instances can reach the repository, which is the failure worth avoiding: it
+  works in the test cluster.
 - *Who is routed.* Stock pg_duckdb lets only a superuser read local files, so
   only superusers are routed and everybody else is answered from the heap,
   correctly.
@@ -851,6 +916,28 @@ snapshot.
 
 ---
 
+## Running the cluster test
+
+- **GitHub Actions**: the `cluster-e2e` workflow, by hand. `images: source`
+  builds this checkout and side-loads it into kind; `images: published`, the
+  default, and what a release triggers, pulls `version` from ghcr with the
+  workflow's own token.
+- **A host with Docker and kind**: `bash bench/docker/cluster_kind.sh`, about
+  45 minutes; `KEEP=1` leaves the cluster up. It checks for Docker, cgroups and
+  `CAP_SYS_RESOURCE` first, and exits INCOMPLETE rather than failing halfway.
+- **Any cluster**: `KUBECONFIG=… VERSION=<a published version> GHCR_USER=… GHCR_TOKEN=… bash
+  bench/scripts/cluster_e2e.sh` pulls a published version. With images already
+  on the nodes, `LOCAL_IMAGES=1 ROLL_IMAGE=<a second tag>` says so in the output.
+  `SCOPE=legacy` is for 0.0.3 and earlier; the default follows the version.
+- **No cluster**: `sudo bash bench/scripts/cluster_e2e_selftest.sh` runs the
+  slot, verify, routing, halt and REBUILD sections against a primary, a standby
+  and the sidecar on this host. It needs PostgreSQL 17 with pg_duckdb and
+  pg_quicksilver installed. Set `DUCKDB_EXT_DIR` to also check that DuckDB's
+  extensions are carried rather than fetched.
+
+A failed run leaves its logs in `$ARTIFACTS` (default `/tmp/qs-cluster-e2e`),
+and the workflow uploads them.
+
 ## What has not been verified
 
 Stated plainly, because a deployment guide that implies more than was tested is
@@ -956,6 +1043,25 @@ other direction.
   all — the file that used to hold it measured 2.7x the size of the Parquet it
   indexed and slower to load than rebuilding from it ([docs/32](32-the-knob-that-barely-fires.md)).
 
+- **Three instances, two mirrors, DuckLake and the router on a cluster — the
+  test exists and has not run.** Everything in the DuckLake and routing
+  sections above was validated on one host with one standby.
+  [`cluster_e2e.sh`](../bench/scripts/cluster_e2e.sh) was extended to assert it
+  on a three-instance Cluster built from the operand image (per-Pod slots,
+  `qs-verify` MATCH in both replica Pods, an aggregate through `-ro` routed and
+  equal to the primary's, a key lookup on the heap, a halt and its `REBUILD`, a
+  switchover, a scale-down, the roll and the takeover gate), and
+  [`cluster-e2e`](../.github/workflows/cluster-e2e.yml) now runs it on pull
+  requests. It was written where no Pod can start. What stands in for a run:
+  [`cluster_e2e_selftest.sh`](../bench/scripts/cluster_e2e_selftest.sh) runs
+  the slot, verify, routing, halt and REBUILD sections of that same script
+  against a real primary, standby and sidecar, and passes (run by hand on the
+  development host, with `DUCKDB_EXT_DIR` set; `make installcheck` passes 10 of
+  10 against the same cluster); the Kubernetes half
+  (admission, Pods, Services, the second replica, switchover, scale-down) has
+  been linted and read, not run. Treat the first cluster-e2e run of this as
+  the first run.
+
 First real deployment should still be `mode: off` on a throwaway cluster, to
 confirm the plugin loads and validates at all, then `mode: shadow` on one table.
 What that sequence is now for is the two things above that a cluster is the only
@@ -974,7 +1080,14 @@ way to reach: live reconcile behaviour, and a Pod that actually runs.
   switchover), and a mirror whose tables are **all halted** drops its slot
   rather than pin WAL until an operator arrives (one halted table among
   several does not: the stream carries on and keeps confirming). Both mean a snapshot the next time that Pod
-  mirrors. Neither has been exercised on a real cluster.
+  mirrors. Neither has been exercised on a real cluster **yet**:
+  [`cluster_e2e.sh`](../bench/scripts/cluster_e2e.sh) section 8 now does a
+  switchover and requires the primary to hold exactly one active slot per
+  replica afterwards, and section 9 scales 3 to 2 and reports the removed
+  Pod's slot. With no janitor in the build, section 9 marks the janitor check
+  NOT RUN (which is not a pass), drops the slot the documented way and
+  requires that to work. Neither section had run on a cluster when this was
+  written.
 
   - set `max_slot_wal_keep_size`, so PostgreSQL bounds what any slot can pin;
   - after removing an instance, drop its slot by hand —

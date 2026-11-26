@@ -5,8 +5,31 @@
 operatorNamespace: cnpg-system
 
 image:
-  plugin: ghcr.io/howlerops/pg_quicksilver-plugin:0.0.3
-  mirror: ghcr.io/howlerops/pg_quicksilver-mirror:0.0.3
+  plugin: ghcr.io/howlerops/pg_quicksilver-plugin:0.0.4
+  # The sidecar the plugin injects into every instance Pod, unless a Cluster
+  # names its own with the sidecarImage parameter.
+  mirror: ghcr.io/howlerops/pg_quicksilver-mirror:0.0.4
+  # The PostgreSQL OPERAND image for Clusters that route reads: the
+  # CloudNativePG PostgreSQL 17 image plus pg_duckdb, pg_quicksilver and
+  # DuckDB's ducklake and sqlite extensions (deploy/Dockerfile, target
+  # `postgres`).
+  #
+  # NOTHING THIS CHART INSTALLS RUNS IT, and that is said here because this
+  # chart has shipped a value nothing consumed before. An operand image is
+  # chosen per Cluster, in spec.imageName, which no plugin can set. It is a
+  # value all the same for two reasons: `helm install` prints it in the notes,
+  # with the three Cluster settings that have to go with it, and the release
+  # workflow refuses to publish unless it carries the same version as the other
+  # two, so the chart cannot name an operand image that was never built.
+  #
+  # THE TAG STARTS WITH THE POSTGRESQL MAJOR, and has to. CloudNativePG reads
+  # a Cluster's PostgreSQL version from the image tag (and so does this
+  # plugin, to refuse logical ingest below 17). A tag of "0.0.4" is read as
+  # PostgreSQL 0, and "latest" or "dev" is refused at admission. So the tag is
+  # <postgresql major>-<chart version>, and CI checks that it parses as 17.
+  #
+  # A Cluster that only mirrors does not need it and keeps the stock image.
+  postgres: ghcr.io/howlerops/pg_quicksilver-postgres:17-0.0.4
   pullPolicy: IfNotPresent
   # Secrets for pulling the PLUGIN image, in operatorNamespace. Not needed for
   # the images above: the ghcr packages are public and answer an anonymous pull.

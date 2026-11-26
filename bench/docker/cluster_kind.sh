@@ -1,26 +1,29 @@
 #!/usr/bin/env bash
 # The cluster test, on a kind cluster built from Docker on THIS host.
 #
-# This is the replacement for .github/workflows/cluster-e2e.yml, and it is the
-# only thing in the repository that can settle the last two open claims:
+# The same run .github/workflows/cluster-e2e.yml makes on a pull request, for a
+# machine that has Docker and for the days GitHub Actions does not allocate
+# runners (it has happened: HANDOFF.md). It builds this checkout's THREE images
+# (plugin, mirror, and the PostgreSQL operand image with pg_duckdb and
+# pg_quicksilver), side-loads them, and runs bench/scripts/cluster_e2e.sh in
+# full scope: three instances, per-Pod slots, both mirrors verified, routing
+# through -ro, a halt and its REBUILD, a switchover, a scale-down, the roll and
+# the takeover gate.
 #
-#   - a Pod being ROLLED because a plugin parameter changed
-#   - a Pod being REMOVED from the -ro Service because the mirror's readiness
-#     probe failed
-#
-# Both need a kubelet that can create pod sandboxes. Nothing in the sandbox this
-# was developed in can, and as of this writing GitHub Actions is not allocating
-# runners for the account, so this script is how the answer gets produced.
+# All of it needs a kubelet that can create pod sandboxes, which nothing in the
+# sandbox this was developed in can.
 #
 #   bash bench/docker/cluster_kind.sh              # build this checkout, run it
 #   KEEP=1 bash bench/docker/cluster_kind.sh       # leave the cluster up
 #   CLUSTER_NAME=qs bash bench/docker/cluster_kind.sh
 #
-# Roughly 25 minutes: a few for the images, the rest waiting on CloudNativePG.
+# Roughly 45 minutes: about ten for the images the first time (the operand
+# image downloads pg_duckdb and DuckDB's extensions), the rest waiting on
+# CloudNativePG.
 set -uo pipefail
 
 REPO=$(cd "$(dirname "$0")/../.." && pwd)
-cd "$REPO"
+cd "$REPO" || exit 2
 
 CLUSTER_NAME=${CLUSTER_NAME:-qs}
 KEEP=${KEEP:-0}
@@ -70,8 +73,8 @@ done
 # running — a precondition that reports failure and then proceeds anyway is
 # worse than no precondition.
 avail=$(df -BG --output=avail / 2>/dev/null | tail -1 | tr -dc '0-9')
-if [ -n "$avail" ] && [ "$avail" -lt 12 ]; then
-  skip "${avail}G free on /, and a kind cluster with two operators and two PostgreSQL images needs about 12G"
+if [ -n "$avail" ] && [ "$avail" -lt 14 ]; then
+  skip "${avail}G free on /, and a kind cluster with two operators, the operand image and three instances needs about 14G"
 fi
 printf '  disk: %sG free\n' "${avail:-unknown}"
 
@@ -103,6 +106,14 @@ $engine build --target plugin -t "$REGISTRY/pg_quicksilver-plugin:$TAG" -f deplo
   || die "building the plugin image"
 $engine build --target mirror -t "$REGISTRY/pg_quicksilver-mirror:$TAG" -f deploy/Dockerfile . \
   || die "building the mirror image"
+# The operand image. Tagged 17-<tag>: CloudNativePG reads the PostgreSQL major
+# from the front of an image tag and refuses one that does not start with a
+# number. Its build is also a test: the last stage starts a
+# PostgreSQL with the network OFF and requires both extensions to load and a
+# DuckLake on a SQLite catalog to read back (deploy/duckdb-extensions.sh), so a
+# failure here is usually that, and the build log says which statement.
+$engine build --target postgres -t "$REGISTRY/pg_quicksilver-postgres:17-$TAG" -f deploy/Dockerfile . \
+  || die "building the PostgreSQL operand image (its last stage is an offline self-check; read the log above)"
 
 # A SECOND tag on the same image, for the roll. Section 4 proves the operator
 # replaces Pods when sidecarImage changes, so it needs a reference that differs
@@ -114,18 +125,21 @@ $engine tag "$REGISTRY/pg_quicksilver-mirror:$TAG" "$REGISTRY/pg_quicksilver-mir
 kind load docker-image --name "$CLUSTER_NAME" \
   "$REGISTRY/pg_quicksilver-plugin:$TAG" \
   "$REGISTRY/pg_quicksilver-mirror:$TAG" \
-  "$REGISTRY/pg_quicksilver-mirror:$ROLL_TAG" || die "kind load"
-echo "  loaded $TAG and $ROLL_TAG"
+  "$REGISTRY/pg_quicksilver-mirror:$ROLL_TAG" \
+  "$REGISTRY/pg_quicksilver-postgres:17-$TAG" || die "kind load"
+echo "  loaded $TAG and $ROLL_TAG, and the operand image"
 
 # ---------------------------------------------------------------- the run
-say "3. pull, run, roll and gate"
+say "3. the cluster test, full scope"
 # LOCAL_IMAGES=1 says plainly that the registry path is NOT being exercised
 # here: the images are side-loaded onto the node. The published-pull half is
 # what the release workflow is for, and claiming it from a side-load would be
 # claiming something weaker than it sounds.
-LOCAL_IMAGES=1 \
+env LOCAL_IMAGES=1 \
+SCOPE=full \
 VERSION="$TAG" \
 REGISTRY="$REGISTRY" \
+PG_IMAGE="$REGISTRY/pg_quicksilver-postgres:17-$TAG" \
 ROLL_IMAGE="$REGISTRY/pg_quicksilver-mirror:$ROLL_TAG" \
 bash bench/scripts/cluster_e2e.sh
 rc=$?
@@ -141,6 +155,8 @@ case $rc in
      kubectl get pods -A -o wide 2>/dev/null | head -30
      kubectl -n qs-e2e describe pod -l cnpg.io/podRole=instance 2>/dev/null \
        | grep -E "Name:|Image:|Ready:|State:|Reason:|QS_MODE|QS_FRESHNESS|Readiness:" | head -40
+     echo
+     echo "Logs, slots, mirror_status and the sidecars' /metrics: ${ARTIFACTS:-/tmp/qs-cluster-e2e}"
      ;;
 esac
 exit $rc
