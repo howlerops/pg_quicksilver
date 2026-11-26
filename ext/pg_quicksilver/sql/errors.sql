@@ -89,9 +89,12 @@ CREATE VIEW qtm.slow AS SELECT r['id']::int AS id, r['n']::bigint AS n
   FROM duckdb.query($$ SELECT 1 AS id, count(*) AS n FROM range(200000000000) $$) r;
 SELECT quicksilver.register_mirror('qt.slow', 'qtm.slow', 1000000000000);
 SELECT quicksilver.report_applied_lsn('qt.slow', pg_current_wal_lsn());
+-- pg_duckdb reports its own cancel as XX000; the extension answers it as the heap does (57014)
+\set VERBOSITY sqlstate
 SET statement_timeout = '300ms';
 SELECT n FROM qt.slow;
 RESET statement_timeout;
+\set VERBOSITY default
 -- the session is intact, and the heap still answers when asked
 SET quicksilver.route = heap;
 SELECT n FROM qt.slow;

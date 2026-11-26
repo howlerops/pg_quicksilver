@@ -89,6 +89,7 @@
 #include "utils/rel.h"
 #include "utils/snapmgr.h"
 #include "utils/syscache.h"
+#include "utils/timeout.h"
 #include "utils/timestamp.h"
 
 PG_MODULE_MAGIC;
@@ -767,6 +768,7 @@ qs_watch(Oid relid)
 static QsAllowEntry *qs_allow_lookup(QsAllowKind kind, Oid oid, Oid oid2);
 static bool qs_must_rethrow(int sqlerrcode);
 static bool qs_mirror_error_ok(ErrorData *ed);
+static void qs_rethrow(ErrorData *ed);
 
 /* How a mirror column of type (mtype, mmod) becomes the heap's (htype, hmod). */
 static bool
@@ -1367,7 +1369,7 @@ qs_duck_raw(const char *sql)
 			AtEOXact_GUC(true, save_nestlevel);
 			qs_busy = save_busy;
 			qs_elev_end(&elev);
-			PG_RE_THROW();
+			qs_rethrow(ed);
 		}
 		FlushErrorState();
 		FreeErrorData(ed);
@@ -3501,6 +3503,49 @@ qs_create_scan_state(CustomScan *cscan)
 	return (Node *) st;
 }
 
+/*
+ * A statement that pg_duckdb was executing when it was cancelled comes back as
+ * XX000 "Query cancelled" (its own interrupt error), not as 57014. When the
+ * cancel was a statement_timeout, or a cancel request from the client, that is
+ * the same event PostgreSQL reports as 57014 on the heap, so the error is
+ * translated to it. Any other cause (a shutdown, a cancel PostgreSQL did not
+ * ask for) is left as it is.
+ */
+static bool
+qs_translate_cancel(ErrorData *ed)
+{
+	if (ed->elevel != ERROR || ed->message == NULL || ed->sqlerrcode != ERRCODE_INTERNAL_ERROR)
+		return false;
+	if (strstr(ed->message, "Query cancelled") == NULL && strstr(ed->message, "INTERRUPT Error") == NULL)
+		return false;
+	if (ProcDiePending)
+		return false;
+	if (get_timeout_indicator(STATEMENT_TIMEOUT, false))
+		ed->message = "canceling statement due to statement timeout";
+	else if (QueryCancelPending)
+		ed->message = "canceling statement due to user request";
+	else
+		return false;
+	ed->sqlerrcode = ERRCODE_QUERY_CANCELED;
+	ed->detail = NULL;
+	ed->detail_log = NULL;
+	ed->hint = NULL;
+	ed->context = NULL;
+	return true;
+}
+
+/*
+ * Rethrow an error caught on the mirror path (in a PG_CATCH, with `ed` its
+ * copy): as it was, or translated by qs_translate_cancel.
+ */
+static void
+qs_rethrow(ErrorData *ed)
+{
+	if (!qs_translate_cancel(ed))
+		PG_RE_THROW();
+	ThrowErrorData(ed);
+}
+
 /* Errors that mean "stop", not "this side cannot answer". */
 static bool
 qs_must_rethrow(int sqlerrcode)
@@ -3726,7 +3771,7 @@ qs_mirror_start(QsScanState *st, EState *estate)
 		MemoryContextSwitchTo(old);
 		ed = CopyErrorData();
 		if (!st->can_fallback || !qs_mirror_error_ok(ed))
-			PG_RE_THROW();
+			qs_rethrow(ed);
 		FlushErrorState();
 		st->mirror_ps = NULL;
 		qs_lakes_attached = false;
@@ -3805,7 +3850,7 @@ qs_mirror_drain(QsScanState *st, bool all)
 		MemoryContextSwitchTo(old);
 		ed = CopyErrorData();
 		if (!st->can_fallback || !qs_mirror_error_ok(ed))
-			PG_RE_THROW();
+			qs_rethrow(ed);
 		FlushErrorState();
 		qs_mirror_failed(st, ed->message);
 		INSTR_TIME_SET_CURRENT(t1);
@@ -4099,7 +4144,7 @@ qs_explain_mirror_plan(QsScanState *st, List *ancestors, ExplainState *es)
 			MemoryContextSwitchTo(old);
 			ed = CopyErrorData();
 			if (!qs_mirror_error_ok(ed))
-				PG_RE_THROW();
+				qs_rethrow(ed);
 			FlushErrorState();
 			resetStringInfo(tmp->str);
 			appendStringInfo(tmp->str, "(not available: %s)", ed->message);
@@ -4466,7 +4511,7 @@ qs_decide(Query *orig, PlannedStmt *heap, const char *query_string, int cursorOp
 		MemoryContextSwitchTo(old);
 		ed = CopyErrorData();
 		if (!qs_mirror_error_ok(ed))
-			PG_RE_THROW();
+			qs_rethrow(ed);
 		FlushErrorState();
 		strlcpy(detail, ed->message, sizeof(detail));
 		mplan = NULL;

@@ -226,10 +226,13 @@ SELECT quicksilver.report_applied_lsn('qt.slow', pg_current_wal_lsn());
  
 (1 row)
 
+-- pg_duckdb reports its own cancel as XX000; the extension answers it as the heap does (57014)
+\set VERBOSITY sqlstate
 SET statement_timeout = '300ms';
 SELECT n FROM qt.slow;
-ERROR:  (PGDuckDB/Duckdb_ExecCustomScan_Cpp) Executor Error: Query cancelled
+ERROR:  57014
 RESET statement_timeout;
+\set VERBOSITY default
 -- the session is intact, and the heap still answers when asked
 SET quicksilver.route = heap;
 SELECT n FROM qt.slow;
