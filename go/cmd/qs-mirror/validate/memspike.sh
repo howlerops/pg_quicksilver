@@ -6,7 +6,7 @@
 #
 # Usage: memspike.sh TAG [DURATION_S]
 #   QS_BIN       directory holding qs-mirror, qs-verify (default: the scratchpad bin)
-#   CGROUP       if 1, the sidecar is moved into the v1 memory cgroup qsmem (set up by the caller)
+#   CGROUP       if 1, the sidecar starts in the v1 memory cgroup /sys/fs/cgroup/memory/qsmem (made by the caller)
 #   HEAP_DUMP_MB RSS above which a heap profile is taken, at most one per 30 s (default 1200)
 #
 # Output: go/cmd/qs-mirror/validate/out/memspike_TAG/
@@ -58,12 +58,18 @@ pgsu "$PG/pg_ctl -D $BASE/standby -l $BASE/standby.log -w -o '-p $SPORT -c unix_
 
 # Sidecar. Same environment as go/ducklake/validate/qs2_env.sh's sc_start, plus pprof.
 mkdir -p "$BASE/mirror/item1"
+# With CGROUP=1 the sidecar puts itself into the memory cgroup qsmem before it
+# exec's, so the limit is in place when it reads its memory sizing at start.
+CMD=("$BIN/qs-mirror")
+if [ "${CGROUP:-0}" = 1 ]; then
+  CMD=(bash -c 'echo $$ > /sys/fs/cgroup/memory/qsmem/cgroup.procs && exec "$0"' "$BIN/qs-mirror")
+fi
 nohup env QS_CLUSTER=memspike QS_MODE=shadow QS_INGEST=logical QS_TABLES=$TABLES \
   QS_SLOT=memspike_item1 QS_PUBLICATION=memspike_pub QS_MIRROR_PATH="$BASE/mirror/item1" QS_FRESHNESS_SLO=30s \
   QS_PRIMARY_HOST=localhost QS_PRIMARY_PORT=$PPORT QS_LOCAL_SOCKET_DIR=$SOCK QS_LOCAL_PORT=$SPORT \
   QS_DATABASE=app QS_PGUSER=postgres QS_POD_NAME=item1 QS_HEALTH_ADDR=127.0.0.1:$HPORT \
   QS_DUCKLAKE=on QS_SLOW_TICK=1ms QS_DEBUG_ADDR=127.0.0.1:$DPORT \
-  "$BIN/qs-mirror" >> "$OUT/sidecar.log" 2>&1 < /dev/null &
+  "${CMD[@]}" >> "$OUT/sidecar.log" 2>&1 < /dev/null &
 echo $! > "$OUT/sidecar.pid"
 SC=$(cat "$OUT/sidecar.pid")
 echo "sidecar pid=$SC"
@@ -72,11 +78,6 @@ for _ in $(seq 1200); do
   sleep 0.1
 done
 [ "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:$HPORT/readyz)" = 200 ] || die "sidecar not ready"
-
-if [ "${CGROUP:-0}" = 1 ]; then
-  echo "$SC" > /sys/fs/cgroup/memory/qsmem/cgroup.procs || die "cgroup move"
-  echo "sidecar moved into cgroup qsmem"
-fi
 
 # Sampler: VmRSS and VmHWM every second; a heap profile when RSS is above HEAP_DUMP_MB.
 (
