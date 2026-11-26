@@ -3,9 +3,10 @@
 -- or its schema. The mirror's rows say 'mirror' (and include a row the heap
 -- does not have), so a leak would show.
 --
--- The roles are members of qs_duck (duckdb.postgres_role in validate/setup.sh):
--- pg_duckdb refuses to run for anyone else. The fabricated mirror reads no
--- file, which stock pg_duckdb would refuse a non-superuser.
+-- The roles are not superusers and are not members of qs_duck. Stock pg_duckdb
+-- gives such a role no local file system and refuses DuckDB to it, so nothing
+-- they run is routed (unprivileged.sql): every answer here is the heap's, and
+-- the mirror's rows must never appear. The fabricated mirror reads no file.
 \set last 'SELECT side, reason FROM quicksilver.last_decision();'
 SET client_min_messages = warning;
 CREATE SCHEMA qt;
@@ -26,9 +27,9 @@ CREATE VIEW qtm.rls AS
 SELECT quicksilver.register_mirror('qt.rls', 'qtm.rls', 1000000000000);
 SELECT quicksilver.report_applied_lsn('qt.rls', pg_current_wal_lsn());
 
-CREATE ROLE qs_t_all LOGIN IN ROLE qs_duck;
-CREATE ROLE qs_t_none LOGIN IN ROLE qs_duck;
-CREATE ROLE qs_t_col LOGIN IN ROLE qs_duck;
+CREATE ROLE qs_t_all LOGIN;
+CREATE ROLE qs_t_none LOGIN;
+CREATE ROLE qs_t_col LOGIN;
 GRANT USAGE ON SCHEMA qt TO qs_t_all, qs_t_none, qs_t_col;
 GRANT SELECT ON qt.h, qt.rls TO qs_t_all;
 GRANT SELECT (id, a, b) ON qt.h TO qs_t_col;

@@ -196,47 +196,95 @@ func TestRowDescriptionIsTheHeaps(t *testing.T) {
 	}
 }
 
-// A transaction block stays on the heap (pg_duckdb aborts a transaction that
-// takes a savepoint after it has run a query), so pgx's nested transactions
-// work unchanged.
+// A transaction block is routed where that is safe: READ COMMITTED, no savepoint
+// open, nothing written yet. pg_duckdb aborts a transaction that takes a
+// savepoint while its DuckDB transaction is open, and pgx's nested transaction
+// is a savepoint; the extension ends DuckDB's transaction with each routed
+// statement, so the nested transaction works, in every exec mode.
 func TestTransactionWithSavepoint(t *testing.T) {
 	ctx := context.Background()
-	c := extConn(t, pgx.QueryExecModeCacheStatement, "auto")
-	tx, err := c.Begin(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var n int64
-	var s *string
-	if err := tx.QueryRow(ctx, bigAgg, int32(1)).Scan(&n, &s); err != nil {
-		t.Fatal(err)
-	}
-	if got, why := side(t, c); got != "heap" {
-		t.Fatalf("inside a transaction: answered by %s (%s)", got, why)
-	}
-	nested, err := tx.Begin(ctx) // SAVEPOINT
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := nested.QueryRow(ctx, bigAgg, int32(1)).Scan(&n, &s); err != nil {
-		t.Fatal(err)
-	}
-	if err := nested.Rollback(ctx); err != nil {
-		t.Fatal(err)
-	}
-	if err := tx.Commit(ctx); err != nil {
-		t.Fatal(err)
-	}
-	if n != 300000 {
-		t.Fatalf("count = %d", n)
-	}
-	// and the same statement, same connection, outside the block: the mirror
-	forget(t, c)
-	if err := c.QueryRow(ctx, bigAgg, int32(1)).Scan(&n, &s); err != nil {
-		t.Fatal(err)
-	}
-	if got, why := side(t, c); got != "mirror" {
-		t.Fatalf("after the transaction: answered by %s (%s)", got, why)
+	for _, mode := range []pgx.QueryExecMode{
+		pgx.QueryExecModeCacheStatement, pgx.QueryExecModeCacheDescribe, pgx.QueryExecModeDescribeExec,
+		pgx.QueryExecModeExec, pgx.QueryExecModeSimpleProtocol,
+	} {
+		c := extConn(t, mode, "auto")
+		heap := extConn(t, mode, "heap")
+		var wantN int64
+		var wantS *string
+		if err := heap.QueryRow(ctx, bigAgg, int32(1)).Scan(&wantN, &wantS); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := c.Exec(ctx, `CREATE TEMP TABLE qs_extcheck_w (i int)`); err != nil {
+			t.Fatal(err)
+		}
+		read := func(q interface {
+			QueryRow(context.Context, string, ...any) pgx.Row
+		}, want string, where string) {
+			t.Helper()
+			var n int64
+			var s *string
+			forget(t, c)
+			if err := q.QueryRow(ctx, bigAgg, int32(1)).Scan(&n, &s); err != nil {
+				t.Fatalf("%v, %s: %v", mode, where, err)
+			}
+			if n != wantN || (s == nil) != (wantS == nil) || (s != nil && *s != *wantS) {
+				t.Fatalf("%v, %s: %d rows, the heap says %d", mode, where, n, wantN)
+			}
+			if got, why := side(t, c); got != want {
+				t.Fatalf("%v, %s: answered by %s (%s), want %s", mode, where, got, why, want)
+			}
+		}
+		tx, err := c.Begin(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		read(tx, "mirror", "first statement of the transaction")
+		nested, err := tx.Begin(ctx) // SAVEPOINT, after a routed statement
+		if err != nil {
+			t.Fatalf("%v: SAVEPOINT after a routed statement: %v", mode, err)
+		}
+		read(nested, "heap", "inside the savepoint")
+		if err := nested.Commit(ctx); err != nil { // RELEASE
+			t.Fatal(err)
+		}
+		read(tx, "mirror", "after RELEASE")
+		// pgx rolls a nested transaction back with ROLLBACK TO SAVEPOINT and does not
+		// release it: the rest of the transaction is inside that savepoint, and the heap's
+		nested, err = tx.Begin(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := nested.Rollback(ctx); err != nil {
+			t.Fatal(err)
+		}
+		read(tx, "heap", "after ROLLBACK TO SAVEPOINT")
+		if _, err := tx.Exec(ctx, `INSERT INTO qs_extcheck_w VALUES (1)`); err != nil {
+			t.Fatalf("%v: a write after routed statements: %v", mode, err)
+		}
+		read(tx, "heap", "after the transaction has written")
+		if err := tx.Commit(ctx); err != nil {
+			t.Fatalf("%v: COMMIT: %v", mode, err)
+		}
+		// a read-only transaction and a rolled-back one
+		ro, err := c.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly})
+		if err != nil {
+			t.Fatal(err)
+		}
+		read(ro, "mirror", "READ ONLY transaction")
+		if err := ro.Rollback(ctx); err != nil {
+			t.Fatal(err)
+		}
+		rr, err := c.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead})
+		if err != nil {
+			t.Fatal(err)
+		}
+		read(rr, "heap", "REPEATABLE READ transaction")
+		if err := rr.Commit(ctx); err != nil {
+			t.Fatal(err)
+		}
+		read(c, "mirror", "after the transactions")
+		c.Close(ctx)
+		heap.Close(ctx)
 	}
 }
 

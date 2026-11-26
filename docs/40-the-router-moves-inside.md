@@ -458,6 +458,47 @@ asked.
 - The registry, the allowlist, `register_mirror`, `report_applied_lsn` and
   `quicksilver.allow_unsafe` are refused to an ordinary role.
 
+**Roles that are not superusers are never routed.** This is the one part of
+the requirement that stock pg_duckdb 1.2.0 does not allow, measured on this
+cluster (`sql/unprivileged.sql`, which proves the heap answer for each case):
+
+- A role with `SELECT` on the heap table and no membership of
+  `duckdb.postgres_role`: pg_duckdb refuses DuckDB to it (`DuckDB execution is
+  not allowed because you have not been granted the duckdb.postgres_role`).
+  Running the mirror as the bootstrap superuser inside the router does not
+  help: the same refusal came back from pg_duckdb's planning call.
+- A member of `duckdb.postgres_role`: its DuckDB has no local file system
+  (`File system LocalFileSystem has been disabled by configuration`), with
+  `duckdb.enable_external_access = off` and `duckdb.allowed_directories` set to
+  the lake's directory. So it cannot read the lake either.
+- Granting `pg_read_server_files` and `pg_write_server_files` would give it the
+  file system back, and with it `COPY` from and to any file the server can
+  reach. That is not a setting an operator should take.
+
+The router therefore answers every role that is not a superuser from the heap
+(reason: "the role is not a superuser"), with the heap's rows, the heap's
+error and the heap's plan, and it never asks the mirror for them. A row that
+the mirror would have added, or hid, is never seen by such a role
+(`sql/permissions.sql` fabricates one to show it).
+
+What an operator would have to set, and what would still be missing:
+
+```
+shared_preload_libraries = 'pg_duckdb,pg_quicksilver'
+duckdb.enable_external_access = off           # as validate/real/setup.sh sets it
+duckdb.allowed_directories = '<the lake directory>'
+duckdb.postgres_role = '<a role no application role is a member of>'
+```
+
+These are the settings of the confined configuration `setup.sh` runs. They
+keep the lake out of everybody else's reach, but on stock 1.2.0 they do not
+give a non-superuser the lake: the missing piece is a pg_duckdb build whose
+unprivileged DuckDB keeps the local file system and is confined to
+`duckdb.allowed_directories`. `bench/patches/pg_duckdb-allowed-directories.patch`
+does that for pg_duckdb 1.1.1 (its README has the reasons); it has not been
+ported to 1.2.0 or built here. Until a build does it, non-superusers stay on
+the heap, and the extension needs no further change for them.
+
 ## What is still not routed, and why
 
 - **Most SQL.** Division, `avg`, float and double, `varchar(n)`, `char`,
@@ -549,6 +590,49 @@ the end of [Wired to the sidecar](#wired-to-the-sidecar).)
 
 The mirror relation's path is local to the instance that has the files. On an
 instance that does not, the mirror cannot plan and the heap answers.
+
+## At 10M rows
+
+`validate/real/scale.py` on a 10,000,000-row `orders` and 100,000-row
+`customers` (`bench/engine_compare/four_engines/scripts/load.sql`; 3 min 52 s to
+load, so not the 3M fallback), a hot standby with the sidecar, ICU `en-US`,
+4 vCPU, `work_mem` 4 MB. Median of five runs. Heap and routed are the same
+statement, on the same server, with `quicksilver.route` set to `heap` and `auto`.
+
+| statement (`bench.py`) | heap ms | routed ms | answered by |
+|---|---|---|---|
+| `count(*)` | 527.6 | 20.2 | mirror |
+| `sum(amount)` | 1,109.9 | 160.7 | mirror |
+| `count(*), sum(amount)` over one month | 189.9 | 82.3 | mirror |
+| `status, count(*)` ordered by `status` | 848.5 | 853.2 | heap: `<` on text under ICU |
+| revenue by month, joined to `customers` | 11,260.4 | 11,699.1 | heap: `date_trunc(text, timestamptz)` |
+| primary-key lookup | 0.2 | 0.2 | heap: cheap on the heap |
+
+Every routed answer equals the heap's (`scale.py`'s check). Under ICU, the two
+aggregates the text order and `date_trunc` keep on the heap are the ones the
+C locale would route; that run was not made here. The 10M-row stream of all
+rows to the client was not faster routed: 96.1 s heap, 92.1 s routed, the same
+checksum. Cut the lake's file short while its rows were arriving, the client got
+the error after 2,326,528 rows, none twice; inside a transaction block the heap
+answered the whole 10M rows (75.6 s) and the block went on.
+
+## Not done: top-N seeding
+
+`ORDER BY col DESC LIMIT n` on the mirror is not seeded with a bound from the
+row groups. A seed would be `col >= T` with T taken from the row-group minimums,
+so that DuckDB reads only the groups that can hold the top rows. It is not
+implemented, because T must account for deleted rows (a group's minimum may be
+one that a delete has since removed, so T must be lower than any live row would
+need) and for NULL ordering (`DESC` puts NULLs first in PostgreSQL, so a bound on
+the non-null values alone would drop them).
+
+Measured on the 10M-row cluster above, with `amount` (numeric), `ORDER BY amount
+DESC LIMIT 10`, one session each: the mirror 352 ms the first time and 62 to
+75 ms after that; the heap 969 to 987 ms. The 1,100 ms figure this section was
+meant to record is not what this run shows, so it is not repeated here: a
+seed would be worth less than the sketch assumed, and it should be measured
+again before anybody builds it. The 13 to 20 ms for a bound taken from the
+row-group minimums is not re-measured here either.
 
 ## Running it
 
@@ -644,8 +728,15 @@ what the heap on the same node would have answered: not "identical". It now
 defaults to **0**: a statement is routed only if its mirror has reached
 everything the statement can see on this node when it starts (the replay
 position on a standby; the insert position on a primary, which bounds every
-commit a snapshot can see). A mirror that has not is given
-`quicksilver.freshness_wait` (20 ms; 0 allowed) and then the heap answers.
+commit a snapshot can see). A mirror that has not is answered by the heap at once. The router has a
+wait for it, `quicksilver.freshness_wait_fraction` (10%) of the heap plan's
+estimated time (total cost times `quicksilver.ms_per_cost_unit`, 0.005 ms), capped at
+`quicksilver.freshness_wait_max` (500 ms), with `quicksilver.freshness_wait` as a
+floor under it (0 by default). The wait is **not taken** in this build: it would
+have to give up the statement's snapshot, the planner and an executor's start both
+run inside one, and the portal that holds it keeps a pointer to it (see [What the
+wait costs](#what-the-wait-costs)). The settings are there for a build that can
+wait without a snapshot; with this one they do nothing.
 Bounded staleness is something a session asks for: `max_lag > 0` means "a
 routed read may be this much WAL behind the heap on this node". Separately, a
 transaction that has an xid is never routed, whatever
@@ -687,6 +778,45 @@ behind a standby that replays in milliseconds; a 200 ms wait gets 42% at a
 cost of 200 ms each. A workload like that either accepts a bound
 (`max_lag`) or is answered by the heap. The default was not loosened to hide
 this.
+
+### What the wait costs
+
+The wait was written first to give up the statement's snapshot while it slept,
+and to take a new one after it. It did wait (a 1 s floor waited about a second
+before the heap answered), and an assertion-enabled build aborted: `TRAP:
+failed Assert("portal->portalSnapshot == GetActiveSnapshot()"), File: pquery.c,
+Line: 1180`, because the portal of the statement keeps a pointer to the
+snapshot it was given, and a replaced snapshot is not that pointer. Keeping the
+pointer keeps the snapshot's xmin, which is the thing a wait must not hold. So
+the wait is not taken in this build: the router waits only where no snapshot is
+held, and the planner and an executor's start always hold one. The cap, the
+fraction and the cost unit are implemented, and do nothing until a build can
+wait without a snapshot.
+
+`validate/real/waitcost.py` on the 10M-row bench cluster (ICU `en-US`,
+standby), the shipped build, while another session commits single-row `UPDATE`s
+of `public.orders`: 10 and 100 commits a second. The "new default" row is the
+10%, 500 ms setting; it waits zero time here, as does the "old default" row.
+Latency is the client's median in milliseconds.
+
+| commits/s | statement | heap | old default (20 ms floor): routed, median | new default (10%, cap 500 ms): routed, median |
+|---|---|---|---|---|
+| 10 | ~50 ms | 47.3 | 0 of 60, 47.2 | 0 of 60, 51.5 |
+| 10 | ~500 ms | 385.7 | 0 of 30, 677.7 | 0 of 30, 575.3 |
+| 10 | seconds | 2833.9 | 2 of 10, 1650.4 | 0 of 10, 2615.2 |
+| 100 | ~50 ms | 52.7 | 0 of 60, 52.0 | 0 of 60, 54.8 |
+| 100 | ~500 ms | 391.1 | 0 of 30, 321.1 | 0 of 30, 335.9 |
+| 100 | seconds | 2849.7 | 1 of 10, 2689.4 | 0 of 10, 2668.3 |
+
+Routing is where the mirror happened to be fresh when the statement was
+planned: 0 to 2 of 10 for the statements that take seconds, none for the rest.
+The latency differences are not waits, and they are of the size the heap rows move by
+between runs. The
+mirror was 30 to 80 KB of WAL behind on the statements that were not routed,
+which is a publish cycle. With a 1 s floor the statements waited about a
+second and then the heap answered; with the write load they did not catch up
+(0 of 20 routed; 3 of 20 without the floor, in another run), so a wait would not
+change the steady-write case that `strict.py` described above.
 
 ### A snapshot older than the freshness check had just approved
 

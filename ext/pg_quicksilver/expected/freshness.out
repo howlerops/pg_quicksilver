@@ -20,7 +20,7 @@ SHOW quicksilver.max_lag;
 SHOW quicksilver.freshness_wait;
  quicksilver.freshness_wait 
 ----------------------------
- 20ms
+ 0
 (1 row)
 
 SET quicksilver.max_lag = '16MB';

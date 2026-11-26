@@ -12,7 +12,7 @@ EXTENSION = pg_quicksilver
 DATA = pg_quicksilver--0.1.sql
 PGFILEDESC = "pg_quicksilver - fail-closed heap/mirror read routing"
 
-REGRESS = routing failclosed permissions prepared transactions invalidation shadow freshness robustness errors
+REGRESS = routing failclosed permissions unprivileged prepared transactions explain invalidation shadow freshness robustness errors
 REGRESS_OPTS = --use-existing --host=/tmp --port=$(or $(PPORT),5541) --user=postgres
 
 PG_CONFIG ?= /usr/lib/postgresql/17/bin/pg_config

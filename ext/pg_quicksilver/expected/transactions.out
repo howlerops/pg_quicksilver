@@ -27,20 +27,23 @@ SELECT b, count(*) FROM qt.h GROUP BY b;
  mirror |     5
 (1 row)
 
--- inside one: the heap, by default. pg_duckdb aborts a transaction that takes
--- a SAVEPOINT after it has run a query, and every driver's nested transaction
--- is a SAVEPOINT.
+-- inside one: routed too, where it is safe (READ COMMITTED, no savepoint open,
+-- nothing written). pg_duckdb aborts a transaction that takes a SAVEPOINT while
+-- its DuckDB transaction is open, and every driver's nested transaction is a
+-- SAVEPOINT: so the mirror's answer is taken whole when the statement starts
+-- and DuckDB's transaction is ended with it. The SAVEPOINT below works; inside
+-- it the heap answers, because pg_duckdb refuses to start there.
 BEGIN;
 SELECT b, count(*) FROM qt.h GROUP BY b;
-  b   | count 
-------+-------
- heap |     5
+   b    | count 
+--------+-------
+ mirror |     5
 (1 row)
 
 :last
- side |           reason           |                                 detail                                 
-------+----------------------------+------------------------------------------------------------------------
- heap | inside a transaction block | a later SAVEPOINT would abort it; see quicksilver.route_in_transaction
+  side  | reason |           detail           
+--------+--------+----------------------------
+ mirror | routed | quicksilver.route = mirror
 (1 row)
 
 SAVEPOINT s;
@@ -54,6 +57,33 @@ RELEASE s;
 COMMIT;
 -- a multi-statement Query message is an implicit transaction block
 SELECT b, count(*) FROM qt.h GROUP BY b \; SELECT side, reason FROM quicksilver.last_decision();
+   b    | count 
+--------+-------
+ mirror |     5
+(1 row)
+
+  side  | reason 
+--------+--------
+ mirror | routed
+(1 row)
+
+-- opted out: the heap, in any block
+SET quicksilver.route_in_transaction = off;
+BEGIN;
+SELECT b, count(*) FROM qt.h GROUP BY b;
+  b   | count 
+------+-------
+ heap |     5
+(1 row)
+
+:last
+ side |           reason           |                 detail                  
+------+----------------------------+-----------------------------------------
+ heap | inside a transaction block | quicksilver.route_in_transaction is off
+(1 row)
+
+COMMIT;
+SELECT b, count(*) FROM qt.h GROUP BY b \; SELECT side, reason FROM quicksilver.last_decision();
   b   | count 
 ------+-------
  heap |     5
@@ -64,7 +94,7 @@ SELECT b, count(*) FROM qt.h GROUP BY b \; SELECT side, reason FROM quicksilver.
  heap | inside a transaction block
 (1 row)
 
--- opted in: routed, in a READ COMMITTED block with no savepoint open
+-- the default again: routed, in a READ COMMITTED block with no savepoint open
 SET quicksilver.route_in_transaction = on;
 BEGIN;
 SELECT b, count(*) FROM qt.h GROUP BY b;
@@ -80,7 +110,7 @@ SELECT b, count(*) FROM qt.h GROUP BY b;
 (1 row)
 
 INSERT INTO qt.h VALUES (6, 60, 'heap');
--- the mirror cannot see this transaction's own write: the price of opting in
+-- a transaction that has written is the heap's from then on: the mirror cannot see its own write
 SELECT b, count(*) FROM qt.h GROUP BY b;
   b   | count 
 ------+-------
@@ -123,7 +153,7 @@ SELECT b, count(*) FROM qt.h GROUP BY b;
 (1 row)
 
 COMMIT;
--- and this is the hazard the default avoids: a SAVEPOINT after a routed statement
+-- a SAVEPOINT after a routed statement: used to abort the transaction
 BEGIN;
 SELECT b, count(*) FROM qt.h GROUP BY b;
    b    | count 
@@ -132,7 +162,6 @@ SELECT b, count(*) FROM qt.h GROUP BY b;
 (1 row)
 
 SAVEPOINT s;
-ERROR:  (PGDuckDB/DuckdbSubXactCallback_Cpp) Not implemented Error: SAVEPOINT is not supported in DuckDB
 ROLLBACK;
 -- a snapshot isolation level would be reading two snapshots: heap
 BEGIN ISOLATION LEVEL REPEATABLE READ;
@@ -143,9 +172,9 @@ SELECT b, count(*) FROM qt.h GROUP BY b;
 (1 row)
 
 :last
- side |                   reason                    | detail 
-------+---------------------------------------------+--------
- heap | transaction isolation is not READ COMMITTED | 
+ side |                   reason                    |                      detail                       
+------+---------------------------------------------+---------------------------------------------------
+ heap | transaction isolation is not READ COMMITTED | the mirror cannot read the transaction's snapshot
 (1 row)
 
 COMMIT;
@@ -223,7 +252,8 @@ FETCH 1 FROM c;
 (0 rows)
 
 CLOSE c;
--- a scrollable or holdable cursor needs to go backwards or outlive the transaction: heap
+-- a scrollable cursor needs to go backwards: heap. A holdable one does not: routed,
+-- and its rows outlive the transaction like any other holdable cursor's
 DECLARE s SCROLL CURSOR FOR SELECT id, b FROM qt.h ORDER BY id;
 FETCH 2 FROM s;
  id |  b   
@@ -239,9 +269,9 @@ FETCH BACKWARD 1 FROM s;
 (1 row)
 
 :last
- side |            reason             | detail 
-------+-------------------------------+--------
- heap | scrollable or holdable cursor | 
+ side |      reason       | detail 
+------+-------------------+--------
+ heap | scrollable cursor | 
 (1 row)
 
 DECLARE h CURSOR WITH HOLD FOR SELECT id, b FROM qt.h ORDER BY id;
@@ -311,6 +341,316 @@ SELECT b, count(*) FROM qt.h GROUP BY b;
  mirror |     5
 (1 row)
 
+-- ---------------------------------------------------------------- what may follow a routed read in the same block
+\set VERBOSITY terse
+CREATE TABLE qt.w (i int);
+\set r 'SELECT b, count(*) FROM qt.h GROUP BY b;'
+\set side 'SELECT side, reason, detail FROM quicksilver.last_decision();'
+-- a savepoint; a routed read after it is released; a write in a savepoint that is rolled
+-- back (the transaction has an xid from then on: the heap); a write; a read after the write
+BEGIN;
+:r
+   b    | count 
+--------+-------
+ mirror |     5
+(1 row)
+
+:side
+  side  | reason |           detail           
+--------+--------+----------------------------
+ mirror | routed | quicksilver.route = mirror
+(1 row)
+
+SAVEPOINT b;
+RELEASE b;
+:r
+   b    | count 
+--------+-------
+ mirror |     5
+(1 row)
+
+:side
+  side  | reason |           detail           
+--------+--------+----------------------------
+ mirror | routed | quicksilver.route = mirror
+(1 row)
+
+SAVEPOINT a;
+INSERT INTO qt.w VALUES (1);
+ROLLBACK TO a;
+RELEASE a;
+:r
+  b   | count 
+------+-------
+ heap |     5
+(1 row)
+
+:side
+ side |           reason           |                                   detail                                   
+------+----------------------------+----------------------------------------------------------------------------
+ heap | inside a transaction block | the transaction has written; the mirror cannot see its uncommitted changes
+(1 row)
+
+INSERT INTO qt.w VALUES (2);
+:r
+  b   | count 
+------+-------
+ heap |     5
+(1 row)
+
+:side
+ side |           reason           |                                   detail                                   
+------+----------------------------+----------------------------------------------------------------------------
+ heap | inside a transaction block | the transaction has written; the mirror cannot see its uncommitted changes
+(1 row)
+
+COMMIT;
+SELECT * FROM qt.w;
+ i 
+---
+ 2
+(1 row)
+
+-- a PL/pgSQL exception block (an internal subtransaction): this used to end the session
+BEGIN;
+:r
+   b    | count 
+--------+-------
+ mirror |     5
+(1 row)
+
+DO $$ BEGIN BEGIN PERFORM 1/0; EXCEPTION WHEN OTHERS THEN RAISE NOTICE 'caught'; END; END $$;
+:r
+   b    | count 
+--------+-------
+ mirror |     5
+(1 row)
+
+:side
+  side  | reason |           detail           
+--------+--------+----------------------------
+ mirror | routed | quicksilver.route = mirror
+(1 row)
+
+COMMIT;
+-- EXPLAIN and EXPLAIN ANALYZE after it, and a routed read after EXPLAIN ANALYZE
+BEGIN;
+:r
+   b    | count 
+--------+-------
+ mirror |     5
+(1 row)
+
+EXPLAIN (COSTS OFF) SELECT b, count(*) FROM qt.h GROUP BY b;
+           QUERY PLAN           
+--------------------------------
+ Custom Scan (QuicksilverRoute)
+   Quicksilver: mirror
+   ->  HashAggregate
+         Group Key: h.b
+         ->  Seq Scan on h
+(5 rows)
+
+ROLLBACK;
+BEGIN;
+:r
+   b    | count 
+--------+-------
+ mirror |     5
+(1 row)
+
+EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) SELECT b, count(*) FROM qt.h GROUP BY b;
+                        QUERY PLAN                         
+-----------------------------------------------------------
+ Custom Scan (QuicksilverRoute) (actual rows=1 loops=1)
+   Quicksilver: mirror
+   Mirror Rows: 1
+   Mirror Result: taken whole at start (transaction block)
+   ->  HashAggregate (never executed)
+         Group Key: h.b
+         ->  Seq Scan on h (never executed)
+(7 rows)
+
+SAVEPOINT a;
+RELEASE a;
+:r
+   b    | count 
+--------+-------
+ mirror |     5
+(1 row)
+
+:side
+  side  | reason |           detail           
+--------+--------+----------------------------
+ mirror | routed | quicksilver.route = mirror
+(1 row)
+
+COMMIT;
+-- a cursor: its rows are the mirror's as of DECLARE, and anything may come between the fetches
+BEGIN;
+DECLARE c CURSOR FOR SELECT id, b FROM qt.h ORDER BY id;
+:side
+  side  | reason |           detail           
+--------+--------+----------------------------
+ mirror | routed | quicksilver.route = mirror
+(1 row)
+
+SAVEPOINT a;
+FETCH 2 FROM c;
+ id |   b    
+----+--------
+  1 | mirror
+  2 | mirror
+(2 rows)
+
+ROLLBACK TO a;
+INSERT INTO qt.w VALUES (3);
+FETCH 2 FROM c;
+ id |   b    
+----+--------
+  3 | mirror
+  4 | mirror
+(2 rows)
+
+COMMIT;
+BEGIN;
+DECLARE hc CURSOR WITH HOLD FOR SELECT id, b FROM qt.h ORDER BY id;
+:side
+  side  | reason |           detail           
+--------+--------+----------------------------
+ mirror | routed | quicksilver.route = mirror
+(1 row)
+
+SAVEPOINT a;
+RELEASE a;
+COMMIT;
+FETCH 2 FROM hc;
+ id |   b    
+----+--------
+  1 | mirror
+  2 | mirror
+(2 rows)
+
+CLOSE hc;
+DECLARE hc CURSOR WITH HOLD FOR SELECT id, b FROM qt.h ORDER BY id;
+FETCH 2 FROM hc;
+ id |   b    
+----+--------
+  1 | mirror
+  2 | mirror
+(2 rows)
+
+CLOSE hc;
+-- an error after a routed read, then the same transaction shape again
+BEGIN;
+:r
+   b    | count 
+--------+-------
+ mirror |     5
+(1 row)
+
+SELECT 1/0;
+ERROR:  division by zero
+ROLLBACK;
+BEGIN;
+:r
+   b    | count 
+--------+-------
+ mirror |     5
+(1 row)
+
+:side
+  side  | reason |           detail           
+--------+--------+----------------------------
+ mirror | routed | quicksilver.route = mirror
+(1 row)
+
+COMMIT;
+-- READ ONLY: routed; REPEATABLE READ and SERIALIZABLE, read only or not: the heap
+BEGIN READ ONLY;
+:r
+   b    | count 
+--------+-------
+ mirror |     5
+(1 row)
+
+:side
+  side  | reason |           detail           
+--------+--------+----------------------------
+ mirror | routed | quicksilver.route = mirror
+(1 row)
+
+SAVEPOINT a;
+ROLLBACK;
+BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY;
+:r
+  b   | count 
+------+-------
+ heap |     5
+(1 row)
+
+:side
+ side |                   reason                    |                      detail                       
+------+---------------------------------------------+---------------------------------------------------
+ heap | transaction isolation is not READ COMMITTED | the mirror cannot read the transaction's snapshot
+(1 row)
+
+COMMIT;
+BEGIN ISOLATION LEVEL SERIALIZABLE;
+:r
+  b   | count 
+------+-------
+ heap |     5
+(1 row)
+
+:side
+ side |                   reason                    |                      detail                       
+------+---------------------------------------------+---------------------------------------------------
+ heap | transaction isolation is not READ COMMITTED | the mirror cannot read the transaction's snapshot
+(1 row)
+
+COMMIT;
+-- DuckDB used directly in the block (a superuser can): its DuckDB transaction is
+-- not the router's to end, so nothing is routed after it; and the error the
+-- SAVEPOINT then gets is pg_duckdb's own, with the router or without
+BEGIN;
+SELECT * FROM duckdb.query($$ SELECT 42 AS x $$);
+ x  
+----
+ 42
+(1 row)
+
+:r
+  b   | count 
+------+-------
+ heap |     5
+(1 row)
+
+:side
+ side |           reason           |                                           detail                                            
+------+----------------------------+---------------------------------------------------------------------------------------------
+ heap | inside a transaction block | the transaction has used DuckDB directly: its DuckDB transaction is not the router's to end
+(1 row)
+
+SAVEPOINT a;
+ERROR:  (PGDuckDB/DuckdbSubXactCallback_Cpp) Not implemented Error: SAVEPOINT is not supported in DuckDB
+ROLLBACK;
+-- the next transaction is routed again
+BEGIN;
+:r
+   b    | count 
+--------+-------
+ mirror |     5
+(1 row)
+
+:side
+  side  | reason |           detail           
+--------+--------+----------------------------
+ mirror | routed | quicksilver.route = mirror
+(1 row)
+
+COMMIT;
+\set VERBOSITY default
 DROP SCHEMA qt, qtm CASCADE;
 SELECT quicksilver.prune();
  prune 

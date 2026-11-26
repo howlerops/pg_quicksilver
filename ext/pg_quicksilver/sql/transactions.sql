@@ -14,9 +14,12 @@ SET quicksilver.route = mirror;
 -- outside a transaction block: routed
 SELECT b, count(*) FROM qt.h GROUP BY b;
 
--- inside one: the heap, by default. pg_duckdb aborts a transaction that takes
--- a SAVEPOINT after it has run a query, and every driver's nested transaction
--- is a SAVEPOINT.
+-- inside one: routed too, where it is safe (READ COMMITTED, no savepoint open,
+-- nothing written). pg_duckdb aborts a transaction that takes a SAVEPOINT while
+-- its DuckDB transaction is open, and every driver's nested transaction is a
+-- SAVEPOINT: so the mirror's answer is taken whole when the statement starts
+-- and DuckDB's transaction is ended with it. The SAVEPOINT below works; inside
+-- it the heap answers, because pg_duckdb refuses to start there.
 BEGIN;
 SELECT b, count(*) FROM qt.h GROUP BY b;
 :last
@@ -28,13 +31,20 @@ COMMIT;
 -- a multi-statement Query message is an implicit transaction block
 SELECT b, count(*) FROM qt.h GROUP BY b \; SELECT side, reason FROM quicksilver.last_decision();
 
--- opted in: routed, in a READ COMMITTED block with no savepoint open
+-- opted out: the heap, in any block
+SET quicksilver.route_in_transaction = off;
+BEGIN;
+SELECT b, count(*) FROM qt.h GROUP BY b;
+:last
+COMMIT;
+SELECT b, count(*) FROM qt.h GROUP BY b \; SELECT side, reason FROM quicksilver.last_decision();
+-- the default again: routed, in a READ COMMITTED block with no savepoint open
 SET quicksilver.route_in_transaction = on;
 BEGIN;
 SELECT b, count(*) FROM qt.h GROUP BY b;
 :last
 INSERT INTO qt.h VALUES (6, 60, 'heap');
--- the mirror cannot see this transaction's own write: the price of opting in
+-- a transaction that has written is the heap's from then on: the mirror cannot see its own write
 SELECT b, count(*) FROM qt.h GROUP BY b;
 SELECT id, b FROM qt.h WHERE id = 6 FOR UPDATE;
 ROLLBACK;
@@ -47,7 +57,7 @@ ROLLBACK TO s;
 SELECT b, count(*) FROM qt.h GROUP BY b;
 :last
 COMMIT;
--- and this is the hazard the default avoids: a SAVEPOINT after a routed statement
+-- a SAVEPOINT after a routed statement: used to abort the transaction
 BEGIN;
 SELECT b, count(*) FROM qt.h GROUP BY b;
 SAVEPOINT s;
@@ -82,7 +92,8 @@ FETCH 2 FROM c;
 FETCH ALL FROM c;
 FETCH 1 FROM c;
 CLOSE c;
--- a scrollable or holdable cursor needs to go backwards or outlive the transaction: heap
+-- a scrollable cursor needs to go backwards: heap. A holdable one does not: routed,
+-- and its rows outlive the transaction like any other holdable cursor's
 DECLARE s SCROLL CURSOR FOR SELECT id, b FROM qt.h ORDER BY id;
 FETCH 2 FROM s;
 FETCH BACKWARD 1 FROM s;
@@ -121,6 +132,112 @@ BEGIN
 END $$;
 SET client_min_messages = warning;
 SELECT b, count(*) FROM qt.h GROUP BY b;
+
+
+-- ---------------------------------------------------------------- what may follow a routed read in the same block
+\set VERBOSITY terse
+CREATE TABLE qt.w (i int);
+\set r 'SELECT b, count(*) FROM qt.h GROUP BY b;'
+\set side 'SELECT side, reason, detail FROM quicksilver.last_decision();'
+-- a savepoint; a routed read after it is released; a write in a savepoint that is rolled
+-- back (the transaction has an xid from then on: the heap); a write; a read after the write
+BEGIN;
+:r
+:side
+SAVEPOINT b;
+RELEASE b;
+:r
+:side
+SAVEPOINT a;
+INSERT INTO qt.w VALUES (1);
+ROLLBACK TO a;
+RELEASE a;
+:r
+:side
+INSERT INTO qt.w VALUES (2);
+:r
+:side
+COMMIT;
+SELECT * FROM qt.w;
+-- a PL/pgSQL exception block (an internal subtransaction): this used to end the session
+BEGIN;
+:r
+DO $$ BEGIN BEGIN PERFORM 1/0; EXCEPTION WHEN OTHERS THEN RAISE NOTICE 'caught'; END; END $$;
+:r
+:side
+COMMIT;
+-- EXPLAIN and EXPLAIN ANALYZE after it, and a routed read after EXPLAIN ANALYZE
+BEGIN;
+:r
+EXPLAIN (COSTS OFF) SELECT b, count(*) FROM qt.h GROUP BY b;
+ROLLBACK;
+BEGIN;
+:r
+EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) SELECT b, count(*) FROM qt.h GROUP BY b;
+SAVEPOINT a;
+RELEASE a;
+:r
+:side
+COMMIT;
+-- a cursor: its rows are the mirror's as of DECLARE, and anything may come between the fetches
+BEGIN;
+DECLARE c CURSOR FOR SELECT id, b FROM qt.h ORDER BY id;
+:side
+SAVEPOINT a;
+FETCH 2 FROM c;
+ROLLBACK TO a;
+INSERT INTO qt.w VALUES (3);
+FETCH 2 FROM c;
+COMMIT;
+BEGIN;
+DECLARE hc CURSOR WITH HOLD FOR SELECT id, b FROM qt.h ORDER BY id;
+:side
+SAVEPOINT a;
+RELEASE a;
+COMMIT;
+FETCH 2 FROM hc;
+CLOSE hc;
+DECLARE hc CURSOR WITH HOLD FOR SELECT id, b FROM qt.h ORDER BY id;
+FETCH 2 FROM hc;
+CLOSE hc;
+-- an error after a routed read, then the same transaction shape again
+BEGIN;
+:r
+SELECT 1/0;
+ROLLBACK;
+BEGIN;
+:r
+:side
+COMMIT;
+-- READ ONLY: routed; REPEATABLE READ and SERIALIZABLE, read only or not: the heap
+BEGIN READ ONLY;
+:r
+:side
+SAVEPOINT a;
+ROLLBACK;
+BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY;
+:r
+:side
+COMMIT;
+BEGIN ISOLATION LEVEL SERIALIZABLE;
+:r
+:side
+COMMIT;
+-- DuckDB used directly in the block (a superuser can): its DuckDB transaction is
+-- not the router's to end, so nothing is routed after it; and the error the
+-- SAVEPOINT then gets is pg_duckdb's own, with the router or without
+BEGIN;
+SELECT * FROM duckdb.query($$ SELECT 42 AS x $$);
+:r
+:side
+SAVEPOINT a;
+ROLLBACK;
+-- the next transaction is routed again
+BEGIN;
+:r
+:side
+COMMIT;
+\set VERBOSITY default
 
 DROP SCHEMA qt, qtm CASCADE;
 SELECT quicksilver.prune();
