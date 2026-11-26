@@ -54,7 +54,12 @@ import (
 //	0 (absent)  every binary before versions were recorded
 //	1           snapshots read the output function's text, not ::text;
 //	            unconstrained numeric is text, not DECIMAL(38,9)
-const WriterFormatVersion = 1
+//	2           numeric(p,s) with p <= 18 is stored on INT64, not fixed-length
+//	            bytes; delta-packed where the column is spread out; declared
+//	            NOT NULL columns are REQUIRED; min/max are marked exact (see
+//	            encoding.go). No rule above is about these, so no file of
+//	            version 1 or 2 is flagged for rebuild.
+const WriterFormatVersion = 2
 
 // formatRule says that files from writers older than fixedIn hold some
 // columns in a way no reader can repair.
