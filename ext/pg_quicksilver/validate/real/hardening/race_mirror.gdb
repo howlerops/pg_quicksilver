@@ -3,7 +3,7 @@
 # mirror view disappear as a standby's replay would, and lets the backend see the invalidation.
 set pagination off
 set confirm off
-break pg_quicksilver.c:908 if m->heap == HEAPOID
+break pg_quicksilver.c:LINE if m->heap == HEAPOID
 continue
 shell $RACE_DROP
 call (void) AcceptInvalidationMessages()

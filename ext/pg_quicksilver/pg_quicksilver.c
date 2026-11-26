@@ -367,6 +367,9 @@ typedef struct QsDecisionCache
 
 static MemoryContext qs_cache_cxt = NULL;
 static bool qs_cache_valid = false;
+static bool qs_loading = false;		/* qs_load_registry runs: nothing may use the registry */
+static int	qs_in_ext = 0;			/* hooks and SQL functions of this extension on the stack */
+static List *qs_retired = NIL;		/* earlier generations of qs_cache_cxt: deleted by qs_retire_sweep */
 static bool qs_installed = false;	/* the extension exists in this database */
 static Oid	qs_mirrors_relid = InvalidOid;
 static Oid	qs_allowlist_relid = InvalidOid;
@@ -848,6 +851,29 @@ qs_storage_cast_ok(Oid htype, int32 hmod, Oid mtype, int32 mmod, bool *need_cast
 	return false;
 }
 
+/*
+ * The type, typmod and collation of one column of a mirror relation, by number, from a single
+ * catalog lookup that cannot fail: false if the column is no longer there. The relation can be
+ * dropped or altered by an invalidation accepted at any lookup of the build (a standby replays the
+ * sidecar's DROP VIEW while a backend loads the registry); nothing may then look it up again
+ * through an error path (get_atttypetypmodcoll raises one).
+ */
+static bool
+qs_mirror_att(Oid rel, AttrNumber attno, Oid *type, int32 *typmod, Oid *coll)
+{
+	HeapTuple	tp = SearchSysCache2(ATTNUM, ObjectIdGetDatum(rel), Int16GetDatum(attno));
+	Form_pg_attribute att;
+
+	if (!HeapTupleIsValid(tp))
+		return false;
+	att = (Form_pg_attribute) GETSTRUCT(tp);
+	*type = att->atttypid;
+	*typmod = att->atttypmod;
+	*coll = att->attcollation;
+	ReleaseSysCache(tp);
+	return true;
+}
+
 static void
 qs_build_mirror(QsMirror *m)
 {
@@ -866,6 +892,8 @@ qs_build_mirror(QsMirror *m)
 	ListCell   *lc;
 	List	   *joinx = NIL;	/* QsJoinExp: the companions this subquery is to expose */
 	int			ncomp;
+	char	   *mnspname = NULL;	/* the mirror's names, copied while its catalog entry is held */
+	char	   *mrelname = NULL;
 
 	m->usable = false;
 	heap = try_table_open(m->heap, AccessShareLock);
@@ -903,9 +931,16 @@ qs_build_mirror(QsMirror *m)
 	cls = (Form_pg_class) GETSTRUCT(tup);
 	mkind = cls->relkind;
 	mowner = cls->relowner;
+	mrelname = pstrdup(NameStr(cls->relname));
+	mnspname = get_namespace_name(cls->relnamespace);
 	initStringInfo(&sql);
 	appendStringInfoString(&sql, "SELECT ");
 	ReleaseSysCache(tup);
+	if (mnspname == NULL)
+	{
+		m->reason = "mirror relation does not exist";
+		goto out;
+	}
 	if (mkind != RELKIND_VIEW && mkind != RELKIND_RELATION && mkind != RELKIND_FOREIGN_TABLE &&
 		mkind != RELKIND_MATVIEW)
 	{
@@ -944,7 +979,12 @@ qs_build_mirror(QsMirror *m)
 			appendStringInfo(&sql, "NULL::int4 AS %s", quote_identifier(NameStr(att->attname)));
 			continue;
 		}
-		get_atttypetypmodcoll(m->mirror, mattno, &mtype, &mmod, &mcoll);
+		if (!qs_mirror_att(m->mirror, mattno, &mtype, &mmod, &mcoll))
+		{
+			m->col_why[i] = "not in the mirror";
+			appendStringInfo(&sql, "NULL::int4 AS %s", quote_identifier(NameStr(att->attname)));
+			continue;
+		}
 		if (att->attgenerated)
 			m->col_why[i] = "generated column";
 		else if ((ae = qs_allow_lookup(QA_TYPE, att->atttypid, InvalidOid)) != NULL && ae->finite)
@@ -1002,7 +1042,8 @@ qs_build_mirror(QsMirror *m)
 		cattno = get_attnum(m->mirror, jr->companion);
 		if (cattno <= 0)
 			continue;
-		get_atttypetypmodcoll(m->mirror, cattno, &ctype, &ctypmod, &ccoll);
+		if (!qs_mirror_att(m->mirror, cattno, &ctype, &ctypmod, &ccoll))
+			continue;
 		if (ctype != INT8OID)
 			continue;
 		appendStringInfo(&sql, ", m.%s AS %s", quote_identifier(jr->companion), quote_identifier(jr->companion));
@@ -1021,8 +1062,7 @@ qs_build_mirror(QsMirror *m)
 	if (desc->natts == 0)
 		appendStringInfoString(&sql, "NULL::int4");
 	appendStringInfo(&sql, " FROM %s m",
-					 quote_qualified_identifier(get_namespace_name(get_rel_namespace(m->mirror)),
-												get_rel_name(m->mirror)));
+					 quote_qualified_identifier(mnspname, mrelname));
 
 	/*
 	 * The columns and types were checked against the catalog above, so this
@@ -1116,7 +1156,11 @@ qs_build_mirror(QsMirror *m)
 			m->joins = lappend(m->joins, je);
 	}
 	MemoryContextSwitchTo(old);
-	m->usable = true;
+	/* the mirror may have gone while its columns were read: then it is not usable, and says so */
+	if (!SearchSysCacheExists1(RELOID, ObjectIdGetDatum(m->mirror)))
+		m->reason = "mirror relation changed while it was being read";
+	else
+		m->usable = true;
 out:
 	table_close(heap, AccessShareLock);
 }
@@ -1739,8 +1783,55 @@ qs_own_table(Oid nsp, Oid ext, const char *name)
  * where nothing holds a pointer into the cache: an invalidation only clears
  * the flag, the memory is replaced here.
  */
+static void qs_load_registry(void);
+
+/*
+ * Deletes the retired generations of the registry when nothing of this extension is on the
+ * stack: no hook or SQL function (qs_in_ext), no load, no decision (qs_busy). Called at the entry
+ * of a top-level planning and at the end of a transaction.
+ */
+static void
+qs_retire_sweep(void)
+{
+	ListCell   *lc;
+
+	if (qs_retired == NIL || qs_in_ext > 0 || qs_busy || qs_loading)
+		return;
+	foreach(lc, qs_retired)
+		MemoryContextDelete((MemoryContext) lfirst(lc));
+	list_free(qs_retired);
+	qs_retired = NIL;
+}
+
+/*
+ * Make the registry and the allowlist current. A load replaces the registry in a new memory
+ * context; nothing is freed here that the caller might still point into. A call made while a load
+ * runs does nothing (the load is not re-entered).
+ */
 static void
 qs_ensure_loaded(void)
+{
+	if (qs_cache_valid)
+		return;
+	/* only a caller that holds no registry pointer gets here during a load, and none may ask it */
+	if (qs_loading)
+		ereport(ERROR,
+				(errcode(ERRCODE_INTERNAL_ERROR),
+				 errmsg("quicksilver: the registry is being loaded and cannot be read by this call")));
+	qs_loading = true;
+	PG_TRY();
+	{
+		qs_load_registry();
+	}
+	PG_FINALLY();
+	{
+		qs_loading = false;
+	}
+	PG_END_TRY();
+}
+
+static void
+qs_load_registry(void)
 {
 	HASHCTL		ctl;
 	Oid			nsp,
@@ -1751,8 +1842,6 @@ qs_ensure_loaded(void)
 	Oid			save_userid;
 	int			save_sec_context;
 
-	if (qs_cache_valid)
-		return;
 
 	if (qs_watch_hash == NULL)
 	{
@@ -1785,10 +1874,19 @@ qs_ensure_loaded(void)
 	qs_join_rows = NIL;
 	qs_lakes = NIL;
 	qs_lakes_attached = false;
+	/*
+	 * A new generation of the registry, in a new context. The previous one is retired, not reset:
+	 * a caller that still holds a pointer into it (taken before a call that can process
+	 * invalidations) reads valid memory until qs_retire_sweep finds nothing of this extension running.
+	 */
 	if (qs_cache_cxt)
-		MemoryContextReset(qs_cache_cxt);
-	else
-		qs_cache_cxt = AllocSetContextCreate(TopMemoryContext, "quicksilver cache", ALLOCSET_DEFAULT_SIZES);
+	{
+		MemoryContext prev = MemoryContextSwitchTo(TopMemoryContext);
+
+		qs_retired = lappend(qs_retired, qs_cache_cxt);
+		MemoryContextSwitchTo(prev);
+	}
+	qs_cache_cxt = AllocSetContextCreate(TopMemoryContext, "quicksilver cache", ALLOCSET_DEFAULT_SIZES);
 
 	memset(&ctl, 0, sizeof(ctl));
 	ctl.keysize = sizeof(Oid);
@@ -2982,6 +3080,8 @@ qs_pin(void)
 static void
 qs_xact_cb(XactEvent event, void *arg)
 {
+	if (event == XACT_EVENT_COMMIT || event == XACT_EVENT_ABORT)
+		qs_retire_sweep();
 	switch (event)
 	{
 		case XACT_EVENT_COMMIT:
@@ -4696,6 +4796,7 @@ qs_decide(Query *orig, PlannedStmt *heap, const char *query_string, int cursorOp
 
 	detail[0] = '\0';
 	qs_cost(heap, &cost);
+	generation = qs_load_count;
 
 #define QS_HEAP(reason, det, constructs) \
 	do { qs_record(queryid, false, (reason), (det), (constructs), heap->planTree->total_cost, cost.rows); return NULL; } while (0)
@@ -4871,7 +4972,7 @@ qs_decide(Query *orig, PlannedStmt *heap, const char *query_string, int cursorOp
 		(qs_attach_retry_at == 0 || GetCurrentTimestamp() >= qs_attach_retry_at))
 	{
 		(void) qs_attach_lakes(false);
-		if (!qs_cache_valid)
+		if (!qs_cache_valid || generation != qs_load_count)
 		{
 			qs_registry_moved = true;
 			if (!qs_decide_again)
@@ -4886,7 +4987,6 @@ qs_decide(Query *orig, PlannedStmt *heap, const char *query_string, int cursorOp
 	 * the heap for no reason. What matters is whether the registry this
 	 * decision was made from is still the one in force.
 	 */
-	generation = qs_load_count;
 	mq = copyObject(orig);
 	memset(&subst, 0, sizeof(subst));
 	subst.params = boundParams;
@@ -5027,7 +5127,41 @@ qs_duckfn_walker(Node *node, void *context)
 }
 
 static PlannedStmt *
+qs_planner_impl(Query *parse, const char *query_string, int cursorOptions, ParamListInfo boundParams);
+
+/*
+ * The planner hook. While the registry is being loaded nothing of this extension runs (a nested
+ * load would reset what the outer one builds): the statement is planned as if the extension were
+ * not installed. Otherwise the planning is "in" the extension, and retired registries are deleted
+ * first if nothing else of it is on the stack.
+ */
+static PlannedStmt *
 qs_planner(Query *parse, const char *query_string, int cursorOptions, ParamListInfo boundParams)
+{
+	PlannedStmt *result = NULL;
+
+	if (qs_loading)
+	{
+		if (prev_planner_hook)
+			return prev_planner_hook(parse, query_string, cursorOptions, boundParams);
+		return standard_planner(parse, query_string, cursorOptions, boundParams);
+	}
+	qs_retire_sweep();
+	qs_in_ext++;
+	PG_TRY();
+	{
+		result = qs_planner_impl(parse, query_string, cursorOptions, boundParams);
+	}
+	PG_FINALLY();
+	{
+		qs_in_ext--;
+	}
+	PG_END_TRY();
+	return result;
+}
+
+static PlannedStmt *
+qs_planner_impl(Query *parse, const char *query_string, int cursorOptions, ParamListInfo boundParams)
 {
 	PlannedStmt *heap;
 	PlannedStmt *routed;
@@ -5125,6 +5259,7 @@ static void
 qs_ExecutorRun(QueryDesc *queryDesc, ScanDirection direction, uint64 count, bool execute_once)
 {
 	qs_nesting++;
+	qs_in_ext++;
 	PG_TRY();
 	{
 		if (prev_ExecutorRun)
@@ -5135,6 +5270,7 @@ qs_ExecutorRun(QueryDesc *queryDesc, ScanDirection direction, uint64 count, bool
 	PG_FINALLY();
 	{
 		qs_nesting--;
+		qs_in_ext--;
 	}
 	PG_END_TRY();
 }
@@ -5143,6 +5279,7 @@ static void
 qs_ExecutorFinish(QueryDesc *queryDesc)
 {
 	qs_nesting++;
+	qs_in_ext++;
 	PG_TRY();
 	{
 		if (prev_ExecutorFinish)
@@ -5153,6 +5290,7 @@ qs_ExecutorFinish(QueryDesc *queryDesc)
 	PG_FINALLY();
 	{
 		qs_nesting--;
+		qs_in_ext--;
 	}
 	PG_END_TRY();
 }
@@ -5178,6 +5316,7 @@ qs_ProcessUtility(PlannedStmt *pstmt, const char *queryString, bool readOnlyTree
 		qs_duck_foreign = true;
 	if (!transparent)
 		qs_nesting++;
+	qs_in_ext++;
 	PG_TRY();
 	{
 		if (prev_ProcessUtility)
@@ -5189,6 +5328,7 @@ qs_ProcessUtility(PlannedStmt *pstmt, const char *queryString, bool readOnlyTree
 	{
 		if (!transparent)
 			qs_nesting--;
+		qs_in_ext--;
 	}
 	PG_END_TRY();
 }
@@ -5201,6 +5341,7 @@ qs_ExplainOneQuery(Query *query, int cursorOptions, IntoClause *into, ExplainSta
 
 	qs_last.fresh = false;
 	qs_explain_into = (into != NULL);
+	qs_in_ext++;
 	PG_TRY();
 	{
 		if (prev_ExplainOneQuery)
@@ -5231,6 +5372,7 @@ qs_ExplainOneQuery(Query *query, int cursorOptions, IntoClause *into, ExplainSta
 	PG_FINALLY();
 	{
 		qs_explain_into = save_into;
+		qs_in_ext--;
 	}
 	PG_END_TRY();
 
@@ -5251,8 +5393,28 @@ qs_ExplainOneQuery(Query *query, int cursorOptions, IntoClause *into, ExplainSta
 
 /* ================================================================ SQL-callable */
 
+static Datum qs_changed_impl(PG_FUNCTION_ARGS);
+
 Datum
 qs_changed(PG_FUNCTION_ARGS)
+{
+	Datum		result = (Datum) 0;
+
+	qs_in_ext++;
+	PG_TRY();
+	{
+		result = qs_changed_impl(fcinfo);
+	}
+	PG_FINALLY();
+	{
+		qs_in_ext--;
+	}
+	PG_END_TRY();
+	return result;
+}
+
+static Datum
+qs_changed_impl(PG_FUNCTION_ARGS)
 {
 	TriggerData *td = (TriggerData *) fcinfo->context;
 
@@ -5318,8 +5480,28 @@ qs_lsn_sweep_databases(void)
 	return any;
 }
 
+static Datum qs_report_applied_lsn_impl(PG_FUNCTION_ARGS);
+
 Datum
 qs_report_applied_lsn(PG_FUNCTION_ARGS)
+{
+	Datum		result = (Datum) 0;
+
+	qs_in_ext++;
+	PG_TRY();
+	{
+		result = qs_report_applied_lsn_impl(fcinfo);
+	}
+	PG_FINALLY();
+	{
+		qs_in_ext--;
+	}
+	PG_END_TRY();
+	return result;
+}
+
+static Datum
+qs_report_applied_lsn_impl(PG_FUNCTION_ARGS)
 {
 	Oid			relid = PG_GETARG_OID(0);
 	XLogRecPtr	lsn = PG_GETARG_LSN(1);
@@ -5382,8 +5564,28 @@ qs_report_applied_lsn(PG_FUNCTION_ARGS)
 	PG_RETURN_VOID();
 }
 
+static Datum qs_mirror_status_impl(PG_FUNCTION_ARGS);
+
 Datum
 qs_mirror_status(PG_FUNCTION_ARGS)
+{
+	Datum		result = (Datum) 0;
+
+	qs_in_ext++;
+	PG_TRY();
+	{
+		result = qs_mirror_status_impl(fcinfo);
+	}
+	PG_FINALLY();
+	{
+		qs_in_ext--;
+	}
+	PG_END_TRY();
+	return result;
+}
+
+static Datum
+qs_mirror_status_impl(PG_FUNCTION_ARGS)
 {
 	ReturnSetInfo *rsinfo = (ReturnSetInfo *) fcinfo->resultinfo;
 	HASH_SEQ_STATUS seq;
@@ -5438,8 +5640,28 @@ qs_mirror_status(PG_FUNCTION_ARGS)
 }
 
 /* quicksilver.attach_lakes(): for a session that reads a mirror relation by name */
+static Datum qs_attach_lakes_sql_impl(PG_FUNCTION_ARGS);
+
 Datum
 qs_attach_lakes_sql(PG_FUNCTION_ARGS)
+{
+	Datum		result = (Datum) 0;
+
+	qs_in_ext++;
+	PG_TRY();
+	{
+		result = qs_attach_lakes_sql_impl(fcinfo);
+	}
+	PG_FINALLY();
+	{
+		qs_in_ext--;
+	}
+	PG_END_TRY();
+	return result;
+}
+
+static Datum
+qs_attach_lakes_sql_impl(PG_FUNCTION_ARGS)
 {
 	if (!superuser())
 		ereport(ERROR,
@@ -5452,8 +5674,28 @@ qs_attach_lakes_sql(PG_FUNCTION_ARGS)
 }
 
 /* quicksilver.unsafe_constructs(sql): the constructs that keep a statement on the heap */
+static Datum qs_check_impl(PG_FUNCTION_ARGS);
+
 Datum
 qs_check(PG_FUNCTION_ARGS)
+{
+	Datum		result = (Datum) 0;
+
+	qs_in_ext++;
+	PG_TRY();
+	{
+		result = qs_check_impl(fcinfo);
+	}
+	PG_FINALLY();
+	{
+		qs_in_ext--;
+	}
+	PG_END_TRY();
+	return result;
+}
+
+static Datum
+qs_check_impl(PG_FUNCTION_ARGS)
 {
 	ReturnSetInfo *rsinfo = (ReturnSetInfo *) fcinfo->resultinfo;
 	char	   *sql = text_to_cstring(PG_GETARG_TEXT_PP(0));
@@ -5498,8 +5740,28 @@ qs_check(PG_FUNCTION_ARGS)
 	PG_RETURN_VOID();
 }
 
+static Datum qs_last_decision_impl(PG_FUNCTION_ARGS);
+
 Datum
 qs_last_decision(PG_FUNCTION_ARGS)
+{
+	Datum		result = (Datum) 0;
+
+	qs_in_ext++;
+	PG_TRY();
+	{
+		result = qs_last_decision_impl(fcinfo);
+	}
+	PG_FINALLY();
+	{
+		qs_in_ext--;
+	}
+	PG_END_TRY();
+	return result;
+}
+
+static Datum
+qs_last_decision_impl(PG_FUNCTION_ARGS)
 {
 	ReturnSetInfo *rsinfo = (ReturnSetInfo *) fcinfo->resultinfo;
 	Datum		values[7];
@@ -5519,15 +5781,55 @@ qs_last_decision(PG_FUNCTION_ARGS)
 	PG_RETURN_VOID();
 }
 
+static Datum qs_forget_last_impl(PG_FUNCTION_ARGS);
+
 Datum
 qs_forget_last(PG_FUNCTION_ARGS)
+{
+	Datum		result = (Datum) 0;
+
+	qs_in_ext++;
+	PG_TRY();
+	{
+		result = qs_forget_last_impl(fcinfo);
+	}
+	PG_FINALLY();
+	{
+		qs_in_ext--;
+	}
+	PG_END_TRY();
+	return result;
+}
+
+static Datum
+qs_forget_last_impl(PG_FUNCTION_ARGS)
 {
 	qs_last.valid = false;
 	PG_RETURN_VOID();
 }
 
+static Datum qs_decisions_impl(PG_FUNCTION_ARGS);
+
 Datum
 qs_decisions(PG_FUNCTION_ARGS)
+{
+	Datum		result = (Datum) 0;
+
+	qs_in_ext++;
+	PG_TRY();
+	{
+		result = qs_decisions_impl(fcinfo);
+	}
+	PG_FINALLY();
+	{
+		qs_in_ext--;
+	}
+	PG_END_TRY();
+	return result;
+}
+
+static Datum
+qs_decisions_impl(PG_FUNCTION_ARGS)
 {
 	ReturnSetInfo *rsinfo = (ReturnSetInfo *) fcinfo->resultinfo;
 	HASH_SEQ_STATUS seq;
@@ -5558,8 +5860,28 @@ qs_decisions(PG_FUNCTION_ARGS)
 	PG_RETURN_VOID();
 }
 
+static Datum qs_reasons_impl(PG_FUNCTION_ARGS);
+
 Datum
 qs_reasons(PG_FUNCTION_ARGS)
+{
+	Datum		result = (Datum) 0;
+
+	qs_in_ext++;
+	PG_TRY();
+	{
+		result = qs_reasons_impl(fcinfo);
+	}
+	PG_FINALLY();
+	{
+		qs_in_ext--;
+	}
+	PG_END_TRY();
+	return result;
+}
+
+static Datum
+qs_reasons_impl(PG_FUNCTION_ARGS)
 {
 	ReturnSetInfo *rsinfo = (ReturnSetInfo *) fcinfo->resultinfo;
 	int			i;
@@ -5582,8 +5904,28 @@ qs_reasons(PG_FUNCTION_ARGS)
 	PG_RETURN_VOID();
 }
 
+static Datum qs_reset_impl(PG_FUNCTION_ARGS);
+
 Datum
 qs_reset(PG_FUNCTION_ARGS)
+{
+	Datum		result = (Datum) 0;
+
+	qs_in_ext++;
+	PG_TRY();
+	{
+		result = qs_reset_impl(fcinfo);
+	}
+	PG_FINALLY();
+	{
+		qs_in_ext--;
+	}
+	PG_END_TRY();
+	return result;
+}
+
+static Datum
+qs_reset_impl(PG_FUNCTION_ARGS)
 {
 	HASH_SEQ_STATUS seq;
 	QsStatEntry *e;
@@ -5601,8 +5943,28 @@ qs_reset(PG_FUNCTION_ARGS)
 	PG_RETURN_VOID();
 }
 
+static Datum qs_allowlist_problems_impl(PG_FUNCTION_ARGS);
+
 Datum
 qs_allowlist_problems(PG_FUNCTION_ARGS)
+{
+	Datum		result = (Datum) 0;
+
+	qs_in_ext++;
+	PG_TRY();
+	{
+		result = qs_allowlist_problems_impl(fcinfo);
+	}
+	PG_FINALLY();
+	{
+		qs_in_ext--;
+	}
+	PG_END_TRY();
+	return result;
+}
+
+static Datum
+qs_allowlist_problems_impl(PG_FUNCTION_ARGS)
 {
 	ReturnSetInfo *rsinfo = (ReturnSetInfo *) fcinfo->resultinfo;
 	ListCell   *lc;

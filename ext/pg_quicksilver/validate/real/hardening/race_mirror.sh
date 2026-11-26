@@ -30,7 +30,10 @@ su postgres -c "$P -c 'SELECT pg_sleep(4)' -c 'SELECT count(*) FROM customers'" 
 sleep 1
 su postgres -c "$P -c \"UPDATE quicksilver.mirrors SET max_lag_bytes = max_lag_bytes WHERE heap = 'customers'::regclass\"" >/dev/null 2>&1
 PID=$(su postgres -c "$P -c \"SELECT pid FROM pg_stat_activity WHERE query LIKE 'SELECT pg_sleep%' AND datname = '$DB'\"" | head -1)
-sed "s/HEAPOID/$HEAP/" "$HERE/race_mirror.gdb" > "$OUT/race.gdb"
+# the line after the existence check in qs_build_mirror: the lookup it made is held there
+LINE=$(awk '/^qs_build_mirror\(QsMirror \*m\)/{f=1} f && /ReleaseSysCache\(tup\);/{print NR; exit}' "$HERE/../../../pg_quicksilver.c")
+[ -n "$LINE" ] || { echo "no ReleaseSysCache in qs_build_mirror" >&2; exit 1; }
+sed "s/HEAPOID/$HEAP/; s/LINE/$LINE/" "$HERE/race_mirror.gdb" > "$OUT/race.gdb"
 RACE_DROP=$DROPSH gdb -p "$PID" -batch -x "$OUT/race.gdb" > "$OUT/race_gdb.txt" 2>&1 &
 wait
 grep -v "warning:\|libthread_db\|^\[Thread\|^\[Inferior" "$OUT/race_gdb.txt"
