@@ -1,8 +1,90 @@
-time=2026-11-26T16:03:29.954Z level=INFO msg="quicksilver mirror starting" cluster=qsv pod=s1 mode=shadow ingest=logical tables=[public.orders] slo=15s slot=qs_v1_s1 configured_slot=qs_v1
-time=2026-11-26T16:03:29.954Z level=INFO msg="slot janitor on: when this instance is the primary it drops this cluster's Quicksilver slots that nothing will consume again" slots="qs_v1 and qs_v1_*" interval=1m0s wal_limit_bytes=4294967296 inactive_limit=6h0m0s off="QS_SLOT_JANITOR=off"
-time=2026-11-26T16:03:30.036Z level=INFO msg="pg_quicksilver is not installed in this database; no mirror relation is registered (CREATE EXTENSION pg_quicksilver on the primary to route reads; this is looked at again every minute)" database=app
-time=2026-11-26T16:03:30.104Z level=INFO msg="new replication slot; bootstrapping by snapshot" at=0/30351D8
-time=2026-11-26T16:03:30.248Z level=INFO msg="snapshot complete" table=public.orders rows=10000 seconds=0.144498064
-time=2026-11-26T16:03:30.249Z level=INFO msg="key index built" table=public.orders keys=10000 seconds=0.00046466
-time=2026-11-26T16:03:30.708Z level=ERROR msg="mirror stopped" err="receive message failed: unexpected EOF" retry_in=1s
-time=2026-11-26T16:03:31.712Z level=INFO msg="this node is the primary — standing down; the mirror is built on replicas"
+time=2026-11-26T16:08:21.358Z level=INFO msg="quicksilver mirror starting" cluster=qsv pod=s1 mode=shadow ingest=logical tables="[public.t1 public.t2 public.t3]" slo=15s slot=qs_v1_s1 configured_slot=qs_v1
+time=2026-11-26T16:08:21.359Z level=INFO msg="slot janitor on: when this instance is the primary it drops this cluster's Quicksilver slots that nothing will consume again" slots="qs_v1 and qs_v1_*" interval=1m0s wal_limit_bytes=4294967296 inactive_limit=6h0m0s off="QS_SLOT_JANITOR=off"
+time=2026-11-26T16:08:21.417Z level=INFO msg="pg_quicksilver is not installed in this database; no mirror relation is registered (CREATE EXTENSION pg_quicksilver on the primary to route reads; this is looked at again every minute)" database=app
+time=2026-11-26T16:08:21.432Z level=INFO msg="new replication slot; bootstrapping by snapshot" at=0/4034608
+time=2026-11-26T16:08:21.534Z level=INFO msg="snapshot complete" table=public.t3 rows=20000 seconds=0.101206159
+time=2026-11-26T16:08:21.642Z level=INFO msg="snapshot complete" table=public.t1 rows=20000 seconds=0.108327611
+time=2026-11-26T16:08:21.729Z level=INFO msg="snapshot complete" table=public.t2 rows=20000 seconds=0.087343774
+time=2026-11-26T16:08:21.731Z level=INFO msg="key index built" table=public.t1 keys=20000 seconds=0.000907869
+time=2026-11-26T16:08:21.732Z level=INFO msg="key index built" table=public.t2 keys=20000 seconds=0.000947965
+time=2026-11-26T16:08:21.733Z level=INFO msg="key index built" table=public.t3 keys=20000 seconds=0.001018834
+time=2026-11-26T16:08:22.950Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=255 apply_ms=249 head_lsn_ms=6
+time=2026-11-26T16:08:23.755Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=271 apply_ms=271
+time=2026-11-26T16:08:23.998Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=243 apply_ms=242
+time=2026-11-26T16:08:24.277Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=276 apply_ms=267 head_lsn_ms=8
+time=2026-11-26T16:08:24.562Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=284 apply_ms=283 is_primary_ms=1
+time=2026-11-26T16:08:24.835Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=270 apply_ms=261 head_lsn_ms=9
+time=2026-11-26T16:08:25.229Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=393 apply_ms=387 head_lsn_ms=4
+time=2026-11-26T16:08:25.698Z level=INFO msg="merged deltas" table=public.t2 rows=4180 seconds=0.078498944
+time=2026-11-26T16:08:25.698Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=271 apply_ms=192 merge_deltas_ms=78
+time=2026-11-26T16:08:26.075Z level=INFO msg="merged deltas" table=public.t1 rows=5227 seconds=0.064563065
+time=2026-11-26T16:08:26.154Z level=INFO msg="merged deltas" table=public.t3 rows=4800 seconds=0.079355417
+time=2026-11-26T16:08:26.154Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=448 apply_ms=302 merge_deltas_ms=79 merge_deltas_ms=64 head_lsn_ms=1
+time=2026-11-26T16:08:26.479Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=324 apply_ms=322 is_primary_ms=1
+time=2026-11-26T16:08:26.741Z level=ERROR msg="table halted; it is out of service and its changes are discarded until it is rebuilt. The other tables are still mirrored" table=public.t2 reason="halting public.t2: unsupported schema change (RETYPED x integer->bigint); the mirror must be rebuilt" rebuild="create /var/lib/postgresql/qsy1/mirror/s1/public.t2/REBUILD and restart the sidecar"
+time=2026-11-26T16:08:26.778Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=293 apply_ms=247 evolve_ms=43 is_primary_ms=2
+time=2026-11-26T16:08:27.009Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=231 apply_ms=228 head_lsn_ms=2
+time=2026-11-26T16:08:27.792Z level=INFO msg="merged deltas" table=public.t1 rows=13827 seconds=0.234156389
+time=2026-11-26T16:08:27.873Z level=INFO msg="merged deltas" table=public.t3 rows=11826 seconds=0.080519747
+time=2026-11-26T16:08:27.873Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=406 merge_deltas_ms=234 apply_ms=89 merge_deltas_ms=80 head_lsn_ms=2
+time=2026-11-26T16:08:28.078Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=205 apply_ms=204
+time=2026-11-26T16:08:28.387Z level=INFO msg="compaction started" table=public.t1 why=churn base_rows=20000 delta_rows=25006
+2026/11/26 16:08:28 INFO rewrite clustering table=public.t1 column=none why="1 row groups, too few to tell"
+time=2026-11-26T16:08:28.704Z level=INFO msg=compacted table=public.t1 rows=21260 seconds=0.310472026
+time=2026-11-26T16:08:28.704Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=317 apply_ms=271 finish_compaction_ms=44 head_lsn_ms=1
+time=2026-11-26T16:08:28.819Z level=INFO msg="compaction started" table=public.t3 why=churn base_rows=20000 delta_rows=25647
+2026/11/26 16:08:28 INFO rewrite clustering table=public.t3 column=none why="1 row groups, too few to tell"
+time=2026-11-26T16:08:29.068Z level=INFO msg=compacted table=public.t3 rows=21760 seconds=0.244857495
+time=2026-11-26T16:08:29.069Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=210 apply_ms=160 finish_compaction_ms=43 is_primary_ms=5
+time=2026-11-26T16:08:32.502Z level=INFO msg="quicksilver mirror starting" cluster=qsv pod=s1 mode=shadow ingest=logical tables="[public.t1 public.t2 public.t3]" slo=15s slot=qs_v1_s1 configured_slot=qs_v1
+time=2026-11-26T16:08:32.505Z level=INFO msg="slot janitor on: when this instance is the primary it drops this cluster's Quicksilver slots that nothing will consume again" slots="qs_v1 and qs_v1_*" interval=1m0s wal_limit_bytes=4294967296 inactive_limit=6h0m0s off="QS_SLOT_JANITOR=off"
+time=2026-11-26T16:08:32.505Z level=ERROR msg="table is halted in its manifest and stays out of service" table=public.t2 reason="halting public.t2: unsupported schema change (RETYPED x integer->bigint); the mirror must be rebuilt" serve_with_halted_tables=false
+time=2026-11-26T16:08:32.537Z level=INFO msg="pg_quicksilver is not installed in this database; no mirror relation is registered (CREATE EXTENSION pg_quicksilver on the primary to route reads; this is looked at again every minute)" database=app
+time=2026-11-26T16:08:32.537Z level=INFO msg="rebuild requested for a halted table; it will be re-snapshotted" table=public.t2 halted_for="halting public.t2: unsupported schema change (RETYPED x integer->bigint); the mirror must be rebuilt"
+time=2026-11-26T16:08:32.569Z level=WARN msg="not resuming this table from the slot; re-snapshotting it" table=public.t2 why="an operator asked for this halted table to be rebuilt (REBUILD file)" slot=qs_v1_s1 at=0/5FC4DB8
+time=2026-11-26T16:08:32.713Z level=INFO msg="snapshot complete" table=public.t2 rows=22640 seconds=0.143841757
+time=2026-11-26T16:08:32.730Z level=INFO msg="halted table rebuilt from a snapshot and back in service" table=public.t2
+time=2026-11-26T16:08:32.730Z level=INFO msg="resuming from the existing slot" slot=qs_v1_s1 confirmed=0/5F91250
+time=2026-11-26T16:08:32.748Z level=INFO msg="key index built" table=public.t1 keys=22800 seconds=0.017209264
+time=2026-11-26T16:08:32.749Z level=INFO msg="key index built" table=public.t2 keys=22640 seconds=0.000728787
+time=2026-11-26T16:08:32.762Z level=INFO msg="key index built" table=public.t3 keys=22620 seconds=0.012910044
+time=2026-11-26T16:08:44.646Z level=INFO msg="merged deltas" table=public.t1 rows=6395 seconds=0.187415558
+time=2026-11-26T16:08:44.646Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=543 apply_ms=290 merge_deltas_ms=187 head_lsn_ms=47 confirm_ms=17
+time=2026-11-26T16:08:44.854Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=207 apply_ms=207
+time=2026-11-26T16:08:45.295Z level=INFO msg="merged deltas" table=public.t3 rows=924 seconds=0.04245384
+time=2026-11-26T16:08:45.295Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=239 apply_ms=196 merge_deltas_ms=42
+time=2026-11-26T16:08:45.700Z level=INFO msg="merged deltas" table=public.t1 rows=2712 seconds=0.084378486
+time=2026-11-26T16:08:46.086Z level=INFO msg="merged deltas" table=public.t3 rows=6281 seconds=0.059955032
+time=2026-11-26T16:08:46.412Z level=INFO msg="merged deltas" table=public.t2 rows=7961 seconds=0.110396411
+time=2026-11-26T16:08:46.787Z level=INFO msg="merged deltas" table=public.t1 rows=9422 seconds=0.156356675
+time=2026-11-26T16:08:46.787Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=245 merge_deltas_ms=156 apply_ms=87 head_lsn_ms=1
+time=2026-11-26T16:08:47.090Z level=INFO msg="merged deltas" table=public.t3 rows=10624 seconds=0.091201727
+time=2026-11-26T16:08:47.458Z level=INFO msg="merged deltas" table=public.t2 rows=11689 seconds=0.082354903
+time=2026-11-26T16:08:47.458Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=258 apply_ms=173 merge_deltas_ms=82 confirm_ms=1
+time=2026-11-26T16:08:47.669Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=210 apply_ms=208 head_lsn_ms=1
+time=2026-11-26T16:08:47.744Z level=ERROR msg="table halted; it is out of service and its changes are discarded until it is rebuilt. The other tables are still mirrored" table=public.t2 reason="column(s) r were backfilled by a table rewrite; their values never appear in the change stream" rebuild="create /var/lib/postgresql/qsy1/mirror/s1/public.t2/REBUILD and restart the sidecar"
+time=2026-11-26T16:08:47.946Z level=INFO msg="merged deltas" table=public.t1 rows=13747 seconds=0.194580122
+time=2026-11-26T16:08:47.946Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=276 merge_deltas_ms=194 apply_ms=48 evolve_ms=27 head_lsn_ms=5
+time=2026-11-26T16:08:48.506Z level=INFO msg="merged deltas" table=public.t3 rows=15188 seconds=0.176338783
+time=2026-11-26T16:08:48.506Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=373 apply_ms=189 merge_deltas_ms=176 head_lsn_ms=7
+time=2026-11-26T16:08:48.942Z level=INFO msg="merged deltas" table=public.t1 rows=16691 seconds=0.126668848
+time=2026-11-26T16:08:49.086Z level=INFO msg="compaction started" table=public.t3 why=churn base_rows=21760 delta_rows=25218
+2026/11/26 16:08:49 INFO rewrite clustering table=public.t3 column=none why="1 row groups, too few to tell"
+time=2026-11-26T16:08:49.311Z level=INFO msg=compacted table=public.t3 rows=21917 seconds=0.2143592
+time=2026-11-26T16:08:49.377Z level=INFO msg="compaction started" table=public.t1 why=churn base_rows=21260 delta_rows=25156
+2026/11/26 16:08:49 INFO rewrite clustering table=public.t1 column=none why="1 row groups, too few to tell"
+time=2026-11-26T16:08:49.765Z level=INFO msg=compacted table=public.t1 rows=21155 seconds=0.383356421
+time=2026-11-26T16:08:50.667Z level=INFO msg="merged deltas" table=public.t3 rows=3736 seconds=0.062352634
+time=2026-11-26T16:08:51.003Z level=INFO msg="merged deltas" table=public.t1 rows=3525 seconds=0.028964846
+time=2026-11-26T16:08:53.424Z level=INFO msg="quicksilver mirror starting" cluster=qsv pod=s1 mode=shadow ingest=logical tables="[public.t1 public.t2 public.t3]" slo=15s slot=qs_v1_s1 configured_slot=qs_v1
+time=2026-11-26T16:08:53.424Z level=INFO msg="slot janitor on: when this instance is the primary it drops this cluster's Quicksilver slots that nothing will consume again" slots="qs_v1 and qs_v1_*" interval=1m0s wal_limit_bytes=4294967296 inactive_limit=6h0m0s off="QS_SLOT_JANITOR=off"
+time=2026-11-26T16:08:53.424Z level=ERROR msg="table is halted in its manifest and stays out of service" table=public.t2 reason="column(s) r were backfilled by a table rewrite; their values never appear in the change stream" serve_with_halted_tables=false
+time=2026-11-26T16:08:53.456Z level=INFO msg="pg_quicksilver is not installed in this database; no mirror relation is registered (CREATE EXTENSION pg_quicksilver on the primary to route reads; this is looked at again every minute)" database=app
+time=2026-11-26T16:08:53.456Z level=INFO msg="rebuild requested for a halted table; it will be re-snapshotted" table=public.t2 halted_for="column(s) r were backfilled by a table rewrite; their values never appear in the change stream"
+time=2026-11-26T16:08:53.484Z level=WARN msg="not resuming this table from the slot; re-snapshotting it" table=public.t2 why="an operator asked for this halted table to be rebuilt (REBUILD file)" slot=qs_v1_s1 at=0/7B980D0
+time=2026-11-26T16:08:53.633Z level=INFO msg="snapshot complete" table=public.t2 rows=22920 seconds=0.148344456
+time=2026-11-26T16:08:53.637Z level=INFO msg="halted table rebuilt from a snapshot and back in service" table=public.t2
+time=2026-11-26T16:08:53.637Z level=INFO msg="resuming from the existing slot" slot=qs_v1_s1 confirmed=0/7B6C461
+time=2026-11-26T16:08:53.670Z level=INFO msg="key index built" table=public.t1 keys=22940 seconds=0.030424018
+time=2026-11-26T16:08:53.671Z level=INFO msg="key index built" table=public.t2 keys=22920 seconds=0.000658824
+time=2026-11-26T16:08:53.696Z level=INFO msg="key index built" table=public.t3 keys=22860 seconds=0.025691241

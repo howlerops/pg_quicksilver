@@ -45,8 +45,9 @@ printf "\nport = 5601\nlisten_addresses = 'localhost'\nunix_socket_directories =
 pgu "$PG/pg_ctl -D $BASE/s1 -l $BASE/s1.log -w start" >/dev/null
 
 # writers START: one loop per table on the primary, until $STOP exists.
+WPIDS=()
 writers_start() {
-  rm -f "$STOP"
+  rm -f "$STOP"; WPIDS=()
   for t in t1 t2 t3; do
     ( n=0
       while [ ! -f "$STOP" ]; do
@@ -56,9 +57,11 @@ UPDATE $t SET v = md5(random()::text) WHERE id % 97 = $((n % 97));
 INSERT INTO $t SELECT g, g % 1000, md5(g::text) FROM generate_series($((100000 + n*20)), $((100000 + n*20 + 19))) g ON CONFLICT DO NOTHING;
 Q
       done ) &
+    WPIDS+=($!)
   done
 }
-writers_stop() { touch "$STOP"; wait; rm -f "$STOP"; }
+# Only the writers: a bare `wait` would also wait for the sidecar, which never exits.
+writers_stop() { touch "$STOP"; wait "${WPIDS[@]}"; rm -f "$STOP"; }
 
 # wait_halt: until /readyz names t2 (it is not ready once a table is halted).
 wait_halt() {
