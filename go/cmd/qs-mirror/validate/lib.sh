@@ -44,7 +44,7 @@ start_sc() {
     QS_SLOT=$BASE_SLOT QS_PUBLICATION=$PUB QS_MIRROR_PATH="$BASE/mirror/$name" QS_FRESHNESS_SLO=15s \
     QS_PRIMARY_HOST=localhost QS_PRIMARY_PORT=$pp QS_LOCAL_SOCKET_DIR=$BASE/sock QS_LOCAL_PORT=$lp \
     QS_DATABASE=$DB QS_PGUSER=postgres QS_POD_NAME=$pod QS_HEALTH_ADDR=127.0.0.1:$hp "$@" \
-    "$BIN/qs-mirror" >> "$OUT/$name.log" 2>&1 < /dev/null &
+    "${QS_MIRROR_BIN:-$BIN/qs-mirror}" >> "$OUT/$name.log" 2>&1 < /dev/null &
   echo $! > "$OUT/$name.pid"
   echo "started sidecar $name pod=$pod pid=$(cat "$OUT/$name.pid")"
 }

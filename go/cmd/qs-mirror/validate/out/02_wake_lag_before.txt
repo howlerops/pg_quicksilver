@@ -1,0 +1,109 @@
++ export 'PS4=+ '
++ PS4='+ '
++ TABLES=public.bench
++ pg_down s1
++ pg_down p2
++ rm -rf /var/lib/postgresql/qsy1/p2 /var/lib/postgresql/qsy1/s1 /var/lib/postgresql/qsy1/mirror
++ install -d -o postgres -g postgres /var/lib/postgresql/qsy1 /var/lib/postgresql/qsy1/sock /var/lib/postgresql/qsy1/mirror
++ pgu '/usr/lib/postgresql/17/bin/initdb -D /var/lib/postgresql/qsy1/p2 -U postgres -A trust --locale=C.UTF-8 -E UTF8'
++ su postgres -s /bin/bash -c '/usr/lib/postgresql/17/bin/initdb -D /var/lib/postgresql/qsy1/p2 -U postgres -A trust --locale=C.UTF-8 -E UTF8'
++ cat
++ pg_up p2 5600
++ pgu '/usr/lib/postgresql/17/bin/pg_ctl -D /var/lib/postgresql/qsy1/p2 -l /var/lib/postgresql/qsy1/p2.log -w -o '\''-c port=5600 -c unix_socket_directories=/var/lib/postgresql/qsy1/sock -c listen_addresses=localhost'\'' start'
++ su postgres -s /bin/bash -c '/usr/lib/postgresql/17/bin/pg_ctl -D /var/lib/postgresql/qsy1/p2 -l /var/lib/postgresql/qsy1/p2.log -w -o '\''-c port=5600 -c unix_socket_directories=/var/lib/postgresql/qsy1/sock -c listen_addresses=localhost'\'' start'
++ sql 5600 postgres
++ su postgres -s /bin/bash -c '/usr/lib/postgresql/17/bin/psql -X -A -t -q -v ON_ERROR_STOP=1 -h /var/lib/postgresql/qsy1/sock -p 5600 -U postgres -d postgres -f -'
++ cat
++ sql 5600 app
++ su postgres -s /bin/bash -c '/usr/lib/postgresql/17/bin/psql -X -A -t -q -v ON_ERROR_STOP=1 -h /var/lib/postgresql/qsy1/sock -p 5600 -U postgres -d app -f -'
++ cat
++ sql 5600 postgres
++ su postgres -s /bin/bash -c '/usr/lib/postgresql/17/bin/psql -X -A -t -q -v ON_ERROR_STOP=1 -h /var/lib/postgresql/qsy1/sock -p 5600 -U postgres -d postgres -f -'
++ cat
+(s1phys,)
++ pgu '/usr/lib/postgresql/17/bin/pg_basebackup -c fast -h /var/lib/postgresql/qsy1/sock -p 5600 -U postgres -D /var/lib/postgresql/qsy1/s1 -R -X stream -S s1phys'
++ su postgres -s /bin/bash -c '/usr/lib/postgresql/17/bin/pg_basebackup -c fast -h /var/lib/postgresql/qsy1/sock -p 5600 -U postgres -D /var/lib/postgresql/qsy1/s1 -R -X stream -S s1phys'
++ printf '\nport = 5601\nlisten_addresses = '\''localhost'\''\nunix_socket_directories = '\''/var/lib/postgresql/qsy1/sock'\''\nprimary_conninfo = '\''host=localhost port=5600 user=postgres dbname=app application_name=s1'\''\nprimary_slot_name = '\''s1phys'\''\nhot_standby_feedback = on\nsync_replication_slots = on\n'
++ pgu '/usr/lib/postgresql/17/bin/pg_ctl -D /var/lib/postgresql/qsy1/s1 -l /var/lib/postgresql/qsy1/s1.log -w start'
++ su postgres -s /bin/bash -c '/usr/lib/postgresql/17/bin/pg_ctl -D /var/lib/postgresql/qsy1/s1 -l /var/lib/postgresql/qsy1/s1.log -w start'
++ start_sc s1 s1 5611 5601 5600
++ local name=s1 pod=s1 hp=5611 lp=5601 pp=5600
++ shift 5
++ mkdir -p /var/lib/postgresql/qsy1/mirror/s1
++ echo 30897
+++ cat /home/user/pg_quicksilver/.claude/worktrees/agent-a205c91741fc17a04/go/cmd/qs-mirror/validate/out/s1.pid
++ nohup env QS_CLUSTER=qsv QS_MODE=shadow QS_INGEST=logical QS_TABLES=public.bench QS_SLOT=qs_v1 QS_PUBLICATION=qs_v1 QS_MIRROR_PATH=/var/lib/postgresql/qsy1/mirror/s1 QS_FRESHNESS_SLO=15s QS_PRIMARY_HOST=localhost QS_PRIMARY_PORT=5600 QS_LOCAL_SOCKET_DIR=/var/lib/postgresql/qsy1/sock QS_LOCAL_PORT=5601 QS_DATABASE=app QS_PGUSER=postgres QS_POD_NAME=s1 QS_HEALTH_ADDR=127.0.0.1:5611 /tmp/claude-0/-home-user-pg-quicksilver/58894071-fd3a-5a32-94ab-41a0530826ff/scratchpad/bin/qs-mirror-base
++ echo 'started sidecar s1 pod=s1 pid=30897'
+started sidecar s1 pod=s1 pid=30897
+++ seq 600
++ for _ in $(seq 600)
+++ applied_lsn s1 public.bench
++ '[' -n '' ']'
++ sleep 0.2
++ for _ in $(seq 600)
+++ applied_lsn s1 public.bench
++ '[' -n '' ']'
++ sleep 0.2
++ for _ in $(seq 600)
+++ applied_lsn s1 public.bench
++ '[' -n '' ']'
++ sleep 0.2
++ for _ in $(seq 600)
+++ applied_lsn s1 public.bench
++ '[' -n '' ']'
++ sleep 0.2
++ for _ in $(seq 600)
+++ applied_lsn s1 public.bench
++ '[' -n '' ']'
++ sleep 0.2
++ for _ in $(seq 600)
+++ applied_lsn s1 public.bench
++ '[' -n '' ']'
++ sleep 0.2
++ for _ in $(seq 600)
+++ applied_lsn s1 public.bench
++ '[' -n '' ']'
++ sleep 0.2
++ for _ in $(seq 600)
+++ applied_lsn s1 public.bench
++ '[' -n '' ']'
++ sleep 0.2
++ for _ in $(seq 600)
+++ applied_lsn s1 public.bench
++ '[' -n 0/80351D0 ']'
++ break
+++ applied_lsn s1 public.bench
+++ /tmp/claude-0/-home-user-pg-quicksilver/58894071-fd3a-5a32-94ab-41a0530826ff/scratchpad/bin/qs-query -mirror /var/lib/postgresql/qsy1/mirror/s1 -table public.bench -lsn
++ echo 'mirror of public.bench first LSN: 0/80351D0'
+mirror of public.bench first LSN: 0/80351D0
++ ready 5611 120
+++ seq 1200
++ for _ in $(seq $(( ${2:-60} * 10 )))
++ curl -sf http://127.0.0.1:5611/readyz
++ return 0
++ echo 's1 ready'
+s1 ready
+++ dirname ./02_wake_lag.sh
++ python3 ./lag.py before /tmp/claude-0/-home-user-pg-quicksilver/58894071-fd3a-5a32-94ab-41a0530826ff/scratchpad/bin/qs-query /var/lib/postgresql/qsy1/mirror/s1 /var/lib/postgresql/qsy1/sock 5600
+[before] 30 commits x 50 rows: median 102.7 ms, p95 245.7 ms, max 302.5 ms, polls per wait median 4
+[before] per-commit ms (50 rows): 176.2 97.1 60.8 70.0 85.4 102.0 210.0 71.2 67.0 128.6 74.7 188.3 113.2 70.7 103.5 179.1 144.3 155.4 121.3 139.2 54.6 67.2 120.1 142.5 79.4 81.1 302.5 93.6 245.7 58.6
+[before] 30 commits x 5000 rows: median 296.4 ms, p95 533.1 ms, max 623.5 ms, polls per wait median 7
+[before] per-commit ms (5000 rows): 115.3 178.9 311.5 320.6 407.9 411.9 157.9 390.5 296.7 193.0 623.5 226.4 134.8 110.1 320.9 323.7 344.9 218.2 507.8 360.8 216.3 533.1 328.1 254.9 236.4 201.6 255.1 296.0 383.5 151.6
++ stop_sc s1
++ local p
+++ cat /home/user/pg_quicksilver/.claude/worktrees/agent-a205c91741fc17a04/go/cmd/qs-mirror/validate/out/s1.pid
++ p=30897
++ kill -TERM 30897
+++ seq 300
++ for _ in $(seq 300)
++ kill -0 30897
++ sleep 0.1
++ for _ in $(seq 300)
++ kill -0 30897
++ break
++ echo 'stopped sidecar s1 pid=30897'
+stopped sidecar s1 pid=30897
++ pg_down s1
++ pgu '/usr/lib/postgresql/17/bin/pg_ctl -D /var/lib/postgresql/qsy1/s1 -m fast -w stop'
++ pg_down p2
++ pgu '/usr/lib/postgresql/17/bin/pg_ctl -D /var/lib/postgresql/qsy1/p2 -m fast -w stop'

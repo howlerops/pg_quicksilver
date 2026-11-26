@@ -1,7 +1,0 @@
-time=2026-11-26T15:52:18.678Z level=INFO msg="quicksilver mirror starting" cluster=qsv pod=p1 mode=shadow ingest=logical tables=[public.t1] slo=15s slot=qs_v1_p1 configured_slot=qs_v1
-time=2026-11-26T15:52:18.678Z level=INFO msg="slot janitor on: when this instance is the primary it drops this cluster's Quicksilver slots that nothing will consume again" slots="qs_v1 and qs_v1_*" interval=2s wal_limit_bytes=4294967296 inactive_limit=5s off="QS_SLOT_JANITOR=off"
-time=2026-11-26T15:52:18.686Z level=INFO msg="this node is the primary — standing down; the mirror is built on replicas"
-time=2026-11-26T15:52:18.716Z level=INFO msg="slot janitor: keeping slot" slot=qs_v1_gone rule=recently_inactive why="inactive for 0s, under 5s"
-time=2026-11-26T15:52:18.716Z level=INFO msg="slot janitor: keeping slot" slot=qs_v1_s2 rule=pod_connected why="instance \"s2\" is streaming from this primary"
-time=2026-11-26T15:52:20.747Z level=INFO msg="slot janitor: keeping slot" slot=qs_v1_s1 rule=active why="a sidecar is consuming it"
-time=2026-11-26T15:52:24.810Z level=WARN msg="slot janitor: dropped slot; if its sidecar returns it will find no slot, create one and rebuild its mirror from a snapshot" slot=qs_v1_gone rule=orphaned why="inactive for 6s (limit 5s) and no instance of this cluster has a replication connection or a physical slot by that name"
