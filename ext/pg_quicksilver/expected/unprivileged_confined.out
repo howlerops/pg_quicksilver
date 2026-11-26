@@ -167,48 +167,25 @@ SELECT current_user, session_user;
  qs_c_ok      | qs_c_ok
 (1 row)
 
--- the routed statement's plan names no internal role
-EXPLAIN (VERBOSE, COSTS OFF) SELECT count(*), sum(amount), min(id), max(id) FROM public.orders WHERE customer_id = 1;
-                                                          QUERY PLAN                                                           
--------------------------------------------------------------------------------------------------------------------------------
+-- the routed statement's plan names no internal role. Not VERBOSE: VERBOSE
+-- prints a "Query Identifier", a hash of object OIDs that changes whenever the
+-- extension's SQL script creates an object (the extension always computes query
+-- ids, so compute_query_id cannot hide it). The routed node and the heap plan
+-- are what this asserts on.
+EXPLAIN (COSTS OFF) SELECT count(*), sum(amount), min(id), max(id) FROM public.orders WHERE customer_id = 1;
+                               QUERY PLAN                               
+------------------------------------------------------------------------
  Custom Scan (QuicksilverRoute)
-   Output: count, sum, min, max
    Quicksilver: mirror
-   Quicksilver Reason: quicksilver.route = mirror
-   Mirror Plan: 
- ╭─ Ungrouped Aggregate ─────╮
- │ Aggregates: count_star(), │
- │             sum(#0),      │
- │             min(#1),      │
- │             max(#2)       │
- │ ~1 row                    │
- ╰─────────────┬─────────────╯
- ╭─ Projection ┴─────────────╮
- │ Projections: amount, id,  │
- │              id           │
- │ ~100 rows                 │
- ╰─────────────┬─────────────╯
- ╭─ Ducklake Scan ───────────╮
- │ Table: lake.public.orders │
- │ Projections: id, amount   │
- │ Filters: customer_id = 1  │
- │ ~100 rows                 │
- ╰───────────────────────────╯
- 
    ->  Finalize Aggregate
-         Output: count(*), sum(orders.amount), min(orders.id), max(orders.id)
          ->  Gather
-               Output: (PARTIAL count(*)), (PARTIAL sum(orders.amount)), (PARTIAL min(orders.id)), (PARTIAL max(orders.id))
                Workers Planned: 2
                ->  Partial Aggregate
-                     Output: PARTIAL count(*), PARTIAL sum(orders.amount), PARTIAL min(orders.id), PARTIAL max(orders.id)
-                     ->  Parallel Bitmap Heap Scan on public.orders
-                           Output: orders.id, orders.customer_id, orders.status, orders.amount, orders.created_at, orders.note
-                           Recheck Cond: (orders.customer_id = 1)
+                     ->  Parallel Bitmap Heap Scan on orders
+                           Recheck Cond: (customer_id = 1)
                            ->  Bitmap Index Scan on orders_customer_idx
-                                 Index Cond: (orders.customer_id = 1)
- Query Identifier: 2421752078444121478
-(37 rows)
+                                 Index Cond: (customer_id = 1)
+(10 rows)
 
 SELECT usename FROM pg_stat_activity WHERE pid = pg_backend_pid();
  usename 
