@@ -54,6 +54,10 @@ psq $PPORT "CREATE DATABASE $DB" postgres >/dev/null
 psq $PPORT "CREATE ROLE qs_duck" postgres >/dev/null    # members may run DuckDB (the permission tests)
 psq $PPORT "CREATE EXTENSION pg_duckdb" >/dev/null || die "CREATE EXTENSION pg_duckdb"
 psq $PPORT "CREATE EXTENSION pg_quicksilver" >/dev/null || die "CREATE EXTENSION pg_quicksilver"
+# The one membership an operator grants (docs/40, "Ordinary roles"): the mirror
+# side runs as quicksilver_mirror_reader, and that role is what may run DuckDB.
+# No application role is ever made a member of qs_duck.
+psq $PPORT "GRANT qs_duck TO quicksilver_mirror_reader" >/dev/null || die "GRANT qs_duck TO quicksilver_mirror_reader"
 # What the image has to have done (docs/40): with pg_duckdb confined to the lake's
 # directory, DuckDB cannot download or install an extension, on any instance. So
 # the two the lake needs are installed here, in a session that lifts the

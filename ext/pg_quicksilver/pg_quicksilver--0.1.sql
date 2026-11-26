@@ -1,6 +1,28 @@
 -- pg_quicksilver 0.1
 \echo Use "CREATE EXTENSION pg_quicksilver" to load this file. \quit
 
+-- ---------------------------------------------------------------- the mirror role
+-- The mirror side runs as this role (docs/40, "Ordinary roles"); the C code
+-- switches to it around each call into pg_duckdb (QS_MIRROR_ROLE). It is
+-- NOLOGIN, owns the mirror relations (the sidecar makes them so: go/cmd/
+-- qs-mirror, quicksilver_mirror), holds no privilege on a heap table, and is
+-- the one role an operator makes a member of duckdb.postgres_role:
+--
+--   GRANT <duckdb.postgres_role> TO quicksilver_mirror_reader;
+--
+-- No application role may be a member of that role: a member runs DuckDB
+-- statements itself, and DuckDB can read every mirrored table's files.
+-- Created only if absent, so that another database of the cluster that has
+-- the extension does not fail; a role is cluster-wide and is not dropped with
+-- the extension.
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_catalog.pg_roles WHERE rolname = 'quicksilver_mirror_reader') THEN
+        CREATE ROLE quicksilver_mirror_reader NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION;
+    END IF;
+END
+$$;
+
 -- ---------------------------------------------------------------- registry
 -- One row per mirrored heap table. The sidecar (or whoever publishes the
 -- mirror) owns these rows. applied_lsn here is the durable copy, written on

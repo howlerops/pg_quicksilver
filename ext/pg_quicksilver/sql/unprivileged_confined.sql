@@ -1,10 +1,16 @@
 -- Ordinary roles on the confined build (docs/40, "Ordinary roles").
 --
--- A role that is not a superuser is routed only where pg_duckdb is confined:
--- the build defines duckdb.confined_file_access, the lake's directory is in
--- duckdb.allowed_directories, and the role is a member of duckdb.postgres_role
--- and of neither pg_read_server_files nor pg_write_server_files. On the stock
--- build this file does nothing but say so (expected/unprivileged_confined_1.out).
+-- A role that is not a superuser is routed to the mirror, and it is NOT a
+-- member of duckdb.postgres_role: the mirror side runs as quicksilver_mirror_reader,
+-- the one role that is (setup.sh grants it). What this file checks:
+--   1. an ordinary role that is not a member is routed, with the heap's answer;
+--   2. it cannot run DuckDB, read a lake file, or read a mirror relation directly;
+--   3. a table it may not read gets the heap's error and is not routed;
+--   4. it cannot become the mirror role, and the mirror role never shows as the user;
+--   5. a mirror-side failure leaves the user unchanged, outside and inside a block;
+--   6. a role that is a member (an operator's choice) is routed the same way, and
+--      the mirror role losing its membership sends everything to the heap.
+-- On the stock build this file does nothing but say so (expected/unprivileged_confined_1.out).
 --
 -- Each case: the answer is the heap's, and the decision is either "routed"
 -- (the mirror answered, with the same rows) or the heap's reason.
@@ -12,29 +18,41 @@
 SELECT coalesce(current_setting('duckdb.confined_file_access', true), 'off') = 'on' AS confined \gset
 \if :confined
 SELECT current_setting('duckdb.allowed_directories') LIKE '%/mirror,/tmp/qs_regress' AS confined_to_the_lake;
+SELECT pg_has_role('quicksilver_mirror_reader', 'qs_duck', 'MEMBER') AS mirror_role_is_member;
 
-CREATE ROLE qs_c_ok LOGIN IN ROLE qs_duck;             -- member, SELECT on both tables: routed
-CREATE ROLE qs_c_nosel LOGIN IN ROLE qs_duck;          -- member, no privilege on orders
-CREATE ROLE qs_c_nocol LOGIN IN ROLE qs_duck;          -- member, SELECT on (id, customer_id) only
-CREATE ROLE qs_c_rls LOGIN IN ROLE qs_duck;            -- member, SELECT on customers, which has row-level security
-CREATE ROLE qs_c_out LOGIN;                            -- not a member: the heap
-CREATE ROLE qs_c_files LOGIN IN ROLE qs_duck, pg_read_server_files;  -- member and holder of the file role: the heap
-GRANT SELECT ON public.orders, public.customers TO qs_c_ok, qs_c_out, qs_c_files;
+CREATE ROLE qs_c_ok LOGIN;                             -- not a member: routed, SELECT on both tables
+CREATE ROLE qs_c_member LOGIN IN ROLE qs_duck;         -- a member (an operator's choice): routed the same
+CREATE ROLE qs_c_nosel LOGIN;                          -- no privilege on orders
+CREATE ROLE qs_c_nocol LOGIN;                          -- SELECT on (id, customer_id) only
+CREATE ROLE qs_c_rls LOGIN;                            -- SELECT on customers, which has row-level security
+GRANT SELECT ON public.orders, public.customers TO qs_c_ok, qs_c_member;
 GRANT SELECT (id, customer_id) ON public.orders TO qs_c_nocol;
 GRANT SELECT ON public.customers TO qs_c_rls;
 CREATE SCHEMA qs_c;
-GRANT USAGE ON SCHEMA qs_c TO qs_c_ok, qs_c_nosel, qs_c_nocol, qs_c_rls, qs_c_out, qs_c_files;
+GRANT USAGE ON SCHEMA qs_c TO qs_c_ok, qs_c_member, qs_c_nosel, qs_c_nocol, qs_c_rls;
 CREATE VIEW qs_c.plain AS SELECT id, customer_id, amount FROM public.orders WHERE customer_id = 1;
-GRANT SELECT ON qs_c.plain TO qs_c_ok, qs_c_nosel, qs_c_out;
+GRANT SELECT ON qs_c.plain TO qs_c_ok, qs_c_nosel;
+
+-- A heap table with a mirror that fails once the file is replaced (case 5).
+-- The file is what a lake data file is: written by DuckDB, read through a view.
+CREATE TABLE qs_c.h (id int PRIMARY KEY, a int, b text);
+INSERT INTO qs_c.h SELECT g, g * 10, 'heap' FROM generate_series(1, 3) g;
+GRANT SELECT ON qs_c.h TO qs_c_ok;
+SELECT duckdb.raw_query($$ COPY (SELECT * FROM (VALUES (1, 10, 'heap'), (2, 20, 'heap'), (3, 30, 'heap')) t(id, a, b)) TO '/tmp/qs_regress/unpriv.parquet' $$);
+CREATE VIEW qs_c.hm AS SELECT r['id']::int AS id, r['a']::int AS a, r['b']::text AS b
+  FROM duckdb.query($$ SELECT * FROM read_parquet('/tmp/qs_regress/unpriv.parquet') $$) r;
+SELECT quicksilver.register_mirror('qs_c.h', 'qs_c.hm', 1000000000000);
+SELECT quicksilver.report_applied_lsn('qs_c.h', pg_current_wal_lsn() + 1000000000);
+-- the mirror relation of orders, for case 2
+SELECT mirror::regclass::text AS m FROM quicksilver.mirrors WHERE heap = 'public.orders'::regclass \gset
 
 \set last 'SELECT side, reason FROM quicksilver.last_decision();'
 \set agg 'SELECT count(*), sum(amount), min(id), max(id) FROM public.orders WHERE customer_id = 1;'
 
--- ---------------------------------------------------------------- member of duckdb.postgres_role, SELECT on the table: routed
+-- ---------------------------------------------------------------- 1. not a member: routed, the heap's answer
 \c - qs_c_ok
 \set VERBOSITY terse
-SELECT current_user, pg_has_role(current_user, 'qs_duck', 'MEMBER') AS duckdb_member,
-       pg_has_role(current_user, 'pg_read_server_files', 'MEMBER') AS read_files;
+SELECT current_user, session_user, pg_has_role(current_user, 'qs_duck', 'MEMBER') AS duckdb_member;
 SET quicksilver.route = mirror;
 :agg
 :last
@@ -52,14 +70,40 @@ COMMIT;
 -- a view owned by a role that may read the table
 SELECT count(*), sum(amount) FROM qs_c.plain;
 :last
--- the role's DuckDB is confined: a file outside the lake is refused (SQLSTATE only; the message differs by build)
-\set VERBOSITY sqlstate
-SELECT * FROM duckdb.query($$ SELECT count(*) FROM read_csv('/etc/passwd', header = false, sep = '|') $$);
-\set VERBOSITY terse
-:agg
-:last
 
--- ---------------------------------------------------------------- member, no privilege on the table: the heap's error
+-- ---------------------------------------------------------------- 2. no direct route to DuckDB or to a mirror
+SELECT * FROM duckdb.query($$ SELECT count(*) FROM read_parquet('/tmp/qs_regress/unpriv.parquet') $$);
+SELECT duckdb.raw_query($$ SELECT 1 $$);
+SELECT count(*) FROM :m;
+SELECT count(*) FROM quicksilver.mirrors;
+
+-- ---------------------------------------------------------------- 4. the identity is not reachable, and never shows
+SET ROLE quicksilver_mirror_reader;
+SET SESSION AUTHORIZATION quicksilver_mirror_reader;
+SELECT current_user, session_user;
+-- the routed statement's plan names no internal role
+EXPLAIN (VERBOSE, COSTS OFF) SELECT count(*), sum(amount), min(id), max(id) FROM public.orders WHERE customer_id = 1;
+SELECT usename FROM pg_stat_activity WHERE pid = pg_backend_pid();
+
+-- ---------------------------------------------------------------- 5. a mirror that fails: the user is unchanged afterwards
+\c - postgres
+\set VERBOSITY terse
+SELECT lo_from_bytea(0, 'not a parquet file') AS lo \gset
+SELECT lo_export(:lo, '/tmp/qs_regress/unpriv.parquet');
+SELECT lo_unlink(:lo);
+\c - qs_c_ok
+\set VERBOSITY terse
+SET quicksilver.route = mirror;
+SELECT id, a, b FROM qs_c.h ORDER BY id;
+:last
+SELECT current_user, session_user;
+BEGIN;
+SELECT count(*) FROM qs_c.h;
+SELECT current_user;
+COMMIT;
+SELECT current_user, session_user;
+
+-- ---------------------------------------------------------------- 3. member or not, no privilege on the table: the heap's error
 \c - qs_c_nosel
 \set VERBOSITY terse
 SET quicksilver.route = mirror;
@@ -68,7 +112,7 @@ SET quicksilver.route = mirror;
 SELECT count(*) FROM qs_c.plain;
 :last
 
--- ---------------------------------------------------------------- member, SELECT on one column only
+-- ---------------------------------------------------------------- SELECT on one column only
 \c - qs_c_nocol
 \set VERBOSITY terse
 SET quicksilver.route = mirror;
@@ -77,7 +121,7 @@ SELECT count(*) FROM public.orders WHERE customer_id = 1;
 :agg
 :last
 
--- ---------------------------------------------------------------- member, row-level security on the table: the heap's rows
+-- ---------------------------------------------------------------- row-level security on the table: the heap's rows
 \c - postgres
 \set VERBOSITY terse
 ALTER TABLE public.customers ENABLE ROW LEVEL SECURITY;
@@ -92,17 +136,24 @@ SELECT count(*), min(id), max(id) FROM public.customers;
 DROP POLICY qs_c_few ON public.customers;
 ALTER TABLE public.customers DISABLE ROW LEVEL SECURITY;
 
--- ---------------------------------------------------------------- not a member of duckdb.postgres_role: the heap
-\c - qs_c_out
+-- ---------------------------------------------------------------- 6. a member is routed the same; the mirror role without its membership is not
+\c - qs_c_member
 \set VERBOSITY terse
 SET quicksilver.route = mirror;
 :agg
 :last
-SELECT count(*), sum(amount) FROM qs_c.plain;
-:last
-
--- ---------------------------------------------------------------- member, and holds pg_read_server_files: the heap
-\c - qs_c_files
+\c - postgres
+\set VERBOSITY terse
+REVOKE qs_duck FROM quicksilver_mirror_reader;
+\c - qs_c_ok
+\set VERBOSITY terse
+SET quicksilver.route = mirror;
+:agg
+SELECT side, detail FROM quicksilver.last_decision();
+\c - postgres
+\set VERBOSITY terse
+GRANT qs_duck TO quicksilver_mirror_reader;
+\c - qs_c_ok
 \set VERBOSITY terse
 SET quicksilver.route = mirror;
 :agg
@@ -112,8 +163,9 @@ SET quicksilver.route = mirror;
 \c - postgres
 \set VERBOSITY terse
 DROP SCHEMA qs_c CASCADE;
-REVOKE ALL ON public.orders, public.customers FROM qs_c_ok, qs_c_nosel, qs_c_nocol, qs_c_rls, qs_c_out, qs_c_files;
-DROP ROLE qs_c_ok, qs_c_nosel, qs_c_nocol, qs_c_rls, qs_c_out, qs_c_files;
+SELECT quicksilver.prune();
+REVOKE ALL ON public.orders, public.customers FROM qs_c_ok, qs_c_member, qs_c_nosel, qs_c_nocol, qs_c_rls;
+DROP ROLE qs_c_ok, qs_c_member, qs_c_nosel, qs_c_nocol, qs_c_rls;
 \else
 \echo skipped: the DuckDB build is not the confined one (duckdb.confined_file_access is off)
 \endif
