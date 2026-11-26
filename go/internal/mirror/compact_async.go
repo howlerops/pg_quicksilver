@@ -34,6 +34,7 @@ import (
 	"path/filepath"
 	"slices"
 	"sort"
+	"strings"
 	"time"
 )
 
@@ -51,6 +52,9 @@ type Compaction struct {
 	index    *keyIndex // key -> position in the new base file
 	dupDead  []int     // positions superseded within the rewrite itself
 	rowCount int
+	// clusterBy is the column the rewrite kept the output clustered on, ""
+	// if it wrote the base and then the deltas; clusterWhy is the reason.
+	clusterBy, clusterWhy string
 	// halted is the reason the rewrite met a value the mirror cannot hold. The
 	// rewrite works on a detached copy of the table and cannot halt the real
 	// one; the swap does it, on the apply goroutine.
@@ -231,6 +235,36 @@ func (t *Table) BeginCompaction() *Compaction {
 		if err != nil {
 			c.err = err
 			return
+		}
+		// Where the delta rows go. With a column the base file is already
+		// clustered on, they are merged into the base stream on it, so that the
+		// new file is clustered as the old one was (compact_cluster.go). With
+		// none, or with no delta rows to place, it is the loop below, which
+		// puts them at the end.
+		var baseRels, deltaRels []string
+		for _, rel := range snapshot {
+			switch {
+			case pcols[rel] != nil:
+			case strings.HasPrefix(rel, "base"):
+				baseRels = append(baseRels, rel)
+			default:
+				deltaRels = append(deltaRels, rel)
+			}
+		}
+		c.clusterBy, c.clusterWhy = t.clusterColumn(baseRels)
+		if len(deltaRels) == 0 {
+			c.clusterBy = ""
+		}
+		if c.clusterBy != "" {
+			n, err := t.rewriteClustered(c.clusterBy, baseRels, deltaRels, deadOf, overlay,
+				numeric, hashing, kb, w)
+			if err != nil {
+				w.Close()
+				c.err = err
+				return
+			}
+			out = n
+			snapshot = nil // written; nothing for the loop below
 		}
 		for _, rel := range snapshot {
 			if pcols[rel] != nil {
