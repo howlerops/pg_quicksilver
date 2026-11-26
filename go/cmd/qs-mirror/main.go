@@ -170,6 +170,11 @@ func main() {
 	if lake != nil {
 		defer lake.Close()
 	}
+	// pg_quicksilver, if the database has it (extension.go). The reporter is
+	// its own goroutine with its own connection to the local server.
+	ext = newExtLink(log, o)
+	h.AddMetrics(ext.Metrics)
+	go ext.run(ctx)
 
 	// Halted tables, from the manifests, BEFORE anything connects. Opening a
 	// table needs the source's catalog, and a probe that waits for the source
@@ -511,6 +516,10 @@ func runMirror(ctx context.Context, log *slog.Logger, o options, h *health.Healt
 	for _, q := range append(append([]string{}, hplan.Stay...), hplan.Rebuild...) {
 		h.SetHalted(q, tables[q].Halted())
 	}
+	// A halted table leaves pg_quicksilver's registry now, not after the
+	// snapshots below; one being rebuilt returns to it before the pump starts.
+	ext.markDirty()
+	ext.reconcile(ctx, conn, tables)
 	if len(hplan.Stay) == len(tables) {
 		// Before the slot is touched: there is nothing to stream for.
 		return errAllHalted(tables)
@@ -700,8 +709,12 @@ func runMirror(ctx context.Context, log *slog.Logger, o options, h *health.Healt
 	}
 
 	lakeReconcile(tables)
+	ext.markDirty()
+	ext.reconcile(ctx, conn, tables)
 	h.RecordBootstrapped()
 
+	ext.attachStream(st)
+	defer ext.attachStream(nil)
 	return pump(ctx, log, o, h, conn, st, tables)
 }
 
@@ -744,6 +757,7 @@ func pump(
 		}
 	}
 	var lastIdleConfirm time.Time
+	var appliedThrough uint64 // see extLink.pumpIdle
 	// For the stuck-stream test below: the position at the previous slot
 	// measurement, and how many measurements in a row found the slot far
 	// behind without that position having moved.
@@ -765,8 +779,12 @@ func pump(
 		// table's changes and pins no WAL for it: they are discarded, because
 		// the only way back for that table is a snapshot anyway.
 		if noteHalted(log, h, tables) == 0 {
+			ext.observe(tables)
 			return errAllHalted(tables)
 		}
+		// Cheap unless something changed: one comparison of the halted set.
+		ext.reconcile(ctx, conn, tables)
+		tt.done("extension")
 
 		// A promotion of THIS node means we are now the primary and must stop.
 		// Checking here rather than only in the supervisor keeps the window
@@ -805,6 +823,7 @@ func pump(
 		for _, t := range pending {
 			queued += t.Len()
 		}
+		ext.pumpBusy() // whatever Transactions() hands out is not applied yet
 		if queued < maxPendingChanges {
 			fresh, err := st.Transactions(ctx)
 			if err != nil {
@@ -960,6 +979,7 @@ func pump(
 			// when a rewrite is cheapest and when its result lasts longest.
 			maintain(log, tables, tt)
 			lakeRewrites(log, tables)
+			ext.pumpIdle(appliedThrough) // nothing handed out is unapplied
 			tt.report(log)
 			continue
 		}
@@ -1014,6 +1034,7 @@ func pump(
 				}
 			}
 		}
+		ext.observe(tables) // a table that just halted is reported unreadable at once
 		if noteHalted(log, h, tables) == 0 {
 			// Not confirmed: with no table left the slot is about to be dropped.
 			return errAllHalted(tables)
@@ -1026,6 +1047,12 @@ func pump(
 		tt.done("confirm")
 		if at := changestream.ParseLSN(last.NextLSN); at > confirmedLSN {
 			confirmedLSN = at
+		}
+		// Not confirmedLSN: that starts from the furthest table's manifest,
+		// and after a resume the other tables are behind it until the stream
+		// has been replayed to them. This counts only what THIS stream applied.
+		if at := changestream.ParseLSN(last.NextLSN); at > appliedThrough {
+			appliedThrough = at
 		}
 
 		var headLSN string
@@ -1057,6 +1084,9 @@ func pump(
 			if noteHalted(log, h, tables) == 0 {
 				return errAllHalted(tables)
 			}
+			// The heap's columns changed: the mirror relation is made again.
+			ext.markDirty()
+			ext.reconcile(ctx, conn, tables)
 			tt.done("evolve")
 		}
 
@@ -1069,6 +1099,7 @@ func pump(
 		if len(pending) > 0 {
 			ticker.Reset(time.Millisecond)
 		} else {
+			ext.pumpIdle(appliedThrough) // everything handed out has been applied
 			ticker.Reset(200 * time.Millisecond)
 		}
 	}

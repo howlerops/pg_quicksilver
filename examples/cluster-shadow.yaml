@@ -75,11 +75,13 @@ spec:
         # structure — the key index, one entry per live row — which a profile
         # against a 20.5M-row mirror put at 95.76% of the live heap.
         #
-        # Budget about 90 bytes of RSS per live row, and round up:
+        # That is the steady state (90 to 130 bytes of RSS per live row). The
+        # limit has to hold the PEAK, catching up while the base is rewritten:
+        # 3,040 MB at 10.5M rows, 290 bytes per row. Budget 300 and round up:
         #
-        #     1M rows      256Mi   (the default)
-        #     5M rows      512Mi
-        #    20M rows        2Gi   measured peak 1,854 MB
+        #   3.5M rows        1Gi   (the default)
+        #    10M rows        3Gi
+        #    20M rows        6Gi
         #
         # This is a request AND a limit, so the sidecar is Guaranteed QoS. That
         # matters more than the number: a container that requests far less than
@@ -90,7 +92,7 @@ spec:
         # runs with GOMEMLIMIT at 80% of this value, so Go collects harder
         # instead of growing past the limit. Measured at 20.5M rows, a ceiling
         # near the live heap costs 10x the drain time, so leave the headroom.
-        sidecarMemory: 2Gi
+        sidecarMemory: 3Gi
 
   bootstrap:
     initdb:

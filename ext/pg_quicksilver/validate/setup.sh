@@ -27,6 +27,10 @@ shared_preload_libraries = 'pg_duckdb,pg_quicksilver'
 shared_buffers = 512MB
 timezone = 'UTC'
 duckdb.postgres_role = 'qs_duck'
+# This path is the stand-in one (docs/40): a view names files and the LSN that
+# publish.sh reports is the one at publication, so it cannot keep up with the
+# strict default. The real path is validate/real.
+quicksilver.max_lag = '16MB'
 max_wal_senders = 10
 max_replication_slots = 10
 CONF

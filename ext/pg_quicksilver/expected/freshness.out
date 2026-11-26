@@ -9,6 +9,22 @@ CREATE VIEW qtm.h AS SELECT r['id']::int AS id, r['a']::int AS a, r['b']::text A
   FROM duckdb.query($$ SELECT * FROM (VALUES (1, 10, 'mirror')) t(id, a, b) $$) r;
 CREATE TABLE qt.filler (x text);
 SET quicksilver.route = mirror;
+-- The default is strict (max_lag = 0) and waits; the first half of this file
+-- is about the bound, so it sets one and does not wait.
+SHOW quicksilver.max_lag;
+ quicksilver.max_lag 
+---------------------
+ 0
+(1 row)
+
+SHOW quicksilver.freshness_wait;
+ quicksilver.freshness_wait 
+----------------------------
+ 20ms
+(1 row)
+
+SET quicksilver.max_lag = '16MB';
+SET quicksilver.freshness_wait = 0;
 -- registered, but nobody has said what it has applied: not routed
 SELECT quicksilver.register_mirror('qt.h', 'qtm.h');
  register_mirror 
@@ -105,7 +121,7 @@ SELECT b, count(*) FROM qt.h GROUP BY b;
  mirror |     1
 (1 row)
 
-RESET quicksilver.max_lag;
+SET quicksilver.max_lag = '16MB';
 -- the durable copy in the registry counts too; the newer of the two is believed
 UPDATE quicksilver.mirrors SET applied_lsn = '0/1' WHERE heap = 'qt.h'::regclass;
 SELECT b, count(*) FROM qt.h GROUP BY b;
@@ -175,12 +191,12 @@ SELECT h.b, g.b FROM qt.h h JOIN qt.g g ON g.id = h.id ORDER BY h.id;
 (1 row)
 
 :last
- side |           reason           |                   detail                   
-------+----------------------------+--------------------------------------------
- heap | mirror is not fresh enough | qt.g: mirror is N WAL bytes behind, over N
+ side |           reason           |                                                            detail                                                             
+------+----------------------------+-------------------------------------------------------------------------------------------------------------------------------
+ heap | mirror is not fresh enough | qt.g: mirror is at N, this node is at N (N WAL bytes behind; quicksilver.max_lag = N routes only a mirror that has caught up)
 (1 row)
 
-SELECT quicksilver.report_applied_lsn('qt.g', pg_current_wal_lsn());
+SELECT quicksilver.report_applied_lsn('qt.g', pg_current_wal_insert_lsn() + 100000000);
  report_applied_lsn 
 --------------------
  
@@ -192,6 +208,136 @@ SELECT h.b, g.b FROM qt.h h JOIN qt.g g ON g.id = h.id ORDER BY h.id;
  mirror | mirror
 (1 row)
 
+-- ---------------------------------------------------------------- strict, the default
+-- Routed only if the mirror has reached everything this statement can see.
+RESET quicksilver.max_lag;
+SELECT quicksilver.report_applied_lsn('qt.g', pg_current_wal_insert_lsn() + 100000000);
+ report_applied_lsn 
+--------------------
+ 
+(1 row)
+
+SELECT quicksilver.report_applied_lsn('qt.h', pg_current_wal_insert_lsn());
+ report_applied_lsn 
+--------------------
+ 
+(1 row)
+
+INSERT INTO qt.filler VALUES ('one more record');     -- the node moves on, by a few bytes
+SELECT b, count(*) FROM qt.h GROUP BY b;
+  b   | count 
+------+-------
+ heap |     4
+(1 row)
+
+:last
+ side |           reason           |                                                            detail                                                             
+------+----------------------------+-------------------------------------------------------------------------------------------------------------------------------
+ heap | mirror is not fresh enough | qt.h: mirror is at N, this node is at N (N WAL bytes behind; quicksilver.max_lag = N routes only a mirror that has caught up)
+(1 row)
+
+-- a mirror that is ahead of the node is not behind it
+SELECT quicksilver.report_applied_lsn('qt.h', pg_current_wal_insert_lsn() + 100000000);
+ report_applied_lsn 
+--------------------
+ 
+(1 row)
+
+SELECT b, count(*) FROM qt.h GROUP BY b;
+   b    | count 
+--------+-------
+ mirror |     1
+(1 row)
+
+-- behind again; it is given freshness_wait to catch up, and does not
+SELECT quicksilver.report_applied_lsn('qt.h', pg_current_wal_insert_lsn());
+ report_applied_lsn 
+--------------------
+ 
+(1 row)
+
+INSERT INTO qt.filler VALUES ('and another');
+SET quicksilver.freshness_wait = '200ms';
+SELECT b, count(*) FROM qt.h GROUP BY b;
+  b   | count 
+------+-------
+ heap |     4
+(1 row)
+
+:last
+ side |           reason           |                                                            detail                                                             
+------+----------------------------+-------------------------------------------------------------------------------------------------------------------------------
+ heap | mirror is not fresh enough | qt.h: mirror is at N, this node is at N (N WAL bytes behind; quicksilver.max_lag = N routes only a mirror that has caught up)
+(1 row)
+
+SET quicksilver.freshness_wait = 0;
+-- bounded staleness is something a session asks for
+SET quicksilver.max_lag = '1MB';
+SELECT b, count(*) FROM qt.h GROUP BY b;
+   b    | count 
+--------+-------
+ mirror |     1
+(1 row)
+
+RESET quicksilver.max_lag;
+-- 0/0 is "do not read it here", and the registry's durable copy does not overrule it
+UPDATE quicksilver.mirrors SET applied_lsn = pg_current_wal_insert_lsn() + 100000000 WHERE heap = 'qt.h'::regclass;
+SELECT quicksilver.report_applied_lsn('qt.h', '0/0');
+ report_applied_lsn 
+--------------------
+ 
+(1 row)
+
+SELECT b, count(*) FROM qt.h GROUP BY b;
+  b   | count 
+------+-------
+ heap |     4
+(1 row)
+
+:last
+ side |           reason           |                                           detail                                           
+------+----------------------------+--------------------------------------------------------------------------------------------
+ heap | mirror is not fresh enough | qt.h: its mirror on this node is reported unreadable (halted, rebuilding or not published)
+(1 row)
+
+SELECT fresh, regexp_replace(stale_because, 'qt\.h: ', '') AS stale_because FROM quicksilver.mirror_status() WHERE heap = 'qt.h'::regclass;
+ fresh |                                    stale_because                                     
+-------+--------------------------------------------------------------------------------------
+ f     | its mirror on this node is reported unreadable (halted, rebuilding or not published)
+(1 row)
+
+UPDATE quicksilver.mirrors SET applied_lsn = NULL WHERE heap = 'qt.h'::regclass;
+-- ---------------------------------------------------------------- a transaction that has written
+SELECT quicksilver.report_applied_lsn('qt.h', pg_current_wal_insert_lsn() + 100000000);
+ report_applied_lsn 
+--------------------
+ 
+(1 row)
+
+SET quicksilver.route_in_transaction = on;
+BEGIN;
+SELECT b, count(*) FROM qt.h GROUP BY b;              -- nothing written yet: the mirror
+   b    | count 
+--------+-------
+ mirror |     1
+(1 row)
+
+INSERT INTO qt.h VALUES (5, 50, 'mine');
+SELECT b, count(*) FROM qt.h GROUP BY b ORDER BY b;   -- the mirror cannot show it its own row
+  b   | count 
+------+-------
+ heap |     4
+ mine |     1
+(2 rows)
+
+:last
+ side |           reason           |                                   detail                                   
+------+----------------------------+----------------------------------------------------------------------------
+ heap | inside a transaction block | the transaction has written; the mirror cannot see its uncommitted changes
+(1 row)
+
+ROLLBACK;
+RESET quicksilver.route_in_transaction;
 DROP SCHEMA qt, qtm CASCADE;
 SELECT quicksilver.prune();
  prune 

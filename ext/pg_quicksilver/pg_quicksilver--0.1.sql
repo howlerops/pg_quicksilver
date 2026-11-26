@@ -6,18 +6,34 @@
 -- mirror) owns these rows. applied_lsn here is the durable copy, written on
 -- the primary and read when a backend (re)loads the registry;
 -- quicksilver.report_applied_lsn() is the live one: shared memory, no WAL,
--- works on a standby. The newer of the two is believed.
+-- works on a standby. The newer of the two is believed, except that a report
+-- of 0/0 means "do not read this table's mirror on this node" and wins. The
+-- sidecar reports and leaves the column NULL: every node has its own mirror
+-- and the column is the same on all of them.
 CREATE TABLE quicksilver.mirrors (
     heap           regclass PRIMARY KEY,
     mirror         regclass NOT NULL,
     applied_lsn    pg_lsn,
     max_lag_bytes  bigint CHECK (max_lag_bytes >= 0),   -- NULL: quicksilver.max_lag
     enabled        boolean NOT NULL DEFAULT true,
-    -- date/timestamp columns asserted to hold no +-infinity. The mirror does not
-    -- keep infinity (docs/40), so such a column is routable only when whoever
-    -- writes the mirror, and so sees every value, lists it here.
+    -- Retired. For a type whose allowlist row has the option 'finite', a column
+    -- is routable only if it is listed here. No row of the shipped allowlist
+    -- has it any more: the mirror keeps +-infinity (docs/40). The sidecar does
+    -- not maintain this column.
     finite_columns name[] NOT NULL DEFAULT '{}',
     note           text
+);
+
+-- ---------------------------------------------------------------- lakes
+-- The DuckLake catalogs the mirror relations read. pg_duckdb's DuckDB lives in
+-- the backend, so a lake has to be attached in every session before a mirror
+-- relation over it can be planned. The extension does that itself, before it
+-- first asks the mirror, and only where the catalog file exists: on a node
+-- with no mirror (the primary) nothing is attached and nothing fails. The path
+-- is the same on every instance. Written by the sidecar, on the primary.
+CREATE TABLE quicksilver.lakes (
+    alias    name PRIMARY KEY,
+    catalog  text NOT NULL CHECK (catalog LIKE '/%')
 );
 
 -- ---------------------------------------------------------------- allowlist
@@ -48,7 +64,7 @@ CREATE TABLE quicksilver.mirrors (
 --             be declared with a precision; a literal must carry a decimal
 --             point; CASE/COALESCE must not merge different scales.
 --   finite    type: a column is routable only if quicksilver.mirrors lists it
---             in finite_columns.
+--             in finite_columns. Not used by any shipped row (docs/40).
 --   cmp       operator: a comparison. A bare literal or a cmp_only cast is
 --             exact as its direct operand.
 --   cmp_only  function: exact only as the direct operand of a cmp operator.
@@ -67,7 +83,8 @@ CREATE TABLE quicksilver.allowlist (
     PRIMARY KEY (kind, ident)
 );
 
-REVOKE ALL ON quicksilver.mirrors, quicksilver.allowlist FROM PUBLIC;
+REVOKE ALL ON quicksilver.mirrors, quicksilver.allowlist, quicksilver.lakes FROM PUBLIC;
+SELECT pg_catalog.pg_extension_config_dump('quicksilver.lakes', '');
 SELECT pg_catalog.pg_extension_config_dump('quicksilver.mirrors', '');
 SELECT pg_catalog.pg_extension_config_dump('quicksilver.allowlist', '');
 
@@ -80,6 +97,8 @@ CREATE FUNCTION quicksilver._changed() RETURNS trigger
 CREATE TRIGGER mirrors_changed AFTER INSERT OR DELETE OR TRUNCATE ON quicksilver.mirrors
     FOR EACH STATEMENT EXECUTE FUNCTION quicksilver._changed();
 CREATE TRIGGER mirrors_updated AFTER UPDATE OF heap, mirror, max_lag_bytes, enabled, finite_columns ON quicksilver.mirrors
+    FOR EACH STATEMENT EXECUTE FUNCTION quicksilver._changed();
+CREATE TRIGGER lakes_changed AFTER INSERT OR UPDATE OR DELETE OR TRUNCATE ON quicksilver.lakes
     FOR EACH STATEMENT EXECUTE FUNCTION quicksilver._changed();
 CREATE TRIGGER allowlist_changed AFTER INSERT OR UPDATE OR DELETE OR TRUNCATE ON quicksilver.allowlist
     FOR EACH STATEMENT EXECUTE FUNCTION quicksilver._changed();
@@ -95,6 +114,12 @@ $$;
 
 CREATE FUNCTION quicksilver.report_applied_lsn(heap regclass, lsn pg_lsn) RETURNS void
     AS 'MODULE_PATHNAME', 'qs_report_applied_lsn' LANGUAGE C STRICT;
+
+-- Attaches the lakes in this session, for somebody who wants to read a mirror
+-- relation by name. A routed statement needs no such call. Returns how many
+-- are attached, -1 if one could not be (no catalog on this node, for one).
+CREATE FUNCTION quicksilver.attach_lakes() RETURNS integer
+    AS 'MODULE_PATHNAME', 'qs_attach_lakes_sql' LANGUAGE C;
 
 CREATE FUNCTION quicksilver.mirror_status(
     OUT heap regclass, OUT mirror regclass, OUT usable boolean, OUT reason text,
@@ -150,7 +175,8 @@ $$;
 GRANT USAGE ON SCHEMA quicksilver TO PUBLIC;
 REVOKE ALL ON FUNCTION quicksilver.prune() FROM PUBLIC;
 REVOKE ALL ON FUNCTION quicksilver.register_mirror(regclass, regclass, bigint),
-    quicksilver.report_applied_lsn(regclass, pg_lsn), quicksilver.reset() FROM PUBLIC;
+    quicksilver.report_applied_lsn(regclass, pg_lsn), quicksilver.reset(),
+    quicksilver.attach_lakes() FROM PUBLIC;
 
 -- ---------------------------------------------------------------- seed
 -- Small on purpose. Every row was verified by ext/pg_quicksilver/validate/
@@ -169,9 +195,11 @@ FROM (VALUES
   ('type', 'boolean', 'none', '{}'),
   ('type', 'text', 'none', '{}'),
   ('type', 'uuid', 'none', '{}'),
-  ('type', 'date', 'none', '{finite}'),
-  ('type', 'timestamp without time zone', 'none', '{finite}'),
-  ('type', 'timestamp with time zone', 'none', '{finite}'),
+  -- no 'finite': the mirror keeps +-infinity as DuckDB's own infinity and it
+  -- reads back identical through DuckLake and pg_duckdb (docs/40)
+  ('type', 'date', 'none', '{}'),
+  ('type', 'timestamp without time zone', 'none', '{}'),
+  ('type', 'timestamp with time zone', 'none', '{}'),
   -- expression nodes
   ('node', 'BoolExpr', 'none', '{}'),
   ('node', 'NullTest', 'none', '{}'),
@@ -245,3 +273,28 @@ INSERT INTO quicksilver.allowlist (kind, ident, verified_by)
 SELECT 'aggregate', format('%s(%s)', f, t), 'docs/40 equality harness, pg_duckdb 1.2.0'
 FROM unnest(ARRAY['min','max']) f,
      unnest(ARRAY['smallint','integer','bigint','numeric','date','timestamp without time zone','timestamp with time zone']) t;
+
+-- BEGIN widened by validate/widen.py
+-- Generated: do not edit by hand. Each row was proposed from quicksilver.unsafe_constructs(),
+-- routed through the DuckLake mirror on a hot standby, and kept only because every routed
+-- statement that exercises it returned the heap's bytes and RowDescription, in the ICU en-US
+-- and in the C locale database. Which statements: validate/results/widen-*.json.
+INSERT INTO quicksilver.allowlist (kind, ident, collation_rule, options, verified_by) VALUES
+  ('aggregate', 'array_agg(anynonarray)', 'none', '{}', 'validate/widen.py: 3 statements routed and identical, both locales'),
+  ('feature', 'agg_filter', 'none', '{}', 'validate/widen.py: 3 statements routed and identical, both locales'),
+  ('feature', 'agg_order_by', 'none', '{}', 'validate/widen.py: 3 statements routed and identical, both locales'),
+  ('feature', 'offset', 'none', '{}', 'validate/widen.py: 7 statements routed and identical, both locales'),
+  ('feature', 'sublink_any', 'none', '{}', 'validate/widen.py: 7 statements routed and identical, both locales'),
+  ('feature', 'sublink_exists', 'none', '{}', 'validate/widen.py: 3 statements routed and identical, both locales'),
+  ('feature', 'sublink_expr', 'none', '{}', 'validate/widen.py: 3 statements routed and identical, both locales'),
+  ('feature', 'union', 'none', '{}', 'validate/widen.py: 4 statements routed and identical, both locales'),
+  ('feature', 'union_all', 'none', '{}', 'validate/widen.py: 6 statements routed and identical, both locales'),
+  ('feature', 'window', 'none', '{}', 'validate/widen.py: 9 statements routed and identical, both locales'),
+  ('operator', '<(boolean,boolean)', 'none', '{cmp}', 'validate/widen.py: 3 statements routed and identical, both locales'),
+  ('operator', '~~(text,text)', 'deterministic', '{}', 'validate/widen.py: 11 statements routed and identical, both locales'),
+  ('type', 'double precision', 'none', '{}', 'validate/widen.py: 7 statements routed and identical, both locales'),
+  ('type', 'integer[]', 'none', '{}', 'validate/widen.py: 3 statements routed and identical, both locales'),
+  ('type', 'real', 'none', '{}', 'validate/widen.py: 6 statements routed and identical, both locales'),
+  ('window', 'rank()', 'none', '{}', 'validate/widen.py: 5 statements routed and identical, both locales'),
+  ('window', 'row_number()', 'none', '{}', 'validate/widen.py: 4 statements routed and identical, both locales');
+-- END widened by validate/widen.py

@@ -82,9 +82,9 @@ SELECT b, count(*) FROM qt.h GROUP BY b;
 INSERT INTO qt.h VALUES (6, 60, 'heap');
 -- the mirror cannot see this transaction's own write: the price of opting in
 SELECT b, count(*) FROM qt.h GROUP BY b;
-   b    | count 
---------+-------
- mirror |     5
+  b   | count 
+------+-------
+ heap |     6
 (1 row)
 
 SELECT id, b FROM qt.h WHERE id = 6 FOR UPDATE;

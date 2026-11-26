@@ -1,0 +1,15 @@
+load on the primary: none
+  strict, freshness_wait 0               routed  419 of  422 ( 99.3%)  median ms: routed  23.0, heap  68.4, all  23.1; p95 all  36.8  [writes 0/s]
+  strict, freshness_wait 20ms (default)  routed  348 of  348 (100.0%)  median ms: routed  32.5, heap   nan, all  32.5; p95 all  51.9  [writes 0/s]
+  strict, freshness_wait 200ms           routed  375 of  375 (100.0%)  median ms: routed  28.3, heap   nan, all  28.3; p95 all  44.0  [writes 0/s]
+  max_lag 1MB (opt-in)                   routed  383 of  383 (100.0%)  median ms: routed  28.3, heap   nan, all  28.3; p95 all  44.1  [writes 0/s]
+load on the primary: unmirrored table, 200 transactions/s asked for
+  strict, freshness_wait 0               routed   37 of  223 ( 16.6%)  median ms: routed  34.8, heap  67.9, all  65.1; p95 all 102.8  [writes 200/s]
+  strict, freshness_wait 20ms (default)  routed  333 of  346 ( 96.2%)  median ms: routed  30.6, heap  84.9, all  31.1; p95 all  60.2  [writes 200/s]
+  strict, freshness_wait 200ms           routed  294 of  294 (100.0%)  median ms: routed  45.7, heap   nan, all  45.7; p95 all  64.3  [writes 200/s]
+  max_lag 1MB (opt-in)                   routed  331 of  331 (100.0%)  median ms: routed  34.6, heap   nan, all  34.6; p95 all  60.4  [writes 200/s]
+load on the primary: mirrored table, 200 transactions/s asked for
+  strict, freshness_wait 0               routed    0 of  225 (  0.0%)  median ms: routed   nan, heap  65.8, all  65.8; p95 all  89.0  [writes 200/s]
+  strict, freshness_wait 20ms (default)  routed    0 of  178 (  0.0%)  median ms: routed   nan, heap  88.5, all  88.5; p95 all 122.3  [writes 200/s]
+  strict, freshness_wait 200ms           routed   31 of   73 ( 42.5%)  median ms: routed 215.7, heap 275.9, all 267.0; p95 all 303.6  [writes 200/s]
+  max_lag 1MB (opt-in)                   routed  290 of  290 (100.0%)  median ms: routed  39.2, heap   nan, all  39.2; p95 all  75.6  [writes 200/s]
