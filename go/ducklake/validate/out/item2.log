@@ -1,0 +1,989 @@
+time=2026-11-26T17:09:29.545Z level=INFO msg="memory sizing" limit_bytes=0 limit_source=none max_tick_changes=250000 max_pending_changes=1000000 gomemlimit_set=false gomemlimit_bytes=9223372036854775807
+time=2026-11-26T17:09:29.546Z level=INFO msg="quicksilver mirror starting" cluster=qs2 pod=item2 mode=shadow ingest=logical tables=[public.rb_ledger] slo=30s slot=qs2_item2_item2 configured_slot=qs2_item2
+time=2026-11-26T17:09:29.702Z level=INFO msg="ducklake publishing on" catalog=/var/lib/postgresql/qslake2/mirror/item2/_ducklake/catalog.sqlite format=1.1 retention=5m0s attach="ATTACH 'ducklake:sqlite:/var/lib/postgresql/qslake2/mirror/item2/_ducklake/catalog.sqlite' AS \"lake\" (READ_ONLY);"
+time=2026-11-26T17:09:29.702Z level=INFO msg="slot janitor on: when this instance is the primary it drops this cluster's Quicksilver slots that nothing will consume again" slots="qs2_item2 and qs2_item2_*" interval=1m0s wal_limit_bytes=4294967296 inactive_limit=6h0m0s off="QS_SLOT_JANITOR=off"
+time=2026-11-26T17:09:29.826Z level=INFO msg="pg_quicksilver is not installed in this database; no mirror relation is registered (CREATE EXTENSION pg_quicksilver on the primary to route reads; this is looked at again every minute)" database=app
+time=2026-11-26T17:09:29.996Z level=INFO msg="new replication slot; bootstrapping by snapshot" at=0/18E2A5D8
+time=2026-11-26T17:09:30.014Z level=INFO msg="snapshot complete" table=public.rb_ledger rows=2000 seconds=0.01739274
+time=2026-11-26T17:09:30.020Z level=INFO msg="key index built" table=public.rb_ledger keys=2000 seconds=0.005540236
+time=2026-11-26T17:09:30.031Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=5 is_primary_ms=4
+time=2026-11-26T17:09:30.253Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=1 is_primary_ms=1
+time=2026-11-26T17:09:30.460Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=28 is_primary_ms=28
+time=2026-11-26T17:09:30.671Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=19 is_primary_ms=19
+time=2026-11-26T17:09:30.854Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=29 is_primary_ms=29
+time=2026-11-26T17:09:31.828Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=3 is_primary_ms=3
+time=2026-11-26T17:09:32.430Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=2 is_primary_ms=2
+time=2026-11-26T17:09:32.632Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=124 apply_ms=99 head_lsn_ms=23
+time=2026-11-26T17:09:32.711Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=51 is_primary_ms=30 idle_confirm_ms=20
+time=2026-11-26T17:09:32.744Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=32 is_primary_ms=32
+time=2026-11-26T17:09:32.810Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=28 apply_ms=15 confirm_ms=8 head_lsn_ms=3
+time=2026-11-26T17:09:33.015Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=27 apply_ms=26
+time=2026-11-26T17:09:33.390Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=128 apply_ms=127
+time=2026-11-26T17:09:33.393Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=1
+time=2026-11-26T17:09:33.479Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=19 apply_ms=14 is_primary_ms=4
+time=2026-11-26T17:09:33.589Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=10 is_primary_ms=9
+time=2026-11-26T17:09:33.756Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=66 head_lsn_ms=56 apply_ms=9
+time=2026-11-26T17:09:33.860Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=76 is_primary_ms=76
+time=2026-11-26T17:09:33.969Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=61 is_primary_ms=33 apply_ms=27
+time=2026-11-26T17:09:34.098Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=9 apply_ms=6 head_lsn_ms=1
+time=2026-11-26T17:09:34.318Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=23 apply_ms=21 confirm_ms=1
+time=2026-11-26T17:09:34.427Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=2 is_primary_ms=2
+time=2026-11-26T17:09:34.517Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=17 apply_ms=14 head_lsn_ms=1
+time=2026-11-26T17:09:34.719Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=17 apply_ms=14 head_lsn_ms=2
+time=2026-11-26T17:09:34.950Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=36 apply_ms=32 confirm_ms=1 is_primary_ms=1
+time=2026-11-26T17:09:34.956Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=3 is_primary_ms=3
+time=2026-11-26T17:09:35.132Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=13 apply_ms=10 head_lsn_ms=2
+time=2026-11-26T17:09:35.388Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=57 apply_ms=56
+time=2026-11-26T17:09:35.434Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=9 is_primary_ms=9
+time=2026-11-26T17:09:35.564Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=29 apply_ms=26 head_lsn_ms=2
+time=2026-11-26T17:09:35.790Z level=INFO msg="merged deltas" table=public.rb_ledger rows=8 seconds=0.009510383
+time=2026-11-26T17:09:35.790Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=45 apply_ms=32 merge_deltas_ms=9 head_lsn_ms=3
+time=2026-11-26T17:09:35.994Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=20 apply_ms=18 head_lsn_ms=1
+time=2026-11-26T17:09:36.004Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=3 is_primary_ms=3
+time=2026-11-26T17:09:36.192Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=26 apply_ms=20 head_lsn_ms=6
+time=2026-11-26T17:09:36.405Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=13 apply_ms=11 head_lsn_ms=1
+time=2026-11-26T17:09:36.603Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=11 apply_ms=9 head_lsn_ms=2
+time=2026-11-26T17:09:36.817Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=16 apply_ms=14 head_lsn_ms=1
+time=2026-11-26T17:09:37.011Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=6 apply_ms=4 head_lsn_ms=2
+time=2026-11-26T17:09:37.238Z level=INFO msg="merged deltas" table=public.rb_ledger rows=15 seconds=0.015915662
+time=2026-11-26T17:09:37.238Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=25 merge_deltas_ms=15 apply_ms=9
+time=2026-11-26T17:09:37.440Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=16 apply_ms=15
+time=2026-11-26T17:09:37.442Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=1 is_primary_ms=1
+time=2026-11-26T17:09:37.633Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=6 apply_ms=5
+time=2026-11-26T17:09:37.833Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=8 idle_confirm_ms=7
+time=2026-11-26T17:09:37.852Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=11 apply_ms=9 head_lsn_ms=2
+time=2026-11-26T17:09:38.079Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=12 apply_ms=12
+time=2026-11-26T17:09:38.350Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=24 apply_ms=19 head_lsn_ms=3
+time=2026-11-26T17:09:38.557Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=22 apply_ms=13 head_lsn_ms=8
+time=2026-11-26T17:09:38.784Z level=INFO msg="merged deltas" table=public.rb_ledger rows=22 seconds=0.03234494
+time=2026-11-26T17:09:38.784Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=46 merge_deltas_ms=32 apply_ms=13
+time=2026-11-26T17:09:38.791Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=4 is_primary_ms=4
+time=2026-11-26T17:09:38.982Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=42 apply_ms=37 head_lsn_ms=4
+time=2026-11-26T17:09:39.204Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=53 apply_ms=45 head_lsn_ms=6
+time=2026-11-26T17:09:39.380Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=10 apply_ms=8
+time=2026-11-26T17:09:39.595Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=22 apply_ms=20 head_lsn_ms=1
+time=2026-11-26T17:09:39.844Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=32 head_lsn_ms=28 apply_ms=3
+time=2026-11-26T17:09:40.047Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=21 apply_ms=20
+time=2026-11-26T17:09:40.267Z level=INFO msg="merged deltas" table=public.rb_ledger rows=29 seconds=0.005388132
+time=2026-11-26T17:09:40.267Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=35 apply_ms=29 merge_deltas_ms=5
+time=2026-11-26T17:09:40.436Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=5 apply_ms=3 head_lsn_ms=1
+time=2026-11-26T17:09:40.629Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=3 is_primary_ms=3
+time=2026-11-26T17:09:40.654Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=6 apply_ms=4 head_lsn_ms=1
+time=2026-11-26T17:09:40.857Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=5 apply_ms=3 head_lsn_ms=1
+time=2026-11-26T17:09:41.066Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=8 apply_ms=6 head_lsn_ms=1
+time=2026-11-26T17:09:41.286Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=26 apply_ms=25 head_lsn_ms=1
+time=2026-11-26T17:09:41.474Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=5 apply_ms=3 head_lsn_ms=1
+time=2026-11-26T17:09:41.689Z level=INFO msg="merged deltas" table=public.rb_ledger rows=36 seconds=0.009832946
+time=2026-11-26T17:09:41.689Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=19 merge_deltas_ms=9 apply_ms=6 head_lsn_ms=2
+time=2026-11-26T17:09:41.897Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=20 apply_ms=16 head_lsn_ms=2 is_primary_ms=1
+time=2026-11-26T17:09:42.100Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=14 apply_ms=12 head_lsn_ms=1
+time=2026-11-26T17:09:42.106Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=2 is_primary_ms=2
+time=2026-11-26T17:09:42.306Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=6 apply_ms=4 head_lsn_ms=2
+time=2026-11-26T17:09:42.512Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=8 apply_ms=6 head_lsn_ms=1
+time=2026-11-26T17:09:42.733Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=5 apply_ms=3 head_lsn_ms=2
+time=2026-11-26T17:09:42.927Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=6 apply_ms=4 head_lsn_ms=1
+time=2026-11-26T17:09:42.940Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=1 idle_confirm_ms=1
+time=2026-11-26T17:09:43.154Z level=INFO msg="merged deltas" table=public.rb_ledger rows=43 seconds=0.021573074
+time=2026-11-26T17:09:43.154Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=29 merge_deltas_ms=21 apply_ms=5 head_lsn_ms=1
+time=2026-11-26T17:09:43.359Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=27 apply_ms=17 is_primary_ms=8 head_lsn_ms=2
+time=2026-11-26T17:09:43.600Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=24 apply_ms=15 head_lsn_ms=9
+time=2026-11-26T17:09:43.792Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=13 apply_ms=8 head_lsn_ms=4
+time=2026-11-26T17:09:44.005Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=5 apply_ms=3
+time=2026-11-26T17:09:44.205Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=4 apply_ms=4
+time=2026-11-26T17:09:44.441Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=21 apply_ms=16 is_primary_ms=4 head_lsn_ms=1
+time=2026-11-26T17:09:44.663Z level=INFO msg="merged deltas" table=public.rb_ledger rows=50 seconds=0.005059398
+time=2026-11-26T17:09:44.663Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=44 apply_ms=37 merge_deltas_ms=5
+time=2026-11-26T17:09:44.665Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=1 is_primary_ms=1
+time=2026-11-26T17:09:44.848Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=23 is_primary_ms=18 apply_ms=4
+time=2026-11-26T17:09:45.030Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=5 extension_ms=3
+time=2026-11-26T17:09:45.064Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=21 apply_ms=18 head_lsn_ms=2
+time=2026-11-26T17:09:45.249Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=19 is_primary_ms=19
+time=2026-11-26T17:09:45.267Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=14 apply_ms=13 head_lsn_ms=1
+time=2026-11-26T17:09:45.484Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=29 apply_ms=28
+time=2026-11-26T17:09:45.686Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=28 apply_ms=14 head_lsn_ms=13
+time=2026-11-26T17:09:45.891Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=6 apply_ms=5
+time=2026-11-26T17:09:46.178Z level=INFO msg="merged deltas" table=public.rb_ledger rows=57 seconds=0.047208772
+time=2026-11-26T17:09:46.178Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=83 merge_deltas_ms=47 apply_ms=35 head_lsn_ms=1
+time=2026-11-26T17:09:46.326Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=24 apply_ms=24
+time=2026-11-26T17:09:46.533Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=24 apply_ms=21 head_lsn_ms=3
+time=2026-11-26T17:09:46.722Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=11 apply_ms=9 confirm_ms=1
+time=2026-11-26T17:09:46.732Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=4 is_primary_ms=4
+time=2026-11-26T17:09:46.929Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=16 apply_ms=10 head_lsn_ms=5
+time=2026-11-26T17:09:46.934Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=2 is_primary_ms=2
+time=2026-11-26T17:09:47.158Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=35 is_primary_ms=16 apply_ms=14 head_lsn_ms=4
+time=2026-11-26T17:09:47.187Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=23 is_primary_ms=23
+time=2026-11-26T17:09:47.378Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=35 apply_ms=29 is_primary_ms=4 head_lsn_ms=1
+time=2026-11-26T17:09:47.569Z level=INFO msg="merged deltas" table=public.rb_ledger rows=64 seconds=0.017609124
+time=2026-11-26T17:09:47.569Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=26 merge_deltas_ms=17 apply_ms=7
+time=2026-11-26T17:09:47.640Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=15 is_primary_ms=15
+time=2026-11-26T17:09:47.770Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=14 apply_ms=10 head_lsn_ms=3
+time=2026-11-26T17:09:47.981Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=21 apply_ms=18 head_lsn_ms=3
+time=2026-11-26T17:09:48.000Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=8 idle_confirm_ms=7
+time=2026-11-26T17:09:48.177Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=10 apply_ms=6 head_lsn_ms=2
+time=2026-11-26T17:09:48.410Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=30 apply_ms=28 head_lsn_ms=1
+time=2026-11-26T17:09:48.428Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=3 is_primary_ms=3
+time=2026-11-26T17:09:48.601Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=13 apply_ms=11 head_lsn_ms=2
+time=2026-11-26T17:09:48.815Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=27 apply_ms=25 head_lsn_ms=1
+time=2026-11-26T17:09:49.031Z level=INFO msg="merged deltas" table=public.rb_ledger rows=71 seconds=0.036792351
+time=2026-11-26T17:09:49.031Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=41 merge_deltas_ms=36 apply_ms=3 head_lsn_ms=1
+time=2026-11-26T17:09:49.044Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=1 is_primary_ms=1
+time=2026-11-26T17:09:49.230Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=26 apply_ms=22 head_lsn_ms=3
+time=2026-11-26T17:09:49.465Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=63 apply_ms=61 head_lsn_ms=1
+time=2026-11-26T17:09:49.641Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=21 apply_ms=20 head_lsn_ms=1
+time=2026-11-26T17:09:49.859Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=20 apply_ms=18 head_lsn_ms=1
+time=2026-11-26T17:09:50.057Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=17 apply_ms=16 head_lsn_ms=1
+time=2026-11-26T17:09:50.264Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=8 apply_ms=4 head_lsn_ms=3
+time=2026-11-26T17:09:50.484Z level=INFO msg="merged deltas" table=public.rb_ledger rows=78 seconds=0.014524178
+time=2026-11-26T17:09:50.484Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=26 merge_deltas_ms=14 apply_ms=9 head_lsn_ms=1
+time=2026-11-26T17:09:50.669Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=9 apply_ms=7 head_lsn_ms=2
+time=2026-11-26T17:09:50.683Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=3 is_primary_ms=3
+time=2026-11-26T17:09:50.934Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=73 apply_ms=51 is_primary_ms=20 head_lsn_ms=1
+time=2026-11-26T17:09:51.114Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=27 apply_ms=14 is_primary_ms=12
+time=2026-11-26T17:09:51.337Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=21 apply_ms=19 head_lsn_ms=1
+time=2026-11-26T17:09:51.519Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=4 apply_ms=2 head_lsn_ms=1
+time=2026-11-26T17:09:51.741Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=28 apply_ms=25 head_lsn_ms=2
+time=2026-11-26T17:09:51.747Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=3 is_primary_ms=3
+time=2026-11-26T17:09:51.931Z level=INFO msg="merged deltas" table=public.rb_ledger rows=85 seconds=0.011706066
+time=2026-11-26T17:09:51.931Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=17 merge_deltas_ms=11 apply_ms=3 head_lsn_ms=1
+time=2026-11-26T17:09:52.123Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=6 apply_ms=6
+time=2026-11-26T17:09:52.337Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=18 apply_ms=16 head_lsn_ms=1
+time=2026-11-26T17:09:52.555Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=7 apply_ms=5 head_lsn_ms=1
+time=2026-11-26T17:09:52.756Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=7 apply_ms=5 head_lsn_ms=1
+time=2026-11-26T17:09:52.960Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=8 apply_ms=7 head_lsn_ms=1
+time=2026-11-26T17:09:53.026Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=1 idle_confirm_ms=1
+time=2026-11-26T17:09:53.157Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=5 apply_ms=4
+time=2026-11-26T17:09:53.413Z level=INFO msg="merged deltas" table=public.rb_ledger rows=92 seconds=0.01165859
+time=2026-11-26T17:09:53.413Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=17 merge_deltas_ms=11 apply_ms=3 head_lsn_ms=2
+time=2026-11-26T17:09:53.655Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=51 apply_ms=48 head_lsn_ms=1 confirm_ms=1
+time=2026-11-26T17:09:53.823Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=9 apply_ms=4 head_lsn_ms=4
+time=2026-11-26T17:09:54.021Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=5 apply_ms=3 head_lsn_ms=1
+time=2026-11-26T17:09:54.245Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=18 apply_ms=9 head_lsn_ms=8
+time=2026-11-26T17:09:54.453Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=17 apply_ms=15 head_lsn_ms=1
+time=2026-11-26T17:09:54.664Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=18 head_lsn_ms=14 apply_ms=3
+time=2026-11-26T17:09:54.924Z level=INFO msg="merged deltas" table=public.rb_ledger rows=99 seconds=0.012274461
+time=2026-11-26T17:09:54.924Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=45 apply_ms=32 merge_deltas_ms=12
+time=2026-11-26T17:09:55.087Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=6 apply_ms=6
+time=2026-11-26T17:09:55.227Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=2 is_primary_ms=2
+time=2026-11-26T17:09:55.311Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=13 apply_ms=12
+time=2026-11-26T17:09:55.499Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=4 apply_ms=3
+time=2026-11-26T17:09:55.718Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=21 head_lsn_ms=14 apply_ms=5
+time=2026-11-26T17:09:55.728Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=5 is_primary_ms=5
+time=2026-11-26T17:09:55.916Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=4 apply_ms=3
+time=2026-11-26T17:09:56.122Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=8 apply_ms=7 confirm_ms=1
+time=2026-11-26T17:09:56.331Z level=INFO msg="merged deltas" table=public.rb_ledger rows=106 seconds=0.009101904
+time=2026-11-26T17:09:56.331Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=15 merge_deltas_ms=9 apply_ms=5
+time=2026-11-26T17:09:56.543Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=24 apply_ms=22 head_lsn_ms=1
+time=2026-11-26T17:09:56.731Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=5 apply_ms=4
+time=2026-11-26T17:09:56.949Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=15 apply_ms=14 head_lsn_ms=1
+time=2026-11-26T17:09:57.148Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=5 apply_ms=4
+time=2026-11-26T17:09:57.354Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=8 apply_ms=7 head_lsn_ms=1
+time=2026-11-26T17:09:57.602Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=30 apply_ms=29
+time=2026-11-26T17:09:57.840Z level=INFO msg="merged deltas" table=public.rb_ledger rows=113 seconds=0.049521165
+time=2026-11-26T17:09:57.840Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=59 merge_deltas_ms=49 apply_ms=8 head_lsn_ms=1
+time=2026-11-26T17:09:58.009Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=20 apply_ms=18 head_lsn_ms=1
+time=2026-11-26T17:09:58.025Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=12 is_primary_ms=12
+time=2026-11-26T17:09:58.207Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=4 apply_ms=3
+time=2026-11-26T17:09:58.212Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=1 idle_confirm_ms=1
+time=2026-11-26T17:09:58.422Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=15 head_lsn_ms=10 apply_ms=5
+time=2026-11-26T17:09:58.656Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=31 apply_ms=15 head_lsn_ms=15
+time=2026-11-26T17:09:58.657Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=1 is_primary_ms=1
+time=2026-11-26T17:09:58.840Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=4 apply_ms=3
+time=2026-11-26T17:09:59.076Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=25 apply_ms=24
+time=2026-11-26T17:09:59.289Z level=INFO msg="merged deltas" table=public.rb_ledger rows=120 seconds=0.010955933
+time=2026-11-26T17:09:59.289Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=14 merge_deltas_ms=11 apply_ms=2
+time=2026-11-26T17:09:59.494Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=3 apply_ms=3
+time=2026-11-26T17:09:59.697Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=4 apply_ms=3
+time=2026-11-26T17:09:59.836Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=11 is_primary_ms=11
+time=2026-11-26T17:09:59.985Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=54 apply_ms=49 head_lsn_ms=3
+time=2026-11-26T17:10:00.029Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=4 extension_ms=3
+time=2026-11-26T17:10:00.132Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=7 apply_ms=6
+time=2026-11-26T17:10:00.364Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=31 apply_ms=24 head_lsn_ms=3 is_primary_ms=2
+time=2026-11-26T17:10:00.543Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=5 apply_ms=4
+time=2026-11-26T17:10:00.764Z level=INFO msg="merged deltas" table=public.rb_ledger rows=127 seconds=0.011817785
+time=2026-11-26T17:10:00.764Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=19 merge_deltas_ms=11 apply_ms=5 head_lsn_ms=2
+time=2026-11-26T17:10:00.837Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=11 is_primary_ms=10
+time=2026-11-26T17:10:01.004Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=45 apply_ms=32 head_lsn_ms=8 is_primary_ms=3
+time=2026-11-26T17:10:01.038Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=10 is_primary_ms=9
+time=2026-11-26T17:10:01.175Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=17 apply_ms=15 is_primary_ms=1
+time=2026-11-26T17:10:01.228Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=3
+time=2026-11-26T17:10:01.378Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=16 apply_ms=12 is_primary_ms=3 head_lsn_ms=1
+time=2026-11-26T17:10:01.591Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=13 apply_ms=12 head_lsn_ms=1
+time=2026-11-26T17:10:01.851Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=43 apply_ms=32 head_lsn_ms=10
+time=2026-11-26T17:10:01.857Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=3 is_primary_ms=3
+time=2026-11-26T17:10:02.044Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=27 apply_ms=18 head_lsn_ms=9
+time=2026-11-26T17:10:02.045Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=1 is_primary_ms=1
+time=2026-11-26T17:10:02.305Z level=INFO msg="merged deltas" table=public.rb_ledger rows=134 seconds=0.036783723
+time=2026-11-26T17:10:02.305Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=79 apply_ms=39 merge_deltas_ms=36 head_lsn_ms=2
+time=2026-11-26T17:10:02.306Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=1 is_primary_ms=1
+time=2026-11-26T17:10:02.448Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=12 head_lsn_ms=6 apply_ms=5
+time=2026-11-26T17:10:02.661Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=25 apply_ms=24
+time=2026-11-26T17:10:02.855Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=14 apply_ms=14
+time=2026-11-26T17:10:03.073Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=31 apply_ms=25 head_lsn_ms=5
+time=2026-11-26T17:10:03.237Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=12 idle_confirm_ms=12
+time=2026-11-26T17:10:03.300Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=42 apply_ms=41
+time=2026-11-26T17:10:03.426Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=2 is_primary_ms=2
+time=2026-11-26T17:10:03.472Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=13 apply_ms=12
+time=2026-11-26T17:10:03.729Z level=INFO msg="merged deltas" table=public.rb_ledger rows=141 seconds=0.056280675
+time=2026-11-26T17:10:03.729Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=60 merge_deltas_ms=56 apply_ms=3
+time=2026-11-26T17:10:03.877Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=5 apply_ms=4
+time=2026-11-26T17:10:04.087Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=8 apply_ms=7
+time=2026-11-26T17:10:04.304Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=20 apply_ms=16 head_lsn_ms=4
+time=2026-11-26T17:10:04.504Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=18 apply_ms=12 head_lsn_ms=4 confirm_ms=1
+time=2026-11-26T17:10:04.696Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=5 apply_ms=4
+time=2026-11-26T17:10:04.960Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=53 apply_ms=39 is_primary_ms=9 head_lsn_ms=4
+time=2026-11-26T17:10:04.982Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=16 is_primary_ms=16
+time=2026-11-26T17:10:05.158Z level=INFO msg="merged deltas" table=public.rb_ledger rows=148 seconds=0.007962808
+time=2026-11-26T17:10:05.158Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=14 merge_deltas_ms=8 apply_ms=4 head_lsn_ms=1
+time=2026-11-26T17:10:05.349Z level=ERROR msg="table halted; it is out of service and its changes are discarded until it is rebuilt. The other tables are still mirrored" table=public.rb_ledger reason="halting public.rb_ledger: unsupported schema change (RETYPED amount integer->bigint); the mirror must be rebuilt" rebuild="create /var/lib/postgresql/qslake2/mirror/item2/public.rb_ledger/REBUILD and restart the sidecar"
+time=2026-11-26T17:10:05.426Z level=WARN msg="dropped this mirror's replication slot to protect the primary; the next start will rebuild from a fresh snapshot" slot=qs2_item2_item2
+time=2026-11-26T17:10:05.426Z level=ERROR msg="mirror stopped" err="the mirror is halted: every mirrored table is halted (public.rb_ledger); none will resume without an operator" retry_in=1s
+time=2026-11-26T17:10:06.940Z level=ERROR msg="mirror stopped" err="the mirror is halted: every mirrored table is halted (public.rb_ledger); none will resume without an operator" retry_in=2s
+time=2026-11-26T17:10:10.069Z level=ERROR msg="mirror stopped" err="the mirror is halted: every mirrored table is halted (public.rb_ledger); none will resume without an operator" retry_in=4s
+time=2026-11-26T17:10:14.366Z level=ERROR msg="mirror stopped" err="the mirror is halted: every mirrored table is halted (public.rb_ledger); none will resume without an operator" retry_in=8s
+time=2026-11-26T17:10:16.511Z level=INFO msg="memory sizing" limit_bytes=0 limit_source=none max_tick_changes=250000 max_pending_changes=1000000 gomemlimit_set=false gomemlimit_bytes=9223372036854775807
+time=2026-11-26T17:10:16.560Z level=INFO msg="quicksilver mirror starting" cluster=qs2 pod=item2 mode=shadow ingest=logical tables=[public.rb_ledger] slo=30s slot=qs2_item2_item2 configured_slot=qs2_item2
+time=2026-11-26T17:10:16.576Z level=INFO msg="ducklake publishing on" catalog=/var/lib/postgresql/qslake2/mirror/item2/_ducklake/catalog.sqlite format=1.1 retention=5m0s attach="ATTACH 'ducklake:sqlite:/var/lib/postgresql/qslake2/mirror/item2/_ducklake/catalog.sqlite' AS \"lake\" (READ_ONLY);"
+time=2026-11-26T17:10:16.576Z level=INFO msg="slot janitor on: when this instance is the primary it drops this cluster's Quicksilver slots that nothing will consume again" slots="qs2_item2 and qs2_item2_*" interval=1m0s wal_limit_bytes=4294967296 inactive_limit=6h0m0s off="QS_SLOT_JANITOR=off"
+time=2026-11-26T17:10:16.577Z level=ERROR msg="table is halted in its manifest and stays out of service" table=public.rb_ledger reason="halting public.rb_ledger: unsupported schema change (RETYPED amount integer->bigint); the mirror must be rebuilt" serve_with_halted_tables=false
+time=2026-11-26T17:10:16.702Z level=INFO msg="pg_quicksilver is not installed in this database; no mirror relation is registered (CREATE EXTENSION pg_quicksilver on the primary to route reads; this is looked at again every minute)" database=app
+time=2026-11-26T17:10:16.702Z level=INFO msg="rebuild requested for a halted table; it will be re-snapshotted" table=public.rb_ledger halted_for="halting public.rb_ledger: unsupported schema change (RETYPED amount integer->bigint); the mirror must be rebuilt"
+time=2026-11-26T17:10:16.754Z level=INFO msg="new replication slot; bootstrapping by snapshot" at=0/18E85638
+time=2026-11-26T17:10:16.904Z level=INFO msg="snapshot complete" table=public.rb_ledger rows=2199 seconds=0.149890469
+time=2026-11-26T17:10:16.998Z level=INFO msg="halted table rebuilt from a snapshot and back in service" table=public.rb_ledger
+time=2026-11-26T17:10:17.000Z level=INFO msg="key index built" table=public.rb_ledger keys=2199 seconds=0.000366374
+time=2026-11-26T17:10:17.358Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=348 apply_ms=249 is_primary_ms=83 head_lsn_ms=14
+time=2026-11-26T17:10:17.411Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=50 apply_ms=48 head_lsn_ms=1
+time=2026-11-26T17:10:17.416Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=5 apply_ms=3
+time=2026-11-26T17:10:17.426Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=6 idle_confirm_ms=6
+time=2026-11-26T17:10:17.678Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=42 apply_ms=40 head_lsn_ms=1
+time=2026-11-26T17:10:17.691Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=10 is_primary_ms=10
+time=2026-11-26T17:10:17.862Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=27 apply_ms=25 head_lsn_ms=1
+time=2026-11-26T17:10:18.067Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=19 apply_ms=9 is_primary_ms=8 head_lsn_ms=1
+time=2026-11-26T17:10:18.215Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=9 is_primary_ms=9
+time=2026-11-26T17:10:18.269Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=6 apply_ms=5
+time=2026-11-26T17:10:18.498Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=19 apply_ms=16 head_lsn_ms=2
+time=2026-11-26T17:10:18.702Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=16 apply_ms=14 head_lsn_ms=1
+time=2026-11-26T17:10:18.912Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=17 apply_ms=14 head_lsn_ms=2
+time=2026-11-26T17:10:19.108Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=8 apply_ms=6 head_lsn_ms=1
+time=2026-11-26T17:10:19.310Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=7 apply_ms=4 head_lsn_ms=2
+time=2026-11-26T17:10:19.527Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=16 apply_ms=14 head_lsn_ms=1
+time=2026-11-26T17:10:19.614Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=8 is_primary_ms=8
+time=2026-11-26T17:10:19.719Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=5 apply_ms=3 confirm_ms=1
+time=2026-11-26T17:10:19.932Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=11 apply_ms=10
+time=2026-11-26T17:10:20.157Z level=INFO msg="merged deltas" table=public.rb_ledger rows=8 seconds=0.01983477
+time=2026-11-26T17:10:20.157Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=27 merge_deltas_ms=19 apply_ms=4 head_lsn_ms=3
+time=2026-11-26T17:10:20.232Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=24 is_primary_ms=24
+time=2026-11-26T17:10:20.367Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=27 apply_ms=26
+time=2026-11-26T17:10:20.587Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=37 apply_ms=21 is_primary_ms=14 head_lsn_ms=1
+time=2026-11-26T17:10:20.591Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=1 is_primary_ms=1
+time=2026-11-26T17:10:20.762Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=10 apply_ms=8 head_lsn_ms=1
+time=2026-11-26T17:10:20.967Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=8 apply_ms=6 head_lsn_ms=1
+time=2026-11-26T17:10:21.186Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=25 apply_ms=22 head_lsn_ms=2
+time=2026-11-26T17:10:21.383Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=17 apply_ms=15 head_lsn_ms=1
+time=2026-11-26T17:10:21.587Z level=INFO msg="merged deltas" table=public.rb_ledger rows=15 seconds=0.012800396
+time=2026-11-26T17:10:21.587Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=19 merge_deltas_ms=12 apply_ms=4 head_lsn_ms=1
+time=2026-11-26T17:10:21.799Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=30 apply_ms=27 head_lsn_ms=2
+time=2026-11-26T17:10:21.976Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=5 apply_ms=3 head_lsn_ms=1
+time=2026-11-26T17:10:22.180Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=6 apply_ms=4 head_lsn_ms=1
+time=2026-11-26T17:10:22.404Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=20 apply_ms=19
+time=2026-11-26T17:10:22.599Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=13 apply_ms=11 head_lsn_ms=1
+time=2026-11-26T17:10:22.603Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=1 idle_confirm_ms=1
+time=2026-11-26T17:10:22.794Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=4 apply_ms=4
+time=2026-11-26T17:10:23.006Z level=INFO msg="merged deltas" table=public.rb_ledger rows=22 seconds=0.009028967
+time=2026-11-26T17:10:23.006Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=15 merge_deltas_ms=9 apply_ms=4 head_lsn_ms=2
+time=2026-11-26T17:10:23.204Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=11 apply_ms=9 head_lsn_ms=1
+time=2026-11-26T17:10:23.402Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=5 apply_ms=3 head_lsn_ms=1
+time=2026-11-26T17:10:23.627Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=4 apply_ms=4
+time=2026-11-26T17:10:23.834Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=7 apply_ms=4 head_lsn_ms=1
+time=2026-11-26T17:10:24.033Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=4 apply_ms=3
+time=2026-11-26T17:10:24.040Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=2 is_primary_ms=1
+time=2026-11-26T17:10:24.236Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=4 apply_ms=3 head_lsn_ms=1
+time=2026-11-26T17:10:24.475Z level=INFO msg="merged deltas" table=public.rb_ledger rows=29 seconds=0.019308089
+time=2026-11-26T17:10:24.475Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=38 merge_deltas_ms=19 apply_ms=11 head_lsn_ms=7
+time=2026-11-26T17:10:24.691Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=37 apply_ms=36
+time=2026-11-26T17:10:24.853Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=6 apply_ms=4 head_lsn_ms=1
+time=2026-11-26T17:10:24.859Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=1 is_primary_ms=1
+time=2026-11-26T17:10:25.083Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=26 apply_ms=21 is_primary_ms=2 head_lsn_ms=1
+time=2026-11-26T17:10:25.342Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=61 apply_ms=56 is_primary_ms=3 head_lsn_ms=1
+time=2026-11-26T17:10:25.348Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=3 is_primary_ms=3
+time=2026-11-26T17:10:25.408Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=3 is_primary_ms=3
+time=2026-11-26T17:10:25.509Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=23 is_primary_ms=10 apply_ms=7 head_lsn_ms=5
+time=2026-11-26T17:10:25.699Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=10 apply_ms=9
+time=2026-11-26T17:10:26.011Z level=INFO msg="merged deltas" table=public.rb_ledger rows=36 seconds=0.104598412
+time=2026-11-26T17:10:26.011Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=117 merge_deltas_ms=104 apply_ms=12
+time=2026-11-26T17:10:26.020Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=1 is_primary_ms=1
+time=2026-11-26T17:10:26.126Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=26 head_lsn_ms=14 apply_ms=9 confirm_ms=1
+time=2026-11-26T17:10:26.311Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=8 apply_ms=4 head_lsn_ms=3
+time=2026-11-26T17:10:26.518Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=11 apply_ms=7 head_lsn_ms=4
+time=2026-11-26T17:10:26.741Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=31 apply_ms=22 head_lsn_ms=9
+time=2026-11-26T17:10:26.941Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=21 apply_ms=18 is_primary_ms=1 head_lsn_ms=1
+time=2026-11-26T17:10:27.133Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=5 apply_ms=3 head_lsn_ms=1
+time=2026-11-26T17:10:27.409Z level=INFO msg="merged deltas" table=public.rb_ledger rows=43 seconds=0.047891353
+time=2026-11-26T17:10:27.409Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=65 merge_deltas_ms=47 apply_ms=16
+time=2026-11-26T17:10:27.418Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=6 is_primary_ms=6
+time=2026-11-26T17:10:27.423Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=5 is_primary_ms=5
+time=2026-11-26T17:10:27.587Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=27 apply_ms=24 head_lsn_ms=1
+time=2026-11-26T17:10:27.610Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=4 idle_confirm_ms=3
+time=2026-11-26T17:10:27.798Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=37 apply_ms=35 head_lsn_ms=1
+time=2026-11-26T17:10:27.994Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=31 apply_ms=28 head_lsn_ms=2
+time=2026-11-26T17:10:28.193Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=15 apply_ms=14 head_lsn_ms=1
+time=2026-11-26T17:10:28.406Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=21 apply_ms=19 head_lsn_ms=1
+time=2026-11-26T17:10:28.593Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=6 apply_ms=4 head_lsn_ms=1
+time=2026-11-26T17:10:28.854Z level=INFO msg="merged deltas" table=public.rb_ledger rows=50 seconds=0.009986824
+time=2026-11-26T17:10:28.854Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=50 apply_ms=34 merge_deltas_ms=10 is_primary_ms=4 head_lsn_ms=1
+time=2026-11-26T17:10:29.008Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=7 apply_ms=6
+time=2026-11-26T17:10:29.220Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=8 head_lsn_ms=4 apply_ms=4
+time=2026-11-26T17:10:29.427Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=5 apply_ms=5
+time=2026-11-26T17:10:29.611Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=3 is_primary_ms=2
+time=2026-11-26T17:10:29.672Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=34 apply_ms=30 head_lsn_ms=4
+time=2026-11-26T17:10:29.839Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=6 apply_ms=4 head_lsn_ms=1
+time=2026-11-26T17:10:30.042Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=6 apply_ms=5
+time=2026-11-26T17:10:30.282Z level=INFO msg="merged deltas" table=public.rb_ledger rows=57 seconds=0.033282399
+time=2026-11-26T17:10:30.282Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=43 merge_deltas_ms=33 head_lsn_ms=5 apply_ms=3
+time=2026-11-26T17:10:30.459Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=19 apply_ms=12 head_lsn_ms=6
+time=2026-11-26T17:10:30.688Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=45 apply_ms=43 head_lsn_ms=1
+time=2026-11-26T17:10:30.820Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=14 is_primary_ms=13
+time=2026-11-26T17:10:30.862Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=9 apply_ms=9
+time=2026-11-26T17:10:31.135Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=39 apply_ms=27 is_primary_ms=8 head_lsn_ms=3
+time=2026-11-26T17:10:31.152Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=14 is_primary_ms=14
+time=2026-11-26T17:10:31.305Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=5 apply_ms=4
+time=2026-11-26T17:10:31.310Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=2 is_primary_ms=2
+time=2026-11-26T17:10:31.502Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=4 apply_ms=4
+time=2026-11-26T17:10:31.772Z level=INFO msg="merged deltas" table=public.rb_ledger rows=64 seconds=0.058990953
+time=2026-11-26T17:10:31.772Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=64 merge_deltas_ms=59 apply_ms=4
+time=2026-11-26T17:10:31.916Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=6 apply_ms=5 head_lsn_ms=1
+time=2026-11-26T17:10:32.022Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=16
+time=2026-11-26T17:10:32.132Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=9 head_lsn_ms=5 apply_ms=3
+time=2026-11-26T17:10:32.139Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=4 is_primary_ms=4
+time=2026-11-26T17:10:32.328Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=4 apply_ms=3
+time=2026-11-26T17:10:32.582Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=54 apply_ms=54
+time=2026-11-26T17:10:32.640Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=35 is_primary_ms=29 idle_confirm_ms=5
+time=2026-11-26T17:10:32.736Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=4 apply_ms=4
+time=2026-11-26T17:10:32.966Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=14 apply_ms=13
+time=2026-11-26T17:10:33.016Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=5 is_primary_ms=5
+time=2026-11-26T17:10:33.172Z level=INFO msg="merged deltas" table=public.rb_ledger rows=71 seconds=0.009524088
+time=2026-11-26T17:10:33.172Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=17 merge_deltas_ms=9 apply_ms=7
+time=2026-11-26T17:10:33.362Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=5 apply_ms=4
+time=2026-11-26T17:10:33.571Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=9 apply_ms=7 head_lsn_ms=1
+time=2026-11-26T17:10:33.771Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=5 apply_ms=5
+time=2026-11-26T17:10:33.976Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=6 apply_ms=4 head_lsn_ms=1
+time=2026-11-26T17:10:34.192Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=9 apply_ms=7 head_lsn_ms=2
+time=2026-11-26T17:10:34.393Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=6 apply_ms=4 head_lsn_ms=1
+time=2026-11-26T17:10:34.632Z level=INFO msg="merged deltas" table=public.rb_ledger rows=78 seconds=0.029052615
+time=2026-11-26T17:10:34.632Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=37 merge_deltas_ms=29 apply_ms=7 head_lsn_ms=1
+time=2026-11-26T17:10:34.633Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=1 is_primary_ms=1
+time=2026-11-26T17:10:34.861Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=14 apply_ms=7 is_primary_ms=4 head_lsn_ms=1
+time=2026-11-26T17:10:35.111Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=36 apply_ms=34 head_lsn_ms=1
+time=2026-11-26T17:10:35.325Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=34 apply_ms=17 head_lsn_ms=9 confirm_ms=6
+time=2026-11-26T17:10:35.529Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=34 apply_ms=33
+time=2026-11-26T17:10:35.727Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=28 apply_ms=27
+time=2026-11-26T17:10:35.928Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=8 apply_ms=5 head_lsn_ms=2
+time=2026-11-26T17:10:36.142Z level=INFO msg="merged deltas" table=public.rb_ledger rows=85 seconds=0.008320433
+time=2026-11-26T17:10:36.142Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=15 merge_deltas_ms=8 apply_ms=3 head_lsn_ms=3
+time=2026-11-26T17:10:36.380Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=24 head_lsn_ms=16 apply_ms=7
+time=2026-11-26T17:10:36.596Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=20 apply_ms=19
+time=2026-11-26T17:10:36.799Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=5 apply_ms=3 head_lsn_ms=1
+time=2026-11-26T17:10:37.020Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=14 head_lsn_ms=7 apply_ms=5
+time=2026-11-26T17:10:37.235Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=22 apply_ms=18 head_lsn_ms=3
+time=2026-11-26T17:10:37.424Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=8 apply_ms=8
+time=2026-11-26T17:10:37.667Z level=INFO msg="merged deltas" table=public.rb_ledger rows=92 seconds=0.010935045
+time=2026-11-26T17:10:37.667Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=31 apply_ms=20 merge_deltas_ms=10
+time=2026-11-26T17:10:37.671Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=1 idle_confirm_ms=1
+time=2026-11-26T17:10:37.850Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=10 apply_ms=7 head_lsn_ms=2
+time=2026-11-26T17:10:38.057Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=11 apply_ms=10
+time=2026-11-26T17:10:38.276Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=19 apply_ms=15 head_lsn_ms=4
+time=2026-11-26T17:10:38.411Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=6 is_primary_ms=6
+time=2026-11-26T17:10:38.478Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=12 apply_ms=11
+time=2026-11-26T17:10:38.681Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=11 apply_ms=9 head_lsn_ms=1
+time=2026-11-26T17:10:38.688Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=4 is_primary_ms=4
+time=2026-11-26T17:10:38.903Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=27 apply_ms=25 head_lsn_ms=2
+time=2026-11-26T17:10:39.099Z level=INFO msg="merged deltas" table=public.rb_ledger rows=99 seconds=0.006809783
+time=2026-11-26T17:10:39.099Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=20 apply_ms=7 merge_deltas_ms=6 head_lsn_ms=6
+time=2026-11-26T17:10:39.304Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=21 apply_ms=19 head_lsn_ms=2
+time=2026-11-26T17:10:39.500Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=16 apply_ms=13 head_lsn_ms=2
+time=2026-11-26T17:10:39.700Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=8 apply_ms=5 head_lsn_ms=1 confirm_ms=1
+time=2026-11-26T17:10:39.912Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=23 apply_ms=22
+time=2026-11-26T17:10:40.101Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=6 apply_ms=4 confirm_ms=1
+time=2026-11-26T17:10:40.303Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=6 apply_ms=5
+time=2026-11-26T17:10:40.530Z level=INFO msg="merged deltas" table=public.rb_ledger rows=106 seconds=0.009952237
+time=2026-11-26T17:10:40.530Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=27 apply_ms=12 merge_deltas_ms=9 head_lsn_ms=4
+time=2026-11-26T17:10:40.742Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=17 apply_ms=15 head_lsn_ms=1
+time=2026-11-26T17:10:40.970Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=32 apply_ms=29 head_lsn_ms=1
+time=2026-11-26T17:10:41.171Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=27 apply_ms=22 head_lsn_ms=5
+time=2026-11-26T17:10:41.365Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=8 apply_ms=6 head_lsn_ms=1
+time=2026-11-26T17:10:41.571Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=10 apply_ms=9 head_lsn_ms=1
+time=2026-11-26T17:10:41.786Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=6 apply_ms=3 head_lsn_ms=2
+time=2026-11-26T17:10:42.077Z level=INFO msg="merged deltas" table=public.rb_ledger rows=113 seconds=0.054474726
+time=2026-11-26T17:10:42.077Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=80 merge_deltas_ms=54 apply_ms=19 head_lsn_ms=5
+time=2026-11-26T17:10:42.261Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=56 apply_ms=54
+time=2026-11-26T17:10:42.264Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=2 is_primary_ms=2
+time=2026-11-26T17:10:42.448Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=43 apply_ms=40 head_lsn_ms=1
+time=2026-11-26T17:10:42.454Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=2 is_primary_ms=2
+time=2026-11-26T17:10:42.460Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=3 is_primary_ms=3
+time=2026-11-26T17:10:42.720Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=21 apply_ms=20
+time=2026-11-26T17:10:42.748Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=7 idle_confirm_ms=6
+time=2026-11-26T17:10:42.966Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=58 apply_ms=56 head_lsn_ms=1
+time=2026-11-26T17:10:43.008Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=3 is_primary_ms=3
+time=2026-11-26T17:10:43.126Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=11 head_lsn_ms=7 apply_ms=3
+time=2026-11-26T17:10:43.328Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=7 apply_ms=6 head_lsn_ms=1
+time=2026-11-26T17:10:43.332Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=1 is_primary_ms=1
+time=2026-11-26T17:10:43.575Z level=INFO msg="merged deltas" table=public.rb_ledger rows=120 seconds=0.016637908
+time=2026-11-26T17:10:43.575Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=53 head_lsn_ms=19 apply_ms=17 merge_deltas_ms=16
+time=2026-11-26T17:10:43.740Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=8 apply_ms=7
+time=2026-11-26T17:10:43.964Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=26 apply_ms=23 head_lsn_ms=2
+time=2026-11-26T17:10:44.177Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=28 apply_ms=26 head_lsn_ms=1
+time=2026-11-26T17:10:44.217Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=1 is_primary_ms=1
+time=2026-11-26T17:10:44.393Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=24 head_lsn_ms=13 apply_ms=10
+time=2026-11-26T17:10:44.397Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=2 is_primary_ms=2
+time=2026-11-26T17:10:44.638Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=50 apply_ms=48 head_lsn_ms=1
+time=2026-11-26T17:10:44.797Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=11 apply_ms=10
+time=2026-11-26T17:10:45.108Z level=INFO msg="merged deltas" table=public.rb_ledger rows=127 seconds=0.096108586
+time=2026-11-26T17:10:45.108Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=118 merge_deltas_ms=96 apply_ms=15 head_lsn_ms=6
+time=2026-11-26T17:10:45.248Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=13 apply_ms=7 head_lsn_ms=4
+time=2026-11-26T17:10:45.507Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=31 apply_ms=23 is_primary_ms=6 head_lsn_ms=1
+time=2026-11-26T17:10:45.520Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=2 is_primary_ms=2
+time=2026-11-26T17:10:45.697Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=20 apply_ms=18 head_lsn_ms=1
+time=2026-11-26T17:10:45.812Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=6 is_primary_ms=6
+time=2026-11-26T17:10:45.888Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=7 apply_ms=5 head_lsn_ms=1
+time=2026-11-26T17:10:46.110Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=27 apply_ms=26 head_lsn_ms=1
+time=2026-11-26T17:10:46.310Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=14 apply_ms=12 head_lsn_ms=1
+time=2026-11-26T17:10:46.537Z level=INFO msg="merged deltas" table=public.rb_ledger rows=134 seconds=0.026212237
+time=2026-11-26T17:10:46.537Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=39 merge_deltas_ms=26 apply_ms=11 head_lsn_ms=1
+time=2026-11-26T17:10:46.711Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=8 apply_ms=6 head_lsn_ms=1
+time=2026-11-26T17:10:46.921Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=14 apply_ms=12 head_lsn_ms=1
+time=2026-11-26T17:10:47.131Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=17 apply_ms=13 slot_guard_ms=2 head_lsn_ms=1
+time=2026-11-26T17:10:47.321Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=5 apply_ms=4 head_lsn_ms=1
+time=2026-11-26T17:10:47.532Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=9 apply_ms=6 head_lsn_ms=2
+time=2026-11-26T17:10:47.616Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=10 is_primary_ms=10
+time=2026-11-26T17:10:47.740Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=7 apply_ms=6 head_lsn_ms=1
+time=2026-11-26T17:10:47.810Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=4 idle_confirm_ms=4
+time=2026-11-26T17:10:47.995Z level=INFO msg="merged deltas" table=public.rb_ledger rows=141 seconds=0.050102104
+time=2026-11-26T17:10:47.996Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=56 merge_deltas_ms=50 apply_ms=4
+time=2026-11-26T17:10:48.161Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=6 apply_ms=4 head_lsn_ms=1
+time=2026-11-26T17:10:48.369Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=5 apply_ms=3 head_lsn_ms=1
+time=2026-11-26T17:10:48.586Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=14 apply_ms=12 head_lsn_ms=1
+time=2026-11-26T17:10:48.813Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=26 apply_ms=24 head_lsn_ms=1
+time=2026-11-26T17:10:49.031Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=42 apply_ms=40 head_lsn_ms=1
+time=2026-11-26T17:10:49.218Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=22 apply_ms=19 head_lsn_ms=2
+time=2026-11-26T17:10:49.479Z level=INFO msg="merged deltas" table=public.rb_ledger rows=148 seconds=0.04297077
+time=2026-11-26T17:10:49.479Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=82 merge_deltas_ms=43 apply_ms=38 head_lsn_ms=1
+time=2026-11-26T17:10:49.612Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=4 is_primary_ms=4
+time=2026-11-26T17:10:49.630Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=6 apply_ms=4 head_lsn_ms=1
+time=2026-11-26T17:10:49.884Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=55 apply_ms=51 head_lsn_ms=2
+time=2026-11-26T17:10:50.045Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=14 apply_ms=12 head_lsn_ms=1
+time=2026-11-26T17:10:50.259Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=27 apply_ms=27
+time=2026-11-26T17:10:50.449Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=5 apply_ms=5
+time=2026-11-26T17:10:50.656Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=18 apply_ms=16 head_lsn_ms=1
+time=2026-11-26T17:10:50.814Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=8 is_primary_ms=8
+time=2026-11-26T17:10:50.874Z level=INFO msg="merged deltas" table=public.rb_ledger rows=155 seconds=0.020762387
+time=2026-11-26T17:10:50.874Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=27 merge_deltas_ms=20 apply_ms=6
+time=2026-11-26T17:10:51.008Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=1
+time=2026-11-26T17:10:51.149Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=53 apply_ms=40 is_primary_ms=12
+time=2026-11-26T17:10:51.160Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=7 is_primary_ms=7
+time=2026-11-26T17:10:51.397Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=98 apply_ms=71 head_lsn_ms=15 is_primary_ms=11
+time=2026-11-26T17:10:51.410Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=9 read_stream_ms=6 is_primary_ms=2
+time=2026-11-26T17:10:51.414Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=3 is_primary_ms=3
+time=2026-11-26T17:10:51.518Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=9 apply_ms=8 head_lsn_ms=1
+time=2026-11-26T17:10:51.713Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=19 apply_ms=11 is_primary_ms=5 head_lsn_ms=2
+time=2026-11-26T17:10:51.835Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=10 is_primary_ms=10
+time=2026-11-26T17:10:52.018Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=60 apply_ms=58 head_lsn_ms=1
+time=2026-11-26T17:10:52.021Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=3 is_primary_ms=3
+time=2026-11-26T17:10:52.175Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=23 apply_ms=22 head_lsn_ms=1
+time=2026-11-26T17:10:52.718Z level=INFO msg="memory sizing" limit_bytes=0 limit_source=none max_tick_changes=250000 max_pending_changes=1000000 gomemlimit_set=false gomemlimit_bytes=9223372036854775807
+time=2026-11-26T17:10:52.719Z level=INFO msg="quicksilver mirror starting" cluster=qs2 pod=item2 mode=shadow ingest=logical tables=[public.rb_ledger] slo=30s slot=qs2_item2_item2 configured_slot=qs2_item2
+time=2026-11-26T17:10:52.815Z level=INFO msg="ducklake publishing on" catalog=/var/lib/postgresql/qslake2/mirror/item2/_ducklake/catalog.sqlite format=1.1 retention=5m0s attach="ATTACH 'ducklake:sqlite:/var/lib/postgresql/qslake2/mirror/item2/_ducklake/catalog.sqlite' AS \"lake\" (READ_ONLY);"
+time=2026-11-26T17:10:52.815Z level=INFO msg="slot janitor on: when this instance is the primary it drops this cluster's Quicksilver slots that nothing will consume again" slots="qs2_item2 and qs2_item2_*" interval=1m0s wal_limit_bytes=4294967296 inactive_limit=6h0m0s off="QS_SLOT_JANITOR=off"
+time=2026-11-26T17:10:53.429Z level=INFO msg="pg_quicksilver is not installed in this database; no mirror relation is registered (CREATE EXTENSION pg_quicksilver on the primary to route reads; this is looked at again every minute)" database=app
+time=2026-11-26T17:10:53.653Z level=INFO msg="new replication slot; bootstrapping by snapshot" at=0/18E92080
+time=2026-11-26T17:10:53.734Z level=INFO msg="snapshot complete" table=public.rb_ledger rows=2374 seconds=0.080540535
+time=2026-11-26T17:10:53.735Z level=INFO msg="key index built" table=public.rb_ledger keys=2374 seconds=0.000568055
+time=2026-11-26T17:10:53.761Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=22 is_primary_ms=10 apply_ms=9 head_lsn_ms=1
+time=2026-11-26T17:10:53.764Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=1 idle_confirm_ms=1
+time=2026-11-26T17:10:53.949Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=6 apply_ms=4 head_lsn_ms=1
+time=2026-11-26T17:10:54.166Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=7 apply_ms=5 head_lsn_ms=1
+time=2026-11-26T17:10:54.364Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=4 apply_ms=4
+time=2026-11-26T17:10:54.627Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=18 apply_ms=14 head_lsn_ms=2
+time=2026-11-26T17:10:54.829Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=14 apply_ms=12 head_lsn_ms=1
+time=2026-11-26T17:10:54.939Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=2 is_primary_ms=2
+time=2026-11-26T17:10:55.034Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=15 apply_ms=13 head_lsn_ms=1
+time=2026-11-26T17:10:55.230Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=9 apply_ms=7 head_lsn_ms=1
+time=2026-11-26T17:10:55.448Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=24 apply_ms=18 head_lsn_ms=5
+time=2026-11-26T17:10:55.653Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=25 apply_ms=20 head_lsn_ms=4
+time=2026-11-26T17:10:55.853Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=23 apply_ms=21 head_lsn_ms=1
+time=2026-11-26T17:10:56.093Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=56 apply_ms=32 head_lsn_ms=24
+time=2026-11-26T17:10:56.279Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=34 apply_ms=32 head_lsn_ms=1
+time=2026-11-26T17:10:56.344Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=7 is_primary_ms=7
+time=2026-11-26T17:10:56.472Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=20 apply_ms=19
+time=2026-11-26T17:10:56.738Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=44 apply_ms=31 head_lsn_ms=12
+time=2026-11-26T17:10:56.987Z level=INFO msg="merged deltas" table=public.rb_ledger rows=8 seconds=0.033034447
+time=2026-11-26T17:10:56.987Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=60 merge_deltas_ms=33 apply_ms=23 head_lsn_ms=3
+time=2026-11-26T17:10:56.988Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=1 is_primary_ms=1
+time=2026-11-26T17:10:57.194Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=60 apply_ms=56 is_primary_ms=3
+time=2026-11-26T17:10:57.196Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=1 is_primary_ms=1
+time=2026-11-26T17:10:57.212Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=12 is_primary_ms=12
+time=2026-11-26T17:10:57.346Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=9 is_primary_ms=9
+time=2026-11-26T17:10:57.502Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=113 apply_ms=113
+time=2026-11-26T17:10:57.717Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=105 apply_ms=103 is_primary_ms=1
+time=2026-11-26T17:10:57.829Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=9 apply_ms=7 head_lsn_ms=1
+time=2026-11-26T17:10:57.964Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=25 is_primary_ms=25
+time=2026-11-26T17:10:58.060Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=24 apply_ms=21 head_lsn_ms=2
+time=2026-11-26T17:10:58.264Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=13 apply_ms=9 head_lsn_ms=4
+time=2026-11-26T17:10:58.288Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=13 is_primary_ms=13
+time=2026-11-26T17:10:58.524Z level=INFO msg="merged deltas" table=public.rb_ledger rows=15 seconds=0.016905624
+time=2026-11-26T17:10:58.524Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=37 apply_ms=17 merge_deltas_ms=16 head_lsn_ms=1
+time=2026-11-26T17:10:58.553Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=17 is_primary_ms=17
+time=2026-11-26T17:10:58.707Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=14 apply_ms=13
+time=2026-11-26T17:10:58.743Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=6 is_primary_ms=6
+time=2026-11-26T17:10:58.952Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=15 idle_confirm_ms=12 is_primary_ms=3
+time=2026-11-26T17:10:59.013Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=11 apply_ms=8 head_lsn_ms=2
+time=2026-11-26T17:10:59.261Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=15 apply_ms=12 head_lsn_ms=3
+time=2026-11-26T17:10:59.340Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=3 is_primary_ms=3
+time=2026-11-26T17:10:59.496Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=40 apply_ms=36 head_lsn_ms=4
+time=2026-11-26T17:10:59.548Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=11 is_primary_ms=11
+time=2026-11-26T17:10:59.675Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=16 apply_ms=12 head_lsn_ms=4
+time=2026-11-26T17:10:59.742Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=5 is_primary_ms=5
+time=2026-11-26T17:10:59.902Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=40 apply_ms=39
+time=2026-11-26T17:10:59.942Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=5 is_primary_ms=5
+time=2026-11-26T17:11:00.174Z level=INFO msg="merged deltas" table=public.rb_ledger rows=22 seconds=0.018055192
+time=2026-11-26T17:11:00.174Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=81 apply_ms=62 merge_deltas_ms=18
+time=2026-11-26T17:11:00.175Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=1 is_primary_ms=1
+time=2026-11-26T17:11:00.364Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=24 apply_ms=23 head_lsn_ms=1
+time=2026-11-26T17:11:00.391Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=20 is_primary_ms=20
+time=2026-11-26T17:11:00.599Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=69 apply_ms=42 head_lsn_ms=26
+time=2026-11-26T17:11:00.774Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=37 apply_ms=32 is_primary_ms=2 head_lsn_ms=2
+time=2026-11-26T17:11:00.776Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=1 is_primary_ms=1
+time=2026-11-26T17:11:01.037Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=36 apply_ms=32 head_lsn_ms=4
+time=2026-11-26T17:11:01.233Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=31 apply_ms=29 head_lsn_ms=1
+time=2026-11-26T17:11:01.440Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=34 apply_ms=24 head_lsn_ms=9
+time=2026-11-26T17:11:01.448Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=5 is_primary_ms=5
+time=2026-11-26T17:11:01.719Z level=INFO msg="merged deltas" table=public.rb_ledger rows=29 seconds=0.06452375
+time=2026-11-26T17:11:01.719Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=88 merge_deltas_ms=64 apply_ms=11 is_primary_ms=8 head_lsn_ms=3
+time=2026-11-26T17:11:01.724Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=2 is_primary_ms=2
+time=2026-11-26T17:11:01.844Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=32 apply_ms=28 head_lsn_ms=3
+time=2026-11-26T17:11:02.019Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=4 apply_ms=2 head_lsn_ms=1
+time=2026-11-26T17:11:02.027Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=5 is_primary_ms=5
+time=2026-11-26T17:11:02.249Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=22 apply_ms=20 head_lsn_ms=1
+time=2026-11-26T17:11:02.268Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=15 is_primary_ms=15
+time=2026-11-26T17:11:02.466Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=34 apply_ms=28 is_primary_ms=4 head_lsn_ms=1
+time=2026-11-26T17:11:02.664Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=11 apply_ms=9
+time=2026-11-26T17:11:02.893Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=39 apply_ms=37 head_lsn_ms=1
+time=2026-11-26T17:11:02.942Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=5 is_primary_ms=5
+time=2026-11-26T17:11:03.095Z level=INFO msg="merged deltas" table=public.rb_ledger rows=36 seconds=0.011297924
+time=2026-11-26T17:11:03.095Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=34 apply_ms=20 merge_deltas_ms=11 head_lsn_ms=2
+time=2026-11-26T17:11:03.325Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=30 apply_ms=28 head_lsn_ms=1
+time=2026-11-26T17:11:03.345Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=8 is_primary_ms=8
+time=2026-11-26T17:11:03.636Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=124 apply_ms=120 head_lsn_ms=3
+time=2026-11-26T17:11:03.748Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=34 apply_ms=31 head_lsn_ms=2
+time=2026-11-26T17:11:03.971Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=49 apply_ms=27 is_primary_ms=21
+time=2026-11-26T17:11:03.979Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=8 idle_confirm_ms=8
+time=2026-11-26T17:11:04.168Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=37 apply_ms=24 head_lsn_ms=12
+time=2026-11-26T17:11:04.396Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=19 apply_ms=9 head_lsn_ms=5 is_primary_ms=4
+time=2026-11-26T17:11:04.404Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=3 is_primary_ms=3
+time=2026-11-26T17:11:04.684Z level=INFO msg="merged deltas" table=public.rb_ledger rows=43 seconds=0.030213811
+time=2026-11-26T17:11:04.684Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=100 apply_ms=69 merge_deltas_ms=30
+time=2026-11-26T17:11:04.874Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=46 apply_ms=45
+time=2026-11-26T17:11:04.947Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=10 is_primary_ms=10
+time=2026-11-26T17:11:05.141Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=3 is_primary_ms=3
+time=2026-11-26T17:11:05.205Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=18 apply_ms=17 head_lsn_ms=1
+time=2026-11-26T17:11:05.592Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=111 apply_ms=99 is_primary_ms=7 head_lsn_ms=4
+time=2026-11-26T17:11:05.716Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=87 apply_ms=55 is_primary_ms=32
+time=2026-11-26T17:11:05.744Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=8 is_primary_ms=8
+time=2026-11-26T17:11:05.746Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=2 is_primary_ms=2
+time=2026-11-26T17:11:05.846Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=11 apply_ms=11
+time=2026-11-26T17:11:06.052Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=9 apply_ms=6 head_lsn_ms=2
+time=2026-11-26T17:11:06.281Z level=INFO msg="merged deltas" table=public.rb_ledger rows=50 seconds=0.016611739
+time=2026-11-26T17:11:06.282Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=29 merge_deltas_ms=16 apply_ms=10 head_lsn_ms=1
+time=2026-11-26T17:11:06.482Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=14 apply_ms=13
+time=2026-11-26T17:11:06.488Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=2 is_primary_ms=2
+time=2026-11-26T17:11:06.552Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=6 is_primary_ms=6
+time=2026-11-26T17:11:06.791Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=84 apply_ms=78 head_lsn_ms=5
+time=2026-11-26T17:11:06.793Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=1
+time=2026-11-26T17:11:06.804Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=4 is_primary_ms=4
+time=2026-11-26T17:11:06.926Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=5 apply_ms=3 head_lsn_ms=1
+time=2026-11-26T17:11:07.146Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=22 apply_ms=20 head_lsn_ms=2
+time=2026-11-26T17:11:07.335Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=5 apply_ms=4 head_lsn_ms=1
+time=2026-11-26T17:11:07.566Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=10 apply_ms=7 head_lsn_ms=2
+time=2026-11-26T17:11:07.776Z level=INFO msg="merged deltas" table=public.rb_ledger rows=57 seconds=0.016153239
+time=2026-11-26T17:11:07.776Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=24 merge_deltas_ms=16 apply_ms=5 head_lsn_ms=2
+time=2026-11-26T17:11:07.970Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=10 apply_ms=8 head_lsn_ms=1
+time=2026-11-26T17:11:08.184Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=16 apply_ms=10 head_lsn_ms=5
+time=2026-11-26T17:11:08.342Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=5 is_primary_ms=5
+time=2026-11-26T17:11:08.406Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=38 head_lsn_ms=22 apply_ms=15
+time=2026-11-26T17:11:08.581Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=12 apply_ms=8 head_lsn_ms=3
+time=2026-11-26T17:11:08.748Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=11 extension_ms=1
+time=2026-11-26T17:11:08.780Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=7 apply_ms=4 head_lsn_ms=2
+time=2026-11-26T17:11:09.008Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=6 apply_ms=4
+time=2026-11-26T17:11:09.025Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=13 idle_confirm_ms=13
+time=2026-11-26T17:11:09.260Z level=INFO msg="merged deltas" table=public.rb_ledger rows=64 seconds=0.016624963
+time=2026-11-26T17:11:09.260Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=58 apply_ms=39 merge_deltas_ms=16 head_lsn_ms=2
+time=2026-11-26T17:11:09.413Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=5 apply_ms=5
+time=2026-11-26T17:11:09.629Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=14 apply_ms=9 is_primary_ms=3 head_lsn_ms=1
+time=2026-11-26T17:11:09.826Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=8 apply_ms=6 head_lsn_ms=1
+time=2026-11-26T17:11:10.042Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=12 apply_ms=5 head_lsn_ms=4 confirm_ms=1
+time=2026-11-26T17:11:10.138Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=1 is_primary_ms=1
+time=2026-11-26T17:11:10.280Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=24 apply_ms=23
+time=2026-11-26T17:11:10.455Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=7 apply_ms=7
+time=2026-11-26T17:11:10.773Z level=INFO msg="merged deltas" table=public.rb_ledger rows=71 seconds=0.077507581
+time=2026-11-26T17:11:10.773Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=102 merge_deltas_ms=77 apply_ms=24
+time=2026-11-26T17:11:10.776Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=2 is_primary_ms=2
+time=2026-11-26T17:11:10.882Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=8 apply_ms=6 head_lsn_ms=1
+time=2026-11-26T17:11:11.082Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=5 apply_ms=3 head_lsn_ms=1
+time=2026-11-26T17:11:11.320Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=18 apply_ms=15 head_lsn_ms=1
+time=2026-11-26T17:11:11.516Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=11 apply_ms=9 head_lsn_ms=1
+time=2026-11-26T17:11:11.720Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=8 apply_ms=6 head_lsn_ms=1
+time=2026-11-26T17:11:11.931Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=18 apply_ms=16 head_lsn_ms=1
+time=2026-11-26T17:11:12.168Z level=INFO msg="merged deltas" table=public.rb_ledger rows=78 seconds=0.029922187
+time=2026-11-26T17:11:12.168Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=36 merge_deltas_ms=29 apply_ms=3 head_lsn_ms=2
+time=2026-11-26T17:11:12.436Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=99 apply_ms=93 head_lsn_ms=5 is_primary_ms=1
+time=2026-11-26T17:11:12.548Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=5 is_primary_ms=5
+time=2026-11-26T17:11:12.574Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=17 apply_ms=10 head_lsn_ms=5
+time=2026-11-26T17:11:12.828Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=71 head_lsn_ms=60 apply_ms=11
+time=2026-11-26T17:11:12.839Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=2 is_primary_ms=2
+time=2026-11-26T17:11:12.986Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=25 apply_ms=16 head_lsn_ms=5 is_primary_ms=3
+time=2026-11-26T17:11:13.149Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=13 is_primary_ms=12
+time=2026-11-26T17:11:13.190Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=10 apply_ms=9
+time=2026-11-26T17:11:13.203Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=10 is_primary_ms=10
+time=2026-11-26T17:11:13.415Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=7 apply_ms=6
+time=2026-11-26T17:11:13.421Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=3 is_primary_ms=3
+time=2026-11-26T17:11:13.709Z level=INFO msg="merged deltas" table=public.rb_ledger rows=85 seconds=0.064405107
+time=2026-11-26T17:11:13.709Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=99 merge_deltas_ms=64 apply_ms=34
+time=2026-11-26T17:11:13.869Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=51 apply_ms=50
+time=2026-11-26T17:11:14.067Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=39 apply_ms=36 head_lsn_ms=3
+time=2026-11-26T17:11:14.071Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=1 idle_confirm_ms=1
+time=2026-11-26T17:11:14.261Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=17 apply_ms=16 head_lsn_ms=1
+time=2026-11-26T17:11:14.480Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=32 apply_ms=26 confirm_ms=5
+time=2026-11-26T17:11:14.680Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=22 head_lsn_ms=17 apply_ms=5
+time=2026-11-26T17:11:14.868Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=8 apply_ms=5 head_lsn_ms=2
+time=2026-11-26T17:11:15.109Z level=INFO msg="merged deltas" table=public.rb_ledger rows=92 seconds=0.027869672
+time=2026-11-26T17:11:15.109Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=39 merge_deltas_ms=27 apply_ms=10 head_lsn_ms=1
+time=2026-11-26T17:11:15.288Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=6 apply_ms=5
+time=2026-11-26T17:11:15.338Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=1 is_primary_ms=1
+time=2026-11-26T17:11:15.483Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=4 apply_ms=2
+time=2026-11-26T17:11:15.696Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=11 apply_ms=6 head_lsn_ms=4
+time=2026-11-26T17:11:15.931Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=19 apply_ms=18
+time=2026-11-26T17:11:16.119Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=6 apply_ms=5
+time=2026-11-26T17:11:16.325Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=9 head_lsn_ms=4 apply_ms=4
+time=2026-11-26T17:11:16.540Z level=INFO msg="merged deltas" table=public.rb_ledger rows=99 seconds=0.012649893
+time=2026-11-26T17:11:16.540Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=20 merge_deltas_ms=12 apply_ms=7
+time=2026-11-26T17:11:16.760Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=21 apply_ms=20
+time=2026-11-26T17:11:16.969Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=25 apply_ms=21 is_primary_ms=2 head_lsn_ms=1
+time=2026-11-26T17:11:17.180Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=17 apply_ms=17
+time=2026-11-26T17:11:17.394Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=5 apply_ms=4 head_lsn_ms=1
+time=2026-11-26T17:11:17.540Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=3 is_primary_ms=3
+time=2026-11-26T17:11:17.652Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=59 apply_ms=57 head_lsn_ms=2
+time=2026-11-26T17:11:17.844Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=40 apply_ms=36 head_lsn_ms=3
+time=2026-11-26T17:11:18.064Z level=INFO msg="merged deltas" table=public.rb_ledger rows=106 seconds=0.01247013
+time=2026-11-26T17:11:18.064Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=48 apply_ms=34 merge_deltas_ms=12
+time=2026-11-26T17:11:18.247Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=27 apply_ms=21 head_lsn_ms=6
+time=2026-11-26T17:11:18.348Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=10 is_primary_ms=10
+time=2026-11-26T17:11:18.437Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=15 apply_ms=14
+time=2026-11-26T17:11:18.666Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=39 head_lsn_ms=26 apply_ms=12
+time=2026-11-26T17:11:18.680Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=4 is_primary_ms=4
+time=2026-11-26T17:11:18.867Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=11 apply_ms=10
+time=2026-11-26T17:11:19.074Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=6 apply_ms=6
+time=2026-11-26T17:11:19.080Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=3 idle_confirm_ms=3
+time=2026-11-26T17:11:19.298Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=25 head_lsn_ms=17 apply_ms=7
+time=2026-11-26T17:11:19.344Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=4 is_primary_ms=4
+time=2026-11-26T17:11:19.501Z level=INFO msg="merged deltas" table=public.rb_ledger rows=113 seconds=0.009004785
+time=2026-11-26T17:11:19.501Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=21 merge_deltas_ms=9 apply_ms=8 head_lsn_ms=3
+time=2026-11-26T17:11:19.692Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=5 apply_ms=4
+time=2026-11-26T17:11:19.902Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=6 apply_ms=5
+time=2026-11-26T17:11:20.105Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=4 apply_ms=3
+time=2026-11-26T17:11:20.318Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=12 apply_ms=11 head_lsn_ms=1
+time=2026-11-26T17:11:20.338Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=2 is_primary_ms=2
+time=2026-11-26T17:11:20.527Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=13 apply_ms=13
+time=2026-11-26T17:11:20.743Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=15 apply_ms=14
+time=2026-11-26T17:11:21.055Z level=INFO msg="merged deltas" table=public.rb_ledger rows=120 seconds=0.070699508
+time=2026-11-26T17:11:21.055Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=128 merge_deltas_ms=70 apply_ms=57
+time=2026-11-26T17:11:21.058Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=3 is_primary_ms=3
+time=2026-11-26T17:11:21.141Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=3 is_primary_ms=3
+time=2026-11-26T17:11:21.159Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=10 apply_ms=7 head_lsn_ms=2
+time=2026-11-26T17:11:21.360Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=7 apply_ms=4 head_lsn_ms=2
+time=2026-11-26T17:11:21.571Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=8 apply_ms=7
+time=2026-11-26T17:11:21.772Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=8 head_lsn_ms=4 apply_ms=3
+time=2026-11-26T17:11:21.943Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=6 is_primary_ms=6
+time=2026-11-26T17:11:21.984Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=14 apply_ms=8 head_lsn_ms=6
+time=2026-11-26T17:11:22.291Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=105 apply_ms=104
+time=2026-11-26T17:11:22.470Z level=INFO msg="merged deltas" table=public.rb_ledger rows=127 seconds=0.027754768
+time=2026-11-26T17:11:22.470Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=71 apply_ms=42 merge_deltas_ms=27
+time=2026-11-26T17:11:22.544Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=5 is_primary_ms=5
+time=2026-11-26T17:11:22.614Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=14 apply_ms=13
+time=2026-11-26T17:11:22.744Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=4 is_primary_ms=4
+time=2026-11-26T17:11:22.884Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=42 apply_ms=36 head_lsn_ms=5
+time=2026-11-26T17:11:23.093Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=13 apply_ms=12 head_lsn_ms=1
+time=2026-11-26T17:11:23.339Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=2 is_primary_ms=2
+time=2026-11-26T17:11:23.374Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=31 apply_ms=23 head_lsn_ms=7 is_primary_ms=1
+time=2026-11-26T17:11:23.564Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=6 apply_ms=4 head_lsn_ms=1
+time=2026-11-26T17:11:23.739Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=2 extension_ms=1
+time=2026-11-26T17:11:23.763Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=5 apply_ms=3 head_lsn_ms=1
+time=2026-11-26T17:11:23.988Z level=INFO msg="merged deltas" table=public.rb_ledger rows=134 seconds=0.012718632
+time=2026-11-26T17:11:23.988Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=26 apply_ms=13 merge_deltas_ms=12
+time=2026-11-26T17:11:24.146Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=8 idle_confirm_ms=8
+time=2026-11-26T17:11:24.171Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=6 apply_ms=4 head_lsn_ms=1
+time=2026-11-26T17:11:24.373Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=5 apply_ms=3 head_lsn_ms=1
+time=2026-11-26T17:11:24.542Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=5 is_primary_ms=5
+time=2026-11-26T17:11:24.599Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=13 apply_ms=11 head_lsn_ms=1
+time=2026-11-26T17:11:24.740Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=3 is_primary_ms=3
+time=2026-11-26T17:11:24.802Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=7 apply_ms=4 head_lsn_ms=2
+time=2026-11-26T17:11:25.021Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=21 apply_ms=18 head_lsn_ms=2
+time=2026-11-26T17:11:25.025Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=1 is_primary_ms=1
+time=2026-11-26T17:11:25.139Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=2 is_primary_ms=2
+time=2026-11-26T17:11:25.241Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=31 apply_ms=29 head_lsn_ms=1
+time=2026-11-26T17:11:25.343Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=4 is_primary_ms=4
+time=2026-11-26T17:11:25.426Z level=INFO msg="merged deltas" table=public.rb_ledger rows=141 seconds=0.006428102
+time=2026-11-26T17:11:25.426Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=17 apply_ms=10 merge_deltas_ms=6
+time=2026-11-26T17:11:25.618Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=5 apply_ms=5
+time=2026-11-26T17:11:25.832Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=10 apply_ms=9
+time=2026-11-26T17:11:25.840Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=3
+time=2026-11-26T17:11:26.034Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=9 apply_ms=6 is_primary_ms=2
+time=2026-11-26T17:11:26.143Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=6 is_primary_ms=6
+time=2026-11-26T17:11:26.234Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=7 apply_ms=5 head_lsn_ms=1
+time=2026-11-26T17:11:26.445Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=15 apply_ms=14
+time=2026-11-26T17:11:26.551Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=11 is_primary_ms=11
+time=2026-11-26T17:11:26.667Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=31 apply_ms=25 head_lsn_ms=5
+time=2026-11-26T17:11:26.671Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=1 is_primary_ms=1
+time=2026-11-26T17:11:26.880Z level=INFO msg="merged deltas" table=public.rb_ledger rows=148 seconds=0.016331553
+time=2026-11-26T17:11:26.880Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=42 apply_ms=25 merge_deltas_ms=16
+time=2026-11-26T17:11:27.062Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=23 apply_ms=21 head_lsn_ms=1
+time=2026-11-26T17:11:27.286Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=35 apply_ms=32 head_lsn_ms=2
+time=2026-11-26T17:11:27.481Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=18 apply_ms=16 head_lsn_ms=1
+time=2026-11-26T17:11:27.685Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=13 apply_ms=11 head_lsn_ms=1
+time=2026-11-26T17:11:27.885Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=10 apply_ms=6 head_lsn_ms=3
+time=2026-11-26T17:11:28.095Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=18 apply_ms=13 head_lsn_ms=5
+time=2026-11-26T17:11:28.318Z level=INFO msg="merged deltas" table=public.rb_ledger rows=155 seconds=0.006926063
+time=2026-11-26T17:11:28.318Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=12 merge_deltas_ms=6 apply_ms=3 head_lsn_ms=1
+time=2026-11-26T17:11:28.515Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=5 apply_ms=3 head_lsn_ms=1
+time=2026-11-26T17:11:28.724Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=7 apply_ms=4 head_lsn_ms=2
+time=2026-11-26T17:11:28.938Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=18 apply_ms=16 head_lsn_ms=1
+time=2026-11-26T17:11:29.153Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=14 apply_ms=11 head_lsn_ms=1
+time=2026-11-26T17:11:29.155Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=1 idle_confirm_ms=1
+time=2026-11-26T17:11:29.343Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=4 apply_ms=3 head_lsn_ms=1
+time=2026-11-26T17:11:29.556Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=15 head_lsn_ms=9 apply_ms=6
+time=2026-11-26T17:11:29.759Z level=INFO msg="merged deltas" table=public.rb_ledger rows=162 seconds=0.007503731
+time=2026-11-26T17:11:29.759Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=15 merge_deltas_ms=7 apply_ms=5 head_lsn_ms=2
+time=2026-11-26T17:11:29.938Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=1
+time=2026-11-26T17:11:29.972Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=23 apply_ms=21 head_lsn_ms=2
+time=2026-11-26T17:11:30.173Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=18 apply_ms=16 head_lsn_ms=1
+time=2026-11-26T17:11:30.338Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=1 is_primary_ms=1
+time=2026-11-26T17:11:30.378Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=18 apply_ms=18
+time=2026-11-26T17:11:30.569Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=5 apply_ms=4
+time=2026-11-26T17:11:30.778Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=11 apply_ms=9 head_lsn_ms=1
+time=2026-11-26T17:11:30.987Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=16 apply_ms=14 head_lsn_ms=1
+time=2026-11-26T17:11:31.207Z level=INFO msg="merged deltas" table=public.rb_ledger rows=169 seconds=0.02068168
+time=2026-11-26T17:11:31.207Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=37 merge_deltas_ms=20 apply_ms=15 head_lsn_ms=1
+time=2026-11-26T17:11:31.399Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=12 apply_ms=10 is_primary_ms=1
+time=2026-11-26T17:11:31.590Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=5 apply_ms=3 head_lsn_ms=1
+time=2026-11-26T17:11:31.794Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=5 apply_ms=4
+time=2026-11-26T17:11:31.939Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=2 is_primary_ms=2
+time=2026-11-26T17:11:32.000Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=8 apply_ms=6 head_lsn_ms=1
+time=2026-11-26T17:11:32.140Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=3 is_primary_ms=3
+time=2026-11-26T17:11:32.202Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=7 apply_ms=5 head_lsn_ms=1
+time=2026-11-26T17:11:32.402Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=6 apply_ms=4 head_lsn_ms=1
+time=2026-11-26T17:11:32.636Z level=INFO msg="merged deltas" table=public.rb_ledger rows=176 seconds=0.019628965
+time=2026-11-26T17:11:32.636Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=36 merge_deltas_ms=19 apply_ms=14 head_lsn_ms=2
+time=2026-11-26T17:11:32.806Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=4 apply_ms=3 head_lsn_ms=1
+time=2026-11-26T17:11:33.011Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=5 apply_ms=5
+time=2026-11-26T17:11:33.239Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=8 apply_ms=7 head_lsn_ms=1
+time=2026-11-26T17:11:33.436Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=7 apply_ms=4 head_lsn_ms=3
+time=2026-11-26T17:11:33.678Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=24 apply_ms=23
+time=2026-11-26T17:11:33.748Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=11 is_primary_ms=11
+time=2026-11-26T17:11:33.872Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=7 apply_ms=7
+time=2026-11-26T17:11:34.092Z level=INFO msg="merged deltas" table=public.rb_ledger rows=183 seconds=0.01536868
+time=2026-11-26T17:11:34.092Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=25 merge_deltas_ms=15 apply_ms=9
+time=2026-11-26T17:11:34.292Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=22 apply_ms=21
+time=2026-11-26T17:11:34.299Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=5 idle_confirm_ms=5
+time=2026-11-26T17:11:34.524Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=31 apply_ms=29 head_lsn_ms=1
+time=2026-11-26T17:11:34.718Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=19 apply_ms=18
+time=2026-11-26T17:11:34.910Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=9 apply_ms=8
+time=2026-11-26T17:11:34.944Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=4 is_primary_ms=4
+time=2026-11-26T17:11:35.134Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=15 apply_ms=12 head_lsn_ms=2
+time=2026-11-26T17:11:35.166Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=28 is_primary_ms=28
+time=2026-11-26T17:11:35.338Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=7 apply_ms=5 head_lsn_ms=1
+time=2026-11-26T17:11:35.544Z level=INFO msg="merged deltas" table=public.rb_ledger rows=190 seconds=0.006534337
+time=2026-11-26T17:11:35.544Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=13 merge_deltas_ms=6 apply_ms=4 head_lsn_ms=1
+time=2026-11-26T17:11:35.545Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=1
+time=2026-11-26T17:11:35.752Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=14 apply_ms=12 head_lsn_ms=1
+time=2026-11-26T17:11:35.964Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=21 apply_ms=18 head_lsn_ms=2
+time=2026-11-26T17:11:36.160Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=15 apply_ms=14
+time=2026-11-26T17:11:36.351Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=4 apply_ms=4
+time=2026-11-26T17:11:36.556Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=8 apply_ms=5 head_lsn_ms=1
+time=2026-11-26T17:11:36.770Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=5 apply_ms=3 head_lsn_ms=1
+time=2026-11-26T17:11:37.011Z level=INFO msg="merged deltas" table=public.rb_ledger rows=197 seconds=0.033812988
+time=2026-11-26T17:11:37.012Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=48 merge_deltas_ms=33 apply_ms=13 head_lsn_ms=1
+time=2026-11-26T17:11:37.146Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=9 is_primary_ms=9
+time=2026-11-26T17:11:37.171Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=5 apply_ms=3 head_lsn_ms=1
+time=2026-11-26T17:11:37.373Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=5 apply_ms=3 head_lsn_ms=1
+time=2026-11-26T17:11:37.575Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=5 apply_ms=3 head_lsn_ms=1
+time=2026-11-26T17:11:37.779Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=5 apply_ms=3 head_lsn_ms=1
+time=2026-11-26T17:11:37.994Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=14 apply_ms=12 head_lsn_ms=1
+time=2026-11-26T17:11:38.199Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=17 apply_ms=15 head_lsn_ms=1
+time=2026-11-26T17:11:38.417Z level=INFO msg="merged deltas" table=public.rb_ledger rows=204 seconds=0.012014159
+time=2026-11-26T17:11:38.417Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=26 merge_deltas_ms=12 apply_ms=9 head_lsn_ms=4
+time=2026-11-26T17:11:38.597Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=5 apply_ms=3
+time=2026-11-26T17:11:38.823Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=16 apply_ms=12 head_lsn_ms=2
+time=2026-11-26T17:11:39.016Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=6 apply_ms=5
+time=2026-11-26T17:11:39.218Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=5 apply_ms=4
+time=2026-11-26T17:11:39.339Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=2 idle_confirm_ms=2
+time=2026-11-26T17:11:39.423Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=7 apply_ms=4 head_lsn_ms=2
+time=2026-11-26T17:11:39.628Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=4 apply_ms=3 head_lsn_ms=1
+time=2026-11-26T17:11:39.855Z level=INFO msg="merged deltas" table=public.rb_ledger rows=211 seconds=0.01131264
+time=2026-11-26T17:11:39.855Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=26 merge_deltas_ms=11 head_lsn_ms=9 apply_ms=5
+time=2026-11-26T17:11:40.037Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=7 apply_ms=6 head_lsn_ms=1
+time=2026-11-26T17:11:40.238Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=7 apply_ms=5 head_lsn_ms=1
+time=2026-11-26T17:11:40.440Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=6 apply_ms=4 head_lsn_ms=1
+time=2026-11-26T17:11:40.673Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=38 apply_ms=35 head_lsn_ms=2
+time=2026-11-26T17:11:40.843Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=4 apply_ms=4
+time=2026-11-26T17:11:41.051Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=8 apply_ms=6 head_lsn_ms=1
+time=2026-11-26T17:11:41.307Z level=INFO msg="merged deltas" table=public.rb_ledger rows=218 seconds=0.053824593
+time=2026-11-26T17:11:41.307Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=58 merge_deltas_ms=53 apply_ms=3 head_lsn_ms=1
+time=2026-11-26T17:11:41.312Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=1 is_primary_ms=1
+time=2026-11-26T17:11:41.468Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=5 apply_ms=3 head_lsn_ms=1
+time=2026-11-26T17:11:41.687Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=12 apply_ms=10 head_lsn_ms=1
+time=2026-11-26T17:11:41.906Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=20 apply_ms=18 head_lsn_ms=1
+time=2026-11-26T17:11:41.948Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=11 is_primary_ms=11
+time=2026-11-26T17:11:42.117Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=6 apply_ms=4 head_lsn_ms=1
+time=2026-11-26T17:11:42.322Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=5 apply_ms=3 head_lsn_ms=1
+time=2026-11-26T17:11:42.541Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=6 apply_ms=5 head_lsn_ms=1
+time=2026-11-26T17:11:42.758Z level=INFO msg="merged deltas" table=public.rb_ledger rows=225 seconds=0.008889697
+time=2026-11-26T17:11:42.758Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=22 merge_deltas_ms=8 apply_ms=7 head_lsn_ms=5
+time=2026-11-26T17:11:42.946Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=5 apply_ms=4 head_lsn_ms=1
+time=2026-11-26T17:11:43.154Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=5 apply_ms=5
+time=2026-11-26T17:11:43.356Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=4 apply_ms=2 head_lsn_ms=1
+time=2026-11-26T17:11:43.558Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=4 apply_ms=3
+time=2026-11-26T17:11:43.768Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=12 apply_ms=12
+time=2026-11-26T17:11:43.943Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=5 is_primary_ms=5
+time=2026-11-26T17:11:43.972Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=10 apply_ms=8 head_lsn_ms=1
+time=2026-11-26T17:11:44.179Z level=INFO msg="merged deltas" table=public.rb_ledger rows=232 seconds=0.00647169
+time=2026-11-26T17:11:44.179Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=11 merge_deltas_ms=6 apply_ms=4
+time=2026-11-26T17:11:44.377Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=8 apply_ms=6 head_lsn_ms=1
+time=2026-11-26T17:11:44.381Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=1
+time=2026-11-26T17:11:44.590Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=16 apply_ms=13 head_lsn_ms=3
+time=2026-11-26T17:11:44.788Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=8 apply_ms=6 head_lsn_ms=1
+time=2026-11-26T17:11:44.988Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=10 apply_ms=7 head_lsn_ms=2
+time=2026-11-26T17:11:45.195Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=12 apply_ms=9 head_lsn_ms=2
+time=2026-11-26T17:11:45.399Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=10 apply_ms=6 head_lsn_ms=4
+time=2026-11-26T17:11:45.654Z level=INFO msg="merged deltas" table=public.rb_ledger rows=239 seconds=0.025268227
+time=2026-11-26T17:11:45.654Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=54 merge_deltas_ms=25 apply_ms=23 head_lsn_ms=5
+time=2026-11-26T17:11:45.811Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=12 apply_ms=9 head_lsn_ms=3
+time=2026-11-26T17:11:46.034Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=33 apply_ms=28 head_lsn_ms=4
+time=2026-11-26T17:11:46.212Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=7 apply_ms=7
+time=2026-11-26T17:11:46.411Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=5 apply_ms=4
+time=2026-11-26T17:11:46.652Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=43 apply_ms=37 head_lsn_ms=5
+time=2026-11-26T17:11:46.818Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=5 apply_ms=5
+time=2026-11-26T17:11:47.029Z level=INFO msg="merged deltas" table=public.rb_ledger rows=246 seconds=0.005707073
+time=2026-11-26T17:11:47.029Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=13 merge_deltas_ms=5 head_lsn_ms=3 apply_ms=3
+time=2026-11-26T17:11:47.223Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=4 apply_ms=3
+time=2026-11-26T17:11:47.428Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=7 apply_ms=5 head_lsn_ms=1
+time=2026-11-26T17:11:47.643Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=11 head_lsn_ms=5 apply_ms=5
+time=2026-11-26T17:11:47.842Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=5 apply_ms=3 confirm_ms=1
+time=2026-11-26T17:11:48.076Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=35 apply_ms=31 head_lsn_ms=4
+time=2026-11-26T17:11:48.100Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=21 is_primary_ms=21
+time=2026-11-26T17:11:48.149Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=12 is_primary_ms=12
+time=2026-11-26T17:11:48.368Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=124 apply_ms=116 head_lsn_ms=5 is_primary_ms=3
+time=2026-11-26T17:11:48.510Z level=INFO msg="merged deltas" table=public.rb_ledger rows=253 seconds=0.009757014
+time=2026-11-26T17:11:48.510Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=37 apply_ms=23 merge_deltas_ms=9 head_lsn_ms=4
+time=2026-11-26T17:11:48.692Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=19 apply_ms=15 head_lsn_ms=2
+time=2026-11-26T17:11:48.916Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=38 apply_ms=38
+time=2026-11-26T17:11:49.116Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=11 head_lsn_ms=6 apply_ms=4
+time=2026-11-26T17:11:49.373Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=45 head_lsn_ms=30 apply_ms=14
+time=2026-11-26T17:11:49.545Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=20 apply_ms=18 head_lsn_ms=1
+time=2026-11-26T17:11:49.549Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=1
+time=2026-11-26T17:11:49.738Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=8 apply_ms=4 head_lsn_ms=3
+time=2026-11-26T17:11:50.021Z level=INFO msg="merged deltas" table=public.rb_ledger rows=260 seconds=0.033013669
+time=2026-11-26T17:11:50.021Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=81 apply_ms=44 merge_deltas_ms=33 head_lsn_ms=3
+time=2026-11-26T17:11:50.139Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=2 is_primary_ms=2
+time=2026-11-26T17:11:50.201Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=52 apply_ms=49 head_lsn_ms=2
+time=2026-11-26T17:11:50.356Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=13 is_primary_ms=13
+time=2026-11-26T17:11:50.399Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=14 apply_ms=11 head_lsn_ms=1
+time=2026-11-26T17:11:50.607Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=17 apply_ms=16 head_lsn_ms=1
+time=2026-11-26T17:11:50.740Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=3 is_primary_ms=3
+time=2026-11-26T17:11:50.875Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=82 apply_ms=81
+time=2026-11-26T17:11:50.882Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=3 is_primary_ms=3
+time=2026-11-26T17:11:50.953Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=15 is_primary_ms=15
+time=2026-11-26T17:11:51.069Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=18 apply_ms=16 head_lsn_ms=1
+time=2026-11-26T17:11:51.313Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=16 apply_ms=14 head_lsn_ms=1
+time=2026-11-26T17:11:51.523Z level=INFO msg="merged deltas" table=public.rb_ledger rows=267 seconds=0.023576734
+time=2026-11-26T17:11:51.523Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=29 merge_deltas_ms=23 apply_ms=3 head_lsn_ms=1
+time=2026-11-26T17:11:51.546Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=10 is_primary_ms=10
+time=2026-11-26T17:11:51.739Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=25 apply_ms=25
+time=2026-11-26T17:11:51.744Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=4 is_primary_ms=4
+time=2026-11-26T17:11:51.923Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=6 apply_ms=4 head_lsn_ms=1
+time=2026-11-26T17:11:51.974Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=37 is_primary_ms=36
+time=2026-11-26T17:11:52.127Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=5 apply_ms=3 head_lsn_ms=1
+time=2026-11-26T17:11:52.344Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=12 apply_ms=10 head_lsn_ms=1
+time=2026-11-26T17:11:52.544Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=7 is_primary_ms=7
+time=2026-11-26T17:11:52.577Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=5 apply_ms=5
+time=2026-11-26T17:11:52.815Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=5 apply_ms=3 head_lsn_ms=1
+time=2026-11-26T17:11:52.950Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=10 is_primary_ms=10
+time=2026-11-26T17:11:53.069Z level=INFO msg="merged deltas" table=public.rb_ledger rows=274 seconds=0.01589533
+time=2026-11-26T17:11:53.069Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=47 apply_ms=21 merge_deltas_ms=15 head_lsn_ms=9
+time=2026-11-26T17:11:53.376Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=99 apply_ms=96 is_primary_ms=2
+time=2026-11-26T17:11:53.613Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=45 apply_ms=38 head_lsn_ms=4 is_primary_ms=2
+time=2026-11-26T17:11:53.750Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=12 is_primary_ms=12
+time=2026-11-26T17:11:53.888Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=59 head_lsn_ms=30 apply_ms=24 slot_guard_ms=3
+time=2026-11-26T17:11:54.052Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=11 apply_ms=8 head_lsn_ms=2
+time=2026-11-26T17:11:54.145Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=8 is_primary_ms=8
+time=2026-11-26T17:11:54.336Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=85 apply_ms=84
+time=2026-11-26T17:11:54.352Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=10 is_primary_ms=10
+time=2026-11-26T17:11:54.551Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=81 apply_ms=79 head_lsn_ms=1
+time=2026-11-26T17:11:54.561Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=5 idle_confirm_ms=2 is_primary_ms=2
+time=2026-11-26T17:11:54.807Z level=INFO msg="merged deltas" table=public.rb_ledger rows=281 seconds=0.067037059
+time=2026-11-26T17:11:54.807Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=131 merge_deltas_ms=67 apply_ms=59 head_lsn_ms=4
+time=2026-11-26T17:11:54.962Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=74 head_lsn_ms=43 apply_ms=30
+time=2026-11-26T17:11:55.111Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=8 apply_ms=7
+time=2026-11-26T17:11:55.326Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=7 apply_ms=6
+time=2026-11-26T17:11:55.552Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=12 is_primary_ms=12
+time=2026-11-26T17:11:55.592Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=14 apply_ms=14
+time=2026-11-26T17:11:55.746Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=9 is_primary_ms=9
+time=2026-11-26T17:11:55.827Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=10 apply_ms=8 head_lsn_ms=1
+time=2026-11-26T17:11:56.071Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=51 apply_ms=39 is_primary_ms=11
+time=2026-11-26T17:11:56.261Z level=INFO msg="merged deltas" table=public.rb_ledger rows=288 seconds=0.021393512
+time=2026-11-26T17:11:56.261Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=33 merge_deltas_ms=21 apply_ms=8 head_lsn_ms=3
+time=2026-11-26T17:11:56.265Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=1
+time=2026-11-26T17:11:56.488Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=57 apply_ms=56
+time=2026-11-26T17:11:56.648Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=10 apply_ms=5 head_lsn_ms=4
+time=2026-11-26T17:11:56.855Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=14 head_lsn_ms=8 apply_ms=5
+time=2026-11-26T17:11:57.056Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=6 apply_ms=6
+time=2026-11-26T17:11:57.295Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=43 apply_ms=42 head_lsn_ms=1
+time=2026-11-26T17:11:57.476Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=19 apply_ms=17 head_lsn_ms=1
+time=2026-11-26T17:11:57.713Z level=INFO msg="merged deltas" table=public.rb_ledger rows=295 seconds=0.026563187
+time=2026-11-26T17:11:57.713Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=53 merge_deltas_ms=26 apply_ms=25 head_lsn_ms=1
+time=2026-11-26T17:11:57.738Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=1 is_primary_ms=1
+time=2026-11-26T17:11:57.882Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=19 apply_ms=13 head_lsn_ms=6
+time=2026-11-26T17:11:57.888Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=2 is_primary_ms=2
+time=2026-11-26T17:11:58.111Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=35 apply_ms=35
+time=2026-11-26T17:11:58.302Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=18 head_lsn_ms=12 apply_ms=5
+time=2026-11-26T17:11:58.494Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=5 apply_ms=3 head_lsn_ms=1
+time=2026-11-26T17:11:58.736Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=22 apply_ms=21
+time=2026-11-26T17:11:58.740Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=3 is_primary_ms=3
+time=2026-11-26T17:11:58.937Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=18 apply_ms=17 head_lsn_ms=1
+time=2026-11-26T17:11:58.940Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=2 is_primary_ms=2
+time=2026-11-26T17:11:59.170Z level=INFO msg="merged deltas" table=public.rb_ledger rows=302 seconds=0.030336585
+time=2026-11-26T17:11:59.170Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=49 merge_deltas_ms=30 apply_ms=11 head_lsn_ms=6
+time=2026-11-26T17:11:59.174Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=3 is_primary_ms=3
+time=2026-11-26T17:11:59.349Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=24 apply_ms=22 head_lsn_ms=1
+time=2026-11-26T17:11:59.359Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=9 is_primary_ms=9
+time=2026-11-26T17:11:59.557Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=31 apply_ms=19 head_lsn_ms=11
+time=2026-11-26T17:11:59.571Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=3 idle_confirm_ms=3
+time=2026-11-26T17:11:59.735Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=5 apply_ms=5
+time=2026-11-26T17:11:59.944Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=12 apply_ms=10 head_lsn_ms=1
+time=2026-11-26T17:12:00.143Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=4 apply_ms=3
+time=2026-11-26T17:12:00.144Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=1 is_primary_ms=1
+time=2026-11-26T17:12:00.356Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=16 apply_ms=14 head_lsn_ms=1
+time=2026-11-26T17:12:00.538Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=1
+time=2026-11-26T17:12:00.572Z level=INFO msg="merged deltas" table=public.rb_ledger rows=309 seconds=0.014139816
+time=2026-11-26T17:12:00.572Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=28 merge_deltas_ms=14 apply_ms=13
+time=2026-11-26T17:12:00.770Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=17 apply_ms=15
+time=2026-11-26T17:12:00.948Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=8 is_primary_ms=8
+time=2026-11-26T17:12:00.977Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=8 apply_ms=6 head_lsn_ms=1
+time=2026-11-26T17:12:01.188Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=16 apply_ms=14 head_lsn_ms=2
+time=2026-11-26T17:12:01.343Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=6 is_primary_ms=6
+time=2026-11-26T17:12:01.384Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=11 apply_ms=9 head_lsn_ms=1
+time=2026-11-26T17:12:01.596Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=17 head_lsn_ms=9 apply_ms=7
+time=2026-11-26T17:12:01.792Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=6 apply_ms=4 head_lsn_ms=1
+time=2026-11-26T17:12:02.019Z level=INFO msg="merged deltas" table=public.rb_ledger rows=316 seconds=0.022850976
+time=2026-11-26T17:12:02.019Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=30 merge_deltas_ms=22 apply_ms=6 head_lsn_ms=1
+time=2026-11-26T17:12:02.230Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=34 apply_ms=32 head_lsn_ms=1
+time=2026-11-26T17:12:02.407Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=7 apply_ms=4 head_lsn_ms=2
+time=2026-11-26T17:12:02.416Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=2 is_primary_ms=2
+time=2026-11-26T17:12:02.768Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=24 is_primary_ms=24
