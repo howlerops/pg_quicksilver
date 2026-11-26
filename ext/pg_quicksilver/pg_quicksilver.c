@@ -3171,23 +3171,15 @@ qs_subst_query(Query *q, QsSubst *s)
 		}
 		if (rte->perminfoindex > 0)
 		{
-			RTEPermissionInfo *pi = getRTEPermissionInfo(q->rteperminfos, rte);
-
 			/*
-			 * The heap statement's privileges were checked for the calling role
-			 * before this (qs_decide, ExecCheckPermissions on the heap plan). The
-			 * mirror statement runs as the mirror role, which holds none of them
-			 * (a view's SELECT is one: it is the invoker's, checked there), so it
-			 * asks for none. Whatever is checked here would be checked as the
-			 * mirror role.
+			 * No permission entry is kept. The heap statement's privileges were
+			 * checked for the calling role before this (qs_decide, on the heap
+			 * plan); the mirror statement runs as the mirror role, and a check
+			 * here would be made as that role (a view's SELECT, say, is the
+			 * invoker's). PostgreSQL asserts that a kept entry requires something,
+			 * so the entry is dropped rather than emptied.
 			 */
-			pi->requiredPerms = 0;
-			pi->checkAsUser = InvalidOid;
-			pi->selectedCols = NULL;
-			pi->insertedCols = NULL;
-			pi->updatedCols = NULL;
-			perminfos = lappend(perminfos, pi);
-			rte->perminfoindex = list_length(perminfos);
+			rte->perminfoindex = 0;
 		}
 	}
 	q->rteperminfos = perminfos;
