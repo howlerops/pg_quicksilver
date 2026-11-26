@@ -62,7 +62,7 @@ rows = heap.execute("SELECT count(*) FROM public.orders").fetchone()[0]
 lookup = heap.execute("SELECT id FROM public.orders LIMIT 1").fetchone()[0]
 print(f"public.orders: {rows} rows; settings: " + ", ".join(
     f"{n}={auto.execute('SELECT current_setting(%s)', (n,)).fetchone()[0]}"
-    for n in ("work_mem", "max_parallel_workers_per_gather", "quicksilver.max_lag", "duckdb.max_memory", "lc_collate")))
+    for n in ("work_mem", "max_parallel_workers_per_gather", "quicksilver.max_lag", "duckdb.max_memory")))
 
 if "1" not in skip:
     QUERIES = [

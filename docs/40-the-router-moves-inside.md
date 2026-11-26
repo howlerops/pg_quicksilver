@@ -591,6 +591,31 @@ the end of [Wired to the sidecar](#wired-to-the-sidecar).)
 The mirror relation's path is local to the instance that has the files. On an
 instance that does not, the mirror cannot plan and the heap answers.
 
+## At 10M rows
+
+`validate/real/scale.py` on a 10,000,000-row `orders` and 100,000-row
+`customers` (`bench/engine_compare/four_engines/scripts/load.sql`; 3 min 52 s to
+load, so not the 3M fallback), a hot standby with the sidecar, ICU `en-US`,
+4 vCPU, `work_mem` 4 MB. Median of five runs. Heap and routed are the same
+statement, on the same server, with `quicksilver.route` set to `heap` and `auto`.
+
+| statement (`bench.py`) | heap ms | routed ms | answered by |
+|---|---|---|---|
+| `count(*)` | 527.6 | 20.2 | mirror |
+| `sum(amount)` | 1,109.9 | 160.7 | mirror |
+| `count(*), sum(amount)` over one month | 189.9 | 82.3 | mirror |
+| `status, count(*)` ordered by `status` | 848.5 | 853.2 | heap: `<` on text under ICU |
+| revenue by month, joined to `customers` | 11,260.4 | 11,699.1 | heap: `date_trunc(text, timestamptz)` |
+| primary-key lookup | 0.2 | 0.2 | heap: cheap on the heap |
+
+Every routed answer equals the heap's (`scale.py`'s check). Under ICU, the two
+aggregates the text order and `date_trunc` keep on the heap are the ones the
+C locale would route; that run was not made here. The 10M-row stream of all
+rows to the client was not faster routed: 96.1 s heap, 92.1 s routed, the same
+checksum. Cut the lake's file short while its rows were arriving, the client got
+the error after 2,326,528 rows, none twice; inside a transaction block the heap
+answered the whole 10M rows (75.6 s) and the block went on.
+
 ## Running it
 
 The stand-in path, as it was run for the sections above. Its views are
