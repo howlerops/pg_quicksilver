@@ -175,6 +175,9 @@ func main() {
 	ext = newExtLink(log, o)
 	h.AddMetrics(ext.Metrics)
 	go ext.run(ctx)
+	h.AddMetrics(pumpWakes.Metrics)
+	jan := newJanitor(log, o)
+	h.AddMetrics(jan.Metrics)
 
 	// Halted tables, from the manifests, BEFORE anything connects. Opening a
 	// table needs the source's catalog, and a probe that waits for the source
@@ -195,12 +198,12 @@ func main() {
 		}
 	}
 
-	supervise(ctx, log, o, h)
+	supervise(ctx, log, o, h, jan)
 }
 
 // supervise is the outer loop. It owns exactly two decisions: what role this
 // node currently has, and how long to wait before trying again after a failure.
-func supervise(ctx context.Context, log *slog.Logger, o options, h *health.Health) {
+func supervise(ctx context.Context, log *slog.Logger, o options, h *health.Health, jan *janitor) {
 	backoff := time.Second
 	wasPrimary := false
 	// The local socket is not there yet for the first seconds of a Pod's life:
@@ -239,7 +242,11 @@ func supervise(ctx context.Context, log *slog.Logger, o options, h *health.Healt
 				wasPrimary = true
 			}
 			h.RecordCaughtUp() // a node that builds no mirror is never stale
-			sleep(ctx, 10*time.Second)
+			// The primary is where every Quicksilver slot of this cluster
+			// lives, and this instance is the only one with a superuser
+			// socket to it and nothing else to do (janitor.go).
+			jan.maybeRun(ctx)
+			sleep(ctx, primaryPoll)
 			continue
 		}
 
@@ -507,6 +514,14 @@ func runMirror(ctx context.Context, log *slog.Logger, o options, h *health.Healt
 		haltedNow[q] = t.Halted()
 		requested[q] = rebuildRequested(t.Dir)
 	}
+	// A table with a stored generated column: halted here, whatever its
+	// manifest said, and not rebuilt even if asked (halt.go).
+	if err := haltGenerated(ctx, log, h, conn, tables, requested); err != nil {
+		return err
+	}
+	for q, t := range tables {
+		haltedNow[q] = t.Halted()
+	}
 	hplan := planHalted(haltedNow, requested)
 	for _, q := range hplan.Stale {
 		log.Warn("discarding a rebuild request for a table that is not halted",
@@ -728,8 +743,15 @@ func pump(
 	// committed after a schema change, in the one shape this project keeps
 	// finding: row counts stay plausible and nothing errors.
 	var pending []changestream.Transaction
-	ticker := time.NewTicker(200 * time.Millisecond)
+	// The ticker is the FALLBACK. The loop is woken by the stream (wake.go):
+	// it used to find a commit only when this fired, on average 100 ms late.
+	ticker := time.NewTicker(pumpFallbackInterval)
 	defer ticker.Stop()
+	pacer := newApplyPacer(applyMaxRate, applyBurst, time.Now())
+	ready := st.Ready()
+	if !pumpEvents {
+		ready = nil // QS_PUMP_EVENTS=off: the polling loop this replaced
+	}
 
 	// One connection for the role check, held for the life of the loop rather
 	// than opened per tick. See roleWatch.
@@ -764,10 +786,21 @@ func pump(
 	measuredAt, stalled := confirmedLSN, 0
 
 	for {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-ticker.C:
+		// A backlog (what a DDL or size barrier cut off) is applied at once;
+		// otherwise wait to be told there is something, or for the fallback.
+		why, werr := waitForWork(ctx, ready, ticker.C, len(pending) > 0, wakeCoalesce)
+		if werr != nil {
+			return werr
+		}
+		pumpWakes.note(why)
+		if why == wakeStream {
+			if d := pacer.wait(time.Now()); d > 0 {
+				pumpWakes.paced.Add(1)
+				sleep(ctx, d)
+				if ctx.Err() != nil {
+					return ctx.Err()
+				}
+			}
 		}
 
 		tt := newTickTimer()
@@ -1034,6 +1067,7 @@ func pump(
 				}
 			}
 		}
+		pacer.spend(time.Now())
 		ext.observe(tables) // a table that just halted is reported unreadable at once
 		if noteHalted(log, h, tables) == 0 {
 			// Not confirmed: with no table left the slot is about to be dropped.
@@ -1053,6 +1087,16 @@ func pump(
 		// has been replayed to them. This counts only what THIS stream applied.
 		if at := changestream.ParseLSN(last.NextLSN); at > appliedThrough {
 			appliedThrough = at
+		}
+		// Tell the reporter NOW that everything handed out is applied, rather
+		// than at the end of the tick: what follows is bookkeeping and
+		// maintenance (a delta merge alone was measured at 250-340 ms on this
+		// goroutine), and none of it changes what a reader may be told. Not
+		// at a DDL barrier: there the schema is re-read first, below.
+		reportedEarly := false
+		if len(pending) == 0 && cut < 0 {
+			ext.pumpIdle(appliedThrough)
+			reportedEarly = true
 		}
 
 		var headLSN string
@@ -1096,11 +1140,8 @@ func pump(
 
 		// Whatever the barrier cut off is held in `pending` and applied on the
 		// next tick, against the schema we just re-read.
-		if len(pending) > 0 {
-			ticker.Reset(time.Millisecond)
-		} else {
+		if len(pending) == 0 && !reportedEarly {
 			ext.pumpIdle(appliedThrough) // everything handed out has been applied
-			ticker.Reset(200 * time.Millisecond)
 		}
 	}
 }
@@ -1242,6 +1283,13 @@ func evolve(
 			reason := fmt.Sprintf(
 				"column(s) %s were backfilled by a table rewrite; their values never "+
 					"appear in the change stream", strings.Join(bf.Rewritten, ", "))
+			// A stored generated column is the rewrite a rebuild does not cure:
+			// say that now rather than after the operator has tried one.
+			if gen, err := generatedColumns(ctx, conn, schema, name); err != nil {
+				return err
+			} else if len(gen) > 0 {
+				reason = generatedHaltReason(qualified, gen)
+			}
 			if err := t.Halt(reason); err != nil {
 				return err
 			}

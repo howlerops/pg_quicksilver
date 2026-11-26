@@ -1,0 +1,5068 @@
++ export 'PS4=+ '
++ PS4='+ '
++ TABLES=public.items
++ rm -f /home/user/pg_quicksilver/.claude/worktrees/agent-a205c91741fc17a04/go/cmd/qs-mirror/validate/out/s1.log /home/user/pg_quicksilver/.claude/worktrees/agent-a205c91741fc17a04/go/cmd/qs-mirror/validate/out/s1.pid /home/user/pg_quicksilver/.claude/worktrees/agent-a205c91741fc17a04/go/cmd/qs-mirror/validate/out/s2.log /home/user/pg_quicksilver/.claude/worktrees/agent-a205c91741fc17a04/go/cmd/qs-mirror/validate/out/s2.pid
++ for x in s1 s2 p5
++ pg_down s1
++ for x in s1 s2 p5
++ pg_down s2
++ for x in s1 s2 p5
++ pg_down p5
++ rm -rf /var/lib/postgresql/qsy1/p5 /var/lib/postgresql/qsy1/s1 /var/lib/postgresql/qsy1/s2 /var/lib/postgresql/qsy1/mirror
++ install -d -o postgres -g postgres /var/lib/postgresql/qsy1 /var/lib/postgresql/qsy1/sock /var/lib/postgresql/qsy1/mirror
++ pgu '/usr/lib/postgresql/17/bin/initdb -D /var/lib/postgresql/qsy1/p5 -U postgres -A trust --locale=C.UTF-8 -E UTF8'
++ su postgres -s /bin/bash -c '/usr/lib/postgresql/17/bin/initdb -D /var/lib/postgresql/qsy1/p5 -U postgres -A trust --locale=C.UTF-8 -E UTF8'
++ cat
++ pg_up p5 5600
++ pgu '/usr/lib/postgresql/17/bin/pg_ctl -D /var/lib/postgresql/qsy1/p5 -l /var/lib/postgresql/qsy1/p5.log -w -o '\''-c port=5600 -c unix_socket_directories=/var/lib/postgresql/qsy1/sock -c listen_addresses=localhost'\'' start'
++ su postgres -s /bin/bash -c '/usr/lib/postgresql/17/bin/pg_ctl -D /var/lib/postgresql/qsy1/p5 -l /var/lib/postgresql/qsy1/p5.log -w -o '\''-c port=5600 -c unix_socket_directories=/var/lib/postgresql/qsy1/sock -c listen_addresses=localhost'\'' start'
++ sql 5600 postgres
++ su postgres -s /bin/bash -c '/usr/lib/postgresql/17/bin/psql -X -A -t -q -v ON_ERROR_STOP=1 -h /var/lib/postgresql/qsy1/sock -p 5600 -U postgres -d postgres -f -'
++ cat
++ sql 5600 app
++ su postgres -s /bin/bash -c '/usr/lib/postgresql/17/bin/psql -X -A -t -q -v ON_ERROR_STOP=1 -h /var/lib/postgresql/qsy1/sock -p 5600 -U postgres -d app -f -'
++ cat
++ for s in s1 s2
++ sql 5600 postgres
++ cat
++ su postgres -s /bin/bash -c '/usr/lib/postgresql/17/bin/psql -X -A -t -q -v ON_ERROR_STOP=1 -h /var/lib/postgresql/qsy1/sock -p 5600 -U postgres -d postgres -f -'
+(s1phys,)
++ pgu '/usr/lib/postgresql/17/bin/pg_basebackup -c fast -h /var/lib/postgresql/qsy1/sock -p 5600 -U postgres -D /var/lib/postgresql/qsy1/s1 -R -X stream -S s1phys'
++ su postgres -s /bin/bash -c '/usr/lib/postgresql/17/bin/pg_basebackup -c fast -h /var/lib/postgresql/qsy1/sock -p 5600 -U postgres -D /var/lib/postgresql/qsy1/s1 -R -X stream -S s1phys'
++ for s in s1 s2
++ sql 5600 postgres
++ cat
++ su postgres -s /bin/bash -c '/usr/lib/postgresql/17/bin/psql -X -A -t -q -v ON_ERROR_STOP=1 -h /var/lib/postgresql/qsy1/sock -p 5600 -U postgres -d postgres -f -'
+(s2phys,)
++ pgu '/usr/lib/postgresql/17/bin/pg_basebackup -c fast -h /var/lib/postgresql/qsy1/sock -p 5600 -U postgres -D /var/lib/postgresql/qsy1/s2 -R -X stream -S s2phys'
++ su postgres -s /bin/bash -c '/usr/lib/postgresql/17/bin/pg_basebackup -c fast -h /var/lib/postgresql/qsy1/sock -p 5600 -U postgres -D /var/lib/postgresql/qsy1/s2 -R -X stream -S s2phys'
++ printf '\nport = 5601\nlisten_addresses = '\''localhost'\''\nunix_socket_directories = '\''/var/lib/postgresql/qsy1/sock'\''\nprimary_conninfo = '\''host=localhost port=5600 user=postgres dbname=app application_name=s1'\''\nprimary_slot_name = '\''s1phys'\''\nhot_standby_feedback = on\nsync_replication_slots = on\n'
++ printf '\nport = 5602\nlisten_addresses = '\''localhost'\''\nunix_socket_directories = '\''/var/lib/postgresql/qsy1/sock'\''\nprimary_conninfo = '\''host=localhost port=5600 user=postgres dbname=app application_name=s2'\''\nprimary_slot_name = '\''s2phys'\''\nhot_standby_feedback = on\nsync_replication_slots = on\n'
++ pgu '/usr/lib/postgresql/17/bin/pg_ctl -D /var/lib/postgresql/qsy1/s1 -l /var/lib/postgresql/qsy1/s1.log -w start'
++ su postgres -s /bin/bash -c '/usr/lib/postgresql/17/bin/pg_ctl -D /var/lib/postgresql/qsy1/s1 -l /var/lib/postgresql/qsy1/s1.log -w start'
++ pgu '/usr/lib/postgresql/17/bin/pg_ctl -D /var/lib/postgresql/qsy1/s2 -l /var/lib/postgresql/qsy1/s2.log -w start'
++ su postgres -s /bin/bash -c '/usr/lib/postgresql/17/bin/pg_ctl -D /var/lib/postgresql/qsy1/s2 -l /var/lib/postgresql/qsy1/s2.log -w start'
++ start_sc s1 s1 5611 5601 5600
++ local name=s1 pod=s1 hp=5611 lp=5601 pp=5600
++ shift 5
++ mkdir -p /var/lib/postgresql/qsy1/mirror/s1
++ echo 26647
+++ cat /home/user/pg_quicksilver/.claude/worktrees/agent-a205c91741fc17a04/go/cmd/qs-mirror/validate/out/s1.pid
++ echo 'started sidecar s1 pod=s1 pid=26647'
++ start_sc s2 s2 5612 5602 5600
++ local name=s2 pod=s2 hp=5612 lp=5602 pp=5600
++ shift 5
++ mkdir -p /var/lib/postgresql/qsy1/mirror/s2
++ nohup env QS_CLUSTER=qsv QS_MODE=shadow QS_INGEST=logical QS_TABLES=public.items QS_SLOT=qs_v1 QS_PUBLICATION=qs_v1 QS_MIRROR_PATH=/var/lib/postgresql/qsy1/mirror/s1 QS_FRESHNESS_SLO=15s QS_PRIMARY_HOST=localhost QS_PRIMARY_PORT=5600 QS_LOCAL_SOCKET_DIR=/var/lib/postgresql/qsy1/sock QS_LOCAL_PORT=5601 QS_DATABASE=app QS_PGUSER=postgres QS_POD_NAME=s1 QS_HEALTH_ADDR=127.0.0.1:5611 /tmp/claude-0/-home-user-pg-quicksilver/58894071-fd3a-5a32-94ab-41a0530826ff/scratchpad/bin/qs-mirror
++ echo 26650
++ nohup env QS_CLUSTER=qsv QS_MODE=shadow QS_INGEST=logical QS_TABLES=public.items QS_SLOT=qs_v1 QS_PUBLICATION=qs_v1 QS_MIRROR_PATH=/var/lib/postgresql/qsy1/mirror/s2 QS_FRESHNESS_SLO=15s QS_PRIMARY_HOST=localhost QS_PRIMARY_PORT=5600 QS_LOCAL_SOCKET_DIR=/var/lib/postgresql/qsy1/sock QS_LOCAL_PORT=5602 QS_DATABASE=app QS_PGUSER=postgres QS_POD_NAME=s2 QS_HEALTH_ADDR=127.0.0.1:5612 /tmp/claude-0/-home-user-pg-quicksilver/58894071-fd3a-5a32-94ab-41a0530826ff/scratchpad/bin/qs-mirror
+++ cat /home/user/pg_quicksilver/.claude/worktrees/agent-a205c91741fc17a04/go/cmd/qs-mirror/validate/out/s2.pid
++ echo 'started sidecar s2 pod=s2 pid=26650'
++ ready 5611 120
+++ seq 1200
++ for _ in $(seq $(( ${2:-60} * 10 )))
++ curl -sf http://127.0.0.1:5611/readyz
++ sleep 0.1
++ for _ in $(seq $(( ${2:-60} * 10 )))
++ curl -sf http://127.0.0.1:5611/readyz
++ sleep 0.1
++ for _ in $(seq $(( ${2:-60} * 10 )))
++ curl -sf http://127.0.0.1:5611/readyz
++ sleep 0.1
++ for _ in $(seq $(( ${2:-60} * 10 )))
++ curl -sf http://127.0.0.1:5611/readyz
++ sleep 0.1
++ for _ in $(seq $(( ${2:-60} * 10 )))
++ curl -sf http://127.0.0.1:5611/readyz
++ sleep 0.1
++ for _ in $(seq $(( ${2:-60} * 10 )))
++ curl -sf http://127.0.0.1:5611/readyz
++ sleep 0.1
++ for _ in $(seq $(( ${2:-60} * 10 )))
++ curl -sf http://127.0.0.1:5611/readyz
++ sleep 0.1
++ for _ in $(seq $(( ${2:-60} * 10 )))
++ curl -sf http://127.0.0.1:5611/readyz
++ sleep 0.1
++ for _ in $(seq $(( ${2:-60} * 10 )))
++ curl -sf http://127.0.0.1:5611/readyz
++ sleep 0.1
++ for _ in $(seq $(( ${2:-60} * 10 )))
++ curl -sf http://127.0.0.1:5611/readyz
++ sleep 0.1
++ for _ in $(seq $(( ${2:-60} * 10 )))
++ curl -sf http://127.0.0.1:5611/readyz
++ return 0
++ echo 's1 ready'
+s1 ready
++ ready 5612 120
+++ seq 1200
++ for _ in $(seq $(( ${2:-60} * 10 )))
++ curl -sf http://127.0.0.1:5612/readyz
++ return 0
++ echo 's2 ready'
+s2 ready
++ sql 5600 postgres
++ cat
++ su postgres -s /bin/bash -c '/usr/lib/postgresql/17/bin/psql -X -A -t -q -v ON_ERROR_STOP=1 -h /var/lib/postgresql/qsy1/sock -p 5600 -U postgres -d postgres -f -'
+qs_v1_s1|t
+qs_v1_s2|t
+s1phys|t
+s2phys|t
++ echo '=== writes start'
+=== writes start
++ W=26716
++ sleep 20
++ writer
++ local end=68 n=0
++ '[' 8 -lt 68 ']'
++ n=1
++ sql 5600 app
++ '[' 8 -lt 68 ']'
++ n=2
++ sql 5600 app
++ '[' 8 -lt 68 ']'
++ n=3
++ sql 5600 app
++ '[' 8 -lt 68 ']'
++ n=4
++ sql 5600 app
++ '[' 9 -lt 68 ']'
++ n=5
++ sql 5600 app
++ '[' 9 -lt 68 ']'
++ n=6
++ sql 5600 app
++ '[' 9 -lt 68 ']'
++ n=7
++ sql 5600 app
++ '[' 9 -lt 68 ']'
++ n=8
++ sql 5600 app
++ '[' 9 -lt 68 ']'
++ n=9
++ sql 5600 app
++ '[' 9 -lt 68 ']'
++ n=10
++ sql 5600 app
++ '[' 9 -lt 68 ']'
++ n=11
++ sql 5600 app
++ '[' 9 -lt 68 ']'
++ n=12
++ sql 5600 app
++ '[' 9 -lt 68 ']'
++ n=13
++ sql 5600 app
++ '[' 9 -lt 68 ']'
++ n=14
++ sql 5600 app
++ '[' 9 -lt 68 ']'
++ n=15
++ sql 5600 app
++ '[' 9 -lt 68 ']'
++ n=16
++ sql 5600 app
++ '[' 9 -lt 68 ']'
++ n=17
++ sql 5600 app
++ '[' 9 -lt 68 ']'
++ n=18
++ sql 5600 app
++ '[' 9 -lt 68 ']'
++ n=19
++ sql 5600 app
++ '[' 9 -lt 68 ']'
++ n=20
++ sql 5600 app
++ '[' 9 -lt 68 ']'
++ n=21
++ sql 5600 app
++ '[' 9 -lt 68 ']'
++ n=22
++ sql 5600 app
++ '[' 9 -lt 68 ']'
++ n=23
++ sql 5600 app
++ '[' 9 -lt 68 ']'
++ n=24
++ sql 5600 app
++ '[' 9 -lt 68 ']'
++ n=25
++ sql 5600 app
++ '[' 9 -lt 68 ']'
++ n=26
++ sql 5600 app
++ '[' 9 -lt 68 ']'
++ n=27
++ sql 5600 app
++ '[' 10 -lt 68 ']'
++ n=28
++ sql 5600 app
++ '[' 10 -lt 68 ']'
++ n=29
++ sql 5600 app
++ '[' 10 -lt 68 ']'
++ n=30
++ sql 5600 app
++ '[' 10 -lt 68 ']'
++ n=31
++ sql 5600 app
++ '[' 10 -lt 68 ']'
++ n=32
++ sql 5600 app
++ '[' 10 -lt 68 ']'
++ n=33
++ sql 5600 app
++ '[' 10 -lt 68 ']'
++ n=34
++ sql 5600 app
++ '[' 10 -lt 68 ']'
++ n=35
++ sql 5600 app
++ '[' 10 -lt 68 ']'
++ n=36
++ sql 5600 app
++ '[' 10 -lt 68 ']'
++ n=37
++ sql 5600 app
++ '[' 10 -lt 68 ']'
++ n=38
++ sql 5600 app
++ '[' 10 -lt 68 ']'
++ n=39
++ sql 5600 app
++ '[' 10 -lt 68 ']'
++ n=40
++ sql 5600 app
++ '[' 10 -lt 68 ']'
++ n=41
++ sql 5600 app
++ '[' 10 -lt 68 ']'
++ n=42
++ sql 5600 app
++ '[' 10 -lt 68 ']'
++ n=43
++ sql 5600 app
++ '[' 10 -lt 68 ']'
++ n=44
++ sql 5600 app
++ '[' 10 -lt 68 ']'
++ n=45
++ sql 5600 app
++ '[' 10 -lt 68 ']'
++ n=46
++ sql 5600 app
++ '[' 10 -lt 68 ']'
++ n=47
++ sql 5600 app
++ '[' 10 -lt 68 ']'
++ n=48
++ sql 5600 app
++ '[' 10 -lt 68 ']'
++ n=49
++ sql 5600 app
++ '[' 10 -lt 68 ']'
++ n=50
++ sql 5600 app
++ '[' 10 -lt 68 ']'
++ n=51
++ sql 5600 app
++ '[' 10 -lt 68 ']'
++ n=52
++ sql 5600 app
++ '[' 10 -lt 68 ']'
++ n=53
++ sql 5600 app
++ '[' 10 -lt 68 ']'
++ n=54
++ sql 5600 app
++ '[' 10 -lt 68 ']'
++ n=55
++ sql 5600 app
++ '[' 11 -lt 68 ']'
++ n=56
++ sql 5600 app
++ '[' 11 -lt 68 ']'
++ n=57
++ sql 5600 app
++ '[' 11 -lt 68 ']'
++ n=58
++ sql 5600 app
++ '[' 11 -lt 68 ']'
++ n=59
++ sql 5600 app
++ '[' 11 -lt 68 ']'
++ n=60
++ sql 5600 app
++ '[' 11 -lt 68 ']'
++ n=61
++ sql 5600 app
++ '[' 11 -lt 68 ']'
++ n=62
++ sql 5600 app
++ '[' 11 -lt 68 ']'
++ n=63
++ sql 5600 app
++ '[' 11 -lt 68 ']'
++ n=64
++ sql 5600 app
++ '[' 11 -lt 68 ']'
++ n=65
++ sql 5600 app
++ '[' 11 -lt 68 ']'
++ n=66
++ sql 5600 app
++ '[' 11 -lt 68 ']'
++ n=67
++ sql 5600 app
++ '[' 11 -lt 68 ']'
++ n=68
++ sql 5600 app
++ '[' 11 -lt 68 ']'
++ n=69
++ sql 5600 app
++ '[' 11 -lt 68 ']'
++ n=70
++ sql 5600 app
++ '[' 11 -lt 68 ']'
++ n=71
++ sql 5600 app
++ '[' 11 -lt 68 ']'
++ n=72
++ sql 5600 app
++ '[' 11 -lt 68 ']'
++ n=73
++ sql 5600 app
++ '[' 11 -lt 68 ']'
++ n=74
++ sql 5600 app
++ '[' 11 -lt 68 ']'
++ n=75
++ sql 5600 app
++ '[' 11 -lt 68 ']'
++ n=76
++ sql 5600 app
++ '[' 11 -lt 68 ']'
++ n=77
++ sql 5600 app
++ '[' 11 -lt 68 ']'
++ n=78
++ sql 5600 app
++ '[' 11 -lt 68 ']'
++ n=79
++ sql 5600 app
++ '[' 11 -lt 68 ']'
++ n=80
++ sql 5600 app
++ '[' 11 -lt 68 ']'
++ n=81
++ sql 5600 app
++ '[' 11 -lt 68 ']'
++ n=82
++ sql 5600 app
++ '[' 12 -lt 68 ']'
++ n=83
++ sql 5600 app
++ '[' 12 -lt 68 ']'
++ n=84
++ sql 5600 app
++ '[' 12 -lt 68 ']'
++ n=85
++ sql 5600 app
++ '[' 12 -lt 68 ']'
++ n=86
++ sql 5600 app
++ '[' 12 -lt 68 ']'
++ n=87
++ sql 5600 app
++ '[' 12 -lt 68 ']'
++ n=88
++ sql 5600 app
++ '[' 12 -lt 68 ']'
++ n=89
++ sql 5600 app
++ '[' 12 -lt 68 ']'
++ n=90
++ sql 5600 app
++ '[' 12 -lt 68 ']'
++ n=91
++ sql 5600 app
++ '[' 12 -lt 68 ']'
++ n=92
++ sql 5600 app
++ '[' 12 -lt 68 ']'
++ n=93
++ sql 5600 app
++ '[' 12 -lt 68 ']'
++ n=94
++ sql 5600 app
++ '[' 12 -lt 68 ']'
++ n=95
++ sql 5600 app
++ '[' 12 -lt 68 ']'
++ n=96
++ sql 5600 app
++ '[' 12 -lt 68 ']'
++ n=97
++ sql 5600 app
++ '[' 12 -lt 68 ']'
++ n=98
++ sql 5600 app
++ '[' 12 -lt 68 ']'
++ n=99
++ sql 5600 app
++ '[' 12 -lt 68 ']'
++ n=100
++ sql 5600 app
++ '[' 12 -lt 68 ']'
++ n=101
++ sql 5600 app
++ '[' 12 -lt 68 ']'
++ n=102
++ sql 5600 app
++ '[' 12 -lt 68 ']'
++ n=103
++ sql 5600 app
++ '[' 12 -lt 68 ']'
++ n=104
++ sql 5600 app
++ '[' 12 -lt 68 ']'
++ n=105
++ sql 5600 app
++ '[' 12 -lt 68 ']'
++ n=106
++ sql 5600 app
++ '[' 12 -lt 68 ']'
++ n=107
++ sql 5600 app
++ '[' 12 -lt 68 ']'
++ n=108
++ sql 5600 app
++ '[' 12 -lt 68 ']'
++ n=109
++ sql 5600 app
++ '[' 12 -lt 68 ']'
++ n=110
++ sql 5600 app
++ '[' 12 -lt 68 ']'
++ n=111
++ sql 5600 app
++ '[' 12 -lt 68 ']'
++ n=112
++ sql 5600 app
++ '[' 12 -lt 68 ']'
++ n=113
++ sql 5600 app
++ '[' 12 -lt 68 ']'
++ n=114
++ sql 5600 app
++ '[' 13 -lt 68 ']'
++ n=115
++ sql 5600 app
++ '[' 13 -lt 68 ']'
++ n=116
++ sql 5600 app
++ '[' 13 -lt 68 ']'
++ n=117
++ sql 5600 app
++ '[' 13 -lt 68 ']'
++ n=118
++ sql 5600 app
++ '[' 13 -lt 68 ']'
++ n=119
++ sql 5600 app
++ '[' 13 -lt 68 ']'
++ n=120
++ sql 5600 app
++ '[' 13 -lt 68 ']'
++ n=121
++ sql 5600 app
++ '[' 13 -lt 68 ']'
++ n=122
++ sql 5600 app
++ '[' 13 -lt 68 ']'
++ n=123
++ sql 5600 app
++ '[' 13 -lt 68 ']'
++ n=124
++ sql 5600 app
++ '[' 13 -lt 68 ']'
++ n=125
++ sql 5600 app
++ '[' 13 -lt 68 ']'
++ n=126
++ sql 5600 app
++ '[' 13 -lt 68 ']'
++ n=127
++ sql 5600 app
++ '[' 13 -lt 68 ']'
++ n=128
++ sql 5600 app
++ '[' 13 -lt 68 ']'
++ n=129
++ sql 5600 app
++ '[' 13 -lt 68 ']'
++ n=130
++ sql 5600 app
++ '[' 13 -lt 68 ']'
++ n=131
++ sql 5600 app
++ '[' 13 -lt 68 ']'
++ n=132
++ sql 5600 app
++ '[' 13 -lt 68 ']'
++ n=133
++ sql 5600 app
++ '[' 13 -lt 68 ']'
++ n=134
++ sql 5600 app
++ '[' 13 -lt 68 ']'
++ n=135
++ sql 5600 app
++ '[' 13 -lt 68 ']'
++ n=136
++ sql 5600 app
++ '[' 13 -lt 68 ']'
++ n=137
++ sql 5600 app
++ '[' 13 -lt 68 ']'
++ n=138
++ sql 5600 app
++ '[' 13 -lt 68 ']'
++ n=139
++ sql 5600 app
++ '[' 13 -lt 68 ']'
++ n=140
++ sql 5600 app
++ '[' 13 -lt 68 ']'
++ n=141
++ sql 5600 app
++ '[' 13 -lt 68 ']'
++ n=142
++ sql 5600 app
++ '[' 13 -lt 68 ']'
++ n=143
++ sql 5600 app
++ '[' 13 -lt 68 ']'
++ n=144
++ sql 5600 app
++ '[' 13 -lt 68 ']'
++ n=145
++ sql 5600 app
++ '[' 14 -lt 68 ']'
++ n=146
++ sql 5600 app
++ '[' 14 -lt 68 ']'
++ n=147
++ sql 5600 app
++ '[' 14 -lt 68 ']'
++ n=148
++ sql 5600 app
++ '[' 14 -lt 68 ']'
++ n=149
++ sql 5600 app
++ '[' 14 -lt 68 ']'
++ n=150
++ sql 5600 app
++ '[' 14 -lt 68 ']'
++ n=151
++ sql 5600 app
++ '[' 14 -lt 68 ']'
++ n=152
++ sql 5600 app
++ '[' 14 -lt 68 ']'
++ n=153
++ sql 5600 app
++ '[' 14 -lt 68 ']'
++ n=154
++ sql 5600 app
++ '[' 14 -lt 68 ']'
++ n=155
++ sql 5600 app
++ '[' 14 -lt 68 ']'
++ n=156
++ sql 5600 app
++ '[' 14 -lt 68 ']'
++ n=157
++ sql 5600 app
++ '[' 14 -lt 68 ']'
++ n=158
++ sql 5600 app
++ '[' 14 -lt 68 ']'
++ n=159
++ sql 5600 app
++ '[' 14 -lt 68 ']'
++ n=160
++ sql 5600 app
++ '[' 14 -lt 68 ']'
++ n=161
++ sql 5600 app
++ '[' 14 -lt 68 ']'
++ n=162
++ sql 5600 app
++ '[' 14 -lt 68 ']'
++ n=163
++ sql 5600 app
++ '[' 14 -lt 68 ']'
++ n=164
++ sql 5600 app
++ '[' 14 -lt 68 ']'
++ n=165
++ sql 5600 app
++ '[' 14 -lt 68 ']'
++ n=166
++ sql 5600 app
++ '[' 14 -lt 68 ']'
++ n=167
++ sql 5600 app
++ '[' 14 -lt 68 ']'
++ n=168
++ sql 5600 app
++ '[' 14 -lt 68 ']'
++ n=169
++ sql 5600 app
++ '[' 14 -lt 68 ']'
++ n=170
++ sql 5600 app
++ '[' 14 -lt 68 ']'
++ n=171
++ sql 5600 app
++ '[' 14 -lt 68 ']'
++ n=172
++ sql 5600 app
++ '[' 14 -lt 68 ']'
++ n=173
++ sql 5600 app
++ '[' 14 -lt 68 ']'
++ n=174
++ sql 5600 app
++ '[' 14 -lt 68 ']'
++ n=175
++ sql 5600 app
++ '[' 14 -lt 68 ']'
++ n=176
++ sql 5600 app
++ '[' 14 -lt 68 ']'
++ n=177
++ sql 5600 app
++ '[' 15 -lt 68 ']'
++ n=178
++ sql 5600 app
++ '[' 15 -lt 68 ']'
++ n=179
++ sql 5600 app
++ '[' 15 -lt 68 ']'
++ n=180
++ sql 5600 app
++ '[' 15 -lt 68 ']'
++ n=181
++ sql 5600 app
++ '[' 15 -lt 68 ']'
++ n=182
++ sql 5600 app
++ '[' 15 -lt 68 ']'
++ n=183
++ sql 5600 app
++ '[' 15 -lt 68 ']'
++ n=184
++ sql 5600 app
++ '[' 15 -lt 68 ']'
++ n=185
++ sql 5600 app
++ '[' 15 -lt 68 ']'
++ n=186
++ sql 5600 app
++ '[' 15 -lt 68 ']'
++ n=187
++ sql 5600 app
++ '[' 15 -lt 68 ']'
++ n=188
++ sql 5600 app
++ '[' 15 -lt 68 ']'
++ n=189
++ sql 5600 app
++ '[' 15 -lt 68 ']'
++ n=190
++ sql 5600 app
++ '[' 15 -lt 68 ']'
++ n=191
++ sql 5600 app
++ '[' 15 -lt 68 ']'
++ n=192
++ sql 5600 app
++ '[' 15 -lt 68 ']'
++ n=193
++ sql 5600 app
++ '[' 15 -lt 68 ']'
++ n=194
++ sql 5600 app
++ '[' 15 -lt 68 ']'
++ n=195
++ sql 5600 app
++ '[' 15 -lt 68 ']'
++ n=196
++ sql 5600 app
++ '[' 15 -lt 68 ']'
++ n=197
++ sql 5600 app
++ '[' 15 -lt 68 ']'
++ n=198
++ sql 5600 app
++ '[' 15 -lt 68 ']'
++ n=199
++ sql 5600 app
++ '[' 15 -lt 68 ']'
++ n=200
++ sql 5600 app
++ '[' 15 -lt 68 ']'
++ n=201
++ sql 5600 app
++ '[' 15 -lt 68 ']'
++ n=202
++ sql 5600 app
++ '[' 15 -lt 68 ']'
++ n=203
++ sql 5600 app
++ '[' 15 -lt 68 ']'
++ n=204
++ sql 5600 app
++ '[' 15 -lt 68 ']'
++ n=205
++ sql 5600 app
++ '[' 15 -lt 68 ']'
++ n=206
++ sql 5600 app
++ '[' 15 -lt 68 ']'
++ n=207
++ sql 5600 app
++ '[' 15 -lt 68 ']'
++ n=208
++ sql 5600 app
++ '[' 15 -lt 68 ']'
++ n=209
++ sql 5600 app
++ '[' 15 -lt 68 ']'
++ n=210
++ sql 5600 app
++ '[' 15 -lt 68 ']'
++ n=211
++ sql 5600 app
++ '[' 15 -lt 68 ']'
++ n=212
++ sql 5600 app
++ '[' 16 -lt 68 ']'
++ n=213
++ sql 5600 app
++ '[' 16 -lt 68 ']'
++ n=214
++ sql 5600 app
++ '[' 16 -lt 68 ']'
++ n=215
++ sql 5600 app
++ '[' 16 -lt 68 ']'
++ n=216
++ sql 5600 app
++ '[' 16 -lt 68 ']'
++ n=217
++ sql 5600 app
++ '[' 16 -lt 68 ']'
++ n=218
++ sql 5600 app
++ '[' 16 -lt 68 ']'
++ n=219
++ sql 5600 app
++ '[' 16 -lt 68 ']'
++ n=220
++ sql 5600 app
++ '[' 16 -lt 68 ']'
++ n=221
++ sql 5600 app
++ '[' 16 -lt 68 ']'
++ n=222
++ sql 5600 app
++ '[' 16 -lt 68 ']'
++ n=223
++ sql 5600 app
++ '[' 16 -lt 68 ']'
++ n=224
++ sql 5600 app
++ '[' 16 -lt 68 ']'
++ n=225
++ sql 5600 app
++ '[' 16 -lt 68 ']'
++ n=226
++ sql 5600 app
++ '[' 16 -lt 68 ']'
++ n=227
++ sql 5600 app
++ '[' 16 -lt 68 ']'
++ n=228
++ sql 5600 app
++ '[' 16 -lt 68 ']'
++ n=229
++ sql 5600 app
++ '[' 16 -lt 68 ']'
++ n=230
++ sql 5600 app
++ '[' 16 -lt 68 ']'
++ n=231
++ sql 5600 app
++ '[' 16 -lt 68 ']'
++ n=232
++ sql 5600 app
++ '[' 16 -lt 68 ']'
++ n=233
++ sql 5600 app
++ '[' 16 -lt 68 ']'
++ n=234
++ sql 5600 app
++ '[' 16 -lt 68 ']'
++ n=235
++ sql 5600 app
++ '[' 16 -lt 68 ']'
++ n=236
++ sql 5600 app
++ '[' 16 -lt 68 ']'
++ n=237
++ sql 5600 app
++ '[' 16 -lt 68 ']'
++ n=238
++ sql 5600 app
++ '[' 16 -lt 68 ']'
++ n=239
++ sql 5600 app
++ '[' 16 -lt 68 ']'
++ n=240
++ sql 5600 app
++ '[' 16 -lt 68 ']'
++ n=241
++ sql 5600 app
++ '[' 16 -lt 68 ']'
++ n=242
++ sql 5600 app
++ '[' 16 -lt 68 ']'
++ n=243
++ sql 5600 app
++ '[' 16 -lt 68 ']'
++ n=244
++ sql 5600 app
++ '[' 16 -lt 68 ']'
++ n=245
++ sql 5600 app
++ '[' 17 -lt 68 ']'
++ n=246
++ sql 5600 app
++ '[' 17 -lt 68 ']'
++ n=247
++ sql 5600 app
++ '[' 17 -lt 68 ']'
++ n=248
++ sql 5600 app
++ '[' 17 -lt 68 ']'
++ n=249
++ sql 5600 app
++ '[' 17 -lt 68 ']'
++ n=250
++ sql 5600 app
++ '[' 17 -lt 68 ']'
++ n=251
++ sql 5600 app
++ '[' 17 -lt 68 ']'
++ n=252
++ sql 5600 app
++ '[' 17 -lt 68 ']'
++ n=253
++ sql 5600 app
++ '[' 17 -lt 68 ']'
++ n=254
++ sql 5600 app
++ '[' 17 -lt 68 ']'
++ n=255
++ sql 5600 app
++ '[' 17 -lt 68 ']'
++ n=256
++ sql 5600 app
++ '[' 17 -lt 68 ']'
++ n=257
++ sql 5600 app
++ '[' 17 -lt 68 ']'
++ n=258
++ sql 5600 app
++ '[' 17 -lt 68 ']'
++ n=259
++ sql 5600 app
++ '[' 17 -lt 68 ']'
++ n=260
++ sql 5600 app
++ '[' 17 -lt 68 ']'
++ n=261
++ sql 5600 app
++ '[' 17 -lt 68 ']'
++ n=262
++ sql 5600 app
++ '[' 17 -lt 68 ']'
++ n=263
++ sql 5600 app
++ '[' 17 -lt 68 ']'
++ n=264
++ sql 5600 app
++ '[' 17 -lt 68 ']'
++ n=265
++ sql 5600 app
++ '[' 17 -lt 68 ']'
++ n=266
++ sql 5600 app
++ '[' 17 -lt 68 ']'
++ n=267
++ sql 5600 app
++ '[' 17 -lt 68 ']'
++ n=268
++ sql 5600 app
++ '[' 17 -lt 68 ']'
++ n=269
++ sql 5600 app
++ '[' 17 -lt 68 ']'
++ n=270
++ sql 5600 app
++ '[' 17 -lt 68 ']'
++ n=271
++ sql 5600 app
++ '[' 17 -lt 68 ']'
++ n=272
++ sql 5600 app
++ '[' 17 -lt 68 ']'
++ n=273
++ sql 5600 app
++ '[' 18 -lt 68 ']'
++ n=274
++ sql 5600 app
++ '[' 18 -lt 68 ']'
++ n=275
++ sql 5600 app
++ '[' 18 -lt 68 ']'
++ n=276
++ sql 5600 app
++ '[' 18 -lt 68 ']'
++ n=277
++ sql 5600 app
++ '[' 18 -lt 68 ']'
++ n=278
++ sql 5600 app
++ '[' 18 -lt 68 ']'
++ n=279
++ sql 5600 app
++ '[' 18 -lt 68 ']'
++ n=280
++ sql 5600 app
++ '[' 18 -lt 68 ']'
++ n=281
++ sql 5600 app
++ '[' 18 -lt 68 ']'
++ n=282
++ sql 5600 app
++ '[' 18 -lt 68 ']'
++ n=283
++ sql 5600 app
++ '[' 18 -lt 68 ']'
++ n=284
++ sql 5600 app
++ '[' 18 -lt 68 ']'
++ n=285
++ sql 5600 app
++ '[' 18 -lt 68 ']'
++ n=286
++ sql 5600 app
++ '[' 18 -lt 68 ']'
++ n=287
++ sql 5600 app
++ '[' 18 -lt 68 ']'
++ n=288
++ sql 5600 app
++ '[' 18 -lt 68 ']'
++ n=289
++ sql 5600 app
++ '[' 18 -lt 68 ']'
++ n=290
++ sql 5600 app
++ '[' 18 -lt 68 ']'
++ n=291
++ sql 5600 app
++ '[' 18 -lt 68 ']'
++ n=292
++ sql 5600 app
++ '[' 18 -lt 68 ']'
++ n=293
++ sql 5600 app
++ '[' 18 -lt 68 ']'
++ n=294
++ sql 5600 app
++ '[' 18 -lt 68 ']'
++ n=295
++ sql 5600 app
++ '[' 18 -lt 68 ']'
++ n=296
++ sql 5600 app
++ '[' 18 -lt 68 ']'
++ n=297
++ sql 5600 app
++ '[' 18 -lt 68 ']'
++ n=298
++ sql 5600 app
++ '[' 18 -lt 68 ']'
++ n=299
++ sql 5600 app
++ '[' 18 -lt 68 ']'
++ n=300
++ sql 5600 app
++ '[' 18 -lt 68 ']'
++ n=301
++ sql 5600 app
++ '[' 18 -lt 68 ']'
++ n=302
++ sql 5600 app
++ '[' 18 -lt 68 ']'
++ n=303
++ sql 5600 app
++ '[' 18 -lt 68 ']'
++ n=304
++ sql 5600 app
++ '[' 18 -lt 68 ']'
++ n=305
++ sql 5600 app
++ '[' 18 -lt 68 ']'
++ n=306
++ sql 5600 app
++ '[' 18 -lt 68 ']'
++ n=307
++ sql 5600 app
++ '[' 19 -lt 68 ']'
++ n=308
++ sql 5600 app
++ '[' 19 -lt 68 ']'
++ n=309
++ sql 5600 app
++ '[' 19 -lt 68 ']'
++ n=310
++ sql 5600 app
++ '[' 19 -lt 68 ']'
++ n=311
++ sql 5600 app
++ '[' 19 -lt 68 ']'
++ n=312
++ sql 5600 app
++ '[' 19 -lt 68 ']'
++ n=313
++ sql 5600 app
++ '[' 19 -lt 68 ']'
++ n=314
++ sql 5600 app
++ '[' 19 -lt 68 ']'
++ n=315
++ sql 5600 app
++ '[' 19 -lt 68 ']'
++ n=316
++ sql 5600 app
++ '[' 19 -lt 68 ']'
++ n=317
++ sql 5600 app
++ '[' 19 -lt 68 ']'
++ n=318
++ sql 5600 app
++ '[' 19 -lt 68 ']'
++ n=319
++ sql 5600 app
++ '[' 19 -lt 68 ']'
++ n=320
++ sql 5600 app
++ '[' 19 -lt 68 ']'
++ n=321
++ sql 5600 app
++ '[' 19 -lt 68 ']'
++ n=322
++ sql 5600 app
++ '[' 19 -lt 68 ']'
++ n=323
++ sql 5600 app
++ '[' 19 -lt 68 ']'
++ n=324
++ sql 5600 app
++ '[' 19 -lt 68 ']'
++ n=325
++ sql 5600 app
++ '[' 19 -lt 68 ']'
++ n=326
++ sql 5600 app
++ '[' 19 -lt 68 ']'
++ n=327
++ sql 5600 app
++ '[' 19 -lt 68 ']'
++ n=328
++ sql 5600 app
++ '[' 19 -lt 68 ']'
++ n=329
++ sql 5600 app
++ '[' 19 -lt 68 ']'
++ n=330
++ sql 5600 app
++ '[' 19 -lt 68 ']'
++ n=331
++ sql 5600 app
++ '[' 19 -lt 68 ']'
++ n=332
++ sql 5600 app
++ '[' 19 -lt 68 ']'
++ n=333
++ sql 5600 app
++ '[' 19 -lt 68 ']'
++ n=334
++ sql 5600 app
++ '[' 19 -lt 68 ']'
++ n=335
++ sql 5600 app
++ '[' 19 -lt 68 ']'
++ n=336
++ sql 5600 app
++ '[' 19 -lt 68 ']'
++ n=337
++ sql 5600 app
++ '[' 19 -lt 68 ']'
++ n=338
++ sql 5600 app
++ '[' 19 -lt 68 ']'
++ n=339
++ sql 5600 app
++ '[' 19 -lt 68 ']'
++ n=340
++ sql 5600 app
++ '[' 20 -lt 68 ']'
++ n=341
++ sql 5600 app
++ '[' 20 -lt 68 ']'
++ n=342
++ sql 5600 app
++ '[' 20 -lt 68 ']'
++ n=343
++ sql 5600 app
++ '[' 20 -lt 68 ']'
++ n=344
++ sql 5600 app
++ '[' 20 -lt 68 ']'
++ n=345
++ sql 5600 app
++ '[' 20 -lt 68 ']'
++ n=346
++ sql 5600 app
++ '[' 20 -lt 68 ']'
++ n=347
++ sql 5600 app
++ '[' 20 -lt 68 ']'
++ n=348
++ sql 5600 app
++ '[' 20 -lt 68 ']'
++ n=349
++ sql 5600 app
++ '[' 20 -lt 68 ']'
++ n=350
++ sql 5600 app
++ '[' 20 -lt 68 ']'
++ n=351
++ sql 5600 app
++ '[' 20 -lt 68 ']'
++ n=352
++ sql 5600 app
++ '[' 20 -lt 68 ']'
++ n=353
++ sql 5600 app
++ '[' 20 -lt 68 ']'
++ n=354
++ sql 5600 app
++ '[' 20 -lt 68 ']'
++ n=355
++ sql 5600 app
++ '[' 20 -lt 68 ']'
++ n=356
++ sql 5600 app
++ '[' 20 -lt 68 ']'
++ n=357
++ sql 5600 app
++ '[' 20 -lt 68 ']'
++ n=358
++ sql 5600 app
++ '[' 20 -lt 68 ']'
++ n=359
++ sql 5600 app
++ '[' 20 -lt 68 ']'
++ n=360
++ sql 5600 app
++ '[' 20 -lt 68 ']'
++ n=361
++ sql 5600 app
++ '[' 20 -lt 68 ']'
++ n=362
++ sql 5600 app
++ '[' 20 -lt 68 ']'
++ n=363
++ sql 5600 app
++ '[' 20 -lt 68 ']'
++ n=364
++ sql 5600 app
++ '[' 21 -lt 68 ']'
++ n=365
++ sql 5600 app
++ '[' 21 -lt 68 ']'
++ n=366
++ sql 5600 app
++ '[' 21 -lt 68 ']'
++ n=367
++ sql 5600 app
++ '[' 21 -lt 68 ']'
++ n=368
++ sql 5600 app
++ '[' 21 -lt 68 ']'
++ n=369
++ sql 5600 app
++ '[' 21 -lt 68 ']'
++ n=370
++ sql 5600 app
++ '[' 21 -lt 68 ']'
++ n=371
++ sql 5600 app
++ '[' 21 -lt 68 ']'
++ n=372
++ sql 5600 app
++ '[' 21 -lt 68 ']'
++ n=373
++ sql 5600 app
++ '[' 21 -lt 68 ']'
++ n=374
++ sql 5600 app
++ '[' 21 -lt 68 ']'
++ n=375
++ sql 5600 app
++ '[' 21 -lt 68 ']'
++ n=376
++ sql 5600 app
++ '[' 21 -lt 68 ']'
++ n=377
++ sql 5600 app
++ '[' 21 -lt 68 ']'
++ n=378
++ sql 5600 app
++ '[' 21 -lt 68 ']'
++ n=379
++ sql 5600 app
++ '[' 21 -lt 68 ']'
++ n=380
++ sql 5600 app
++ '[' 21 -lt 68 ']'
++ n=381
++ sql 5600 app
++ '[' 21 -lt 68 ']'
++ n=382
++ sql 5600 app
++ '[' 21 -lt 68 ']'
++ n=383
++ sql 5600 app
++ '[' 21 -lt 68 ']'
++ n=384
++ sql 5600 app
++ '[' 21 -lt 68 ']'
++ n=385
++ sql 5600 app
++ '[' 21 -lt 68 ']'
++ n=386
++ sql 5600 app
++ '[' 21 -lt 68 ']'
++ n=387
++ sql 5600 app
++ '[' 21 -lt 68 ']'
++ n=388
++ sql 5600 app
++ '[' 22 -lt 68 ']'
++ n=389
++ sql 5600 app
++ '[' 22 -lt 68 ']'
++ n=390
++ sql 5600 app
++ '[' 22 -lt 68 ']'
++ n=391
++ sql 5600 app
++ '[' 22 -lt 68 ']'
++ n=392
++ sql 5600 app
++ '[' 22 -lt 68 ']'
++ n=393
++ sql 5600 app
++ '[' 22 -lt 68 ']'
++ n=394
++ sql 5600 app
++ '[' 22 -lt 68 ']'
++ n=395
++ sql 5600 app
++ '[' 22 -lt 68 ']'
++ n=396
++ sql 5600 app
++ '[' 22 -lt 68 ']'
++ n=397
++ sql 5600 app
++ '[' 22 -lt 68 ']'
++ n=398
++ sql 5600 app
++ '[' 22 -lt 68 ']'
++ n=399
++ sql 5600 app
++ '[' 22 -lt 68 ']'
++ n=400
++ sql 5600 app
++ '[' 22 -lt 68 ']'
++ n=401
++ sql 5600 app
++ '[' 22 -lt 68 ']'
++ n=402
++ sql 5600 app
++ '[' 22 -lt 68 ']'
++ n=403
++ sql 5600 app
++ '[' 22 -lt 68 ']'
++ n=404
++ sql 5600 app
++ '[' 22 -lt 68 ']'
++ n=405
++ sql 5600 app
++ '[' 22 -lt 68 ']'
++ n=406
++ sql 5600 app
++ '[' 22 -lt 68 ']'
++ n=407
++ sql 5600 app
++ '[' 22 -lt 68 ']'
++ n=408
++ sql 5600 app
++ '[' 22 -lt 68 ']'
++ n=409
++ sql 5600 app
++ '[' 22 -lt 68 ']'
++ n=410
++ sql 5600 app
++ '[' 22 -lt 68 ']'
++ n=411
++ sql 5600 app
++ '[' 22 -lt 68 ']'
++ n=412
++ sql 5600 app
++ '[' 22 -lt 68 ']'
++ n=413
++ sql 5600 app
++ '[' 22 -lt 68 ']'
++ n=414
++ sql 5600 app
++ '[' 22 -lt 68 ']'
++ n=415
++ sql 5600 app
++ '[' 22 -lt 68 ']'
++ n=416
++ sql 5600 app
++ '[' 23 -lt 68 ']'
++ n=417
++ sql 5600 app
++ '[' 23 -lt 68 ']'
++ n=418
++ sql 5600 app
++ '[' 23 -lt 68 ']'
++ n=419
++ sql 5600 app
++ '[' 23 -lt 68 ']'
++ n=420
++ sql 5600 app
++ '[' 23 -lt 68 ']'
++ n=421
++ sql 5600 app
++ '[' 23 -lt 68 ']'
++ n=422
++ sql 5600 app
++ '[' 23 -lt 68 ']'
++ n=423
++ sql 5600 app
++ '[' 23 -lt 68 ']'
++ n=424
++ sql 5600 app
++ '[' 23 -lt 68 ']'
++ n=425
++ sql 5600 app
++ '[' 23 -lt 68 ']'
++ n=426
++ sql 5600 app
++ '[' 23 -lt 68 ']'
++ n=427
++ sql 5600 app
++ '[' 23 -lt 68 ']'
++ n=428
++ sql 5600 app
++ '[' 23 -lt 68 ']'
++ n=429
++ sql 5600 app
++ '[' 23 -lt 68 ']'
++ n=430
++ sql 5600 app
++ '[' 23 -lt 68 ']'
++ n=431
++ sql 5600 app
++ '[' 23 -lt 68 ']'
++ n=432
++ sql 5600 app
++ '[' 23 -lt 68 ']'
++ n=433
++ sql 5600 app
++ '[' 23 -lt 68 ']'
++ n=434
++ sql 5600 app
++ '[' 23 -lt 68 ']'
++ n=435
++ sql 5600 app
++ '[' 23 -lt 68 ']'
++ n=436
++ sql 5600 app
++ '[' 23 -lt 68 ']'
++ n=437
++ sql 5600 app
++ '[' 23 -lt 68 ']'
++ n=438
++ sql 5600 app
++ '[' 23 -lt 68 ']'
++ n=439
++ sql 5600 app
++ '[' 24 -lt 68 ']'
++ n=440
++ sql 5600 app
++ '[' 24 -lt 68 ']'
++ n=441
++ sql 5600 app
++ '[' 24 -lt 68 ']'
++ n=442
++ sql 5600 app
++ '[' 24 -lt 68 ']'
++ n=443
++ sql 5600 app
++ '[' 24 -lt 68 ']'
++ n=444
++ sql 5600 app
++ '[' 24 -lt 68 ']'
++ n=445
++ sql 5600 app
++ '[' 24 -lt 68 ']'
++ n=446
++ sql 5600 app
++ '[' 24 -lt 68 ']'
++ n=447
++ sql 5600 app
++ '[' 24 -lt 68 ']'
++ n=448
++ sql 5600 app
++ '[' 24 -lt 68 ']'
++ n=449
++ sql 5600 app
++ '[' 24 -lt 68 ']'
++ n=450
++ sql 5600 app
++ '[' 24 -lt 68 ']'
++ n=451
++ sql 5600 app
++ '[' 24 -lt 68 ']'
++ n=452
++ sql 5600 app
++ '[' 24 -lt 68 ']'
++ n=453
++ sql 5600 app
++ '[' 24 -lt 68 ']'
++ n=454
++ sql 5600 app
++ '[' 24 -lt 68 ']'
++ n=455
++ sql 5600 app
++ '[' 24 -lt 68 ']'
++ n=456
++ sql 5600 app
++ '[' 24 -lt 68 ']'
++ n=457
++ sql 5600 app
++ '[' 24 -lt 68 ']'
++ n=458
++ sql 5600 app
++ '[' 24 -lt 68 ']'
++ n=459
++ sql 5600 app
++ '[' 24 -lt 68 ']'
++ n=460
++ sql 5600 app
++ '[' 24 -lt 68 ']'
++ n=461
++ sql 5600 app
++ '[' 25 -lt 68 ']'
++ n=462
++ sql 5600 app
++ '[' 25 -lt 68 ']'
++ n=463
++ sql 5600 app
++ '[' 25 -lt 68 ']'
++ n=464
++ sql 5600 app
++ '[' 25 -lt 68 ']'
++ n=465
++ sql 5600 app
++ '[' 25 -lt 68 ']'
++ n=466
++ sql 5600 app
++ '[' 25 -lt 68 ']'
++ n=467
++ sql 5600 app
++ '[' 25 -lt 68 ']'
++ n=468
++ sql 5600 app
++ '[' 25 -lt 68 ']'
++ n=469
++ sql 5600 app
++ '[' 25 -lt 68 ']'
++ n=470
++ sql 5600 app
++ '[' 25 -lt 68 ']'
++ n=471
++ sql 5600 app
++ '[' 25 -lt 68 ']'
++ n=472
++ sql 5600 app
++ '[' 25 -lt 68 ']'
++ n=473
++ sql 5600 app
++ '[' 25 -lt 68 ']'
++ n=474
++ sql 5600 app
++ '[' 25 -lt 68 ']'
++ n=475
++ sql 5600 app
++ '[' 25 -lt 68 ']'
++ n=476
++ sql 5600 app
++ '[' 25 -lt 68 ']'
++ n=477
++ sql 5600 app
++ '[' 25 -lt 68 ']'
++ n=478
++ sql 5600 app
++ '[' 25 -lt 68 ']'
++ n=479
++ sql 5600 app
++ '[' 25 -lt 68 ']'
++ n=480
++ sql 5600 app
++ '[' 25 -lt 68 ']'
++ n=481
++ sql 5600 app
++ '[' 25 -lt 68 ']'
++ n=482
++ sql 5600 app
++ '[' 25 -lt 68 ']'
++ n=483
++ sql 5600 app
++ '[' 25 -lt 68 ']'
++ n=484
++ sql 5600 app
++ '[' 26 -lt 68 ']'
++ n=485
++ sql 5600 app
++ '[' 26 -lt 68 ']'
++ n=486
++ sql 5600 app
++ '[' 26 -lt 68 ']'
++ n=487
++ sql 5600 app
++ '[' 26 -lt 68 ']'
++ n=488
++ sql 5600 app
++ '[' 26 -lt 68 ']'
++ n=489
++ sql 5600 app
++ '[' 26 -lt 68 ']'
++ n=490
++ sql 5600 app
++ '[' 26 -lt 68 ']'
++ n=491
++ sql 5600 app
++ '[' 26 -lt 68 ']'
++ n=492
++ sql 5600 app
++ '[' 26 -lt 68 ']'
++ n=493
++ sql 5600 app
++ '[' 26 -lt 68 ']'
++ n=494
++ sql 5600 app
++ '[' 26 -lt 68 ']'
++ n=495
++ sql 5600 app
++ '[' 26 -lt 68 ']'
++ n=496
++ sql 5600 app
++ '[' 26 -lt 68 ']'
++ n=497
++ sql 5600 app
++ '[' 26 -lt 68 ']'
++ n=498
++ sql 5600 app
++ '[' 26 -lt 68 ']'
++ n=499
++ sql 5600 app
++ '[' 26 -lt 68 ']'
++ n=500
++ sql 5600 app
++ '[' 26 -lt 68 ']'
++ n=501
++ sql 5600 app
++ '[' 26 -lt 68 ']'
++ n=502
++ sql 5600 app
++ '[' 26 -lt 68 ']'
++ n=503
++ sql 5600 app
++ '[' 26 -lt 68 ']'
++ n=504
++ sql 5600 app
++ '[' 27 -lt 68 ']'
++ n=505
++ sql 5600 app
++ '[' 27 -lt 68 ']'
++ n=506
++ sql 5600 app
++ '[' 27 -lt 68 ']'
++ n=507
++ sql 5600 app
++ '[' 28 -lt 68 ']'
++ n=508
++ sql 5600 app
++ '[' 28 -lt 68 ']'
++ n=509
++ sql 5600 app
++ '[' 28 -lt 68 ']'
++ n=510
++ sql 5600 app
++ '[' 28 -lt 68 ']'
++ n=511
++ sql 5600 app
++ '[' 28 -lt 68 ']'
++ n=512
++ sql 5600 app
++ '[' 28 -lt 68 ']'
++ n=513
++ sql 5600 app
++ '[' 28 -lt 68 ']'
++ n=514
++ sql 5600 app
++ '[' 28 -lt 68 ']'
++ n=515
++ sql 5600 app
++ '[' 28 -lt 68 ']'
++ n=516
++ sql 5600 app
++ '[' 28 -lt 68 ']'
++ n=517
++ sql 5600 app
++ '[' 28 -lt 68 ']'
++ n=518
++ sql 5600 app
++ '[' 28 -lt 68 ']'
++ n=519
++ sql 5600 app
++ '[' 28 -lt 68 ']'
++ n=520
++ sql 5600 app
++ '[' 28 -lt 68 ']'
++ n=521
++ sql 5600 app
++ '[' 28 -lt 68 ']'
++ n=522
++ sql 5600 app
++ '[' 28 -lt 68 ']'
++ n=523
++ sql 5600 app
++ '[' 28 -lt 68 ']'
++ n=524
++ sql 5600 app
++ '[' 28 -lt 68 ']'
++ n=525
++ sql 5600 app
+++ cat /home/user/pg_quicksilver/.claude/worktrees/agent-a205c91741fc17a04/go/cmd/qs-mirror/validate/out/s2.pid
++ echo '=== kill -9 the s2 sidecar (pid 26650) while writes continue'
+=== kill -9 the s2 sidecar (pid 26650) while writes continue
+++ cat /home/user/pg_quicksilver/.claude/worktrees/agent-a205c91741fc17a04/go/cmd/qs-mirror/validate/out/s2.pid
++ kill -9 26650
++ sleep 1
++ '[' 28 -lt 68 ']'
++ n=526
++ sql 5600 app
++ '[' 28 -lt 68 ']'
++ n=527
++ sql 5600 app
++ '[' 29 -lt 68 ']'
++ n=528
++ sql 5600 app
++ '[' 29 -lt 68 ']'
++ n=529
++ sql 5600 app
++ '[' 29 -lt 68 ']'
++ n=530
++ sql 5600 app
++ '[' 29 -lt 68 ']'
++ n=531
++ sql 5600 app
++ '[' 29 -lt 68 ']'
++ n=532
++ sql 5600 app
++ '[' 29 -lt 68 ']'
++ n=533
++ sql 5600 app
++ '[' 29 -lt 68 ']'
++ n=534
++ sql 5600 app
++ '[' 29 -lt 68 ']'
++ n=535
++ sql 5600 app
++ '[' 29 -lt 68 ']'
++ n=536
++ sql 5600 app
++ '[' 29 -lt 68 ']'
++ n=537
++ sql 5600 app
++ '[' 29 -lt 68 ']'
++ n=538
++ sql 5600 app
++ '[' 29 -lt 68 ']'
++ n=539
++ sql 5600 app
++ '[' 29 -lt 68 ']'
++ n=540
++ sql 5600 app
++ '[' 29 -lt 68 ']'
++ n=541
++ sql 5600 app
++ '[' 29 -lt 68 ']'
++ n=542
++ sql 5600 app
++ '[' 29 -lt 68 ']'
++ n=543
++ sql 5600 app
++ '[' 29 -lt 68 ']'
++ n=544
++ sql 5600 app
++ '[' 29 -lt 68 ']'
++ n=545
++ sql 5600 app
++ '[' 29 -lt 68 ']'
++ n=546
++ sql 5600 app
+./05_two_standbys.sh: line 69: 26650 Killed                  nohup env QS_CLUSTER=qsv QS_MODE=shadow QS_INGEST=logical QS_TABLES="${TABLES:-public.t1}" QS_SLOT=$BASE_SLOT QS_PUBLICATION=$PUB QS_MIRROR_PATH="$BASE/mirror/$name" QS_FRESHNESS_SLO=15s QS_PRIMARY_HOST=localhost QS_PRIMARY_PORT=$pp QS_LOCAL_SOCKET_DIR=$BASE/sock QS_LOCAL_PORT=$lp QS_DATABASE=$DB QS_PGUSER=postgres QS_POD_NAME=$pod QS_HEALTH_ADDR=127.0.0.1:$hp "$@" "${QS_MIRROR_BIN:-$BIN/qs-mirror}" >> "$OUT/$name.log" 2>&1 < /dev/null
++ echo '--- slots on the primary during the outage'
+--- slots on the primary during the outage
++ sql 5600 postgres
++ cat
++ su postgres -s /bin/bash -c '/usr/lib/postgresql/17/bin/psql -X -A -t -q -v ON_ERROR_STOP=1 -h /var/lib/postgresql/qsy1/sock -p 5600 -U postgres -d postgres -f -'
+qs_v1_s1|t
+qs_v1_s2|f
+s1phys|t
+s2phys|t
++ start_sc s2 s2 5612 5602 5600
++ local name=s2 pod=s2 hp=5612 lp=5602 pp=5600
++ shift 5
++ mkdir -p /var/lib/postgresql/qsy1/mirror/s2
++ echo 29740
++ nohup env QS_CLUSTER=qsv QS_MODE=shadow QS_INGEST=logical QS_TABLES=public.items QS_SLOT=qs_v1 QS_PUBLICATION=qs_v1 QS_MIRROR_PATH=/var/lib/postgresql/qsy1/mirror/s2 QS_FRESHNESS_SLO=15s QS_PRIMARY_HOST=localhost QS_PRIMARY_PORT=5600 QS_LOCAL_SOCKET_DIR=/var/lib/postgresql/qsy1/sock QS_LOCAL_PORT=5602 QS_DATABASE=app QS_PGUSER=postgres QS_POD_NAME=s2 QS_HEALTH_ADDR=127.0.0.1:5612 /tmp/claude-0/-home-user-pg-quicksilver/58894071-fd3a-5a32-94ab-41a0530826ff/scratchpad/bin/qs-mirror
+++ cat /home/user/pg_quicksilver/.claude/worktrees/agent-a205c91741fc17a04/go/cmd/qs-mirror/validate/out/s2.pid
++ echo 'started sidecar s2 pod=s2 pid=29740'
+++ cat /home/user/pg_quicksilver/.claude/worktrees/agent-a205c91741fc17a04/go/cmd/qs-mirror/validate/out/s2.pid
++ echo '=== s2 sidecar restarted (pid 29740)'
+=== s2 sidecar restarted (pid 29740)
++ ready 5612 120
+++ seq 1200
++ for _ in $(seq $(( ${2:-60} * 10 )))
++ curl -sf http://127.0.0.1:5612/readyz
++ '[' 29 -lt 68 ']'
++ n=547
++ sql 5600 app
++ sleep 0.1
++ '[' 29 -lt 68 ']'
++ n=548
++ sql 5600 app
++ '[' 30 -lt 68 ']'
++ n=549
++ sql 5600 app
++ for _ in $(seq $(( ${2:-60} * 10 )))
++ curl -sf http://127.0.0.1:5612/readyz
++ return 0
++ echo 's2 ready after restart'
+s2 ready after restart
++ wait 26716
++ '[' 30 -lt 68 ']'
++ n=550
++ sql 5600 app
++ '[' 30 -lt 68 ']'
++ n=551
++ sql 5600 app
++ '[' 30 -lt 68 ']'
++ n=552
++ sql 5600 app
++ '[' 30 -lt 68 ']'
++ n=553
++ sql 5600 app
++ '[' 30 -lt 68 ']'
++ n=554
++ sql 5600 app
++ '[' 30 -lt 68 ']'
++ n=555
++ sql 5600 app
++ '[' 30 -lt 68 ']'
++ n=556
++ sql 5600 app
++ '[' 30 -lt 68 ']'
++ n=557
++ sql 5600 app
++ '[' 30 -lt 68 ']'
++ n=558
++ sql 5600 app
++ '[' 30 -lt 68 ']'
++ n=559
++ sql 5600 app
++ '[' 30 -lt 68 ']'
++ n=560
++ sql 5600 app
++ '[' 30 -lt 68 ']'
++ n=561
++ sql 5600 app
++ '[' 30 -lt 68 ']'
++ n=562
++ sql 5600 app
++ '[' 30 -lt 68 ']'
++ n=563
++ sql 5600 app
++ '[' 30 -lt 68 ']'
++ n=564
++ sql 5600 app
++ '[' 30 -lt 68 ']'
++ n=565
++ sql 5600 app
++ '[' 30 -lt 68 ']'
++ n=566
++ sql 5600 app
++ '[' 30 -lt 68 ']'
++ n=567
++ sql 5600 app
++ '[' 30 -lt 68 ']'
++ n=568
++ sql 5600 app
++ '[' 30 -lt 68 ']'
++ n=569
++ sql 5600 app
++ '[' 31 -lt 68 ']'
++ n=570
++ sql 5600 app
++ '[' 31 -lt 68 ']'
++ n=571
++ sql 5600 app
++ '[' 31 -lt 68 ']'
++ n=572
++ sql 5600 app
++ '[' 31 -lt 68 ']'
++ n=573
++ sql 5600 app
++ '[' 31 -lt 68 ']'
++ n=574
++ sql 5600 app
++ '[' 31 -lt 68 ']'
++ n=575
++ sql 5600 app
++ '[' 31 -lt 68 ']'
++ n=576
++ sql 5600 app
++ '[' 31 -lt 68 ']'
++ n=577
++ sql 5600 app
++ '[' 31 -lt 68 ']'
++ n=578
++ sql 5600 app
++ '[' 31 -lt 68 ']'
++ n=579
++ sql 5600 app
++ '[' 31 -lt 68 ']'
++ n=580
++ sql 5600 app
++ '[' 31 -lt 68 ']'
++ n=581
++ sql 5600 app
++ '[' 31 -lt 68 ']'
++ n=582
++ sql 5600 app
++ '[' 31 -lt 68 ']'
++ n=583
++ sql 5600 app
++ '[' 31 -lt 68 ']'
++ n=584
++ sql 5600 app
++ '[' 31 -lt 68 ']'
++ n=585
++ sql 5600 app
++ '[' 31 -lt 68 ']'
++ n=586
++ sql 5600 app
++ '[' 31 -lt 68 ']'
++ n=587
++ sql 5600 app
++ '[' 31 -lt 68 ']'
++ n=588
++ sql 5600 app
++ '[' 31 -lt 68 ']'
++ n=589
++ sql 5600 app
++ '[' 31 -lt 68 ']'
++ n=590
++ sql 5600 app
++ '[' 32 -lt 68 ']'
++ n=591
++ sql 5600 app
++ '[' 32 -lt 68 ']'
++ n=592
++ sql 5600 app
++ '[' 32 -lt 68 ']'
++ n=593
++ sql 5600 app
++ '[' 32 -lt 68 ']'
++ n=594
++ sql 5600 app
++ '[' 32 -lt 68 ']'
++ n=595
++ sql 5600 app
++ '[' 32 -lt 68 ']'
++ n=596
++ sql 5600 app
++ '[' 32 -lt 68 ']'
++ n=597
++ sql 5600 app
++ '[' 32 -lt 68 ']'
++ n=598
++ sql 5600 app
++ '[' 32 -lt 68 ']'
++ n=599
++ sql 5600 app
++ '[' 32 -lt 68 ']'
++ n=600
++ sql 5600 app
++ '[' 32 -lt 68 ']'
++ n=601
++ sql 5600 app
++ '[' 32 -lt 68 ']'
++ n=602
++ sql 5600 app
++ '[' 32 -lt 68 ']'
++ n=603
++ sql 5600 app
++ '[' 32 -lt 68 ']'
++ n=604
++ sql 5600 app
++ '[' 32 -lt 68 ']'
++ n=605
++ sql 5600 app
++ '[' 32 -lt 68 ']'
++ n=606
++ sql 5600 app
++ '[' 32 -lt 68 ']'
++ n=607
++ sql 5600 app
++ '[' 32 -lt 68 ']'
++ n=608
++ sql 5600 app
++ '[' 32 -lt 68 ']'
++ n=609
++ sql 5600 app
++ '[' 32 -lt 68 ']'
++ n=610
++ sql 5600 app
++ '[' 32 -lt 68 ']'
++ n=611
++ sql 5600 app
++ '[' 32 -lt 68 ']'
++ n=612
++ sql 5600 app
++ '[' 33 -lt 68 ']'
++ n=613
++ sql 5600 app
++ '[' 33 -lt 68 ']'
++ n=614
++ sql 5600 app
++ '[' 33 -lt 68 ']'
++ n=615
++ sql 5600 app
++ '[' 33 -lt 68 ']'
++ n=616
++ sql 5600 app
++ '[' 33 -lt 68 ']'
++ n=617
++ sql 5600 app
++ '[' 33 -lt 68 ']'
++ n=618
++ sql 5600 app
++ '[' 33 -lt 68 ']'
++ n=619
++ sql 5600 app
++ '[' 33 -lt 68 ']'
++ n=620
++ sql 5600 app
++ '[' 33 -lt 68 ']'
++ n=621
++ sql 5600 app
++ '[' 33 -lt 68 ']'
++ n=622
++ sql 5600 app
++ '[' 33 -lt 68 ']'
++ n=623
++ sql 5600 app
++ '[' 33 -lt 68 ']'
++ n=624
++ sql 5600 app
++ '[' 33 -lt 68 ']'
++ n=625
++ sql 5600 app
++ '[' 33 -lt 68 ']'
++ n=626
++ sql 5600 app
++ '[' 33 -lt 68 ']'
++ n=627
++ sql 5600 app
++ '[' 33 -lt 68 ']'
++ n=628
++ sql 5600 app
++ '[' 33 -lt 68 ']'
++ n=629
++ sql 5600 app
++ '[' 33 -lt 68 ']'
++ n=630
++ sql 5600 app
++ '[' 33 -lt 68 ']'
++ n=631
++ sql 5600 app
++ '[' 34 -lt 68 ']'
++ n=632
++ sql 5600 app
++ '[' 34 -lt 68 ']'
++ n=633
++ sql 5600 app
++ '[' 34 -lt 68 ']'
++ n=634
++ sql 5600 app
++ '[' 34 -lt 68 ']'
++ n=635
++ sql 5600 app
++ '[' 34 -lt 68 ']'
++ n=636
++ sql 5600 app
++ '[' 34 -lt 68 ']'
++ n=637
++ sql 5600 app
++ '[' 34 -lt 68 ']'
++ n=638
++ sql 5600 app
++ '[' 34 -lt 68 ']'
++ n=639
++ sql 5600 app
++ '[' 34 -lt 68 ']'
++ n=640
++ sql 5600 app
++ '[' 34 -lt 68 ']'
++ n=641
++ sql 5600 app
++ '[' 34 -lt 68 ']'
++ n=642
++ sql 5600 app
++ '[' 34 -lt 68 ']'
++ n=643
++ sql 5600 app
++ '[' 34 -lt 68 ']'
++ n=644
++ sql 5600 app
++ '[' 34 -lt 68 ']'
++ n=645
++ sql 5600 app
++ '[' 34 -lt 68 ']'
++ n=646
++ sql 5600 app
++ '[' 34 -lt 68 ']'
++ n=647
++ sql 5600 app
++ '[' 34 -lt 68 ']'
++ n=648
++ sql 5600 app
++ '[' 34 -lt 68 ']'
++ n=649
++ sql 5600 app
++ '[' 34 -lt 68 ']'
++ n=650
++ sql 5600 app
++ '[' 35 -lt 68 ']'
++ n=651
++ sql 5600 app
++ '[' 35 -lt 68 ']'
++ n=652
++ sql 5600 app
++ '[' 35 -lt 68 ']'
++ n=653
++ sql 5600 app
++ '[' 35 -lt 68 ']'
++ n=654
++ sql 5600 app
++ '[' 35 -lt 68 ']'
++ n=655
++ sql 5600 app
++ '[' 35 -lt 68 ']'
++ n=656
++ sql 5600 app
++ '[' 35 -lt 68 ']'
++ n=657
++ sql 5600 app
++ '[' 35 -lt 68 ']'
++ n=658
++ sql 5600 app
++ '[' 35 -lt 68 ']'
++ n=659
++ sql 5600 app
++ '[' 35 -lt 68 ']'
++ n=660
++ sql 5600 app
++ '[' 35 -lt 68 ']'
++ n=661
++ sql 5600 app
++ '[' 35 -lt 68 ']'
++ n=662
++ sql 5600 app
++ '[' 35 -lt 68 ']'
++ n=663
++ sql 5600 app
++ '[' 35 -lt 68 ']'
++ n=664
++ sql 5600 app
++ '[' 35 -lt 68 ']'
++ n=665
++ sql 5600 app
++ '[' 35 -lt 68 ']'
++ n=666
++ sql 5600 app
++ '[' 35 -lt 68 ']'
++ n=667
++ sql 5600 app
++ '[' 35 -lt 68 ']'
++ n=668
++ sql 5600 app
++ '[' 35 -lt 68 ']'
++ n=669
++ sql 5600 app
++ '[' 35 -lt 68 ']'
++ n=670
++ sql 5600 app
++ '[' 35 -lt 68 ']'
++ n=671
++ sql 5600 app
++ '[' 35 -lt 68 ']'
++ n=672
++ sql 5600 app
++ '[' 35 -lt 68 ']'
++ n=673
++ sql 5600 app
++ '[' 36 -lt 68 ']'
++ n=674
++ sql 5600 app
++ '[' 36 -lt 68 ']'
++ n=675
++ sql 5600 app
++ '[' 36 -lt 68 ']'
++ n=676
++ sql 5600 app
++ '[' 36 -lt 68 ']'
++ n=677
++ sql 5600 app
++ '[' 36 -lt 68 ']'
++ n=678
++ sql 5600 app
++ '[' 36 -lt 68 ']'
++ n=679
++ sql 5600 app
++ '[' 36 -lt 68 ']'
++ n=680
++ sql 5600 app
++ '[' 36 -lt 68 ']'
++ n=681
++ sql 5600 app
++ '[' 36 -lt 68 ']'
++ n=682
++ sql 5600 app
++ '[' 36 -lt 68 ']'
++ n=683
++ sql 5600 app
++ '[' 36 -lt 68 ']'
++ n=684
++ sql 5600 app
++ '[' 36 -lt 68 ']'
++ n=685
++ sql 5600 app
++ '[' 36 -lt 68 ']'
++ n=686
++ sql 5600 app
++ '[' 36 -lt 68 ']'
++ n=687
++ sql 5600 app
++ '[' 36 -lt 68 ']'
++ n=688
++ sql 5600 app
++ '[' 36 -lt 68 ']'
++ n=689
++ sql 5600 app
++ '[' 36 -lt 68 ']'
++ n=690
++ sql 5600 app
++ '[' 36 -lt 68 ']'
++ n=691
++ sql 5600 app
++ '[' 36 -lt 68 ']'
++ n=692
++ sql 5600 app
++ '[' 36 -lt 68 ']'
++ n=693
++ sql 5600 app
++ '[' 36 -lt 68 ']'
++ n=694
++ sql 5600 app
++ '[' 37 -lt 68 ']'
++ n=695
++ sql 5600 app
++ '[' 37 -lt 68 ']'
++ n=696
++ sql 5600 app
++ '[' 37 -lt 68 ']'
++ n=697
++ sql 5600 app
++ '[' 37 -lt 68 ']'
++ n=698
++ sql 5600 app
++ '[' 37 -lt 68 ']'
++ n=699
++ sql 5600 app
++ '[' 37 -lt 68 ']'
++ n=700
++ sql 5600 app
++ '[' 37 -lt 68 ']'
++ n=701
++ sql 5600 app
++ '[' 37 -lt 68 ']'
++ n=702
++ sql 5600 app
++ '[' 37 -lt 68 ']'
++ n=703
++ sql 5600 app
++ '[' 37 -lt 68 ']'
++ n=704
++ sql 5600 app
++ '[' 37 -lt 68 ']'
++ n=705
++ sql 5600 app
++ '[' 37 -lt 68 ']'
++ n=706
++ sql 5600 app
++ '[' 37 -lt 68 ']'
++ n=707
++ sql 5600 app
++ '[' 37 -lt 68 ']'
++ n=708
++ sql 5600 app
++ '[' 37 -lt 68 ']'
++ n=709
++ sql 5600 app
++ '[' 37 -lt 68 ']'
++ n=710
++ sql 5600 app
++ '[' 37 -lt 68 ']'
++ n=711
++ sql 5600 app
++ '[' 37 -lt 68 ']'
++ n=712
++ sql 5600 app
++ '[' 37 -lt 68 ']'
++ n=713
++ sql 5600 app
++ '[' 37 -lt 68 ']'
++ n=714
++ sql 5600 app
++ '[' 37 -lt 68 ']'
++ n=715
++ sql 5600 app
++ '[' 37 -lt 68 ']'
++ n=716
++ sql 5600 app
++ '[' 38 -lt 68 ']'
++ n=717
++ sql 5600 app
++ '[' 38 -lt 68 ']'
++ n=718
++ sql 5600 app
++ '[' 38 -lt 68 ']'
++ n=719
++ sql 5600 app
++ '[' 38 -lt 68 ']'
++ n=720
++ sql 5600 app
++ '[' 38 -lt 68 ']'
++ n=721
++ sql 5600 app
++ '[' 38 -lt 68 ']'
++ n=722
++ sql 5600 app
++ '[' 38 -lt 68 ']'
++ n=723
++ sql 5600 app
++ '[' 38 -lt 68 ']'
++ n=724
++ sql 5600 app
++ '[' 38 -lt 68 ']'
++ n=725
++ sql 5600 app
++ '[' 38 -lt 68 ']'
++ n=726
++ sql 5600 app
++ '[' 38 -lt 68 ']'
++ n=727
++ sql 5600 app
++ '[' 38 -lt 68 ']'
++ n=728
++ sql 5600 app
++ '[' 38 -lt 68 ']'
++ n=729
++ sql 5600 app
++ '[' 38 -lt 68 ']'
++ n=730
++ sql 5600 app
++ '[' 38 -lt 68 ']'
++ n=731
++ sql 5600 app
++ '[' 38 -lt 68 ']'
++ n=732
++ sql 5600 app
++ '[' 38 -lt 68 ']'
++ n=733
++ sql 5600 app
++ '[' 38 -lt 68 ']'
++ n=734
++ sql 5600 app
++ '[' 38 -lt 68 ']'
++ n=735
++ sql 5600 app
++ '[' 38 -lt 68 ']'
++ n=736
++ sql 5600 app
++ '[' 38 -lt 68 ']'
++ n=737
++ sql 5600 app
++ '[' 38 -lt 68 ']'
++ n=738
++ sql 5600 app
++ '[' 39 -lt 68 ']'
++ n=739
++ sql 5600 app
++ '[' 39 -lt 68 ']'
++ n=740
++ sql 5600 app
++ '[' 39 -lt 68 ']'
++ n=741
++ sql 5600 app
++ '[' 39 -lt 68 ']'
++ n=742
++ sql 5600 app
++ '[' 39 -lt 68 ']'
++ n=743
++ sql 5600 app
++ '[' 39 -lt 68 ']'
++ n=744
++ sql 5600 app
++ '[' 39 -lt 68 ']'
++ n=745
++ sql 5600 app
++ '[' 39 -lt 68 ']'
++ n=746
++ sql 5600 app
++ '[' 39 -lt 68 ']'
++ n=747
++ sql 5600 app
++ '[' 39 -lt 68 ']'
++ n=748
++ sql 5600 app
++ '[' 39 -lt 68 ']'
++ n=749
++ sql 5600 app
++ '[' 39 -lt 68 ']'
++ n=750
++ sql 5600 app
++ '[' 39 -lt 68 ']'
++ n=751
++ sql 5600 app
++ '[' 39 -lt 68 ']'
++ n=752
++ sql 5600 app
++ '[' 39 -lt 68 ']'
++ n=753
++ sql 5600 app
++ '[' 39 -lt 68 ']'
++ n=754
++ sql 5600 app
++ '[' 39 -lt 68 ']'
++ n=755
++ sql 5600 app
++ '[' 39 -lt 68 ']'
++ n=756
++ sql 5600 app
++ '[' 39 -lt 68 ']'
++ n=757
++ sql 5600 app
++ '[' 39 -lt 68 ']'
++ n=758
++ sql 5600 app
++ '[' 39 -lt 68 ']'
++ n=759
++ sql 5600 app
++ '[' 39 -lt 68 ']'
++ n=760
++ sql 5600 app
++ '[' 39 -lt 68 ']'
++ n=761
++ sql 5600 app
++ '[' 40 -lt 68 ']'
++ n=762
++ sql 5600 app
++ '[' 40 -lt 68 ']'
++ n=763
++ sql 5600 app
++ '[' 40 -lt 68 ']'
++ n=764
++ sql 5600 app
++ '[' 40 -lt 68 ']'
++ n=765
++ sql 5600 app
++ '[' 40 -lt 68 ']'
++ n=766
++ sql 5600 app
++ '[' 40 -lt 68 ']'
++ n=767
++ sql 5600 app
++ '[' 40 -lt 68 ']'
++ n=768
++ sql 5600 app
++ '[' 40 -lt 68 ']'
++ n=769
++ sql 5600 app
++ '[' 40 -lt 68 ']'
++ n=770
++ sql 5600 app
++ '[' 40 -lt 68 ']'
++ n=771
++ sql 5600 app
++ '[' 40 -lt 68 ']'
++ n=772
++ sql 5600 app
++ '[' 40 -lt 68 ']'
++ n=773
++ sql 5600 app
++ '[' 40 -lt 68 ']'
++ n=774
++ sql 5600 app
++ '[' 40 -lt 68 ']'
++ n=775
++ sql 5600 app
++ '[' 40 -lt 68 ']'
++ n=776
++ sql 5600 app
++ '[' 40 -lt 68 ']'
++ n=777
++ sql 5600 app
++ '[' 40 -lt 68 ']'
++ n=778
++ sql 5600 app
++ '[' 40 -lt 68 ']'
++ n=779
++ sql 5600 app
++ '[' 40 -lt 68 ']'
++ n=780
++ sql 5600 app
++ '[' 40 -lt 68 ']'
++ n=781
++ sql 5600 app
++ '[' 40 -lt 68 ']'
++ n=782
++ sql 5600 app
++ '[' 40 -lt 68 ']'
++ n=783
++ sql 5600 app
++ '[' 40 -lt 68 ']'
++ n=784
++ sql 5600 app
++ '[' 40 -lt 68 ']'
++ n=785
++ sql 5600 app
++ '[' 41 -lt 68 ']'
++ n=786
++ sql 5600 app
++ '[' 41 -lt 68 ']'
++ n=787
++ sql 5600 app
++ '[' 41 -lt 68 ']'
++ n=788
++ sql 5600 app
++ '[' 41 -lt 68 ']'
++ n=789
++ sql 5600 app
++ '[' 41 -lt 68 ']'
++ n=790
++ sql 5600 app
++ '[' 41 -lt 68 ']'
++ n=791
++ sql 5600 app
++ '[' 41 -lt 68 ']'
++ n=792
++ sql 5600 app
++ '[' 41 -lt 68 ']'
++ n=793
++ sql 5600 app
++ '[' 41 -lt 68 ']'
++ n=794
++ sql 5600 app
++ '[' 41 -lt 68 ']'
++ n=795
++ sql 5600 app
++ '[' 41 -lt 68 ']'
++ n=796
++ sql 5600 app
++ '[' 41 -lt 68 ']'
++ n=797
++ sql 5600 app
++ '[' 41 -lt 68 ']'
++ n=798
++ sql 5600 app
++ '[' 41 -lt 68 ']'
++ n=799
++ sql 5600 app
++ '[' 41 -lt 68 ']'
++ n=800
++ sql 5600 app
++ '[' 41 -lt 68 ']'
++ n=801
++ sql 5600 app
++ '[' 41 -lt 68 ']'
++ n=802
++ sql 5600 app
++ '[' 41 -lt 68 ']'
++ n=803
++ sql 5600 app
++ '[' 41 -lt 68 ']'
++ n=804
++ sql 5600 app
++ '[' 41 -lt 68 ']'
++ n=805
++ sql 5600 app
++ '[' 41 -lt 68 ']'
++ n=806
++ sql 5600 app
++ '[' 41 -lt 68 ']'
++ n=807
++ sql 5600 app
++ '[' 41 -lt 68 ']'
++ n=808
++ sql 5600 app
++ '[' 41 -lt 68 ']'
++ n=809
++ sql 5600 app
++ '[' 41 -lt 68 ']'
++ n=810
++ sql 5600 app
++ '[' 42 -lt 68 ']'
++ n=811
++ sql 5600 app
++ '[' 42 -lt 68 ']'
++ n=812
++ sql 5600 app
++ '[' 42 -lt 68 ']'
++ n=813
++ sql 5600 app
++ '[' 42 -lt 68 ']'
++ n=814
++ sql 5600 app
++ '[' 42 -lt 68 ']'
++ n=815
++ sql 5600 app
++ '[' 42 -lt 68 ']'
++ n=816
++ sql 5600 app
++ '[' 42 -lt 68 ']'
++ n=817
++ sql 5600 app
++ '[' 42 -lt 68 ']'
++ n=818
++ sql 5600 app
++ '[' 42 -lt 68 ']'
++ n=819
++ sql 5600 app
++ '[' 42 -lt 68 ']'
++ n=820
++ sql 5600 app
++ '[' 42 -lt 68 ']'
++ n=821
++ sql 5600 app
++ '[' 42 -lt 68 ']'
++ n=822
++ sql 5600 app
++ '[' 42 -lt 68 ']'
++ n=823
++ sql 5600 app
++ '[' 42 -lt 68 ']'
++ n=824
++ sql 5600 app
++ '[' 42 -lt 68 ']'
++ n=825
++ sql 5600 app
++ '[' 42 -lt 68 ']'
++ n=826
++ sql 5600 app
++ '[' 42 -lt 68 ']'
++ n=827
++ sql 5600 app
++ '[' 42 -lt 68 ']'
++ n=828
++ sql 5600 app
++ '[' 42 -lt 68 ']'
++ n=829
++ sql 5600 app
++ '[' 43 -lt 68 ']'
++ n=830
++ sql 5600 app
++ '[' 43 -lt 68 ']'
++ n=831
++ sql 5600 app
++ '[' 43 -lt 68 ']'
++ n=832
++ sql 5600 app
++ '[' 43 -lt 68 ']'
++ n=833
++ sql 5600 app
++ '[' 43 -lt 68 ']'
++ n=834
++ sql 5600 app
++ '[' 43 -lt 68 ']'
++ n=835
++ sql 5600 app
++ '[' 43 -lt 68 ']'
++ n=836
++ sql 5600 app
++ '[' 43 -lt 68 ']'
++ n=837
++ sql 5600 app
++ '[' 43 -lt 68 ']'
++ n=838
++ sql 5600 app
++ '[' 43 -lt 68 ']'
++ n=839
++ sql 5600 app
++ '[' 43 -lt 68 ']'
++ n=840
++ sql 5600 app
++ '[' 43 -lt 68 ']'
++ n=841
++ sql 5600 app
++ '[' 43 -lt 68 ']'
++ n=842
++ sql 5600 app
++ '[' 43 -lt 68 ']'
++ n=843
++ sql 5600 app
++ '[' 43 -lt 68 ']'
++ n=844
++ sql 5600 app
++ '[' 43 -lt 68 ']'
++ n=845
++ sql 5600 app
++ '[' 43 -lt 68 ']'
++ n=846
++ sql 5600 app
++ '[' 43 -lt 68 ']'
++ n=847
++ sql 5600 app
++ '[' 44 -lt 68 ']'
++ n=848
++ sql 5600 app
++ '[' 44 -lt 68 ']'
++ n=849
++ sql 5600 app
++ '[' 44 -lt 68 ']'
++ n=850
++ sql 5600 app
++ '[' 44 -lt 68 ']'
++ n=851
++ sql 5600 app
++ '[' 44 -lt 68 ']'
++ n=852
++ sql 5600 app
++ '[' 44 -lt 68 ']'
++ n=853
++ sql 5600 app
++ '[' 44 -lt 68 ']'
++ n=854
++ sql 5600 app
++ '[' 44 -lt 68 ']'
++ n=855
++ sql 5600 app
++ '[' 44 -lt 68 ']'
++ n=856
++ sql 5600 app
++ '[' 44 -lt 68 ']'
++ n=857
++ sql 5600 app
++ '[' 44 -lt 68 ']'
++ n=858
++ sql 5600 app
++ '[' 44 -lt 68 ']'
++ n=859
++ sql 5600 app
++ '[' 44 -lt 68 ']'
++ n=860
++ sql 5600 app
++ '[' 44 -lt 68 ']'
++ n=861
++ sql 5600 app
++ '[' 44 -lt 68 ']'
++ n=862
++ sql 5600 app
++ '[' 44 -lt 68 ']'
++ n=863
++ sql 5600 app
++ '[' 44 -lt 68 ']'
++ n=864
++ sql 5600 app
++ '[' 44 -lt 68 ']'
++ n=865
++ sql 5600 app
++ '[' 44 -lt 68 ']'
++ n=866
++ sql 5600 app
++ '[' 44 -lt 68 ']'
++ n=867
++ sql 5600 app
++ '[' 44 -lt 68 ']'
++ n=868
++ sql 5600 app
++ '[' 44 -lt 68 ']'
++ n=869
++ sql 5600 app
++ '[' 45 -lt 68 ']'
++ n=870
++ sql 5600 app
++ '[' 45 -lt 68 ']'
++ n=871
++ sql 5600 app
++ '[' 45 -lt 68 ']'
++ n=872
++ sql 5600 app
++ '[' 45 -lt 68 ']'
++ n=873
++ sql 5600 app
++ '[' 45 -lt 68 ']'
++ n=874
++ sql 5600 app
++ '[' 45 -lt 68 ']'
++ n=875
++ sql 5600 app
++ '[' 45 -lt 68 ']'
++ n=876
++ sql 5600 app
++ '[' 45 -lt 68 ']'
++ n=877
++ sql 5600 app
++ '[' 45 -lt 68 ']'
++ n=878
++ sql 5600 app
++ '[' 45 -lt 68 ']'
++ n=879
++ sql 5600 app
++ '[' 45 -lt 68 ']'
++ n=880
++ sql 5600 app
++ '[' 45 -lt 68 ']'
++ n=881
++ sql 5600 app
++ '[' 45 -lt 68 ']'
++ n=882
++ sql 5600 app
++ '[' 45 -lt 68 ']'
++ n=883
++ sql 5600 app
++ '[' 45 -lt 68 ']'
++ n=884
++ sql 5600 app
++ '[' 45 -lt 68 ']'
++ n=885
++ sql 5600 app
++ '[' 45 -lt 68 ']'
++ n=886
++ sql 5600 app
++ '[' 45 -lt 68 ']'
++ n=887
++ sql 5600 app
++ '[' 45 -lt 68 ']'
++ n=888
++ sql 5600 app
++ '[' 45 -lt 68 ']'
++ n=889
++ sql 5600 app
++ '[' 45 -lt 68 ']'
++ n=890
++ sql 5600 app
++ '[' 46 -lt 68 ']'
++ n=891
++ sql 5600 app
++ '[' 46 -lt 68 ']'
++ n=892
++ sql 5600 app
++ '[' 46 -lt 68 ']'
++ n=893
++ sql 5600 app
++ '[' 46 -lt 68 ']'
++ n=894
++ sql 5600 app
++ '[' 46 -lt 68 ']'
++ n=895
++ sql 5600 app
++ '[' 46 -lt 68 ']'
++ n=896
++ sql 5600 app
++ '[' 46 -lt 68 ']'
++ n=897
++ sql 5600 app
++ '[' 46 -lt 68 ']'
++ n=898
++ sql 5600 app
++ '[' 46 -lt 68 ']'
++ n=899
++ sql 5600 app
++ '[' 46 -lt 68 ']'
++ n=900
++ sql 5600 app
++ '[' 46 -lt 68 ']'
++ n=901
++ sql 5600 app
++ '[' 46 -lt 68 ']'
++ n=902
++ sql 5600 app
++ '[' 46 -lt 68 ']'
++ n=903
++ sql 5600 app
++ '[' 46 -lt 68 ']'
++ n=904
++ sql 5600 app
++ '[' 46 -lt 68 ']'
++ n=905
++ sql 5600 app
++ '[' 46 -lt 68 ']'
++ n=906
++ sql 5600 app
++ '[' 46 -lt 68 ']'
++ n=907
++ sql 5600 app
++ '[' 46 -lt 68 ']'
++ n=908
++ sql 5600 app
++ '[' 46 -lt 68 ']'
++ n=909
++ sql 5600 app
++ '[' 46 -lt 68 ']'
++ n=910
++ sql 5600 app
++ '[' 46 -lt 68 ']'
++ n=911
++ sql 5600 app
++ '[' 47 -lt 68 ']'
++ n=912
++ sql 5600 app
++ '[' 47 -lt 68 ']'
++ n=913
++ sql 5600 app
++ '[' 47 -lt 68 ']'
++ n=914
++ sql 5600 app
++ '[' 47 -lt 68 ']'
++ n=915
++ sql 5600 app
++ '[' 47 -lt 68 ']'
++ n=916
++ sql 5600 app
++ '[' 47 -lt 68 ']'
++ n=917
++ sql 5600 app
++ '[' 47 -lt 68 ']'
++ n=918
++ sql 5600 app
++ '[' 47 -lt 68 ']'
++ n=919
++ sql 5600 app
++ '[' 47 -lt 68 ']'
++ n=920
++ sql 5600 app
++ '[' 47 -lt 68 ']'
++ n=921
++ sql 5600 app
++ '[' 47 -lt 68 ']'
++ n=922
++ sql 5600 app
++ '[' 47 -lt 68 ']'
++ n=923
++ sql 5600 app
++ '[' 47 -lt 68 ']'
++ n=924
++ sql 5600 app
++ '[' 47 -lt 68 ']'
++ n=925
++ sql 5600 app
++ '[' 47 -lt 68 ']'
++ n=926
++ sql 5600 app
++ '[' 47 -lt 68 ']'
++ n=927
++ sql 5600 app
++ '[' 47 -lt 68 ']'
++ n=928
++ sql 5600 app
++ '[' 47 -lt 68 ']'
++ n=929
++ sql 5600 app
++ '[' 47 -lt 68 ']'
++ n=930
++ sql 5600 app
++ '[' 47 -lt 68 ']'
++ n=931
++ sql 5600 app
++ '[' 47 -lt 68 ']'
++ n=932
++ sql 5600 app
++ '[' 47 -lt 68 ']'
++ n=933
++ sql 5600 app
++ '[' 47 -lt 68 ']'
++ n=934
++ sql 5600 app
++ '[' 47 -lt 68 ']'
++ n=935
++ sql 5600 app
++ '[' 48 -lt 68 ']'
++ n=936
++ sql 5600 app
++ '[' 48 -lt 68 ']'
++ n=937
++ sql 5600 app
++ '[' 48 -lt 68 ']'
++ n=938
++ sql 5600 app
++ '[' 48 -lt 68 ']'
++ n=939
++ sql 5600 app
++ '[' 48 -lt 68 ']'
++ n=940
++ sql 5600 app
++ '[' 48 -lt 68 ']'
++ n=941
++ sql 5600 app
++ '[' 48 -lt 68 ']'
++ n=942
++ sql 5600 app
++ '[' 48 -lt 68 ']'
++ n=943
++ sql 5600 app
++ '[' 48 -lt 68 ']'
++ n=944
++ sql 5600 app
++ '[' 48 -lt 68 ']'
++ n=945
++ sql 5600 app
++ '[' 48 -lt 68 ']'
++ n=946
++ sql 5600 app
++ '[' 48 -lt 68 ']'
++ n=947
++ sql 5600 app
++ '[' 48 -lt 68 ']'
++ n=948
++ sql 5600 app
++ '[' 48 -lt 68 ']'
++ n=949
++ sql 5600 app
++ '[' 48 -lt 68 ']'
++ n=950
++ sql 5600 app
++ '[' 48 -lt 68 ']'
++ n=951
++ sql 5600 app
++ '[' 48 -lt 68 ']'
++ n=952
++ sql 5600 app
++ '[' 48 -lt 68 ']'
++ n=953
++ sql 5600 app
++ '[' 49 -lt 68 ']'
++ n=954
++ sql 5600 app
++ '[' 49 -lt 68 ']'
++ n=955
++ sql 5600 app
++ '[' 49 -lt 68 ']'
++ n=956
++ sql 5600 app
++ '[' 49 -lt 68 ']'
++ n=957
++ sql 5600 app
++ '[' 49 -lt 68 ']'
++ n=958
++ sql 5600 app
++ '[' 49 -lt 68 ']'
++ n=959
++ sql 5600 app
++ '[' 49 -lt 68 ']'
++ n=960
++ sql 5600 app
++ '[' 49 -lt 68 ']'
++ n=961
++ sql 5600 app
++ '[' 49 -lt 68 ']'
++ n=962
++ sql 5600 app
++ '[' 49 -lt 68 ']'
++ n=963
++ sql 5600 app
++ '[' 49 -lt 68 ']'
++ n=964
++ sql 5600 app
++ '[' 49 -lt 68 ']'
++ n=965
++ sql 5600 app
++ '[' 49 -lt 68 ']'
++ n=966
++ sql 5600 app
++ '[' 49 -lt 68 ']'
++ n=967
++ sql 5600 app
++ '[' 49 -lt 68 ']'
++ n=968
++ sql 5600 app
++ '[' 49 -lt 68 ']'
++ n=969
++ sql 5600 app
++ '[' 49 -lt 68 ']'
++ n=970
++ sql 5600 app
++ '[' 49 -lt 68 ']'
++ n=971
++ sql 5600 app
++ '[' 49 -lt 68 ']'
++ n=972
++ sql 5600 app
++ '[' 50 -lt 68 ']'
++ n=973
++ sql 5600 app
++ '[' 50 -lt 68 ']'
++ n=974
++ sql 5600 app
++ '[' 50 -lt 68 ']'
++ n=975
++ sql 5600 app
++ '[' 50 -lt 68 ']'
++ n=976
++ sql 5600 app
++ '[' 50 -lt 68 ']'
++ n=977
++ sql 5600 app
++ '[' 50 -lt 68 ']'
++ n=978
++ sql 5600 app
++ '[' 50 -lt 68 ']'
++ n=979
++ sql 5600 app
++ '[' 50 -lt 68 ']'
++ n=980
++ sql 5600 app
++ '[' 50 -lt 68 ']'
++ n=981
++ sql 5600 app
++ '[' 50 -lt 68 ']'
++ n=982
++ sql 5600 app
++ '[' 50 -lt 68 ']'
++ n=983
++ sql 5600 app
++ '[' 50 -lt 68 ']'
++ n=984
++ sql 5600 app
++ '[' 50 -lt 68 ']'
++ n=985
++ sql 5600 app
++ '[' 50 -lt 68 ']'
++ n=986
++ sql 5600 app
++ '[' 50 -lt 68 ']'
++ n=987
++ sql 5600 app
++ '[' 50 -lt 68 ']'
++ n=988
++ sql 5600 app
++ '[' 50 -lt 68 ']'
++ n=989
++ sql 5600 app
++ '[' 50 -lt 68 ']'
++ n=990
++ sql 5600 app
++ '[' 50 -lt 68 ']'
++ n=991
++ sql 5600 app
++ '[' 50 -lt 68 ']'
++ n=992
++ sql 5600 app
++ '[' 51 -lt 68 ']'
++ n=993
++ sql 5600 app
++ '[' 51 -lt 68 ']'
++ n=994
++ sql 5600 app
++ '[' 51 -lt 68 ']'
++ n=995
++ sql 5600 app
++ '[' 51 -lt 68 ']'
++ n=996
++ sql 5600 app
++ '[' 51 -lt 68 ']'
++ n=997
++ sql 5600 app
++ '[' 51 -lt 68 ']'
++ n=998
++ sql 5600 app
++ '[' 51 -lt 68 ']'
++ n=999
++ sql 5600 app
++ '[' 51 -lt 68 ']'
++ n=1000
++ sql 5600 app
++ '[' 51 -lt 68 ']'
++ n=1001
++ sql 5600 app
++ '[' 51 -lt 68 ']'
++ n=1002
++ sql 5600 app
++ '[' 51 -lt 68 ']'
++ n=1003
++ sql 5600 app
++ '[' 51 -lt 68 ']'
++ n=1004
++ sql 5600 app
++ '[' 51 -lt 68 ']'
++ n=1005
++ sql 5600 app
++ '[' 51 -lt 68 ']'
++ n=1006
++ sql 5600 app
++ '[' 51 -lt 68 ']'
++ n=1007
++ sql 5600 app
++ '[' 51 -lt 68 ']'
++ n=1008
++ sql 5600 app
++ '[' 51 -lt 68 ']'
++ n=1009
++ sql 5600 app
++ '[' 51 -lt 68 ']'
++ n=1010
++ sql 5600 app
++ '[' 51 -lt 68 ']'
++ n=1011
++ sql 5600 app
++ '[' 51 -lt 68 ']'
++ n=1012
++ sql 5600 app
++ '[' 51 -lt 68 ']'
++ n=1013
++ sql 5600 app
++ '[' 51 -lt 68 ']'
++ n=1014
++ sql 5600 app
++ '[' 51 -lt 68 ']'
++ n=1015
++ sql 5600 app
++ '[' 51 -lt 68 ']'
++ n=1016
++ sql 5600 app
++ '[' 52 -lt 68 ']'
++ n=1017
++ sql 5600 app
++ '[' 52 -lt 68 ']'
++ n=1018
++ sql 5600 app
++ '[' 52 -lt 68 ']'
++ n=1019
++ sql 5600 app
++ '[' 52 -lt 68 ']'
++ n=1020
++ sql 5600 app
++ '[' 52 -lt 68 ']'
++ n=1021
++ sql 5600 app
++ '[' 52 -lt 68 ']'
++ n=1022
++ sql 5600 app
++ '[' 52 -lt 68 ']'
++ n=1023
++ sql 5600 app
++ '[' 52 -lt 68 ']'
++ n=1024
++ sql 5600 app
++ '[' 52 -lt 68 ']'
++ n=1025
++ sql 5600 app
++ '[' 52 -lt 68 ']'
++ n=1026
++ sql 5600 app
++ '[' 52 -lt 68 ']'
++ n=1027
++ sql 5600 app
++ '[' 52 -lt 68 ']'
++ n=1028
++ sql 5600 app
++ '[' 52 -lt 68 ']'
++ n=1029
++ sql 5600 app
++ '[' 52 -lt 68 ']'
++ n=1030
++ sql 5600 app
++ '[' 52 -lt 68 ']'
++ n=1031
++ sql 5600 app
++ '[' 52 -lt 68 ']'
++ n=1032
++ sql 5600 app
++ '[' 52 -lt 68 ']'
++ n=1033
++ sql 5600 app
++ '[' 52 -lt 68 ']'
++ n=1034
++ sql 5600 app
++ '[' 52 -lt 68 ']'
++ n=1035
++ sql 5600 app
++ '[' 52 -lt 68 ']'
++ n=1036
++ sql 5600 app
++ '[' 53 -lt 68 ']'
++ n=1037
++ sql 5600 app
++ '[' 53 -lt 68 ']'
++ n=1038
++ sql 5600 app
++ '[' 53 -lt 68 ']'
++ n=1039
++ sql 5600 app
++ '[' 53 -lt 68 ']'
++ n=1040
++ sql 5600 app
++ '[' 53 -lt 68 ']'
++ n=1041
++ sql 5600 app
++ '[' 53 -lt 68 ']'
++ n=1042
++ sql 5600 app
++ '[' 53 -lt 68 ']'
++ n=1043
++ sql 5600 app
++ '[' 53 -lt 68 ']'
++ n=1044
++ sql 5600 app
++ '[' 53 -lt 68 ']'
++ n=1045
++ sql 5600 app
++ '[' 53 -lt 68 ']'
++ n=1046
++ sql 5600 app
++ '[' 53 -lt 68 ']'
++ n=1047
++ sql 5600 app
++ '[' 53 -lt 68 ']'
++ n=1048
++ sql 5600 app
++ '[' 53 -lt 68 ']'
++ n=1049
++ sql 5600 app
++ '[' 53 -lt 68 ']'
++ n=1050
++ sql 5600 app
++ '[' 53 -lt 68 ']'
++ n=1051
++ sql 5600 app
++ '[' 53 -lt 68 ']'
++ n=1052
++ sql 5600 app
++ '[' 53 -lt 68 ']'
++ n=1053
++ sql 5600 app
++ '[' 53 -lt 68 ']'
++ n=1054
++ sql 5600 app
++ '[' 53 -lt 68 ']'
++ n=1055
++ sql 5600 app
++ '[' 53 -lt 68 ']'
++ n=1056
++ sql 5600 app
++ '[' 54 -lt 68 ']'
++ n=1057
++ sql 5600 app
++ '[' 54 -lt 68 ']'
++ n=1058
++ sql 5600 app
++ '[' 54 -lt 68 ']'
++ n=1059
++ sql 5600 app
++ '[' 54 -lt 68 ']'
++ n=1060
++ sql 5600 app
++ '[' 54 -lt 68 ']'
++ n=1061
++ sql 5600 app
++ '[' 54 -lt 68 ']'
++ n=1062
++ sql 5600 app
++ '[' 54 -lt 68 ']'
++ n=1063
++ sql 5600 app
++ '[' 54 -lt 68 ']'
++ n=1064
++ sql 5600 app
++ '[' 54 -lt 68 ']'
++ n=1065
++ sql 5600 app
++ '[' 54 -lt 68 ']'
++ n=1066
++ sql 5600 app
++ '[' 54 -lt 68 ']'
++ n=1067
++ sql 5600 app
++ '[' 54 -lt 68 ']'
++ n=1068
++ sql 5600 app
++ '[' 54 -lt 68 ']'
++ n=1069
++ sql 5600 app
++ '[' 54 -lt 68 ']'
++ n=1070
++ sql 5600 app
++ '[' 54 -lt 68 ']'
++ n=1071
++ sql 5600 app
++ '[' 54 -lt 68 ']'
++ n=1072
++ sql 5600 app
++ '[' 54 -lt 68 ']'
++ n=1073
++ sql 5600 app
++ '[' 54 -lt 68 ']'
++ n=1074
++ sql 5600 app
++ '[' 55 -lt 68 ']'
++ n=1075
++ sql 5600 app
++ '[' 55 -lt 68 ']'
++ n=1076
++ sql 5600 app
++ '[' 55 -lt 68 ']'
++ n=1077
++ sql 5600 app
++ '[' 55 -lt 68 ']'
++ n=1078
++ sql 5600 app
++ '[' 55 -lt 68 ']'
++ n=1079
++ sql 5600 app
++ '[' 55 -lt 68 ']'
++ n=1080
++ sql 5600 app
++ '[' 55 -lt 68 ']'
++ n=1081
++ sql 5600 app
++ '[' 55 -lt 68 ']'
++ n=1082
++ sql 5600 app
++ '[' 55 -lt 68 ']'
++ n=1083
++ sql 5600 app
++ '[' 55 -lt 68 ']'
++ n=1084
++ sql 5600 app
++ '[' 55 -lt 68 ']'
++ n=1085
++ sql 5600 app
++ '[' 55 -lt 68 ']'
++ n=1086
++ sql 5600 app
++ '[' 55 -lt 68 ']'
++ n=1087
++ sql 5600 app
++ '[' 55 -lt 68 ']'
++ n=1088
++ sql 5600 app
++ '[' 55 -lt 68 ']'
++ n=1089
++ sql 5600 app
++ '[' 55 -lt 68 ']'
++ n=1090
++ sql 5600 app
++ '[' 55 -lt 68 ']'
++ n=1091
++ sql 5600 app
++ '[' 55 -lt 68 ']'
++ n=1092
++ sql 5600 app
++ '[' 55 -lt 68 ']'
++ n=1093
++ sql 5600 app
++ '[' 56 -lt 68 ']'
++ n=1094
++ sql 5600 app
++ '[' 56 -lt 68 ']'
++ n=1095
++ sql 5600 app
++ '[' 56 -lt 68 ']'
++ n=1096
++ sql 5600 app
++ '[' 56 -lt 68 ']'
++ n=1097
++ sql 5600 app
++ '[' 56 -lt 68 ']'
++ n=1098
++ sql 5600 app
++ '[' 56 -lt 68 ']'
++ n=1099
++ sql 5600 app
++ '[' 56 -lt 68 ']'
++ n=1100
++ sql 5600 app
++ '[' 56 -lt 68 ']'
++ n=1101
++ sql 5600 app
++ '[' 56 -lt 68 ']'
++ n=1102
++ sql 5600 app
++ '[' 56 -lt 68 ']'
++ n=1103
++ sql 5600 app
++ '[' 56 -lt 68 ']'
++ n=1104
++ sql 5600 app
++ '[' 56 -lt 68 ']'
++ n=1105
++ sql 5600 app
++ '[' 56 -lt 68 ']'
++ n=1106
++ sql 5600 app
++ '[' 56 -lt 68 ']'
++ n=1107
++ sql 5600 app
++ '[' 56 -lt 68 ']'
++ n=1108
++ sql 5600 app
++ '[' 56 -lt 68 ']'
++ n=1109
++ sql 5600 app
++ '[' 56 -lt 68 ']'
++ n=1110
++ sql 5600 app
++ '[' 56 -lt 68 ']'
++ n=1111
++ sql 5600 app
++ '[' 56 -lt 68 ']'
++ n=1112
++ sql 5600 app
++ '[' 56 -lt 68 ']'
++ n=1113
++ sql 5600 app
++ '[' 57 -lt 68 ']'
++ n=1114
++ sql 5600 app
++ '[' 57 -lt 68 ']'
++ n=1115
++ sql 5600 app
++ '[' 57 -lt 68 ']'
++ n=1116
++ sql 5600 app
++ '[' 57 -lt 68 ']'
++ n=1117
++ sql 5600 app
++ '[' 57 -lt 68 ']'
++ n=1118
++ sql 5600 app
++ '[' 57 -lt 68 ']'
++ n=1119
++ sql 5600 app
++ '[' 57 -lt 68 ']'
++ n=1120
++ sql 5600 app
++ '[' 57 -lt 68 ']'
++ n=1121
++ sql 5600 app
++ '[' 57 -lt 68 ']'
++ n=1122
++ sql 5600 app
++ '[' 57 -lt 68 ']'
++ n=1123
++ sql 5600 app
++ '[' 57 -lt 68 ']'
++ n=1124
++ sql 5600 app
++ '[' 57 -lt 68 ']'
++ n=1125
++ sql 5600 app
++ '[' 57 -lt 68 ']'
++ n=1126
++ sql 5600 app
++ '[' 57 -lt 68 ']'
++ n=1127
++ sql 5600 app
++ '[' 57 -lt 68 ']'
++ n=1128
++ sql 5600 app
++ '[' 57 -lt 68 ']'
++ n=1129
++ sql 5600 app
++ '[' 57 -lt 68 ']'
++ n=1130
++ sql 5600 app
++ '[' 57 -lt 68 ']'
++ n=1131
++ sql 5600 app
++ '[' 57 -lt 68 ']'
++ n=1132
++ sql 5600 app
++ '[' 57 -lt 68 ']'
++ n=1133
++ sql 5600 app
++ '[' 57 -lt 68 ']'
++ n=1134
++ sql 5600 app
++ '[' 57 -lt 68 ']'
++ n=1135
++ sql 5600 app
++ '[' 58 -lt 68 ']'
++ n=1136
++ sql 5600 app
++ '[' 58 -lt 68 ']'
++ n=1137
++ sql 5600 app
++ '[' 58 -lt 68 ']'
++ n=1138
++ sql 5600 app
++ '[' 58 -lt 68 ']'
++ n=1139
++ sql 5600 app
++ '[' 58 -lt 68 ']'
++ n=1140
++ sql 5600 app
++ '[' 58 -lt 68 ']'
++ n=1141
++ sql 5600 app
++ '[' 58 -lt 68 ']'
++ n=1142
++ sql 5600 app
++ '[' 58 -lt 68 ']'
++ n=1143
++ sql 5600 app
++ '[' 58 -lt 68 ']'
++ n=1144
++ sql 5600 app
++ '[' 58 -lt 68 ']'
++ n=1145
++ sql 5600 app
++ '[' 58 -lt 68 ']'
++ n=1146
++ sql 5600 app
++ '[' 58 -lt 68 ']'
++ n=1147
++ sql 5600 app
++ '[' 58 -lt 68 ']'
++ n=1148
++ sql 5600 app
++ '[' 58 -lt 68 ']'
++ n=1149
++ sql 5600 app
++ '[' 58 -lt 68 ']'
++ n=1150
++ sql 5600 app
++ '[' 58 -lt 68 ']'
++ n=1151
++ sql 5600 app
++ '[' 58 -lt 68 ']'
++ n=1152
++ sql 5600 app
++ '[' 58 -lt 68 ']'
++ n=1153
++ sql 5600 app
++ '[' 58 -lt 68 ']'
++ n=1154
++ sql 5600 app
++ '[' 59 -lt 68 ']'
++ n=1155
++ sql 5600 app
++ '[' 59 -lt 68 ']'
++ n=1156
++ sql 5600 app
++ '[' 59 -lt 68 ']'
++ n=1157
++ sql 5600 app
++ '[' 59 -lt 68 ']'
++ n=1158
++ sql 5600 app
++ '[' 59 -lt 68 ']'
++ n=1159
++ sql 5600 app
++ '[' 59 -lt 68 ']'
++ n=1160
++ sql 5600 app
++ '[' 59 -lt 68 ']'
++ n=1161
++ sql 5600 app
++ '[' 59 -lt 68 ']'
++ n=1162
++ sql 5600 app
++ '[' 59 -lt 68 ']'
++ n=1163
++ sql 5600 app
++ '[' 59 -lt 68 ']'
++ n=1164
++ sql 5600 app
++ '[' 59 -lt 68 ']'
++ n=1165
++ sql 5600 app
++ '[' 59 -lt 68 ']'
++ n=1166
++ sql 5600 app
++ '[' 59 -lt 68 ']'
++ n=1167
++ sql 5600 app
++ '[' 59 -lt 68 ']'
++ n=1168
++ sql 5600 app
++ '[' 59 -lt 68 ']'
++ n=1169
++ sql 5600 app
++ '[' 59 -lt 68 ']'
++ n=1170
++ sql 5600 app
++ '[' 59 -lt 68 ']'
++ n=1171
++ sql 5600 app
++ '[' 59 -lt 68 ']'
++ n=1172
++ sql 5600 app
++ '[' 59 -lt 68 ']'
++ n=1173
++ sql 5600 app
++ '[' 59 -lt 68 ']'
++ n=1174
++ sql 5600 app
++ '[' 59 -lt 68 ']'
++ n=1175
++ sql 5600 app
++ '[' 59 -lt 68 ']'
++ n=1176
++ sql 5600 app
++ '[' 59 -lt 68 ']'
++ n=1177
++ sql 5600 app
++ '[' 60 -lt 68 ']'
++ n=1178
++ sql 5600 app
++ '[' 60 -lt 68 ']'
++ n=1179
++ sql 5600 app
++ '[' 60 -lt 68 ']'
++ n=1180
++ sql 5600 app
++ '[' 60 -lt 68 ']'
++ n=1181
++ sql 5600 app
++ '[' 60 -lt 68 ']'
++ n=1182
++ sql 5600 app
++ '[' 60 -lt 68 ']'
++ n=1183
++ sql 5600 app
++ '[' 60 -lt 68 ']'
++ n=1184
++ sql 5600 app
++ '[' 60 -lt 68 ']'
++ n=1185
++ sql 5600 app
++ '[' 60 -lt 68 ']'
++ n=1186
++ sql 5600 app
++ '[' 60 -lt 68 ']'
++ n=1187
++ sql 5600 app
++ '[' 60 -lt 68 ']'
++ n=1188
++ sql 5600 app
++ '[' 60 -lt 68 ']'
++ n=1189
++ sql 5600 app
++ '[' 60 -lt 68 ']'
++ n=1190
++ sql 5600 app
++ '[' 60 -lt 68 ']'
++ n=1191
++ sql 5600 app
++ '[' 60 -lt 68 ']'
++ n=1192
++ sql 5600 app
++ '[' 60 -lt 68 ']'
++ n=1193
++ sql 5600 app
++ '[' 60 -lt 68 ']'
++ n=1194
++ sql 5600 app
++ '[' 60 -lt 68 ']'
++ n=1195
++ sql 5600 app
++ '[' 60 -lt 68 ']'
++ n=1196
++ sql 5600 app
++ '[' 60 -lt 68 ']'
++ n=1197
++ sql 5600 app
++ '[' 60 -lt 68 ']'
++ n=1198
++ sql 5600 app
++ '[' 60 -lt 68 ']'
++ n=1199
++ sql 5600 app
++ '[' 60 -lt 68 ']'
++ n=1200
++ sql 5600 app
++ '[' 60 -lt 68 ']'
++ n=1201
++ sql 5600 app
++ '[' 60 -lt 68 ']'
++ n=1202
++ sql 5600 app
++ '[' 61 -lt 68 ']'
++ n=1203
++ sql 5600 app
++ '[' 61 -lt 68 ']'
++ n=1204
++ sql 5600 app
++ '[' 61 -lt 68 ']'
++ n=1205
++ sql 5600 app
++ '[' 61 -lt 68 ']'
++ n=1206
++ sql 5600 app
++ '[' 61 -lt 68 ']'
++ n=1207
++ sql 5600 app
++ '[' 61 -lt 68 ']'
++ n=1208
++ sql 5600 app
++ '[' 61 -lt 68 ']'
++ n=1209
++ sql 5600 app
++ '[' 61 -lt 68 ']'
++ n=1210
++ sql 5600 app
++ '[' 61 -lt 68 ']'
++ n=1211
++ sql 5600 app
++ '[' 61 -lt 68 ']'
++ n=1212
++ sql 5600 app
++ '[' 61 -lt 68 ']'
++ n=1213
++ sql 5600 app
++ '[' 61 -lt 68 ']'
++ n=1214
++ sql 5600 app
++ '[' 61 -lt 68 ']'
++ n=1215
++ sql 5600 app
++ '[' 61 -lt 68 ']'
++ n=1216
++ sql 5600 app
++ '[' 61 -lt 68 ']'
++ n=1217
++ sql 5600 app
++ '[' 61 -lt 68 ']'
++ n=1218
++ sql 5600 app
++ '[' 61 -lt 68 ']'
++ n=1219
++ sql 5600 app
++ '[' 61 -lt 68 ']'
++ n=1220
++ sql 5600 app
++ '[' 61 -lt 68 ']'
++ n=1221
++ sql 5600 app
++ '[' 61 -lt 68 ']'
++ n=1222
++ sql 5600 app
++ '[' 61 -lt 68 ']'
++ n=1223
++ sql 5600 app
++ '[' 61 -lt 68 ']'
++ n=1224
++ sql 5600 app
++ '[' 61 -lt 68 ']'
++ n=1225
++ sql 5600 app
++ '[' 61 -lt 68 ']'
++ n=1226
++ sql 5600 app
++ '[' 61 -lt 68 ']'
++ n=1227
++ sql 5600 app
++ '[' 62 -lt 68 ']'
++ n=1228
++ sql 5600 app
++ '[' 62 -lt 68 ']'
++ n=1229
++ sql 5600 app
++ '[' 62 -lt 68 ']'
++ n=1230
++ sql 5600 app
++ '[' 62 -lt 68 ']'
++ n=1231
++ sql 5600 app
++ '[' 62 -lt 68 ']'
++ n=1232
++ sql 5600 app
++ '[' 62 -lt 68 ']'
++ n=1233
++ sql 5600 app
++ '[' 62 -lt 68 ']'
++ n=1234
++ sql 5600 app
++ '[' 62 -lt 68 ']'
++ n=1235
++ sql 5600 app
++ '[' 62 -lt 68 ']'
++ n=1236
++ sql 5600 app
++ '[' 62 -lt 68 ']'
++ n=1237
++ sql 5600 app
++ '[' 62 -lt 68 ']'
++ n=1238
++ sql 5600 app
++ '[' 62 -lt 68 ']'
++ n=1239
++ sql 5600 app
++ '[' 62 -lt 68 ']'
++ n=1240
++ sql 5600 app
++ '[' 62 -lt 68 ']'
++ n=1241
++ sql 5600 app
++ '[' 62 -lt 68 ']'
++ n=1242
++ sql 5600 app
++ '[' 62 -lt 68 ']'
++ n=1243
++ sql 5600 app
++ '[' 62 -lt 68 ']'
++ n=1244
++ sql 5600 app
++ '[' 62 -lt 68 ']'
++ n=1245
++ sql 5600 app
++ '[' 62 -lt 68 ']'
++ n=1246
++ sql 5600 app
++ '[' 62 -lt 68 ']'
++ n=1247
++ sql 5600 app
++ '[' 62 -lt 68 ']'
++ n=1248
++ sql 5600 app
++ '[' 62 -lt 68 ']'
++ n=1249
++ sql 5600 app
++ '[' 62 -lt 68 ']'
++ n=1250
++ sql 5600 app
++ '[' 63 -lt 68 ']'
++ n=1251
++ sql 5600 app
++ '[' 63 -lt 68 ']'
++ n=1252
++ sql 5600 app
++ '[' 63 -lt 68 ']'
++ n=1253
++ sql 5600 app
++ '[' 64 -lt 68 ']'
++ n=1254
++ sql 5600 app
++ '[' 64 -lt 68 ']'
++ n=1255
++ sql 5600 app
++ '[' 64 -lt 68 ']'
++ n=1256
++ sql 5600 app
++ '[' 64 -lt 68 ']'
++ n=1257
++ sql 5600 app
++ '[' 64 -lt 68 ']'
++ n=1258
++ sql 5600 app
++ '[' 64 -lt 68 ']'
++ n=1259
++ sql 5600 app
++ '[' 64 -lt 68 ']'
++ n=1260
++ sql 5600 app
++ '[' 64 -lt 68 ']'
++ n=1261
++ sql 5600 app
++ '[' 64 -lt 68 ']'
++ n=1262
++ sql 5600 app
++ '[' 64 -lt 68 ']'
++ n=1263
++ sql 5600 app
++ '[' 64 -lt 68 ']'
++ n=1264
++ sql 5600 app
++ '[' 64 -lt 68 ']'
++ n=1265
++ sql 5600 app
++ '[' 64 -lt 68 ']'
++ n=1266
++ sql 5600 app
++ '[' 64 -lt 68 ']'
++ n=1267
++ sql 5600 app
++ '[' 64 -lt 68 ']'
++ n=1268
++ sql 5600 app
++ '[' 64 -lt 68 ']'
++ n=1269
++ sql 5600 app
++ '[' 64 -lt 68 ']'
++ n=1270
++ sql 5600 app
++ '[' 64 -lt 68 ']'
++ n=1271
++ sql 5600 app
++ '[' 64 -lt 68 ']'
++ n=1272
++ sql 5600 app
++ '[' 64 -lt 68 ']'
++ n=1273
++ sql 5600 app
++ '[' 65 -lt 68 ']'
++ n=1274
++ sql 5600 app
++ '[' 65 -lt 68 ']'
++ n=1275
++ sql 5600 app
++ '[' 65 -lt 68 ']'
++ n=1276
++ sql 5600 app
++ '[' 65 -lt 68 ']'
++ n=1277
++ sql 5600 app
++ '[' 65 -lt 68 ']'
++ n=1278
++ sql 5600 app
++ '[' 65 -lt 68 ']'
++ n=1279
++ sql 5600 app
++ '[' 65 -lt 68 ']'
++ n=1280
++ sql 5600 app
++ '[' 65 -lt 68 ']'
++ n=1281
++ sql 5600 app
++ '[' 65 -lt 68 ']'
++ n=1282
++ sql 5600 app
++ '[' 65 -lt 68 ']'
++ n=1283
++ sql 5600 app
++ '[' 65 -lt 68 ']'
++ n=1284
++ sql 5600 app
++ '[' 65 -lt 68 ']'
++ n=1285
++ sql 5600 app
++ '[' 65 -lt 68 ']'
++ n=1286
++ sql 5600 app
++ '[' 65 -lt 68 ']'
++ n=1287
++ sql 5600 app
++ '[' 65 -lt 68 ']'
++ n=1288
++ sql 5600 app
++ '[' 65 -lt 68 ']'
++ n=1289
++ sql 5600 app
++ '[' 65 -lt 68 ']'
++ n=1290
++ sql 5600 app
++ '[' 65 -lt 68 ']'
++ n=1291
++ sql 5600 app
++ '[' 66 -lt 68 ']'
++ n=1292
++ sql 5600 app
++ '[' 66 -lt 68 ']'
++ n=1293
++ sql 5600 app
++ '[' 66 -lt 68 ']'
++ n=1294
++ sql 5600 app
++ '[' 66 -lt 68 ']'
++ n=1295
++ sql 5600 app
++ '[' 66 -lt 68 ']'
++ n=1296
++ sql 5600 app
++ '[' 66 -lt 68 ']'
++ n=1297
++ sql 5600 app
++ '[' 66 -lt 68 ']'
++ n=1298
++ sql 5600 app
++ '[' 66 -lt 68 ']'
++ n=1299
++ sql 5600 app
++ '[' 66 -lt 68 ']'
++ n=1300
++ sql 5600 app
++ '[' 66 -lt 68 ']'
++ n=1301
++ sql 5600 app
++ '[' 66 -lt 68 ']'
++ n=1302
++ sql 5600 app
++ '[' 66 -lt 68 ']'
++ n=1303
++ sql 5600 app
++ '[' 66 -lt 68 ']'
++ n=1304
++ sql 5600 app
++ '[' 66 -lt 68 ']'
++ n=1305
++ sql 5600 app
++ '[' 66 -lt 68 ']'
++ n=1306
++ sql 5600 app
++ '[' 66 -lt 68 ']'
++ n=1307
++ sql 5600 app
++ '[' 66 -lt 68 ']'
++ n=1308
++ sql 5600 app
++ '[' 66 -lt 68 ']'
++ n=1309
++ sql 5600 app
++ '[' 66 -lt 68 ']'
++ n=1310
++ sql 5600 app
++ '[' 66 -lt 68 ']'
++ n=1311
++ sql 5600 app
++ '[' 66 -lt 68 ']'
++ n=1312
++ sql 5600 app
++ '[' 66 -lt 68 ']'
++ n=1313
++ sql 5600 app
++ '[' 66 -lt 68 ']'
++ n=1314
++ sql 5600 app
++ '[' 67 -lt 68 ']'
++ n=1315
++ sql 5600 app
++ '[' 67 -lt 68 ']'
++ n=1316
++ sql 5600 app
++ '[' 67 -lt 68 ']'
++ n=1317
++ sql 5600 app
++ '[' 67 -lt 68 ']'
++ n=1318
++ sql 5600 app
++ '[' 67 -lt 68 ']'
++ n=1319
++ sql 5600 app
++ '[' 67 -lt 68 ']'
++ n=1320
++ sql 5600 app
++ '[' 67 -lt 68 ']'
++ n=1321
++ sql 5600 app
++ '[' 67 -lt 68 ']'
++ n=1322
++ sql 5600 app
++ '[' 67 -lt 68 ']'
++ n=1323
++ sql 5600 app
++ '[' 67 -lt 68 ']'
++ n=1324
++ sql 5600 app
++ '[' 67 -lt 68 ']'
++ n=1325
++ sql 5600 app
++ '[' 67 -lt 68 ']'
++ n=1326
++ sql 5600 app
++ '[' 67 -lt 68 ']'
++ n=1327
++ sql 5600 app
++ '[' 67 -lt 68 ']'
++ n=1328
++ sql 5600 app
++ '[' 67 -lt 68 ']'
++ n=1329
++ sql 5600 app
++ '[' 67 -lt 68 ']'
++ n=1330
++ sql 5600 app
++ '[' 67 -lt 68 ']'
++ n=1331
++ sql 5600 app
++ '[' 67 -lt 68 ']'
++ n=1332
++ sql 5600 app
++ '[' 67 -lt 68 ']'
++ n=1333
++ sql 5600 app
++ '[' 67 -lt 68 ']'
++ n=1334
++ sql 5600 app
++ '[' 67 -lt 68 ']'
++ n=1335
++ sql 5600 app
++ '[' 67 -lt 68 ']'
++ n=1336
++ sql 5600 app
++ '[' 67 -lt 68 ']'
++ n=1337
++ sql 5600 app
++ '[' 67 -lt 68 ']'
++ n=1338
++ sql 5600 app
++ '[' 67 -lt 68 ']'
++ n=1339
++ sql 5600 app
++ '[' 68 -lt 68 ']'
++ echo 'writer done: 1339 batches'
+writer done: 1339 batches
++ echo '=== writes stopped'
+=== writes stopped
+++ sql 5600 app
+++ cat
+++ su postgres -s /bin/bash -c '/usr/lib/postgresql/17/bin/psql -X -A -t -q -v ON_ERROR_STOP=1 -h /var/lib/postgresql/qsy1/sock -p 5600 -U postgres -d app -f -'
++ TARGET=0/4758908
++ wait_mirror s1 public.items 0/4758908 300
++ local at
+++ seq 3000
++ for _ in $(seq $(( ${4:-120} * 10 )))
+++ applied_lsn s1 public.items
+++ /tmp/claude-0/-home-user-pg-quicksilver/58894071-fd3a-5a32-94ab-41a0530826ff/scratchpad/bin/qs-query -mirror /var/lib/postgresql/qsy1/mirror/s1 -table public.items -lsn
++ at=0/47588D8
++ '[' -n 0/47588D8 ']'
+++ lsn_num 0/47588D8
+++ python3 -c 'a,b='\''0/47588D8'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
+++ lsn_num 0/4758908
+++ python3 -c 'a,b='\''0/4758908'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
++ '[' 74811608 -ge 74811656 ']'
++ sleep 0.1
++ for _ in $(seq $(( ${4:-120} * 10 )))
+++ applied_lsn s1 public.items
+++ /tmp/claude-0/-home-user-pg-quicksilver/58894071-fd3a-5a32-94ab-41a0530826ff/scratchpad/bin/qs-query -mirror /var/lib/postgresql/qsy1/mirror/s1 -table public.items -lsn
++ at=0/4758907
++ '[' -n 0/4758907 ']'
+++ lsn_num 0/4758907
+++ python3 -c 'a,b='\''0/4758907'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
+++ lsn_num 0/4758908
+++ python3 -c 'a,b='\''0/4758908'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
++ '[' 74811655 -ge 74811656 ']'
++ sleep 0.1
++ for _ in $(seq $(( ${4:-120} * 10 )))
+++ applied_lsn s1 public.items
+++ /tmp/claude-0/-home-user-pg-quicksilver/58894071-fd3a-5a32-94ab-41a0530826ff/scratchpad/bin/qs-query -mirror /var/lib/postgresql/qsy1/mirror/s1 -table public.items -lsn
++ at=0/4758907
++ '[' -n 0/4758907 ']'
+++ lsn_num 0/4758907
+++ python3 -c 'a,b='\''0/4758907'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
+++ lsn_num 0/4758908
+++ python3 -c 'a,b='\''0/4758908'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
++ '[' 74811655 -ge 74811656 ']'
++ sleep 0.1
++ for _ in $(seq $(( ${4:-120} * 10 )))
+++ applied_lsn s1 public.items
+++ /tmp/claude-0/-home-user-pg-quicksilver/58894071-fd3a-5a32-94ab-41a0530826ff/scratchpad/bin/qs-query -mirror /var/lib/postgresql/qsy1/mirror/s1 -table public.items -lsn
++ at=0/4758907
++ '[' -n 0/4758907 ']'
+++ lsn_num 0/4758907
+++ python3 -c 'a,b='\''0/4758907'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
+++ lsn_num 0/4758908
+++ python3 -c 'a,b='\''0/4758908'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
++ '[' 74811655 -ge 74811656 ']'
++ sleep 0.1
++ for _ in $(seq $(( ${4:-120} * 10 )))
+++ applied_lsn s1 public.items
+++ /tmp/claude-0/-home-user-pg-quicksilver/58894071-fd3a-5a32-94ab-41a0530826ff/scratchpad/bin/qs-query -mirror /var/lib/postgresql/qsy1/mirror/s1 -table public.items -lsn
++ at=0/4758907
++ '[' -n 0/4758907 ']'
+++ lsn_num 0/4758907
+++ python3 -c 'a,b='\''0/4758907'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
+++ lsn_num 0/4758908
+++ python3 -c 'a,b='\''0/4758908'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
++ '[' 74811655 -ge 74811656 ']'
++ sleep 0.1
++ for _ in $(seq $(( ${4:-120} * 10 )))
+++ applied_lsn s1 public.items
+++ /tmp/claude-0/-home-user-pg-quicksilver/58894071-fd3a-5a32-94ab-41a0530826ff/scratchpad/bin/qs-query -mirror /var/lib/postgresql/qsy1/mirror/s1 -table public.items -lsn
++ at=0/4758907
++ '[' -n 0/4758907 ']'
+++ lsn_num 0/4758907
+++ python3 -c 'a,b='\''0/4758907'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
+++ lsn_num 0/4758908
+++ python3 -c 'a,b='\''0/4758908'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
++ '[' 74811655 -ge 74811656 ']'
++ sleep 0.1
++ for _ in $(seq $(( ${4:-120} * 10 )))
+++ applied_lsn s1 public.items
+++ /tmp/claude-0/-home-user-pg-quicksilver/58894071-fd3a-5a32-94ab-41a0530826ff/scratchpad/bin/qs-query -mirror /var/lib/postgresql/qsy1/mirror/s1 -table public.items -lsn
++ at=0/4758907
++ '[' -n 0/4758907 ']'
+++ lsn_num 0/4758907
+++ python3 -c 'a,b='\''0/4758907'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
+++ lsn_num 0/4758908
+++ python3 -c 'a,b='\''0/4758908'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
++ '[' 74811655 -ge 74811656 ']'
++ sleep 0.1
++ for _ in $(seq $(( ${4:-120} * 10 )))
+++ applied_lsn s1 public.items
+++ /tmp/claude-0/-home-user-pg-quicksilver/58894071-fd3a-5a32-94ab-41a0530826ff/scratchpad/bin/qs-query -mirror /var/lib/postgresql/qsy1/mirror/s1 -table public.items -lsn
++ at=0/4758907
++ '[' -n 0/4758907 ']'
+++ lsn_num 0/4758907
+++ python3 -c 'a,b='\''0/4758907'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
+++ lsn_num 0/4758908
+++ python3 -c 'a,b='\''0/4758908'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
++ '[' 74811655 -ge 74811656 ']'
++ sleep 0.1
++ for _ in $(seq $(( ${4:-120} * 10 )))
+++ applied_lsn s1 public.items
+++ /tmp/claude-0/-home-user-pg-quicksilver/58894071-fd3a-5a32-94ab-41a0530826ff/scratchpad/bin/qs-query -mirror /var/lib/postgresql/qsy1/mirror/s1 -table public.items -lsn
++ at=0/4758907
++ '[' -n 0/4758907 ']'
+++ lsn_num 0/4758907
+++ python3 -c 'a,b='\''0/4758907'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
+++ lsn_num 0/4758908
+++ python3 -c 'a,b='\''0/4758908'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
++ '[' 74811655 -ge 74811656 ']'
++ sleep 0.1
++ for _ in $(seq $(( ${4:-120} * 10 )))
+++ applied_lsn s1 public.items
+++ /tmp/claude-0/-home-user-pg-quicksilver/58894071-fd3a-5a32-94ab-41a0530826ff/scratchpad/bin/qs-query -mirror /var/lib/postgresql/qsy1/mirror/s1 -table public.items -lsn
++ at=0/4758907
++ '[' -n 0/4758907 ']'
+++ lsn_num 0/4758907
+++ python3 -c 'a,b='\''0/4758907'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
+++ lsn_num 0/4758908
+++ python3 -c 'a,b='\''0/4758908'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
++ '[' 74811655 -ge 74811656 ']'
++ sleep 0.1
++ for _ in $(seq $(( ${4:-120} * 10 )))
+++ applied_lsn s1 public.items
+++ /tmp/claude-0/-home-user-pg-quicksilver/58894071-fd3a-5a32-94ab-41a0530826ff/scratchpad/bin/qs-query -mirror /var/lib/postgresql/qsy1/mirror/s1 -table public.items -lsn
++ at=0/4758907
++ '[' -n 0/4758907 ']'
+++ lsn_num 0/4758907
+++ python3 -c 'a,b='\''0/4758907'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
+++ lsn_num 0/4758908
+++ python3 -c 'a,b='\''0/4758908'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
++ '[' 74811655 -ge 74811656 ']'
++ sleep 0.1
++ for _ in $(seq $(( ${4:-120} * 10 )))
+++ applied_lsn s1 public.items
+++ /tmp/claude-0/-home-user-pg-quicksilver/58894071-fd3a-5a32-94ab-41a0530826ff/scratchpad/bin/qs-query -mirror /var/lib/postgresql/qsy1/mirror/s1 -table public.items -lsn
++ at=0/4758907
++ '[' -n 0/4758907 ']'
+++ lsn_num 0/4758907
+++ python3 -c 'a,b='\''0/4758907'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
+++ lsn_num 0/4758908
+++ python3 -c 'a,b='\''0/4758908'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
++ '[' 74811655 -ge 74811656 ']'
++ sleep 0.1
++ for _ in $(seq $(( ${4:-120} * 10 )))
+++ applied_lsn s1 public.items
+++ /tmp/claude-0/-home-user-pg-quicksilver/58894071-fd3a-5a32-94ab-41a0530826ff/scratchpad/bin/qs-query -mirror /var/lib/postgresql/qsy1/mirror/s1 -table public.items -lsn
++ at=0/4758907
++ '[' -n 0/4758907 ']'
+++ lsn_num 0/4758907
+++ python3 -c 'a,b='\''0/4758907'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
+++ lsn_num 0/4758908
+++ python3 -c 'a,b='\''0/4758908'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
++ '[' 74811655 -ge 74811656 ']'
++ sleep 0.1
++ for _ in $(seq $(( ${4:-120} * 10 )))
+++ applied_lsn s1 public.items
+++ /tmp/claude-0/-home-user-pg-quicksilver/58894071-fd3a-5a32-94ab-41a0530826ff/scratchpad/bin/qs-query -mirror /var/lib/postgresql/qsy1/mirror/s1 -table public.items -lsn
++ at=0/4758907
++ '[' -n 0/4758907 ']'
+++ lsn_num 0/4758907
+++ python3 -c 'a,b='\''0/4758907'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
+++ lsn_num 0/4758908
+++ python3 -c 'a,b='\''0/4758908'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
++ '[' 74811655 -ge 74811656 ']'
++ sleep 0.1
++ for _ in $(seq $(( ${4:-120} * 10 )))
+++ applied_lsn s1 public.items
+++ /tmp/claude-0/-home-user-pg-quicksilver/58894071-fd3a-5a32-94ab-41a0530826ff/scratchpad/bin/qs-query -mirror /var/lib/postgresql/qsy1/mirror/s1 -table public.items -lsn
++ at=0/4758907
++ '[' -n 0/4758907 ']'
+++ lsn_num 0/4758907
+++ python3 -c 'a,b='\''0/4758907'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
+++ lsn_num 0/4758908
+++ python3 -c 'a,b='\''0/4758908'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
++ '[' 74811655 -ge 74811656 ']'
++ sleep 0.1
++ for _ in $(seq $(( ${4:-120} * 10 )))
+++ applied_lsn s1 public.items
+++ /tmp/claude-0/-home-user-pg-quicksilver/58894071-fd3a-5a32-94ab-41a0530826ff/scratchpad/bin/qs-query -mirror /var/lib/postgresql/qsy1/mirror/s1 -table public.items -lsn
++ at=0/4758907
++ '[' -n 0/4758907 ']'
+++ lsn_num 0/4758907
+++ python3 -c 'a,b='\''0/4758907'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
+++ lsn_num 0/4758908
+++ python3 -c 'a,b='\''0/4758908'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
++ '[' 74811655 -ge 74811656 ']'
++ sleep 0.1
++ for _ in $(seq $(( ${4:-120} * 10 )))
+++ applied_lsn s1 public.items
+++ /tmp/claude-0/-home-user-pg-quicksilver/58894071-fd3a-5a32-94ab-41a0530826ff/scratchpad/bin/qs-query -mirror /var/lib/postgresql/qsy1/mirror/s1 -table public.items -lsn
++ at=0/4758907
++ '[' -n 0/4758907 ']'
+++ lsn_num 0/4758907
+++ python3 -c 'a,b='\''0/4758907'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
+++ lsn_num 0/4758908
+++ python3 -c 'a,b='\''0/4758908'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
++ '[' 74811655 -ge 74811656 ']'
++ sleep 0.1
++ for _ in $(seq $(( ${4:-120} * 10 )))
+++ applied_lsn s1 public.items
+++ /tmp/claude-0/-home-user-pg-quicksilver/58894071-fd3a-5a32-94ab-41a0530826ff/scratchpad/bin/qs-query -mirror /var/lib/postgresql/qsy1/mirror/s1 -table public.items -lsn
++ at=0/4758907
++ '[' -n 0/4758907 ']'
+++ lsn_num 0/4758907
+++ python3 -c 'a,b='\''0/4758907'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
+++ lsn_num 0/4758908
+++ python3 -c 'a,b='\''0/4758908'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
++ '[' 74811655 -ge 74811656 ']'
++ sleep 0.1
++ for _ in $(seq $(( ${4:-120} * 10 )))
+++ applied_lsn s1 public.items
+++ /tmp/claude-0/-home-user-pg-quicksilver/58894071-fd3a-5a32-94ab-41a0530826ff/scratchpad/bin/qs-query -mirror /var/lib/postgresql/qsy1/mirror/s1 -table public.items -lsn
++ at=0/4758907
++ '[' -n 0/4758907 ']'
+++ lsn_num 0/4758907
+++ python3 -c 'a,b='\''0/4758907'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
+++ lsn_num 0/4758908
+++ python3 -c 'a,b='\''0/4758908'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
++ '[' 74811655 -ge 74811656 ']'
++ sleep 0.1
++ for _ in $(seq $(( ${4:-120} * 10 )))
+++ applied_lsn s1 public.items
+++ /tmp/claude-0/-home-user-pg-quicksilver/58894071-fd3a-5a32-94ab-41a0530826ff/scratchpad/bin/qs-query -mirror /var/lib/postgresql/qsy1/mirror/s1 -table public.items -lsn
++ at=0/4758907
++ '[' -n 0/4758907 ']'
+++ lsn_num 0/4758907
+++ python3 -c 'a,b='\''0/4758907'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
+++ lsn_num 0/4758908
+++ python3 -c 'a,b='\''0/4758908'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
++ '[' 74811655 -ge 74811656 ']'
++ sleep 0.1
++ for _ in $(seq $(( ${4:-120} * 10 )))
+++ applied_lsn s1 public.items
+++ /tmp/claude-0/-home-user-pg-quicksilver/58894071-fd3a-5a32-94ab-41a0530826ff/scratchpad/bin/qs-query -mirror /var/lib/postgresql/qsy1/mirror/s1 -table public.items -lsn
++ at=0/4758907
++ '[' -n 0/4758907 ']'
+++ lsn_num 0/4758907
+++ python3 -c 'a,b='\''0/4758907'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
+++ lsn_num 0/4758908
+++ python3 -c 'a,b='\''0/4758908'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
++ '[' 74811655 -ge 74811656 ']'
++ sleep 0.1
++ for _ in $(seq $(( ${4:-120} * 10 )))
+++ applied_lsn s1 public.items
+++ /tmp/claude-0/-home-user-pg-quicksilver/58894071-fd3a-5a32-94ab-41a0530826ff/scratchpad/bin/qs-query -mirror /var/lib/postgresql/qsy1/mirror/s1 -table public.items -lsn
++ at=0/4758907
++ '[' -n 0/4758907 ']'
+++ lsn_num 0/4758907
+++ python3 -c 'a,b='\''0/4758907'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
+++ lsn_num 0/4758908
+++ python3 -c 'a,b='\''0/4758908'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
++ '[' 74811655 -ge 74811656 ']'
++ sleep 0.1
++ for _ in $(seq $(( ${4:-120} * 10 )))
+++ applied_lsn s1 public.items
+++ /tmp/claude-0/-home-user-pg-quicksilver/58894071-fd3a-5a32-94ab-41a0530826ff/scratchpad/bin/qs-query -mirror /var/lib/postgresql/qsy1/mirror/s1 -table public.items -lsn
++ at=0/4758907
++ '[' -n 0/4758907 ']'
+++ lsn_num 0/4758907
+++ python3 -c 'a,b='\''0/4758907'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
+++ lsn_num 0/4758908
+++ python3 -c 'a,b='\''0/4758908'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
++ '[' 74811655 -ge 74811656 ']'
++ sleep 0.1
++ for _ in $(seq $(( ${4:-120} * 10 )))
+++ applied_lsn s1 public.items
+++ /tmp/claude-0/-home-user-pg-quicksilver/58894071-fd3a-5a32-94ab-41a0530826ff/scratchpad/bin/qs-query -mirror /var/lib/postgresql/qsy1/mirror/s1 -table public.items -lsn
++ at=0/4758907
++ '[' -n 0/4758907 ']'
+++ lsn_num 0/4758907
+++ python3 -c 'a,b='\''0/4758907'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
+++ lsn_num 0/4758908
+++ python3 -c 'a,b='\''0/4758908'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
++ '[' 74811655 -ge 74811656 ']'
++ sleep 0.1
++ for _ in $(seq $(( ${4:-120} * 10 )))
+++ applied_lsn s1 public.items
+++ /tmp/claude-0/-home-user-pg-quicksilver/58894071-fd3a-5a32-94ab-41a0530826ff/scratchpad/bin/qs-query -mirror /var/lib/postgresql/qsy1/mirror/s1 -table public.items -lsn
++ at=0/4758907
++ '[' -n 0/4758907 ']'
+++ lsn_num 0/4758907
+++ python3 -c 'a,b='\''0/4758907'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
+++ lsn_num 0/4758908
+++ python3 -c 'a,b='\''0/4758908'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
++ '[' 74811655 -ge 74811656 ']'
++ sleep 0.1
++ for _ in $(seq $(( ${4:-120} * 10 )))
+++ applied_lsn s1 public.items
+++ /tmp/claude-0/-home-user-pg-quicksilver/58894071-fd3a-5a32-94ab-41a0530826ff/scratchpad/bin/qs-query -mirror /var/lib/postgresql/qsy1/mirror/s1 -table public.items -lsn
++ at=0/4758907
++ '[' -n 0/4758907 ']'
+++ lsn_num 0/4758907
+++ python3 -c 'a,b='\''0/4758907'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
+++ lsn_num 0/4758908
+++ python3 -c 'a,b='\''0/4758908'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
++ '[' 74811655 -ge 74811656 ']'
++ sleep 0.1
++ for _ in $(seq $(( ${4:-120} * 10 )))
+++ applied_lsn s1 public.items
+++ /tmp/claude-0/-home-user-pg-quicksilver/58894071-fd3a-5a32-94ab-41a0530826ff/scratchpad/bin/qs-query -mirror /var/lib/postgresql/qsy1/mirror/s1 -table public.items -lsn
++ at=0/4758907
++ '[' -n 0/4758907 ']'
+++ lsn_num 0/4758907
+++ python3 -c 'a,b='\''0/4758907'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
+++ lsn_num 0/4758908
+++ python3 -c 'a,b='\''0/4758908'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
++ '[' 74811655 -ge 74811656 ']'
++ sleep 0.1
++ for _ in $(seq $(( ${4:-120} * 10 )))
+++ applied_lsn s1 public.items
+++ /tmp/claude-0/-home-user-pg-quicksilver/58894071-fd3a-5a32-94ab-41a0530826ff/scratchpad/bin/qs-query -mirror /var/lib/postgresql/qsy1/mirror/s1 -table public.items -lsn
++ at=0/4758907
++ '[' -n 0/4758907 ']'
+++ lsn_num 0/4758907
+++ python3 -c 'a,b='\''0/4758907'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
+++ lsn_num 0/4758908
+++ python3 -c 'a,b='\''0/4758908'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
++ '[' 74811655 -ge 74811656 ']'
++ sleep 0.1
++ for _ in $(seq $(( ${4:-120} * 10 )))
+++ applied_lsn s1 public.items
+++ /tmp/claude-0/-home-user-pg-quicksilver/58894071-fd3a-5a32-94ab-41a0530826ff/scratchpad/bin/qs-query -mirror /var/lib/postgresql/qsy1/mirror/s1 -table public.items -lsn
++ at=0/4758907
++ '[' -n 0/4758907 ']'
+++ lsn_num 0/4758907
+++ python3 -c 'a,b='\''0/4758907'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
+++ lsn_num 0/4758908
+++ python3 -c 'a,b='\''0/4758908'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
++ '[' 74811655 -ge 74811656 ']'
++ sleep 0.1
++ for _ in $(seq $(( ${4:-120} * 10 )))
+++ applied_lsn s1 public.items
+++ /tmp/claude-0/-home-user-pg-quicksilver/58894071-fd3a-5a32-94ab-41a0530826ff/scratchpad/bin/qs-query -mirror /var/lib/postgresql/qsy1/mirror/s1 -table public.items -lsn
++ at=0/4758907
++ '[' -n 0/4758907 ']'
+++ lsn_num 0/4758907
+++ python3 -c 'a,b='\''0/4758907'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
+++ lsn_num 0/4758908
+++ python3 -c 'a,b='\''0/4758908'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
++ '[' 74811655 -ge 74811656 ']'
++ sleep 0.1
++ for _ in $(seq $(( ${4:-120} * 10 )))
+++ applied_lsn s1 public.items
+++ /tmp/claude-0/-home-user-pg-quicksilver/58894071-fd3a-5a32-94ab-41a0530826ff/scratchpad/bin/qs-query -mirror /var/lib/postgresql/qsy1/mirror/s1 -table public.items -lsn
++ at=0/4758907
++ '[' -n 0/4758907 ']'
+++ lsn_num 0/4758907
+++ python3 -c 'a,b='\''0/4758907'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
+++ lsn_num 0/4758908
+++ python3 -c 'a,b='\''0/4758908'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
++ '[' 74811655 -ge 74811656 ']'
++ sleep 0.1
++ for _ in $(seq $(( ${4:-120} * 10 )))
+++ applied_lsn s1 public.items
+++ /tmp/claude-0/-home-user-pg-quicksilver/58894071-fd3a-5a32-94ab-41a0530826ff/scratchpad/bin/qs-query -mirror /var/lib/postgresql/qsy1/mirror/s1 -table public.items -lsn
++ at=0/4758907
++ '[' -n 0/4758907 ']'
+++ lsn_num 0/4758907
+++ python3 -c 'a,b='\''0/4758907'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
+++ lsn_num 0/4758908
+++ python3 -c 'a,b='\''0/4758908'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
++ '[' 74811655 -ge 74811656 ']'
++ sleep 0.1
++ for _ in $(seq $(( ${4:-120} * 10 )))
+++ applied_lsn s1 public.items
+++ /tmp/claude-0/-home-user-pg-quicksilver/58894071-fd3a-5a32-94ab-41a0530826ff/scratchpad/bin/qs-query -mirror /var/lib/postgresql/qsy1/mirror/s1 -table public.items -lsn
++ at=0/4758907
++ '[' -n 0/4758907 ']'
+++ lsn_num 0/4758907
+++ python3 -c 'a,b='\''0/4758907'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
+++ lsn_num 0/4758908
+++ python3 -c 'a,b='\''0/4758908'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
++ '[' 74811655 -ge 74811656 ']'
++ sleep 0.1
++ for _ in $(seq $(( ${4:-120} * 10 )))
+++ applied_lsn s1 public.items
+++ /tmp/claude-0/-home-user-pg-quicksilver/58894071-fd3a-5a32-94ab-41a0530826ff/scratchpad/bin/qs-query -mirror /var/lib/postgresql/qsy1/mirror/s1 -table public.items -lsn
++ at=0/4758907
++ '[' -n 0/4758907 ']'
+++ lsn_num 0/4758907
+++ python3 -c 'a,b='\''0/4758907'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
+++ lsn_num 0/4758908
+++ python3 -c 'a,b='\''0/4758908'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
++ '[' 74811655 -ge 74811656 ']'
++ sleep 0.1
++ for _ in $(seq $(( ${4:-120} * 10 )))
+++ applied_lsn s1 public.items
+++ /tmp/claude-0/-home-user-pg-quicksilver/58894071-fd3a-5a32-94ab-41a0530826ff/scratchpad/bin/qs-query -mirror /var/lib/postgresql/qsy1/mirror/s1 -table public.items -lsn
++ at=0/4758907
++ '[' -n 0/4758907 ']'
+++ lsn_num 0/4758907
+++ python3 -c 'a,b='\''0/4758907'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
+++ lsn_num 0/4758908
+++ python3 -c 'a,b='\''0/4758908'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
++ '[' 74811655 -ge 74811656 ']'
++ sleep 0.1
++ for _ in $(seq $(( ${4:-120} * 10 )))
+++ applied_lsn s1 public.items
+++ /tmp/claude-0/-home-user-pg-quicksilver/58894071-fd3a-5a32-94ab-41a0530826ff/scratchpad/bin/qs-query -mirror /var/lib/postgresql/qsy1/mirror/s1 -table public.items -lsn
++ at=0/4758907
++ '[' -n 0/4758907 ']'
+++ lsn_num 0/4758907
+++ python3 -c 'a,b='\''0/4758907'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
+++ lsn_num 0/4758908
+++ python3 -c 'a,b='\''0/4758908'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
++ '[' 74811655 -ge 74811656 ']'
++ sleep 0.1
++ for _ in $(seq $(( ${4:-120} * 10 )))
+++ applied_lsn s1 public.items
+++ /tmp/claude-0/-home-user-pg-quicksilver/58894071-fd3a-5a32-94ab-41a0530826ff/scratchpad/bin/qs-query -mirror /var/lib/postgresql/qsy1/mirror/s1 -table public.items -lsn
++ at=0/4758907
++ '[' -n 0/4758907 ']'
+++ lsn_num 0/4758907
+++ python3 -c 'a,b='\''0/4758907'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
+++ lsn_num 0/4758908
+++ python3 -c 'a,b='\''0/4758908'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
++ '[' 74811655 -ge 74811656 ']'
++ sleep 0.1
++ for _ in $(seq $(( ${4:-120} * 10 )))
+++ applied_lsn s1 public.items
+++ /tmp/claude-0/-home-user-pg-quicksilver/58894071-fd3a-5a32-94ab-41a0530826ff/scratchpad/bin/qs-query -mirror /var/lib/postgresql/qsy1/mirror/s1 -table public.items -lsn
++ at=0/4758907
++ '[' -n 0/4758907 ']'
+++ lsn_num 0/4758907
+++ python3 -c 'a,b='\''0/4758907'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
+++ lsn_num 0/4758908
+++ python3 -c 'a,b='\''0/4758908'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
++ '[' 74811655 -ge 74811656 ']'
++ sleep 0.1
++ for _ in $(seq $(( ${4:-120} * 10 )))
+++ applied_lsn s1 public.items
+++ /tmp/claude-0/-home-user-pg-quicksilver/58894071-fd3a-5a32-94ab-41a0530826ff/scratchpad/bin/qs-query -mirror /var/lib/postgresql/qsy1/mirror/s1 -table public.items -lsn
++ at=0/4758907
++ '[' -n 0/4758907 ']'
+++ lsn_num 0/4758907
+++ python3 -c 'a,b='\''0/4758907'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
+++ lsn_num 0/4758908
+++ python3 -c 'a,b='\''0/4758908'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
++ '[' 74811655 -ge 74811656 ']'
++ sleep 0.1
++ for _ in $(seq $(( ${4:-120} * 10 )))
+++ applied_lsn s1 public.items
+++ /tmp/claude-0/-home-user-pg-quicksilver/58894071-fd3a-5a32-94ab-41a0530826ff/scratchpad/bin/qs-query -mirror /var/lib/postgresql/qsy1/mirror/s1 -table public.items -lsn
++ at=0/4758907
++ '[' -n 0/4758907 ']'
+++ lsn_num 0/4758907
+++ python3 -c 'a,b='\''0/4758907'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
+++ lsn_num 0/4758908
+++ python3 -c 'a,b='\''0/4758908'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
++ '[' 74811655 -ge 74811656 ']'
++ sleep 0.1
++ for _ in $(seq $(( ${4:-120} * 10 )))
+++ applied_lsn s1 public.items
+++ /tmp/claude-0/-home-user-pg-quicksilver/58894071-fd3a-5a32-94ab-41a0530826ff/scratchpad/bin/qs-query -mirror /var/lib/postgresql/qsy1/mirror/s1 -table public.items -lsn
++ at=0/4758907
++ '[' -n 0/4758907 ']'
+++ lsn_num 0/4758907
+++ python3 -c 'a,b='\''0/4758907'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
+++ lsn_num 0/4758908
+++ python3 -c 'a,b='\''0/4758908'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
++ '[' 74811655 -ge 74811656 ']'
++ sleep 0.1
++ for _ in $(seq $(( ${4:-120} * 10 )))
+++ applied_lsn s1 public.items
+++ /tmp/claude-0/-home-user-pg-quicksilver/58894071-fd3a-5a32-94ab-41a0530826ff/scratchpad/bin/qs-query -mirror /var/lib/postgresql/qsy1/mirror/s1 -table public.items -lsn
++ at=0/4758907
++ '[' -n 0/4758907 ']'
+++ lsn_num 0/4758907
+++ python3 -c 'a,b='\''0/4758907'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
+++ lsn_num 0/4758908
+++ python3 -c 'a,b='\''0/4758908'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
++ '[' 74811655 -ge 74811656 ']'
++ sleep 0.1
++ for _ in $(seq $(( ${4:-120} * 10 )))
+++ applied_lsn s1 public.items
+++ /tmp/claude-0/-home-user-pg-quicksilver/58894071-fd3a-5a32-94ab-41a0530826ff/scratchpad/bin/qs-query -mirror /var/lib/postgresql/qsy1/mirror/s1 -table public.items -lsn
++ at=0/4758907
++ '[' -n 0/4758907 ']'
+++ lsn_num 0/4758907
+++ python3 -c 'a,b='\''0/4758907'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
+++ lsn_num 0/4758908
+++ python3 -c 'a,b='\''0/4758908'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
++ '[' 74811655 -ge 74811656 ']'
++ sleep 0.1
++ for _ in $(seq $(( ${4:-120} * 10 )))
+++ applied_lsn s1 public.items
+++ /tmp/claude-0/-home-user-pg-quicksilver/58894071-fd3a-5a32-94ab-41a0530826ff/scratchpad/bin/qs-query -mirror /var/lib/postgresql/qsy1/mirror/s1 -table public.items -lsn
++ at=0/4758907
++ '[' -n 0/4758907 ']'
+++ lsn_num 0/4758907
+++ python3 -c 'a,b='\''0/4758907'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
+++ lsn_num 0/4758908
+++ python3 -c 'a,b='\''0/4758908'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
++ '[' 74811655 -ge 74811656 ']'
++ sleep 0.1
++ for _ in $(seq $(( ${4:-120} * 10 )))
+++ applied_lsn s1 public.items
+++ /tmp/claude-0/-home-user-pg-quicksilver/58894071-fd3a-5a32-94ab-41a0530826ff/scratchpad/bin/qs-query -mirror /var/lib/postgresql/qsy1/mirror/s1 -table public.items -lsn
++ at=0/4758907
++ '[' -n 0/4758907 ']'
+++ lsn_num 0/4758907
+++ python3 -c 'a,b='\''0/4758907'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
+++ lsn_num 0/4758908
+++ python3 -c 'a,b='\''0/4758908'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
++ '[' 74811655 -ge 74811656 ']'
++ sleep 0.1
++ for _ in $(seq $(( ${4:-120} * 10 )))
+++ applied_lsn s1 public.items
+++ /tmp/claude-0/-home-user-pg-quicksilver/58894071-fd3a-5a32-94ab-41a0530826ff/scratchpad/bin/qs-query -mirror /var/lib/postgresql/qsy1/mirror/s1 -table public.items -lsn
++ at=0/4758907
++ '[' -n 0/4758907 ']'
+++ lsn_num 0/4758907
+++ python3 -c 'a,b='\''0/4758907'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
+++ lsn_num 0/4758908
+++ python3 -c 'a,b='\''0/4758908'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
++ '[' 74811655 -ge 74811656 ']'
++ sleep 0.1
++ for _ in $(seq $(( ${4:-120} * 10 )))
+++ applied_lsn s1 public.items
+++ /tmp/claude-0/-home-user-pg-quicksilver/58894071-fd3a-5a32-94ab-41a0530826ff/scratchpad/bin/qs-query -mirror /var/lib/postgresql/qsy1/mirror/s1 -table public.items -lsn
++ at=0/4758907
++ '[' -n 0/4758907 ']'
+++ lsn_num 0/4758907
+++ python3 -c 'a,b='\''0/4758907'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
+++ lsn_num 0/4758908
+++ python3 -c 'a,b='\''0/4758908'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
++ '[' 74811655 -ge 74811656 ']'
++ sleep 0.1
++ for _ in $(seq $(( ${4:-120} * 10 )))
+++ applied_lsn s1 public.items
+++ /tmp/claude-0/-home-user-pg-quicksilver/58894071-fd3a-5a32-94ab-41a0530826ff/scratchpad/bin/qs-query -mirror /var/lib/postgresql/qsy1/mirror/s1 -table public.items -lsn
++ at=0/4758907
++ '[' -n 0/4758907 ']'
+++ lsn_num 0/4758907
+++ python3 -c 'a,b='\''0/4758907'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
+++ lsn_num 0/4758908
+++ python3 -c 'a,b='\''0/4758908'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
++ '[' 74811655 -ge 74811656 ']'
++ sleep 0.1
++ for _ in $(seq $(( ${4:-120} * 10 )))
+++ applied_lsn s1 public.items
+++ /tmp/claude-0/-home-user-pg-quicksilver/58894071-fd3a-5a32-94ab-41a0530826ff/scratchpad/bin/qs-query -mirror /var/lib/postgresql/qsy1/mirror/s1 -table public.items -lsn
++ at=0/4758907
++ '[' -n 0/4758907 ']'
+++ lsn_num 0/4758907
+++ python3 -c 'a,b='\''0/4758907'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
+++ lsn_num 0/4758908
+++ python3 -c 'a,b='\''0/4758908'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
++ '[' 74811655 -ge 74811656 ']'
++ sleep 0.1
++ for _ in $(seq $(( ${4:-120} * 10 )))
+++ applied_lsn s1 public.items
+++ /tmp/claude-0/-home-user-pg-quicksilver/58894071-fd3a-5a32-94ab-41a0530826ff/scratchpad/bin/qs-query -mirror /var/lib/postgresql/qsy1/mirror/s1 -table public.items -lsn
++ at=0/4758907
++ '[' -n 0/4758907 ']'
+++ lsn_num 0/4758907
+++ python3 -c 'a,b='\''0/4758907'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
+++ lsn_num 0/4758908
+++ python3 -c 'a,b='\''0/4758908'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
++ '[' 74811655 -ge 74811656 ']'
++ sleep 0.1
++ for _ in $(seq $(( ${4:-120} * 10 )))
+++ applied_lsn s1 public.items
+++ /tmp/claude-0/-home-user-pg-quicksilver/58894071-fd3a-5a32-94ab-41a0530826ff/scratchpad/bin/qs-query -mirror /var/lib/postgresql/qsy1/mirror/s1 -table public.items -lsn
++ at=0/4758907
++ '[' -n 0/4758907 ']'
+++ lsn_num 0/4758907
+++ python3 -c 'a,b='\''0/4758907'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
+++ lsn_num 0/4758908
+++ python3 -c 'a,b='\''0/4758908'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
++ '[' 74811655 -ge 74811656 ']'
++ sleep 0.1
++ for _ in $(seq $(( ${4:-120} * 10 )))
+++ applied_lsn s1 public.items
+++ /tmp/claude-0/-home-user-pg-quicksilver/58894071-fd3a-5a32-94ab-41a0530826ff/scratchpad/bin/qs-query -mirror /var/lib/postgresql/qsy1/mirror/s1 -table public.items -lsn
++ at=0/4758907
++ '[' -n 0/4758907 ']'
+++ lsn_num 0/4758907
+++ python3 -c 'a,b='\''0/4758907'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
+++ lsn_num 0/4758908
+++ python3 -c 'a,b='\''0/4758908'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
++ '[' 74811655 -ge 74811656 ']'
++ sleep 0.1
++ for _ in $(seq $(( ${4:-120} * 10 )))
+++ applied_lsn s1 public.items
+++ /tmp/claude-0/-home-user-pg-quicksilver/58894071-fd3a-5a32-94ab-41a0530826ff/scratchpad/bin/qs-query -mirror /var/lib/postgresql/qsy1/mirror/s1 -table public.items -lsn
++ at=0/4758907
++ '[' -n 0/4758907 ']'
+++ lsn_num 0/4758907
+++ python3 -c 'a,b='\''0/4758907'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
+++ lsn_num 0/4758908
+++ python3 -c 'a,b='\''0/4758908'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
++ '[' 74811655 -ge 74811656 ']'
++ sleep 0.1
++ for _ in $(seq $(( ${4:-120} * 10 )))
+++ applied_lsn s1 public.items
+++ /tmp/claude-0/-home-user-pg-quicksilver/58894071-fd3a-5a32-94ab-41a0530826ff/scratchpad/bin/qs-query -mirror /var/lib/postgresql/qsy1/mirror/s1 -table public.items -lsn
++ at=0/4758907
++ '[' -n 0/4758907 ']'
+++ lsn_num 0/4758907
+++ python3 -c 'a,b='\''0/4758907'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
+++ lsn_num 0/4758908
+++ python3 -c 'a,b='\''0/4758908'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
++ '[' 74811655 -ge 74811656 ']'
++ sleep 0.1
++ for _ in $(seq $(( ${4:-120} * 10 )))
+++ applied_lsn s1 public.items
+++ /tmp/claude-0/-home-user-pg-quicksilver/58894071-fd3a-5a32-94ab-41a0530826ff/scratchpad/bin/qs-query -mirror /var/lib/postgresql/qsy1/mirror/s1 -table public.items -lsn
++ at=0/4758907
++ '[' -n 0/4758907 ']'
+++ lsn_num 0/4758907
+++ python3 -c 'a,b='\''0/4758907'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
+++ lsn_num 0/4758908
+++ python3 -c 'a,b='\''0/4758908'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
++ '[' 74811655 -ge 74811656 ']'
++ sleep 0.1
++ for _ in $(seq $(( ${4:-120} * 10 )))
+++ applied_lsn s1 public.items
+++ /tmp/claude-0/-home-user-pg-quicksilver/58894071-fd3a-5a32-94ab-41a0530826ff/scratchpad/bin/qs-query -mirror /var/lib/postgresql/qsy1/mirror/s1 -table public.items -lsn
++ at=0/4758907
++ '[' -n 0/4758907 ']'
+++ lsn_num 0/4758907
+++ python3 -c 'a,b='\''0/4758907'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
+++ lsn_num 0/4758908
+++ python3 -c 'a,b='\''0/4758908'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
++ '[' 74811655 -ge 74811656 ']'
++ sleep 0.1
++ for _ in $(seq $(( ${4:-120} * 10 )))
+++ applied_lsn s1 public.items
+++ /tmp/claude-0/-home-user-pg-quicksilver/58894071-fd3a-5a32-94ab-41a0530826ff/scratchpad/bin/qs-query -mirror /var/lib/postgresql/qsy1/mirror/s1 -table public.items -lsn
++ at=0/4758907
++ '[' -n 0/4758907 ']'
+++ lsn_num 0/4758907
+++ python3 -c 'a,b='\''0/4758907'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
+++ lsn_num 0/4758908
+++ python3 -c 'a,b='\''0/4758908'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
++ '[' 74811655 -ge 74811656 ']'
++ sleep 0.1
++ for _ in $(seq $(( ${4:-120} * 10 )))
+++ applied_lsn s1 public.items
+++ /tmp/claude-0/-home-user-pg-quicksilver/58894071-fd3a-5a32-94ab-41a0530826ff/scratchpad/bin/qs-query -mirror /var/lib/postgresql/qsy1/mirror/s1 -table public.items -lsn
++ at=0/4758907
++ '[' -n 0/4758907 ']'
+++ lsn_num 0/4758907
+++ python3 -c 'a,b='\''0/4758907'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
+++ lsn_num 0/4758908
+++ python3 -c 'a,b='\''0/4758908'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
++ '[' 74811655 -ge 74811656 ']'
++ sleep 0.1
++ for _ in $(seq $(( ${4:-120} * 10 )))
+++ applied_lsn s1 public.items
+++ /tmp/claude-0/-home-user-pg-quicksilver/58894071-fd3a-5a32-94ab-41a0530826ff/scratchpad/bin/qs-query -mirror /var/lib/postgresql/qsy1/mirror/s1 -table public.items -lsn
++ at=0/4758907
++ '[' -n 0/4758907 ']'
+++ lsn_num 0/4758907
+++ python3 -c 'a,b='\''0/4758907'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
+++ lsn_num 0/4758908
+++ python3 -c 'a,b='\''0/4758908'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
++ '[' 74811655 -ge 74811656 ']'
++ sleep 0.1
++ for _ in $(seq $(( ${4:-120} * 10 )))
+++ applied_lsn s1 public.items
+++ /tmp/claude-0/-home-user-pg-quicksilver/58894071-fd3a-5a32-94ab-41a0530826ff/scratchpad/bin/qs-query -mirror /var/lib/postgresql/qsy1/mirror/s1 -table public.items -lsn
++ at=0/4758907
++ '[' -n 0/4758907 ']'
+++ lsn_num 0/4758907
+++ python3 -c 'a,b='\''0/4758907'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
+++ lsn_num 0/4758908
+++ python3 -c 'a,b='\''0/4758908'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
++ '[' 74811655 -ge 74811656 ']'
++ sleep 0.1
++ for _ in $(seq $(( ${4:-120} * 10 )))
+++ applied_lsn s1 public.items
+++ /tmp/claude-0/-home-user-pg-quicksilver/58894071-fd3a-5a32-94ab-41a0530826ff/scratchpad/bin/qs-query -mirror /var/lib/postgresql/qsy1/mirror/s1 -table public.items -lsn
++ at=0/4758907
++ '[' -n 0/4758907 ']'
+++ lsn_num 0/4758907
+++ python3 -c 'a,b='\''0/4758907'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
+++ lsn_num 0/4758908
+++ python3 -c 'a,b='\''0/4758908'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
++ '[' 74811655 -ge 74811656 ']'
++ sleep 0.1
++ for _ in $(seq $(( ${4:-120} * 10 )))
+++ applied_lsn s1 public.items
+++ /tmp/claude-0/-home-user-pg-quicksilver/58894071-fd3a-5a32-94ab-41a0530826ff/scratchpad/bin/qs-query -mirror /var/lib/postgresql/qsy1/mirror/s1 -table public.items -lsn
++ at=0/4758907
++ '[' -n 0/4758907 ']'
+++ lsn_num 0/4758907
+++ python3 -c 'a,b='\''0/4758907'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
+++ lsn_num 0/4758908
+++ python3 -c 'a,b='\''0/4758908'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
++ '[' 74811655 -ge 74811656 ']'
++ sleep 0.1
++ for _ in $(seq $(( ${4:-120} * 10 )))
+++ applied_lsn s1 public.items
+++ /tmp/claude-0/-home-user-pg-quicksilver/58894071-fd3a-5a32-94ab-41a0530826ff/scratchpad/bin/qs-query -mirror /var/lib/postgresql/qsy1/mirror/s1 -table public.items -lsn
++ at=0/4758907
++ '[' -n 0/4758907 ']'
+++ lsn_num 0/4758907
+++ python3 -c 'a,b='\''0/4758907'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
+++ lsn_num 0/4758908
+++ python3 -c 'a,b='\''0/4758908'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
++ '[' 74811655 -ge 74811656 ']'
++ sleep 0.1
++ for _ in $(seq $(( ${4:-120} * 10 )))
+++ applied_lsn s1 public.items
+++ /tmp/claude-0/-home-user-pg-quicksilver/58894071-fd3a-5a32-94ab-41a0530826ff/scratchpad/bin/qs-query -mirror /var/lib/postgresql/qsy1/mirror/s1 -table public.items -lsn
++ at=0/4758907
++ '[' -n 0/4758907 ']'
+++ lsn_num 0/4758907
+++ python3 -c 'a,b='\''0/4758907'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
+++ lsn_num 0/4758908
+++ python3 -c 'a,b='\''0/4758908'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
++ '[' 74811655 -ge 74811656 ']'
++ sleep 0.1
++ for _ in $(seq $(( ${4:-120} * 10 )))
+++ applied_lsn s1 public.items
+++ /tmp/claude-0/-home-user-pg-quicksilver/58894071-fd3a-5a32-94ab-41a0530826ff/scratchpad/bin/qs-query -mirror /var/lib/postgresql/qsy1/mirror/s1 -table public.items -lsn
++ at=0/4758907
++ '[' -n 0/4758907 ']'
+++ lsn_num 0/4758907
+++ python3 -c 'a,b='\''0/4758907'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
+++ lsn_num 0/4758908
+++ python3 -c 'a,b='\''0/4758908'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
++ '[' 74811655 -ge 74811656 ']'
++ sleep 0.1
++ for _ in $(seq $(( ${4:-120} * 10 )))
+++ applied_lsn s1 public.items
+++ /tmp/claude-0/-home-user-pg-quicksilver/58894071-fd3a-5a32-94ab-41a0530826ff/scratchpad/bin/qs-query -mirror /var/lib/postgresql/qsy1/mirror/s1 -table public.items -lsn
++ at=0/4758907
++ '[' -n 0/4758907 ']'
+++ lsn_num 0/4758907
+++ python3 -c 'a,b='\''0/4758907'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
+++ lsn_num 0/4758908
+++ python3 -c 'a,b='\''0/4758908'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
++ '[' 74811655 -ge 74811656 ']'
++ sleep 0.1
++ for _ in $(seq $(( ${4:-120} * 10 )))
+++ applied_lsn s1 public.items
+++ /tmp/claude-0/-home-user-pg-quicksilver/58894071-fd3a-5a32-94ab-41a0530826ff/scratchpad/bin/qs-query -mirror /var/lib/postgresql/qsy1/mirror/s1 -table public.items -lsn
++ at=0/4758907
++ '[' -n 0/4758907 ']'
+++ lsn_num 0/4758907
+++ python3 -c 'a,b='\''0/4758907'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
+++ lsn_num 0/4758908
+++ python3 -c 'a,b='\''0/4758908'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
++ '[' 74811655 -ge 74811656 ']'
++ sleep 0.1
++ for _ in $(seq $(( ${4:-120} * 10 )))
+++ applied_lsn s1 public.items
+++ /tmp/claude-0/-home-user-pg-quicksilver/58894071-fd3a-5a32-94ab-41a0530826ff/scratchpad/bin/qs-query -mirror /var/lib/postgresql/qsy1/mirror/s1 -table public.items -lsn
++ at=0/4758907
++ '[' -n 0/4758907 ']'
+++ lsn_num 0/4758907
+++ python3 -c 'a,b='\''0/4758907'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
+++ lsn_num 0/4758908
+++ python3 -c 'a,b='\''0/4758908'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
++ '[' 74811655 -ge 74811656 ']'
++ sleep 0.1
++ for _ in $(seq $(( ${4:-120} * 10 )))
+++ applied_lsn s1 public.items
+++ /tmp/claude-0/-home-user-pg-quicksilver/58894071-fd3a-5a32-94ab-41a0530826ff/scratchpad/bin/qs-query -mirror /var/lib/postgresql/qsy1/mirror/s1 -table public.items -lsn
++ at=0/4758907
++ '[' -n 0/4758907 ']'
+++ lsn_num 0/4758907
+++ python3 -c 'a,b='\''0/4758907'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
+++ lsn_num 0/4758908
+++ python3 -c 'a,b='\''0/4758908'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
++ '[' 74811655 -ge 74811656 ']'
++ sleep 0.1
++ for _ in $(seq $(( ${4:-120} * 10 )))
+++ applied_lsn s1 public.items
+++ /tmp/claude-0/-home-user-pg-quicksilver/58894071-fd3a-5a32-94ab-41a0530826ff/scratchpad/bin/qs-query -mirror /var/lib/postgresql/qsy1/mirror/s1 -table public.items -lsn
++ at=0/4758907
++ '[' -n 0/4758907 ']'
+++ lsn_num 0/4758907
+++ python3 -c 'a,b='\''0/4758907'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
+++ lsn_num 0/4758908
+++ python3 -c 'a,b='\''0/4758908'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
++ '[' 74811655 -ge 74811656 ']'
++ sleep 0.1
++ for _ in $(seq $(( ${4:-120} * 10 )))
+++ applied_lsn s1 public.items
+++ /tmp/claude-0/-home-user-pg-quicksilver/58894071-fd3a-5a32-94ab-41a0530826ff/scratchpad/bin/qs-query -mirror /var/lib/postgresql/qsy1/mirror/s1 -table public.items -lsn
++ at=0/4758907
++ '[' -n 0/4758907 ']'
+++ lsn_num 0/4758907
+++ python3 -c 'a,b='\''0/4758907'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
+++ lsn_num 0/4758908
+++ python3 -c 'a,b='\''0/4758908'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
++ '[' 74811655 -ge 74811656 ']'
++ sleep 0.1
++ for _ in $(seq $(( ${4:-120} * 10 )))
+++ applied_lsn s1 public.items
+++ /tmp/claude-0/-home-user-pg-quicksilver/58894071-fd3a-5a32-94ab-41a0530826ff/scratchpad/bin/qs-query -mirror /var/lib/postgresql/qsy1/mirror/s1 -table public.items -lsn
++ at=0/4758907
++ '[' -n 0/4758907 ']'
+++ lsn_num 0/4758907
+++ python3 -c 'a,b='\''0/4758907'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
+++ lsn_num 0/4758908
+++ python3 -c 'a,b='\''0/4758908'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
++ '[' 74811655 -ge 74811656 ']'
++ sleep 0.1
++ for _ in $(seq $(( ${4:-120} * 10 )))
+++ applied_lsn s1 public.items
+++ /tmp/claude-0/-home-user-pg-quicksilver/58894071-fd3a-5a32-94ab-41a0530826ff/scratchpad/bin/qs-query -mirror /var/lib/postgresql/qsy1/mirror/s1 -table public.items -lsn
++ at=0/4769F97
++ '[' -n 0/4769F97 ']'
+++ lsn_num 0/4769F97
+++ python3 -c 'a,b='\''0/4769F97'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
+++ lsn_num 0/4758908
+++ python3 -c 'a,b='\''0/4758908'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
++ '[' 74882967 -ge 74811656 ']'
++ return 0
++ echo 's1 caught up'
+s1 caught up
++ wait_mirror s2 public.items 0/4758908 300
++ local at
+++ seq 3000
++ for _ in $(seq $(( ${4:-120} * 10 )))
+++ applied_lsn s2 public.items
+++ /tmp/claude-0/-home-user-pg-quicksilver/58894071-fd3a-5a32-94ab-41a0530826ff/scratchpad/bin/qs-query -mirror /var/lib/postgresql/qsy1/mirror/s2 -table public.items -lsn
++ at=0/47591F7
++ '[' -n 0/47591F7 ']'
+++ lsn_num 0/47591F7
+++ python3 -c 'a,b='\''0/47591F7'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
+++ lsn_num 0/4758908
+++ python3 -c 'a,b='\''0/4758908'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
++ '[' 74813943 -ge 74811656 ']'
++ return 0
++ echo 's2 caught up'
+s2 caught up
++ sleep 2
++ echo '=== verify both mirrors'
+=== verify both mirrors
++ verify s1 public.items 5600
++ /tmp/claude-0/-home-user-pg-quicksilver/58894071-fd3a-5a32-94ab-41a0530826ff/scratchpad/bin/qs-verify -dsn 'postgres://postgres@localhost:5600/app?sslmode=disable' -mirror /var/lib/postgresql/qsy1/mirror/s1 -table public.items
+applied_lsn=0/4769F97
+mirror 36780 rows (checksum e24e2f62f4d5bbca)
+source 36780 rows (checksum e24e2f62f4d5bbca)
+MATCH
++ verify s2 public.items 5600
++ /tmp/claude-0/-home-user-pg-quicksilver/58894071-fd3a-5a32-94ab-41a0530826ff/scratchpad/bin/qs-verify -dsn 'postgres://postgres@localhost:5600/app?sslmode=disable' -mirror /var/lib/postgresql/qsy1/mirror/s2 -table public.items
+applied_lsn=0/47591F7
+mirror 36780 rows (checksum e24e2f62f4d5bbca)
+source 36780 rows (checksum e24e2f62f4d5bbca)
+MATCH
++ echo '=== slots on the primary at the end'
+=== slots on the primary at the end
++ sql 5600 postgres
++ cat
++ su postgres -s /bin/bash -c '/usr/lib/postgresql/17/bin/psql -X -A -t -q -v ON_ERROR_STOP=1 -h /var/lib/postgresql/qsy1/sock -p 5600 -U postgres -d postgres -f -'
+qs_v1_s1|t|t
+qs_v1_s2|t|t
+s1phys|t|t
+s2phys|t|t
++ echo '=== kill -9 and restart in the s2 log'
+=== kill -9 and restart in the s2 log
++ grep -n 'mirror starting\|mirror stopped\|resum\|new replication slot' /home/user/pg_quicksilver/.claude/worktrees/agent-a205c91741fc17a04/go/cmd/qs-mirror/validate/out/s2.log
++ cut -c1-220
+1:time=2026-11-26T16:09:44.609Z level=INFO msg="quicksilver mirror starting" cluster=qsv pod=s2 mode=shadow ingest=logical tables=[public.items] slo=15s slot=qs_v1_s2 configured_slot=qs_v1
+4:time=2026-11-26T16:09:44.739Z level=INFO msg="new replication slot; bootstrapping by snapshot" at=0/40352B0
+38:time=2026-11-26T16:10:06.945Z level=INFO msg="quicksilver mirror starting" cluster=qsv pod=s2 mode=shadow ingest=logical tables=[public.items] slo=15s slot=qs_v1_s2 configured_slot=qs_v1
+41:time=2026-11-26T16:10:06.988Z level=INFO msg="resuming from the existing slot" slot=qs_v1_s2 confirmed=0/4399D69
++ stop_sc s1
++ local p
+++ cat /home/user/pg_quicksilver/.claude/worktrees/agent-a205c91741fc17a04/go/cmd/qs-mirror/validate/out/s1.pid
++ p=26647
++ kill -TERM 26647
+++ seq 300
++ for _ in $(seq 300)
++ kill -0 26647
++ break
++ echo 'stopped sidecar s1 pid=26647'
+stopped sidecar s1 pid=26647
++ stop_sc s2
++ local p
+++ cat /home/user/pg_quicksilver/.claude/worktrees/agent-a205c91741fc17a04/go/cmd/qs-mirror/validate/out/s2.pid
++ p=29740
++ kill -TERM 29740
+++ seq 300
++ for _ in $(seq 300)
++ kill -0 29740
++ sleep 0.1
++ for _ in $(seq 300)
++ kill -0 29740
++ break
++ echo 'stopped sidecar s2 pid=29740'
+stopped sidecar s2 pid=29740
++ pg_down s1
++ pgu '/usr/lib/postgresql/17/bin/pg_ctl -D /var/lib/postgresql/qsy1/s1 -m fast -w stop'
++ pg_down s2
++ pgu '/usr/lib/postgresql/17/bin/pg_ctl -D /var/lib/postgresql/qsy1/s2 -m fast -w stop'
++ pg_down p5
++ pgu '/usr/lib/postgresql/17/bin/pg_ctl -D /var/lib/postgresql/qsy1/p5 -m fast -w stop'
