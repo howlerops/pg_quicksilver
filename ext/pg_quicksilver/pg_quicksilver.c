@@ -2745,13 +2745,12 @@ qs_recovery_blocked(void)
  * candidate at once and goes on to the heap, where it ends like any other.
  */
 static int
-qs_gate(List *heaps, XLogRecPtr now, bool reload, bool planning, double cost, char *why, size_t whylen)
+qs_gate(List *heaps, XLogRecPtr now, bool reload, double cost, char *why, size_t whylen)
 {
 	static uint32 wait_event = 0;
 	TimestampTz start = 0;
 	int			budget = -1;
 	bool		sleeping = false;
-	bool		dropped = false;
 	int			state;
 
 	qs_waited_ms = 0;
@@ -2792,12 +2791,14 @@ qs_gate(List *heaps, XLogRecPtr now, bool reload, bool planning, double cost, ch
 		{
 			budget = qs_wait_budget(cost);
 			/*
-			 * Only while planning, and only at the top level: there the
-			 * statement's snapshot can be dropped for the wait (below). An
-			 * executor's start holds a snapshot it cannot give up, so it does
-			 * not wait; neither does anything inside a subtransaction.
+			 * No wait while a snapshot is held. The planner and an executor's
+			 * start both run inside one, and PostgreSQL requires a portal's
+			 * snapshot to stay the active one (an assertion-enabled build
+			 * aborted when it was swapped during planning; docs/40, "What the
+			 * wait costs"), so the wait is not taken. Nor inside a
+			 * subtransaction.
 			 */
-			if (!planning || IsSubTransaction() || GetCurrentTransactionNestLevel() != 1)
+			if (ActiveSnapshotSet() || IsSubTransaction() || GetCurrentTransactionNestLevel() != 1)
 				budget = 0;
 			if (budget <= 0)
 				break;
@@ -2818,24 +2819,8 @@ qs_gate(List *heaps, XLogRecPtr now, bool reload, bool planning, double cost, ch
 			strlcat(why, "; not waiting: recovery on this standby is waiting on a conflict", whylen);
 			break;
 		}
-		/*
-		 * The wait holds no snapshot: the statement's is given up for the
-		 * sleep (its xmin is released, so the primary's vacuum and the
-		 * standby's replay are not held back by a statement that is only
-		 * waiting), and a new one is taken after it. The freshness check
-		 * that follows is against the position that snapshot can see, so
-		 * the mirror is checked against what the statement will read.
-		 */
-		dropped = ActiveSnapshotSet();
-		if (dropped)
-			PopActiveSnapshot();
 		CHECK_FOR_INTERRUPTS();
 		(void) ConditionVariableTimedSleep(&qs_shared->reported, Min((long) budget - elapsed, 5L), wait_event);
-		if (dropped)
-		{
-			PushActiveSnapshot(GetTransactionSnapshot());
-			now = qs_current_lsn();
-		}
 	}
 	if (sleeping)
 		ConditionVariableCancelSleep();
@@ -3752,7 +3737,7 @@ qs_begin_scan(CustomScanState *node, EState *estate, int eflags)
 			qs_gated_plan = NULL;
 			if (!gated)
 			{
-				state = qs_gate((List *) list_nth(cs->custom_private, 4), qs_current_lsn(), true, false,
+				state = qs_gate((List *) list_nth(cs->custom_private, 4), qs_current_lsn(), true,
 								cs->scan.plan.total_cost, stale, sizeof(stale));
 				if (state >= 0)
 					why = stale;
@@ -4216,7 +4201,7 @@ qs_decide(Query *orig, PlannedStmt *heap, const char *query_string, int cursorOp
 		/* the position this statement can see is taken once, however often it is decided */
 		if (qs_decide_now == InvalidXLogRecPtr)
 			qs_decide_now = qs_current_lsn();
-		stale = qs_gate(heaps, qs_decide_now, false, true, heap->planTree->total_cost, detail, sizeof(detail));
+		stale = qs_gate(heaps, qs_decide_now, false, heap->planTree->total_cost, detail, sizeof(detail));
 		if (stale >= 0)
 			QS_HEAP(stale, detail, NIL);
 		qs_gated_waited_ms = qs_waited_ms;

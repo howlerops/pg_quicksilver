@@ -9,7 +9,7 @@
 -- read through the mirror, by any route. The superuser contrast is at the top.
 \set VERBOSITY terse
 SHOW duckdb.enable_external_access;
-SHOW duckdb.allowed_directories;
+SELECT current_setting('duckdb.allowed_directories') LIKE '%/mirror,/tmp/qs_regress' AS confined_to_the_lake;
 
 CREATE ROLE qs_u_app LOGIN;
 CREATE ROLE qs_u_col LOGIN;

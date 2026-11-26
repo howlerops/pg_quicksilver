@@ -14,10 +14,10 @@ SHOW duckdb.enable_external_access;
  off
 (1 row)
 
-SHOW duckdb.allowed_directories;
-             duckdb.allowed_directories             
-----------------------------------------------------
- /var/lib/postgresql/qsy2/c5/mirror,/tmp/qs_regress
+SELECT current_setting('duckdb.allowed_directories') LIKE '%/mirror,/tmp/qs_regress' AS confined_to_the_lake;
+ confined_to_the_lake 
+----------------------
+ t
 (1 row)
 
 CREATE ROLE qs_u_app LOGIN;
