@@ -81,8 +81,31 @@ Three consequences, all deliberate:
 
 ### Verification
 
-See the section of `bench/scripts/serving_pg17.sh` for the denial list, and the commit
-that adds this section for the results on the patched build and on the stock package.
+Built from the `v1.2.2` tag on PostgreSQL 17.12 (Ubuntu), DuckDB 2.0, 4 vCPU. Run with
+`bench/scripts/serving_pg17.sh` (`PG_BIN`, `PG_LIBDIR` select the build; `STOCK=1` for the
+stock package):
+
+- Patched: `PASS`. An unprivileged role (no server-file roles) reads 196000 rows through
+  PostgreSQL, agreeing with the heap (count and sum). Denied, each with the refusal
+  observed: `/etc/passwd`, `PGDATA` files, path traversal, a symlink to `/etc/passwd`, a
+  symlink to `PGDATA`, `https://`, `ATTACH` of a database file outside, `COPY TO` a file in
+  the mirror (`Cannot write ... writes to local files are disabled`), `COPY TO` outside,
+  DuckDB-level `SET allowed_directories` and `enable_external_access` (`locked`), and
+  the PostgreSQL-level `SET duckdb.*` (`permission denied to set parameter`).
+- Stock 1.2.2 (the Debian package): the mirror read FAILS with
+  `File system LocalFileSystem has been disabled by configuration`, and every denial in the
+  list is refused for that same reason. The denials prove nothing on stock beyond that
+  refusal, which is the point: stock refuses all local reads, not only the ones outside the
+  directory.
+
+Routing extension regression (`make installcheck` of `ext/pg_quicksilver`, routing off):
+on the patched build and on the stock control the same seven of twelve tests fail, and the
+same 33 lines report `mirror is not fresh enough` where the expected output is `routed`.
+That is the environment (the sidecar reports ready, but routing does not see it as fresh),
+not the patch. The one difference attributable to the patch is in `unprivileged.out`: the
+expected text is stock's `LocalFileSystem has been disabled by configuration`, and the
+patched build says `Cannot access file "/etc/passwd" - file system operations are disabled
+by configuration`. Both are denials; the expected output has not been changed.
 
 ---
 

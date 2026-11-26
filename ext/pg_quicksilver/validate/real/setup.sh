@@ -20,7 +20,9 @@ set -uo pipefail
 . "$(dirname "$0")/env.sh"
 ROWS=${ROWS:-1000000}; LOCALE=${LOCALE:-icu-en-US}
 for so in pg_duckdb pg_quicksilver; do
-  [ -f "$($PG/pg_config --pkglibdir)/$so.so" ] || die "$so is not installed for $PG"
+  # PG_LIBDIR names a private prefix's lib: pg_config reports the compiled-in
+  # path, which in a private prefix is the system one (and may hold another build).
+  [ -f "${PG_LIBDIR:-$($PG/pg_config --pkglibdir)}/$so.so" ] || die "$so is not installed for $PG"
 done
 "$HERE/teardown.sh"
 mkdir -p "$BASE" /tmp/qs_regress; chown postgres:postgres "$BASE" /tmp/qs_regress    # /tmp/qs_regress: where errors.sql keeps a mirror it can break
