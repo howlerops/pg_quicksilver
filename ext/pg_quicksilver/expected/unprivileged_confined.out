@@ -207,7 +207,7 @@ EXPLAIN (VERBOSE, COSTS OFF) SELECT count(*), sum(amount), min(id), max(id) FROM
                            Recheck Cond: (orders.customer_id = 1)
                            ->  Bitmap Index Scan on orders_customer_idx
                                  Index Cond: (orders.customer_id = 1)
- Query Identifier: 3890617103146614947
+ Query Identifier: 2421752078444121478
 (37 rows)
 
 SELECT usename FROM pg_stat_activity WHERE pid = pg_backend_pid();

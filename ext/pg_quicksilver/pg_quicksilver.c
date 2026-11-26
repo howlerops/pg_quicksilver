@@ -315,8 +315,39 @@ typedef struct QsMirror
 	int			natts;
 	bool	   *col_ok;			/* [attno - 1] */
 	char	  **col_why;
-	Query	   *subquery;		/* SELECT <heap columns> FROM mirror, rewritten */
+	List	   *joins;			/* QsJoinExp: the companions the subquery carries */
+	Query	   *subquery;		/* SELECT <heap columns> [, companions] FROM mirror, rewritten */
 } QsMirror;
+
+/* One row of quicksilver.join_domains (all of them are kept, in qs_cache_cxt). */
+typedef struct QsJoinRow
+{
+	Oid			heap;
+	char	   *column;
+	char	   *domain;
+	char	   *companion;
+} QsJoinRow;
+
+/* A companion the mirror's subquery exposes: resno is its target entry, 0 if none. */
+typedef struct QsJoinExp
+{
+	AttrNumber	attno;			/* the heap column */
+	char	   *domain;
+	char	   *companion;
+	AttrNumber	resno;
+} QsJoinExp;
+
+/* An equality of two uuid columns of mirrored relations found in the join tree. */
+typedef struct QsJoinCand
+{
+	OpExpr	   *op;
+	int			rta;
+	AttrNumber	atta;
+	QsMirror   *ma;
+	int			rtb;
+	AttrNumber	attb;
+	QsMirror   *mb;
+} QsJoinCand;
 
 typedef struct QsWatch
 {
@@ -340,6 +371,28 @@ static bool qs_installed = false;	/* the extension exists in this database */
 static Oid	qs_mirrors_relid = InvalidOid;
 static Oid	qs_allowlist_relid = InvalidOid;
 static Oid	qs_lakes_relid = InvalidOid;
+
+/*
+ * quicksilver.join_domains: the uuid columns that are compared for equality
+ * across tables, and the companion column the sidecar gives each (docs/16,
+ * "Join domains"). A rewrite is only ever made from these rows, and only where
+ * both columns are in the same domain: then the mirror's equality of the two
+ * companions is the heap's equality of the two uuids (the companions are a
+ * bijection of the values, and NULL maps to NULL). Optional: an installation
+ * without the table has no join rewrites.
+ */
+static Oid	qs_joins_relid = InvalidOid;
+static List *qs_join_rows = NIL;	/* QsJoinRow, in qs_cache_cxt */
+static bool qs_join_domains = true;	/* quicksilver.join_domains */
+static int	qs_join_keys_now = 0;	/* rewritten by the decision being made: EXPLAIN */
+
+/*
+ * The one operator the rewrite compares companions with: =(bigint,bigint), and
+ * the default =(uuid,uuid) it replaces. Built-in OIDs; the allowlist must hold
+ * the first (qs_join_apply checks it), and a rewrite is only of the second.
+ */
+#define QS_OID_INT8EQ	410		/* the operator =(bigint,bigint); its function int8eq is 467 */
+#define QS_OID_UUIDEQ	2972	/* the operator =(uuid,uuid) */
 
 /*
  * A DuckLake the mirror relations read (quicksilver.lakes). pg_duckdb's DuckDB
@@ -542,7 +595,7 @@ qs_relcache_cb(Datum arg, Oid relid)
 	if (!qs_cache_valid)
 		return;
 	if (relid == InvalidOid || relid == qs_mirrors_relid || relid == qs_allowlist_relid ||
-		relid == qs_lakes_relid)
+		relid == qs_lakes_relid || relid == qs_joins_relid)
 		qs_cache_valid = false;
 	else if (qs_watch_hash && hash_search(qs_watch_hash, &relid, HASH_FIND, NULL))
 		qs_cache_valid = false;
@@ -811,6 +864,8 @@ qs_build_mirror(QsMirror *m)
 	Query	   *q;
 	MemoryContext old;
 	ListCell   *lc;
+	List	   *joinx = NIL;	/* QsJoinExp: the companions this subquery is to expose */
+	int			ncomp;
 
 	m->usable = false;
 	heap = try_table_open(m->heap, AccessShareLock);
@@ -920,6 +975,49 @@ qs_build_mirror(QsMirror *m)
 		else
 			appendStringInfo(&sql, "m.%s", quote_identifier(NameStr(att->attname)));
 	}
+	/*
+	 * The companions of the join domain columns (quicksilver.join_domains)
+	 * that this mirror carries: a uuid column of this heap that is in the
+	 * registry, whose companion the mirror relation has as a bigint. They
+	 * follow the heap's columns, so every heap column keeps its position and
+	 * nothing that reads by position (the substitution, the result check)
+	 * sees a difference. Only a companion the mirror has is exposed.
+	 */
+	ncomp = 0;
+	foreach(lc, qs_join_rows)
+	{
+		QsJoinRow  *jr = (QsJoinRow *) lfirst(lc);
+		AttrNumber	hattno;
+		AttrNumber	cattno;
+		Oid			ctype;
+		int32		ctypmod;
+		Oid			ccoll;
+		MemoryContext cxt;
+
+		if (jr->heap != m->heap)
+			continue;
+		hattno = get_attnum(m->heap, jr->column);
+		if (hattno <= 0 || !m->col_ok[hattno - 1] || TupleDescAttr(desc, hattno - 1)->atttypid != UUIDOID)
+			continue;
+		cattno = get_attnum(m->mirror, jr->companion);
+		if (cattno <= 0)
+			continue;
+		get_atttypetypmodcoll(m->mirror, cattno, &ctype, &ctypmod, &ccoll);
+		if (ctype != INT8OID)
+			continue;
+		appendStringInfo(&sql, ", m.%s AS %s", quote_identifier(jr->companion), quote_identifier(jr->companion));
+		cxt = MemoryContextSwitchTo(qs_cache_cxt);
+		{
+			QsJoinExp  *je = palloc0(sizeof(QsJoinExp));
+
+			je->attno = hattno;
+			je->domain = pstrdup(jr->domain);
+			je->companion = pstrdup(jr->companion);
+			joinx = lappend(joinx, je);
+		}
+		MemoryContextSwitchTo(cxt);
+		ncomp++;
+	}
 	if (desc->natts == 0)
 		appendStringInfoString(&sql, "NULL::int4");
 	appendStringInfo(&sql, " FROM %s m",
@@ -939,7 +1037,7 @@ qs_build_mirror(QsMirror *m)
 		if (list_length(rewritten) != 1)
 			elog(ERROR, "mirror view rewrites to %d statements", list_length(rewritten));
 		q = linitial_node(Query, rewritten);
-		if (q->commandType != CMD_SELECT || list_length(q->targetList) != Max(desc->natts, 1))
+		if (q->commandType != CMD_SELECT || list_length(q->targetList) != Max(desc->natts, 1) + ncomp)
 			elog(ERROR, "mirror view does not rewrite to a plain SELECT");
 	}
 	PG_CATCH();
@@ -975,6 +1073,26 @@ qs_build_mirror(QsMirror *m)
 	}
 
 	/*
+	 * The companions are the last ncomp target entries, in the order they were
+	 * written. Each is checked by name and type before it is believed.
+	 */
+	{
+		int			k = 0;
+		ListCell   *lj;
+
+		foreach(lj, joinx)
+		{
+			QsJoinExp  *je = (QsJoinExp *) lfirst(lj);
+			TargetEntry *tle;
+
+			tle = list_nth_node(TargetEntry, q->targetList, Max(desc->natts, 1) + k);
+			if (tle->resname && strcmp(tle->resname, je->companion) == 0 && exprType((Node *) tle->expr) == INT8OID)
+				je->resno = tle->resno;
+			k++;
+		}
+	}
+
+	/*
 	 * The substituted subquery reads the mirror with the mirror owner's
 	 * rights, as a view would: users are not expected to hold any privilege
 	 * on the mirror relation itself. What they may read is decided by the
@@ -989,10 +1107,66 @@ qs_build_mirror(QsMirror *m)
 	}
 	old = MemoryContextSwitchTo(qs_cache_cxt);
 	m->subquery = copyObject(q);
+	m->joins = NIL;
+	foreach(lc, joinx)
+	{
+		QsJoinExp  *je = (QsJoinExp *) lfirst(lc);
+
+		if (je->resno > 0)
+			m->joins = lappend(m->joins, je);
+	}
 	MemoryContextSwitchTo(old);
 	m->usable = true;
 out:
 	table_close(heap, AccessShareLock);
+}
+
+/* join_domains columns: heap, column_name, domain, companion */
+static void
+qs_load_join_domains(Snapshot snap)
+{
+	Relation	rel;
+	TableScanDesc scan;
+	TupleTableSlot *slot;
+	MemoryContext old;
+
+	if (!OidIsValid(qs_joins_relid))
+		return;
+	rel = table_open(qs_joins_relid, AccessShareLock);
+	if (RelationGetDescr(rel)->natts != 4)
+	{
+		qs_problem("join_domains: unexpected table shape");
+		table_close(rel, AccessShareLock);
+		return;
+	}
+	scan = table_beginscan(rel, snap, 0, NULL);
+	slot = table_slot_create(rel, NULL);
+	old = MemoryContextSwitchTo(qs_cache_cxt);
+	while (table_scan_getnextslot(scan, ForwardScanDirection, slot))
+	{
+		bool		n1,
+					n2,
+					n3,
+					n4;
+		Oid			heap = DatumGetObjectId(slot_getattr(slot, 1, &n1));
+		Name		column = DatumGetName(slot_getattr(slot, 2, &n2));
+		Name		domain = DatumGetName(slot_getattr(slot, 3, &n3));
+		Name		companion = DatumGetName(slot_getattr(slot, 4, &n4));
+		QsJoinRow  *r;
+
+		if (n1 || n2 || n3 || n4 || !OidIsValid(heap))
+			continue;
+		r = palloc(sizeof(QsJoinRow));
+		r->heap = heap;
+		r->column = pstrdup(NameStr(*column));
+		r->domain = pstrdup(NameStr(*domain));
+		r->companion = pstrdup(NameStr(*companion));
+		qs_join_rows = lappend(qs_join_rows, r);
+	}
+	MemoryContextSwitchTo(old);
+	ExecDropSingleTupleTableSlot(slot);
+	table_endscan(scan);
+	table_close(rel, AccessShareLock);
 }
 
 /* mirrors columns: heap, mirror, applied_lsn, max_lag_bytes, enabled, finite_columns */
@@ -1607,6 +1781,8 @@ qs_ensure_loaded(void)
 	qs_load_problems = NIL;
 	qs_installed = false;
 	qs_mirrors_relid = qs_allowlist_relid = qs_lakes_relid = InvalidOid;
+	qs_joins_relid = InvalidOid;
+	qs_join_rows = NIL;
 	qs_lakes = NIL;
 	qs_lakes_attached = false;
 	if (qs_cache_cxt)
@@ -1645,6 +1821,8 @@ qs_ensure_loaded(void)
 		return;
 	qs_installed = true;
 	qs_lakes_relid = qs_own_table(nsp, ext, "lakes");
+	/* optional: an extension without it simply has no join rewrites */
+	qs_joins_relid = qs_own_table(nsp, ext, "join_domains");
 
 	/*
 	 * Names in the allowlist are resolved with pg_catalog alone on the path,
@@ -1669,6 +1847,7 @@ qs_ensure_loaded(void)
 								 GUC_ACTION_SAVE, true, 0, false);
 		snap = RegisterSnapshot(GetLatestSnapshot());
 		qs_load_allowlist(snap);
+		qs_load_join_domains(snap);		/* before the mirrors: qs_build_mirror exposes their companions */
 		qs_load_mirrors(snap);
 		qs_load_lakes(snap);
 		UnregisterSnapshot(snap);
@@ -3086,6 +3265,7 @@ typedef struct QsSubst
 {
 	ParamListInfo params;
 	bool		failed;
+	bool		companions;		/* keep the join domain companions in the subqueries (qs_join_candidates) */
 } QsSubst;
 
 static void
@@ -3158,6 +3338,30 @@ qs_subst_query(Query *q, QsSubst *s)
 			}
 			rte->rtekind = RTE_SUBQUERY;
 			rte->subquery = copyObject(m->subquery);
+			/*
+			 * The companions follow the heap's columns in the subquery, so they
+			 * are named after them here: whatever reads the alias list by
+			 * position (EXPLAIN's deparse) then finds every column the join
+			 * rewrite refers to. Anything else and the statement stays on the heap.
+			 */
+			if (m->joins != NIL && !s->companions)
+			{
+				/* nothing in this statement joins on them: the subquery is the heap's columns, as before */
+				rte->subquery->targetList = list_truncate(rte->subquery->targetList, m->natts);
+			}
+			else if (m->joins != NIL)
+			{
+				ListCell   *lj;
+
+				if (rte->eref == NULL || list_length(rte->eref->colnames) != m->natts)
+				{
+					s->failed = true;
+					return;
+				}
+				foreach(lj, m->joins)
+					rte->eref->colnames = lappend(rte->eref->colnames,
+												  makeString(pstrdup(((QsJoinExp *) lfirst(lj))->companion)));
+			}
 			rte->security_barrier = false;
 			rte->relid = InvalidOid;
 			rte->relkind = 0;
@@ -3258,6 +3462,7 @@ static CustomExecMethods qs_exec_methods;
 typedef struct QsScanState
 {
 	CustomScanState css;
+	int			join_keys;		/* join keys rewritten to companions in the mirror statement */
 	PlanState  *mirror_ps;
 	PlanState  *heap_ps;
 	Plan	   *mirror_plan;
@@ -3510,6 +3715,8 @@ qs_combine(PlannedStmt *heap, PlannedStmt *mirror, uint64 queryid, const char *r
 	cs->custom_scan_tlist = scan_tlist;
 	cs->custom_private = list_make5(attnos, convs, makeString(pstrdup(reason)),
 									makeString(psprintf(UINT64_FORMAT, queryid)), heap_relids);
+	/* sixth: the join keys rewritten to companions (EXPLAIN) */
+	cs->custom_private = lappend(cs->custom_private, makeInteger(qs_join_keys_now));
 	cs->methods = &qs_scan_methods;
 
 	heap->planTree = (Plan *) cs;
@@ -3930,6 +4137,7 @@ qs_begin_scan(CustomScanState *node, EState *estate, int eflags)
 		i++;
 	}
 	st->reason = strVal(lthird(cs->custom_private));
+	st->join_keys = list_length(cs->custom_private) > 5 ? intVal(list_nth(cs->custom_private, 5)) : 0;
 	st->queryid = strtou64(strVal(lfourth(cs->custom_private)), NULL, 10);
 	st->side = 0;
 
@@ -4203,6 +4411,8 @@ qs_explain_scan(CustomScanState *node, List *ancestors, ExplainState *es)
 		ExplainPropertyText("Quicksilver", "mirror", es);
 		if (es->costs || es->verbose)
 			ExplainPropertyText("Quicksilver Reason", st->reason, es);
+		if (st->join_keys > 0)
+			ExplainPropertyText("Join keys", psprintf("%d rewritten to companions", st->join_keys), es);
 		if (st->explain_only)
 		{
 			if (st->mirror_ps && (es->costs || es->verbose))
@@ -4228,6 +4438,169 @@ qs_explain_scan(CustomScanState *node, List *ancestors, ExplainState *es)
 		if ((es->costs || es->verbose || st->mirror_failed) && st->fallback[0])
 			ExplainPropertyText("Quicksilver Detail", st->fallback, es);
 	}
+}
+
+/* ---------------------------------------------------------------- join keys */
+
+/*
+ * The companion a mirror exposes for the heap column attno, if any. A uuid
+ * equality is rewritten only when both of its columns have one, in the same
+ * domain (quicksilver.join_domains; docs/16).
+ */
+static QsJoinExp *
+qs_join_exposed(QsMirror *m, AttrNumber attno)
+{
+	ListCell   *lc;
+
+	if (m == NULL || !m->usable)
+		return NULL;
+	foreach(lc, m->joins)
+	{
+		QsJoinExp  *je = (QsJoinExp *) lfirst(lc);
+
+		if (je->attno == attno && je->resno > 0)
+			return je;
+	}
+	return NULL;
+}
+
+/*
+ * One conjunct of a join condition, or of a WHERE clause (an implicit join):
+ * "A.x = B.y" with the default uuid equality, both sides plain columns of two
+ * different relations of this query that are mirrored. Only AND is looked
+ * into; an OR, a NOT, a sublink or a cast is not a conjunct this rewrites.
+ */
+static void
+qs_join_conjunct(Query *q, Node *node, List **out)
+{
+	ListCell   *lc;
+	OpExpr	   *op;
+	Var		   *a,
+			   *b;
+	RangeTblEntry *ra,
+			   *rb;
+	QsMirror   *ma,
+			   *mb;
+	QsJoinCand *c;
+
+	if (node == NULL)
+		return;
+	if (IsA(node, BoolExpr))
+	{
+		BoolExpr   *be = (BoolExpr *) node;
+
+		if (be->boolop == AND_EXPR)
+			foreach(lc, be->args)
+				qs_join_conjunct(q, (Node *) lfirst(lc), out);
+		return;
+	}
+	if (!IsA(node, OpExpr))
+		return;
+	op = (OpExpr *) node;
+	if (op->opno != QS_OID_UUIDEQ || list_length(op->args) != 2 ||
+		!IsA(linitial(op->args), Var) || !IsA(lsecond(op->args), Var))
+		return;
+	a = (Var *) linitial(op->args);
+	b = (Var *) lsecond(op->args);
+	if (a->varlevelsup != 0 || b->varlevelsup != 0 || a->varattno <= 0 || b->varattno <= 0 ||
+		a->vartype != UUIDOID || b->vartype != UUIDOID || a->varno == b->varno)
+		return;
+	if (a->varno < 1 || a->varno > list_length(q->rtable) || b->varno < 1 || b->varno > list_length(q->rtable))
+		return;
+	ra = rt_fetch(a->varno, q->rtable);
+	rb = rt_fetch(b->varno, q->rtable);
+	if (ra->rtekind != RTE_RELATION || rb->rtekind != RTE_RELATION)
+		return;
+	ma = qs_mirror_lookup(ra->relid);
+	mb = qs_mirror_lookup(rb->relid);
+	if (ma == NULL || mb == NULL || ma->joins == NIL || mb->joins == NIL)
+		return;
+	c = palloc0(sizeof(QsJoinCand));
+	c->op = op;
+	c->rta = a->varno;
+	c->atta = a->varattno;
+	c->ma = ma;
+	c->rtb = b->varno;
+	c->attb = b->varattno;
+	c->mb = mb;
+	*out = lappend(*out, c);
+}
+
+/* The join tree of the query's own level: FROM items and the conditions of their joins. */
+static void
+qs_join_jointree(Query *q, Node *node, List **out)
+{
+	ListCell   *lc;
+
+	if (node == NULL)
+		return;
+	if (IsA(node, FromExpr))
+	{
+		FromExpr   *f = (FromExpr *) node;
+
+		foreach(lc, f->fromlist)
+			qs_join_jointree(q, (Node *) lfirst(lc), out);
+		qs_join_conjunct(q, f->quals, out);
+	}
+	else if (IsA(node, JoinExpr))
+	{
+		JoinExpr   *j = (JoinExpr *) node;
+
+		qs_join_jointree(q, j->larg, out);
+		qs_join_jointree(q, j->rarg, out);
+		qs_join_conjunct(q, j->quals, out);
+	}
+}
+
+/*
+ * Every query level's own join tree: the top level, and the subqueries in its
+ * FROM clause, each with its own range table (a Var is one level's column).
+ * Sublinks are not looked into: a semi-join from IN or EXISTS is left alone.
+ */
+static void
+qs_join_query(Query *q, List **out)
+{
+	ListCell   *lc;
+
+	qs_join_jointree(q, (Node *) q->jointree, out);
+	foreach(lc, q->rtable)
+	{
+		RangeTblEntry *rte = lfirst_node(RangeTblEntry, lc);
+
+		if (rte->rtekind == RTE_SUBQUERY && rte->subquery != NULL)
+			qs_join_query(rte->subquery, out);
+	}
+}
+
+/*
+ * Rewrites the candidates in the substituted statement. Called after
+ * qs_subst_query, so the mirror subqueries exist and the candidates' OpExpr
+ * nodes are still the ones in that statement. Returns how many were rewritten.
+ */
+static int
+qs_join_apply(List *cands)
+{
+	ListCell   *lc;
+	int			n = 0;
+
+	/* the comparison the rewrite uses must itself be one the allowlist holds */
+	if (!qs_allow_lookup(QA_OPER, QS_OID_INT8EQ, InvalidOid))
+		return 0;
+	foreach(lc, cands)
+	{
+		QsJoinCand *c = (QsJoinCand *) lfirst(lc);
+		QsJoinExp  *ea = qs_join_exposed(c->ma, c->atta);
+		QsJoinExp  *eb = qs_join_exposed(c->mb, c->attb);
+
+		if (ea == NULL || eb == NULL || strcmp(ea->domain, eb->domain) != 0)
+			continue;
+		c->op->opno = QS_OID_INT8EQ;
+		c->op->opfuncid = get_opcode(QS_OID_INT8EQ);
+		c->op->args = list_make2(makeVar(c->rta, ea->resno, INT8OID, -1, InvalidOid, 0),
+								 makeVar(c->rtb, eb->resno, INT8OID, -1, InvalidOid, 0));
+		n++;
+	}
+	return n;
 }
 
 /* ---------------------------------------------------------------- the decision */
@@ -4297,6 +4670,8 @@ qs_decide(Query *orig, PlannedStmt *heap, const char *query_string, int cursorOp
 	QsElev		elev;
 	List	   *mirror_relids = NIL;
 	List	   *heap_relids = NIL;
+	List	   *join_cands = NIL;
+	int			join_rewrites = 0;
 
 	detail[0] = '\0';
 	qs_cost(heap, &cost);
@@ -4494,7 +4869,18 @@ qs_decide(Query *orig, PlannedStmt *heap, const char *query_string, int cursorOp
 	mq = copyObject(orig);
 	memset(&subst, 0, sizeof(subst));
 	subst.params = boundParams;
+	/*
+	 * The equalities of uuid columns in a join that the join domains can
+	 * compare as companions. Found here, in the copy, before the substitution
+	 * changes the range table; rewritten after it, when the mirror subqueries
+	 * carry the companions.
+	 */
+	if (qs_join_domains && OidIsValid(qs_joins_relid) && qs_join_rows != NIL && mq->jointree != NULL)
+		qs_join_query(mq, &join_cands);
+	subst.companions = join_cands != NIL;
 	qs_subst_query(mq, &subst);
+	if (!subst.failed && join_cands != NIL)
+		join_rewrites = qs_join_apply(join_cands);
 	if (!subst.failed && w.has_extern_param)
 		mq = (Query *) qs_param_mutator((Node *) mq, &subst);
 	if (subst.failed || generation != qs_load_count || !qs_cache_valid)
@@ -4505,6 +4891,7 @@ qs_decide(Query *orig, PlannedStmt *heap, const char *query_string, int cursorOp
 		QS_HEAP(QR_REGISTRY_CHANGED, NULL, NIL);
 	}
 	qs_relids_walker((Node *) mq, &mirror_relids);
+	qs_join_keys_now = join_rewrites;
 	foreach(lc, w.mirrors)
 		heap_relids = lappend_oid(heap_relids, ((QsMirror *) lfirst(lc))->heap);
 
@@ -4680,6 +5067,8 @@ qs_planner(Query *parse, const char *query_string, int cursorOptions, ParamListI
 	if (installed && heap->commandType == CMD_SELECT && heap->utilityStmt == NULL)
 	{
 		heap->relationOids = list_append_unique_oid(heap->relationOids, qs_mirrors_relid);
+		if (OidIsValid(qs_joins_relid))
+			heap->relationOids = list_append_unique_oid(heap->relationOids, qs_joins_relid);
 		if (orig != NULL)
 		{
 			heap->relationOids = list_append_unique_oid(heap->relationOids, qs_allowlist_relid);
@@ -5358,6 +5747,10 @@ _PG_init(void)
 							 "(nothing written) and no savepoint open. on: the same test. The mirror's answer is taken whole when the statement "
 							 "starts and DuckDB's transaction is ended with it, so a later SAVEPOINT, write or EXPLAIN finds pg_duckdb idle.",
 							 &qs_route_in_xact, QS_XACT_SAFE, qs_route_in_xact_options, PGC_USERSET, 0, NULL, NULL, NULL);
+	DefineCustomBoolVariable("quicksilver.join_domains",
+							 "Compare uuid join keys as the sidecar's integer companions where both columns are in one join domain.",
+							 "off disables the rewrite entirely; the mirror then compares the uuid columns themselves.",
+							 &qs_join_domains, true, PGC_USERSET, 0, NULL, NULL, NULL);
 	DefineCustomBoolVariable("quicksilver.prefer_custom_plans",
 							 "Keep the plan cache planning routable prepared statements with their parameter values.", NULL,
 							 &qs_prefer_custom, true, PGC_USERSET, 0, NULL, NULL, NULL);
