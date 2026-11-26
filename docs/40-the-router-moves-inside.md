@@ -883,7 +883,7 @@ regression files pass, and the run above.
 
 ### What an image needs, now
 
-1. pg_duckdb 1.2.0 and `pg_quicksilver` in the PostgreSQL image
+1. pg_duckdb 1.2.2 (the pin; the run above was 1.2.0) and `pg_quicksilver` in the PostgreSQL image
    (`deploy/Dockerfile`, target `postgres`), and
    `shared_preload_libraries = 'pg_duckdb,pg_quicksilver'`, in that order.
 2. `CREATE EXTENSION pg_duckdb; CREATE EXTENSION pg_quicksilver;` in the

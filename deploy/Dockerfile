@@ -106,7 +106,7 @@ ENTRYPOINT ["/qs-mirror"]
 # in the server. Routing runs inside PostgreSQL, so the image the Cluster's
 # imageName points at has to carry
 #
-#   pg_duckdb        the engine that reads the mirror (1.2.0, DuckDB 2.0.0)
+#   pg_duckdb        the engine that reads the mirror (1.2.2, DuckDB 2.0.1)
 #   pg_quicksilver   ext/pg_quicksilver, built here against the same minor
 #   ducklake, sqlite DuckDB's own extensions, which every backend that routes
 #                    loads. pg_duckdb would otherwise fetch them from

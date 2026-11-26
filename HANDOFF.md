@@ -395,7 +395,7 @@ Two workflows on a pull request, and what each job is evidence of.
 | `lint` | `actionlint` on the workflows, `hadolint` on the Dockerfile, `shellcheck` on the scripts CI runs and any a pull request changes |
 | `images` | all three images build; the operand image passes its offline self-check during the build and again as a container with no network and a read-only root |
 | `integration` | the suite against PostgreSQL 17; `bench/exactness --selfcheck` |
-| `extension` | `make installcheck` for `pg_quicksilver` against PostgreSQL 17 with pg_duckdb 1.2.0; DuckDB's extensions load under `unshare -n`; the cluster test's slot, verify, routing, halt and REBUILD sections against a real primary, standby and sidecar |
+| `extension` | `make installcheck` for `pg_quicksilver` against PostgreSQL 17 with pg_duckdb 1.2.2; DuckDB's extensions load under `unshare -n`; the cluster test's slot, verify, routing, halt and REBUILD sections against a real primary, standby and sidecar |
 | `serving` | the patched pg_duckdb, built and served through (unchanged) |
 
 **`cluster-e2e`**, on a pull request to `main` that touches something that ends
