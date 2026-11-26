@@ -537,6 +537,12 @@ this; moving `mirrorPath` to one would.
 | `serveWithHaltedTables` | `false` | `QS_SERVE_WITH_HALTED_TABLES` | keep the Pod ready with a halted table. With the extension that table is answered from the heap on that Pod, so there this is safe |
 | `extension` | `auto` | `QS_EXTENSION` | `auto`: register mirror relations and report applied LSNs if `pg_quicksilver` is installed, do nothing and say so once if it is not. `off`: never touch it |
 | `sidecarMemory` | `1Gi` | request, limit, `GOMEMLIMIT` | see below |
+| `slotJanitor` | on | `QS_SLOT_JANITOR` | `off` stops the sidecar dropping the replication slots of Pods that are gone; their WAL is then kept until someone drops them |
+| `slotJanitorAfter` | `6h` | `QS_SLOT_JANITOR_AFTER` | inactivity before such a slot is dropped; at least `1m` |
+| `autoRebuildLegacy` | `"false"` | `QS_AUTO_REBUILD_LEGACY` | rebuild a table holding data from an older writer at start (see *Files from an older sidecar*) |
+| `bloomColumns` | the sidecar's default | `QS_BLOOM_COLUMNS` | the bloom filter columns, in the sidecar's spelling (see *Bloom filters*) |
+| `clusterBy` | the sidecar's default | `QS_CLUSTER_BY` | the clustering column per table, `schema.table=column,…`, or `none` for a table that should not be clustered |
+| `numericScale` | unset | `QS_NUMERIC_SCALE` | the opt-in decimal scale for `numeric` columns (see *`numeric` without a precision*) |
 
 A value that is not a boolean, a duration or a quantity is refused at
 admission; the sidecar itself would have read it as off.
@@ -574,29 +580,44 @@ a primary (which has no mirror) is untouched and answers from the heap.
 
 ### Sizing `sidecarMemory`
 
-The default was 256Mi and is now **1Gi**. 256Mi came from the key index at
-readiness, 90 to 130 bytes of RSS per live row (METRICS.md). The peak is
-somewhere else. `bench/engine_compare/merged_build/out/p2_summary.txt`, 10.5M
-rows (10M orders, 500k customers), the current build:
+The default is **1Gi**. It was 256Mi, sized from the key index at readiness
+(90 to 130 bytes of RSS per live row, METRICS.md). A limit has to hold the
+peak, and the peak is not at readiness: it is during a catch-up and a base
+rewrite together. A sidecar killed in the middle of a rewrite restarts,
+rewrites again and is killed again.
 
-| | peak RSS | per row |
-|---|---|---|
-| initial snapshot and key index | 1,395 MB | 133 bytes |
-| catching up 3.5 GB of WAL, then the idle base rewrite | 2,972 and 3,040 MB (two runs) | 290 bytes |
+**The rule, measured at 3M rows only:** budget **110 bytes per live row**.
 
-A limit is for the peak: a sidecar that is killed in the middle of a base
-rewrite restarts, rewrites again and is killed again. So:
+The measurement: a table of 3,000,000 narrow rows with a UUID primary key, run
+under a cgroup v1 memory limit with `GOMEMLIMIT` at 80% of it, as the plugin
+sets it. Each run was an initial snapshot and key index, then a 200,000-change
+backlog applied after the sidecar had been paused, then one base rewrite
+(`why=idle`), with `qs-verify` MATCH after each phase. The build is this one,
+with the tick sizing above.
 
-> **300 bytes per live row across the mirrored tables, and not less than 1Gi.**
+| limit | every phase completed | peak resident (VmHWM) | per row |
+|---|---|---|---|
+| 256Mi | yes, no OOM kill (two runs) | 251 MiB | 88 bytes |
+| 384Mi | yes | 280 MiB | 98 bytes |
+| 512Mi | yes | 297 MiB | 104 bytes |
+| 1Gi | yes | 342 MiB | 120 bytes |
 
-| rows | `sidecarMemory` |
+The peak rises with the limit because the collector runs less often when it
+has more room, so the 256Mi row is the one for the rule: 1.25 times 88 bytes
+is 110 bytes, and 3M rows at 110 bytes is 314 MiB, which rounds to `320Mi`.
+
+| rows (measured) | `sidecarMemory` |
 |---|---|
-| up to 3.5M | `1Gi` (the default) |
-| 10M | `3Gi` |
-| 20M | `6Gi` |
+| 3M | `320Mi` |
 
-1Gi holds 3.5M rows through a rewrite by that rule (256Mi held under 900k) and
-about 8M at steady state. The request equals the limit, so the sidecar is
+**What this does not show.** Nothing above 3M rows, and nothing with wide rows.
+An older measurement at 10.5M rows (`bench/engine_compare/merged_build/out/p2_summary.txt`:
+1,395 MB at the snapshot, 2,972 and 3,040 MB during a catch-up of 3.5 GB of WAL
+and an idle base rewrite, 290 bytes per row) is not reproduced by the 3M
+measurement above. The 3M test did not catch up 3.5 GB of WAL. For a larger
+mirror, or wider rows, run the same phases at your own row count before you
+choose a limit. The default `1Gi` is above the 3M rule and is what a plugin
+gets when no `sidecarMemory` is set. The request equals the limit, so the sidecar is
 Guaranteed QoS and cannot get the PostgreSQL Pod evicted, and `GOMEMLIMIT` is
 80% of it, so an undersized sidecar gets slow before it gets killed. A
 quantity under 128Mi is refused. `kubectl top` at readiness shows the steady
@@ -788,6 +809,20 @@ base file, and an unconstrained `numeric` **primary key** that an older sidecar
 stored as `DECIMAL(38,9)` — there a key the source prints as `1.50` does not
 compare equal to the `1.5` the old file gives back, so changes to that row
 leave a duplicate until the table is rebuilt.
+
+At start the sidecar checks every table this way. For each table that reports
+any such column it logs one `WARN` naming the table, the columns and the remedy,
+and it exports `quicksilver_table_needs_rebuild{table="public.orders"} 1` on
+`/metrics` for as long as the files are there. The default is to stop there:
+the table keeps serving what it has, and the operator decides when to rebuild
+it (create `REBUILD` in its mirror directory and restart, as for a halted
+table). With `QS_AUTO_REBUILD_LEGACY=true` the sidecar does it itself: it halts
+the table with a reason that says why, writes the `REBUILD` file, and the
+rebuild runs through the same start-up path. A table that is already halted for
+another reason is never rebuilt automatically, because that halt is there for a
+person to read. The rebuild takes the snapshot's time and the table is out of
+service for it, so leave the variable off on a large table until a window is
+planned.
 
 ---
 

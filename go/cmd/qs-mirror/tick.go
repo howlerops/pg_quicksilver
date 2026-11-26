@@ -72,7 +72,11 @@ func envDuration(key string, def time.Duration) time.Duration {
 // where nothing else in the loop can run.
 //
 // Zero disables the cap and restores the old unbounded behaviour for A/B.
-var maxTickChanges = int(envInt("QS_MAX_TICK_CHANGES", 250_000))
+//
+// The default is derived from the memory limit (memlimit.go): 250,000 from
+// about 3 GiB up, about 22,000 at 256Mi, where the old default was OOM-killed
+// while draining a backlog.
+var maxTickChanges = int(envInt("QS_MAX_TICK_CHANGES", defaultTickChanges(memSizing.Bytes)))
 
 func envInt(key string, def int64) int64 {
 	if v := os.Getenv(key); v != "" {
