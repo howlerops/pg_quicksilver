@@ -1487,10 +1487,12 @@ func measureDeclustering(r []statRange) (d declustering) {
 var reclusterSorted sync.Map
 
 // clusterRank breaks ties between columns: the time column is the one a filter
-// prunes on, and a key lookup goes through the key index.
+// prunes on, and a key lookup goes through the key index. It is the declared
+// type that decides, not the storage: with QS_TEMPORAL_TYPES=0 the time column
+// is text, and it is still the time column.
 func (t *Table) clusterRank(name string) int {
 	switch {
-	case temporalOf(t.Columns[name]) != notTemporal:
+	case declaredTemporal(t.Columns[name]) != notTemporal:
 		return 2
 	case name == t.Key:
 		return 1

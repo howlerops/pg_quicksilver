@@ -432,6 +432,10 @@ func TestNoRewriteIsAskedForWhileAPublishIsFailing(t *testing.T) {
 // mirror's own view reads, or refuses; and it refuses only until the rewrite
 // it asked for.
 func TestConformanceUpgradeFromThePreviousWriter(t *testing.T) {
+	// It compares a TIMESTAMPTZ predicate with the time column, which is text
+	// under QS_TEMPORAL_TYPES=0; the lake's type mapping is tested as native.
+	defer func(prev bool) { mirror.TemporalTypes = prev }(mirror.TemporalTypes)
+	mirror.TemporalTypes = true
 	old := mirror.PartialDeltas
 	mirror.PartialDeltas = false // what the sidecar does when QS_DUCKLAKE is on
 	defer func() { mirror.PartialDeltas = old }()

@@ -225,6 +225,9 @@ func expectRow(row map[string]any) map[string]string {
 // Each declared type reaches the file as the type in the table at the top of
 // types.go, and reads back as the text PostgreSQL printed.
 func TestEveryTypeIsStoredAsDeclared(t *testing.T) {
+	// It asserts native temporal storage, which QS_TEMPORAL_TYPES=0 switches off.
+	defer func(prev bool) { TemporalTypes = prev }(TemporalTypes)
+	TemporalTypes = true
 	tbl := everyTypeTable(t, t.TempDir())
 	want := map[string]map[string]string{}
 	var changes []changestream.Change
@@ -311,6 +314,9 @@ func TestEveryTypeIsStoredAsDeclared(t *testing.T) {
 // by side in one table for most of it. The contents must be right at every
 // step, by the Go read path and — with an engine available — by the view.
 func TestOldFilesAndNewCoexist(t *testing.T) {
+	// It asserts native temporal storage, which QS_TEMPORAL_TYPES=0 switches off.
+	defer func(prev bool) { TemporalTypes = prev }(TemporalTypes)
+	TemporalTypes = true
 	for _, keyCol := range []string{"id", "bi"} {
 		t.Run("key="+keyCol, func(t *testing.T) {
 			dir := t.TempDir()
@@ -448,12 +454,13 @@ func TestOldFilesAndNewCoexist(t *testing.T) {
 			carried := map[string]any{keyCol: row(42, false)[keyCol], "tx": "carried"}
 			carried2 := map[string]any{keyCol: row(11, false)[keyCol], "tx": "carried"}
 			before := len(tbl.State.PartialCols)
+			partialWas := PartialDeltas
 			PartialDeltas = false
 			tapply(t, tbl, 16, changestream.Change{Op: changestream.OpUpdate, Schema: "public",
 				Table: "every", Row: carried, Key: map[string]any{keyCol: carried[keyCol]}},
 				changestream.Change{Op: changestream.OpUpdate, Schema: "public",
 					Table: "every", Row: carried2, Key: map[string]any{keyCol: carried2[keyCol]}})
-			PartialDeltas = true
+			PartialDeltas = partialWas
 			if len(tbl.State.PartialCols) != before {
 				t.Fatalf("the update was stored as a patch, so carry-forward was not exercised")
 			}
@@ -560,6 +567,9 @@ func TestUUIDKeyIsTheSameFromTextAndFromBytes(t *testing.T) {
 // that holds the type's minimum still reads as -infinity — here and in the
 // view.
 func TestNegativeInfinityIsStoredAsTheEngineReadsIt(t *testing.T) {
+	// It asserts native temporal storage, which QS_TEMPORAL_TYPES=0 switches off.
+	defer func(prev bool) { TemporalTypes = prev }(TemporalTypes)
+	TemporalTypes = true
 	for k, want := range map[temporalKind]int64{
 		kindTimestamp: -math.MaxInt64, kindTimestampTZ: -math.MaxInt64, kindDate: -math.MaxInt32,
 	} {

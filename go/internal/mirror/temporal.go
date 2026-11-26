@@ -120,6 +120,13 @@ func temporalOf(pgType string) temporalKind {
 	if !TemporalTypes {
 		return notTemporal
 	}
+	return declaredTemporal(pgType)
+}
+
+// declaredTemporal is what kind of temporal a declared type is, whether or not
+// it is stored as one. Use it for what the column IS (a role, such as the
+// time a filter prunes on), and temporalOf for how it is STORED.
+func declaredTemporal(pgType string) temporalKind {
 	s := strings.ToLower(strings.TrimSpace(pgType))
 	if i := strings.Index(s, "("); i >= 0 { // timestamp(3) with time zone
 		if j := strings.Index(s, ")"); j > i {

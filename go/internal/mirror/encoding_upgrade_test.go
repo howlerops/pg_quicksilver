@@ -102,6 +102,9 @@ func columnForm(t *testing.T, path, col string) (parquet.Type, bool) {
 // delta merge and a base rewrite by each path, a restart, and the generated
 // view in DuckDB at every step. Equal to the model, every time.
 func TestFormat1MirrorCarriedOnByFormat2(t *testing.T) {
+	// It asserts column-partial patch files, which QS_PARTIAL_DELTAS=0 switches off.
+	defer func(prev bool) { PartialDeltas = prev }(PartialDeltas)
+	PartialDeltas = true
 	for _, path := range []string{"sync", "async", "clustered"} {
 		t.Run("rewrite="+path, func(t *testing.T) {
 			withRowGroup(t, 50)
@@ -492,6 +495,9 @@ func TestNotNullColumnAddedLater(t *testing.T) {
 // patch is written without the column, the row keeps the value it has, and
 // the same patch with the column set to NULL is refused.
 func TestPatchWithoutANotNullColumn(t *testing.T) {
+	// It asserts a patch file, which QS_PARTIAL_DELTAS=0 switches off.
+	defer func(prev bool) { PartialDeltas = prev }(PartialDeltas)
+	PartialDeltas = true
 	dir := t.TempDir()
 	tbl, err := New(dir, "public", "o", "id", ordersCols, ordersOrder)
 	if err != nil {

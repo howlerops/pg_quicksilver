@@ -334,6 +334,10 @@ func lakeFilesOnDisk(t testing.TB, p *Publisher) map[string]bool {
 // the lake table is the mirror's live rows, that every retained snapshot still
 // reads as it did when it was published, and that every expired one is gone.
 func TestConformanceAgainstDuckDB(t *testing.T) {
+	// It compares a TIMESTAMPTZ predicate with the time column, which is text
+	// under QS_TEMPORAL_TYPES=0; the lake's type mapping is tested as native.
+	defer func(prev bool) { mirror.TemporalTypes = prev }(mirror.TemporalTypes)
+	mirror.TemporalTypes = true
 	old := mirror.PartialDeltas
 	mirror.PartialDeltas = false // what the sidecar does when QS_DUCKLAKE is on
 	defer func() { mirror.PartialDeltas = old }()
