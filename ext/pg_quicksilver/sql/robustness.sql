@@ -2,6 +2,7 @@
 \set last 'SELECT side, reason, detail FROM quicksilver.last_decision();'
 SET client_min_messages = warning;
 SET search_path = public;
+SELECT quicksilver.reset();    -- the decision statistics below are this file's own
 -- This file is about the mechanism, and its "must stay on the heap" statements
 -- were written against the seed allowlist. The entries validate/widen.py has
 -- added since (LIKE, window functions, UNION ALL, ...) are set aside while it
@@ -60,7 +61,7 @@ SELECT id, b FROM qt.h ORDER BY id;
 -- EXPLAIN ANALYZE is the exception: pg_duckdb does not run the statement in the
 -- executor then but inside DuckDB's own EXPLAIN ANALYZE, where nothing can be caught
 EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) SELECT id, a, b FROM qt.h WHERE id > 0;
-SELECT mirror, heap, fallbacks FROM quicksilver.decision_stats WHERE fallbacks > 0 ORDER BY fallbacks DESC LIMIT 1;
+SELECT mirror, heap, fallbacks FROM quicksilver.decision_stats WHERE fallbacks > 0 ORDER BY fallbacks DESC, mirror, heap LIMIT 1;
 -- with the fallback off the client sees the mirror's error
 SET quicksilver.fallback = off;
 SELECT id, a, b FROM qt.h ORDER BY id;
