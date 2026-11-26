@@ -338,9 +338,12 @@ jobs:
             case "$u" in 26|26:26) ;; *) echo "::error::the $i image runs as '$u', not 26"; exit 1 ;; esac
           done
           # The tools an operator runs INSIDE the Pod are in the mirror image.
+          # Captured first, not piped: under pipefail, `docker run | grep -q`
+          # reports failure when grep exits early and docker is stopped by it.
           for b in qs-verify qs-query; do
-            docker run --rm --entrypoint "/$b" localhost/qs/pg_quicksilver-mirror:dev -h 2>&1 | head -2
-            docker run --rm --entrypoint "/$b" localhost/qs/pg_quicksilver-mirror:dev -h 2>&1 | grep -q "Usage of /$b" \
+            out=$(docker run --rm --entrypoint "/$b" localhost/qs/pg_quicksilver-mirror:dev -h 2>&1 || true)
+            printf '%s\n' "$out" | head -2
+            printf '%s\n' "$out" | grep -q "Usage of /$b" \
               || { echo "::error::/$b is not in the mirror image"; exit 1; }
           done
           # CloudNativePG supplies the entrypoint; an image that sets one
