@@ -22,7 +22,7 @@ export PG=$CA/bin
 [ "$($PG/pg_config --configure | grep -c enable-cassert)" = 1 ] || { echo "$CA is not a cassert build" >&2; exit 1; }
 cp "$STOCK/lib/pg_duckdb.so" "$STOCK/lib/libduckdb.so" "$CA/lib/" || exit 1
 cp /usr/share/postgresql/17/extension/pg_duckdb* "$CA/share/extension/" || exit 1
-B=/var/lib/postgresql/qsint-cabuild
+B=${BASE:-/var/lib/postgresql/qsint}-cabuild    # beside the cluster, never a shared path
 rm -rf "$B"; mkdir -p "$B"
 cp -r "$HERE"/../../{pg_quicksilver.c,pg_quicksilver.control,pg_quicksilver--0.1.sql,Makefile,sql,expected} "$B/"
 ( cd "$B" && make PG_CONFIG=$PG/pg_config with_llvm=no >/dev/null && make PG_CONFIG=$PG/pg_config with_llvm=no install >/dev/null ) || exit 1

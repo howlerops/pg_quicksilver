@@ -335,7 +335,8 @@ and that is not verification.
 A PostgreSQL 17.12 built with `--enable-cassert` (`./configure --enable-cassert
 --enable-debug --with-icu --with-openssl --with-lz4 --with-zstd`), the stock
 pg_duckdb package copied into it, the extension built against it.
-`validate/cassert.sh` runs all of it; `debug_assertions` is `on`.
+`validate/real/cassert.sh` runs all of it (the stand-in `validate/cassert.sh` was
+removed); `debug_assertions` is `on`.
 
 | on the cassert server | |
 |---|---|
@@ -652,7 +653,7 @@ python3 validate/constructs.py          # what one more allowlist entry would bu
 python3 validate/psycopg_check.py && validate/standby_check.sh
 (cd ../../go && QS_EXT_DSN='host=/tmp port=5541 dbname=app user=postgres' go test ./cmd/qs-extcheck/)
 validate/latency.sh && python3 validate/routed_timing.py
-CA=/path/to/cassert/prefix validate/cassert.sh
+CA=/path/to/cassert/prefix validate/real/cassert.sh
 validate/teardown.sh
 ```
 
