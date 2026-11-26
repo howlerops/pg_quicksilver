@@ -1,0 +1,131 @@
+# Reviewed root causes for statements whose VALUES differ. One line per statement:
+# id <TAB> group <TAB> cause. Every line here was assigned by reading the two results
+# (run.py --only <id> prints them); nothing in this file is inferred by the runner.
+# A wrong-value statement missing from this file is reported as `unreviewed`.
+cmp-008	ordering / collation	text sorts and compares by code point in DuckDB, by the database collation (en-US) in PostgreSQL
+cmp-009	ordering / collation	text sorts and compares by code point in DuckDB, by the database collation (en-US) in PostgreSQL
+cmp-010	ordering / collation	text sorts and compares by code point in DuckDB, by the database collation (en-US) in PostgreSQL
+cmp-012	ordering / collation	text sorts and compares by code point in DuckDB, by the database collation (en-US) in PostgreSQL
+cmp-014	ordering / collation	text sorts and compares by code point in DuckDB, by the database collation (en-US) in PostgreSQL
+cmp-017	ordering / collation	text sorts and compares by code point in DuckDB, by the database collation (en-US) in PostgreSQL
+cmp-018	ordering / collation	text sorts and compares by code point in DuckDB, by the database collation (en-US) in PostgreSQL
+cmp-019	ordering / collation	text sorts and compares by code point in DuckDB, by the database collation (en-US) in PostgreSQL
+cmp-022	ordering / collation	text sorts and compares by code point in DuckDB, by the database collation (en-US) in PostgreSQL
+cmp-023	ordering / collation	text sorts and compares by code point in DuckDB, by the database collation (en-US) in PostgreSQL
+cmp-024	ordering / collation	text sorts and compares by code point in DuckDB, by the database collation (en-US) in PostgreSQL
+cmp-028	ordering / collation	text sorts and compares by code point in DuckDB, by the database collation (en-US) in PostgreSQL
+cmp-054	ordering / collation	text sorts and compares by code point in DuckDB, by the database collation (en-US) in PostgreSQL
+cmp-055	ordering / collation	text sorts and compares by code point in DuckDB, by the database collation (en-US) in PostgreSQL
+cmp-056	ordering / collation	text sorts and compares by code point in DuckDB, by the database collation (en-US) in PostgreSQL
+cmp-057	ordering / collation	text sorts and compares by code point in DuckDB, by the database collation (en-US) in PostgreSQL
+cmp-060	ordering / collation	text sorts and compares by code point in DuckDB, by the database collation (en-US) in PostgreSQL
+agg-036	ordering / collation	text sorts and compares by code point in DuckDB, by the database collation (en-US) in PostgreSQL
+agg-037	ordering / collation	text sorts and compares by code point in DuckDB, by the database collation (en-US) in PostgreSQL
+agg-049	ordering / collation	text sorts and compares by code point in DuckDB, by the database collation (en-US) in PostgreSQL
+agg-053	ordering / collation	text sorts and compares by code point in DuckDB, by the database collation (en-US) in PostgreSQL
+agg-055	ordering / collation	text sorts and compares by code point in DuckDB, by the database collation (en-US) in PostgreSQL
+win-006	ordering / collation	text sorts and compares by code point in DuckDB, by the database collation (en-US) in PostgreSQL
+set-003	ordering / collation	text sorts and compares by code point in DuckDB, by the database collation (en-US) in PostgreSQL
+set-015	ordering / collation	text sorts and compares by code point in DuckDB, by the database collation (en-US) in PostgreSQL
+set-021	ordering / collation	text sorts and compares by code point in DuckDB, by the database collation (en-US) in PostgreSQL
+lim-011	ordering / collation	text sorts and compares by code point in DuckDB, by the database collation (en-US) in PostgreSQL
+lim-012	ordering / collation	text sorts and compares by code point in DuckDB, by the database collation (en-US) in PostgreSQL
+lim-013	ordering / collation	text sorts and compares by code point in DuckDB, by the database collation (en-US) in PostgreSQL
+lim-014	ordering / collation	text sorts and compares by code point in DuckDB, by the database collation (en-US) in PostgreSQL
+lim-025	ordering / collation	text sorts and compares by code point in DuckDB, by the database collation (en-US) in PostgreSQL
+lim-027	ordering / collation	text sorts and compares by code point in DuckDB, by the database collation (en-US) in PostgreSQL
+lim-028	ordering / collation	text sorts and compares by code point in DuckDB, by the database collation (en-US) in PostgreSQL
+fn-033	ordering / collation	text sorts and compares by code point in DuckDB, by the database collation (en-US) in PostgreSQL
+fn-034	ordering / collation	text sorts and compares by code point in DuckDB, by the database collation (en-US) in PostgreSQL
+cmp-034	type mapping	enum read as VARCHAR: sorts and compares alphabetically, not in enum order
+cmp-035	type mapping	enum read as VARCHAR: sorts and compares alphabetically, not in enum order
+cmp-037	type mapping	enum read as VARCHAR: sorts and compares alphabetically, not in enum order
+agg-039	type mapping	enum read as VARCHAR: sorts and compares alphabetically, not in enum order
+agg-054	type mapping	enum read as VARCHAR: sorts and compares alphabetically, not in enum order
+set-020	type mapping	enum read as VARCHAR: sorts and compares alphabetically, not in enum order
+join-008	type mapping	enum read as VARCHAR: sorts and compares alphabetically, not in enum order
+lim-016	type mapping	enum read as VARCHAR: sorts and compares alphabetically, not in enum order
+cmp-036	DuckDB semantics	an enum compared with a string literal is compared as text, on the mirror's VARCHAR and on a native DuckDB ENUM alike
+cond-033	DuckDB semantics	an enum compared with a string literal is compared as text, on the mirror's VARCHAR and on a native DuckDB ENUM alike
+cmp-030	type mapping	char(n) stored without its padding by the snapshot (as col::text); bpchar comparison and length rules are lost
+cmp-032	type mapping	char(n) stored without its padding by the snapshot (as col::text); bpchar comparison and length rules are lost
+cmp-033	type mapping	char(n) stored without its padding by the snapshot (as col::text); bpchar comparison and length rules are lost
+str-044	type mapping	char(n) stored without its padding by the snapshot (as col::text); bpchar comparison and length rules are lost
+str-064	type mapping	char(n) stored without its padding by the snapshot (as col::text); bpchar comparison and length rules are lost
+set-017	type mapping	char(n) stored without its padding by the snapshot (as col::text); bpchar comparison and length rules are lost
+set-018	type mapping	char(n) stored without its padding by the snapshot (as col::text); bpchar comparison and length rules are lost
+col-012	type mapping	char(n) stored without its padding by the snapshot (as col::text); bpchar comparison and length rules are lost
+col-031	type mapping	char(n) stored without its padding by the snapshot (as col::text); bpchar comparison and length rules are lost
+cmp-052	type mapping	inet stored as its ::text cast by the snapshot: host addresses gain /32
+lim-034	type mapping	inet stored as its ::text cast by the snapshot: host addresses gain /32
+col-015	type mapping	inet stored as its ::text cast by the snapshot: host addresses gain /32
+cast-009	type mapping	-infinity (date, timestamp, timestamptz) is written as INT_MIN, which DuckDB reads as a finite date in 5877642 BC / 290309 BC
+cast-010	type mapping	-infinity (date, timestamp, timestamptz) is written as INT_MIN, which DuckDB reads as a finite date in 5877642 BC / 290309 BC
+cast-011	type mapping	-infinity (date, timestamp, timestamptz) is written as INT_MIN, which DuckDB reads as a finite date in 5877642 BC / 290309 BC
+agg-063	type mapping	-infinity (date, timestamp, timestamptz) is written as INT_MIN, which DuckDB reads as a finite date in 5877642 BC / 290309 BC
+dt-058	type mapping	-infinity (date, timestamp, timestamptz) is written as INT_MIN, which DuckDB reads as a finite date in 5877642 BC / 290309 BC
+dt-059	type mapping	-infinity (date, timestamp, timestamptz) is written as INT_MIN, which DuckDB reads as a finite date in 5877642 BC / 290309 BC
+dt-060	type mapping	-infinity (date, timestamp, timestamptz) is written as INT_MIN, which DuckDB reads as a finite date in 5877642 BC / 290309 BC
+lim-019	type mapping	-infinity (date, timestamp, timestamptz) is written as INT_MIN, which DuckDB reads as a finite date in 5877642 BC / 290309 BC
+col-017	type mapping	-infinity (date, timestamp, timestamptz) is written as INT_MIN, which DuckDB reads as a finite date in 5877642 BC / 290309 BC
+col-019	type mapping	-infinity (date, timestamp, timestamptz) is written as INT_MIN, which DuckDB reads as a finite date in 5877642 BC / 290309 BC
+col-020	type mapping	-infinity (date, timestamp, timestamptz) is written as INT_MIN, which DuckDB reads as a finite date in 5877642 BC / 290309 BC
+cmp-040	type mapping	uuid read as VARCHAR: comparison is case-sensitive text
+dt-043	type mapping	interval read as VARCHAR: sorts as text
+cmp-046	type mapping	real stored as DOUBLE: the float4 rounding PostgreSQL applies is gone
+ari-047	type mapping	real stored as DOUBLE: the float4 rounding PostgreSQL applies is gone
+agg-015	type mapping	real stored as DOUBLE: the float4 rounding PostgreSQL applies is gone
+join-012	type mapping	real stored as DOUBLE: the float4 rounding PostgreSQL applies is gone
+cast-003	type mapping	unconstrained numeric stored as DECIMAL(38,9): text output carries nine decimals
+cmp-043	type mapping	Parquet statistics: a filter that selects NaN is pruned (min/max exclude NaN), so the NaN row is not returned
+ari-001	DuckDB semantics	`/` on integers is fractional division (SET integer_division = true restores PostgreSQL's)
+ari-002	DuckDB semantics	`/` on integers is fractional division (SET integer_division = true restores PostgreSQL's)
+ari-003	DuckDB semantics	`/` on integers is fractional division (SET integer_division = true restores PostgreSQL's)
+ari-006	DuckDB semantics	`/` on integers is fractional division (SET integer_division = true restores PostgreSQL's)
+ari-007	DuckDB semantics	`/` on integers is fractional division (SET integer_division = true restores PostgreSQL's)
+ari-056	DuckDB semantics	`/` on integers is fractional division (SET integer_division = true restores PostgreSQL's)
+ari-057	DuckDB semantics	`/` on integers is fractional division (SET integer_division = true restores PostgreSQL's)
+cond-013	DuckDB semantics	`/` on integers is fractional division (SET integer_division = true restores PostgreSQL's)
+cond-028	DuckDB semantics	`/` on integers is fractional division (SET integer_division = true restores PostgreSQL's)
+cmp-045	DuckDB semantics	float4 arithmetic, promotion and literal comparison differ (PostgreSQL widens real to float8 first, or sums in float4)
+ari-045	DuckDB semantics	float4 arithmetic, promotion and literal comparison differ (PostgreSQL widens real to float8 first, or sums in float4)
+ari-046	DuckDB semantics	float4 arithmetic, promotion and literal comparison differ (PostgreSQL widens real to float8 first, or sums in float4)
+agg-009	DuckDB semantics	float4 arithmetic, promotion and literal comparison differ (PostgreSQL widens real to float8 first, or sums in float4)
+cast-031	DuckDB semantics	float4 arithmetic, promotion and literal comparison differ (PostgreSQL widens real to float8 first, or sums in float4)
+ari-037	DuckDB semantics	round() on float8 rounds half away from zero; PostgreSQL rounds half to even
+ari-039	DuckDB semantics	double -> numeric cast is DECIMAL(18,3) in DuckDB; PostgreSQL keeps 15 significant digits
+cast-028	DuckDB semantics	double -> numeric cast is DECIMAL(18,3) in DuckDB; PostgreSQL keeps 15 significant digits
+cmp-016	DuckDB semantics	lower()/ILIKE fold dotted capital I (U+0130) to plain i; PostgreSQL (ICU) keeps the combining dot
+agg-029	DuckDB semantics	lower()/ILIKE fold dotted capital I (U+0130) to plain i; PostgreSQL (ICU) keeps the combining dot
+str-017	DuckDB semantics	lower()/ILIKE fold dotted capital I (U+0130) to plain i; PostgreSQL (ICU) keeps the combining dot
+join-016	DuckDB semantics	lower()/ILIKE fold dotted capital I (U+0130) to plain i; PostgreSQL (ICU) keeps the combining dot
+str-027	DuckDB semantics	upper('ß') is 'ẞ' in DuckDB and 'SS' in PostgreSQL (ICU)
+str-075	DuckDB semantics	upper('ß') is 'ẞ' in DuckDB and 'SS' in PostgreSQL (ICU)
+str-008	DuckDB semantics	LIKE has no default escape character: backslash is a literal
+str-009	DuckDB semantics	LIKE has no default escape character: backslash is a literal
+str-014	DuckDB semantics	LIKE has no default escape character: backslash is a literal
+str-022	DuckDB semantics	regex classes \w, \d and [[:alpha:]] are ASCII-only (RE2); PostgreSQL's follow the locale
+str-023	DuckDB semantics	regex classes \w, \d and [[:alpha:]] are ASCII-only (RE2); PostgreSQL's follow the locale
+str-025	DuckDB semantics	SIMILAR TO is matched as a plain regex: % and _ are not wildcards
+str-026	DuckDB semantics	SIMILAR TO is matched as a plain regex: % and _ are not wildcards
+str-035	DuckDB semantics	substring() with a start <= 0 counts from the end; PostgreSQL clips to the start
+str-046	DuckDB semantics	boolean renders as true/false inside concat(); PostgreSQL concat() gives t/f
+cast-005	DuckDB semantics	float -> text renders differently (0.0, -1401.0)
+cast-006	DuckDB semantics	float -> text renders differently (0.0, -1401.0)
+cast-059	DuckDB semantics	::varchar(n) and ::char(n) do not truncate or pad
+cast-070	DuckDB semantics	pg_typeof() reports DuckDB's type names (and the mirror's types)
+cast-071	DuckDB semantics	pg_typeof() reports DuckDB's type names (and the mirror's types)
+cast-072	DuckDB semantics	pg_typeof() reports DuckDB's type names (and the mirror's types)
+dt-010	DuckDB semantics	pg_typeof() reports DuckDB's type names (and the mirror's types)
+dt-036	DuckDB semantics	pg_typeof() reports DuckDB's type names (and the mirror's types)
+dt-006	DuckDB semantics	extract(second ...) drops the fractional seconds
+dt-007	DuckDB semantics	extract(second ...) drops the fractional seconds
+win-031	DuckDB semantics	timestamptz - timestamptz across a DST change is off by the DST hour
+dt-038	DuckDB semantics	timestamptz - timestamptz across a DST change is off by the DST hour
+dt-066	DuckDB semantics	timestamptz - timestamptz across a DST change is off by the DST hour
+dt-071	DuckDB semantics	sub-microsecond time literals truncate; PostgreSQL rounds
+json-029	DuckDB semantics	json -> on a duplicate key returns the first value; PostgreSQL json returns the last
+json-032	DuckDB semantics	json ->> re-renders numbers (2.50 becomes 2.5)
+fn-001	DuckDB semantics	a set-returning function in the SELECT list returns one row holding a list
+fn-029	environment	current_database() / current_user describe the DuckDB session, not the source
+fn-030	environment	current_database() / current_user describe the DuckDB session, not the source
