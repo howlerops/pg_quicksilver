@@ -969,3 +969,26 @@ control files were copied into that prefix. The package's `pg_duckdb.so` has
     duckdb.temporary_directory           duckdb.threads
     duckdb.threads_for_postgres_scan     duckdb.unsafe_allow_execution_inside_functions
     duckdb.unsafe_allow_mixed_transactions duckdb.worker_threads
+
+**The extension on 1.2.2.** `validate/real/setup.sh` with `DB_ROUTE=none` on
+ports 5650-5652, then `make installcheck PPORT=5650`:
+
+    ok 1 - routing   ok 2 - failclosed   ok 3 - permissions   ok 4 - prepared
+    ok 5 - transactions   ok 6 - invalidation   ok 7 - shadow   ok 8 - freshness
+    ok 9 - robustness   ok 10 - errors
+    # All 10 tests passed.
+
+`validate/equality.py --port 5650`: 1142 statements, 438 routed to the mirror,
+0 routed and different, 0 heap-different. The 1.2.0 cassert run above
+routed 361 of 1142; the count moved and nothing else did. The mirror and the
+DuckLake attachment were built by the sidecar on the standby, with
+`QS_DUCKLAKE=on`, and the DuckDB extensions were the 2.0.1 builds that
+`deploy/duckdb-extensions.sh install` writes into `v2.0.1/linux_amd64/`.
+
+**Offline, DuckDB extensions.** `deploy/duckdb-extensions.sh install` and then
+`verify` under `unshare -n`, as the postgres user, against the 1.2.2 server:
+`verified: ducklake sqlite load from ... with no network and no write access,
+and a ducklake:sqlite: lake reads back`. The script needed no change: it takes
+the DuckDB version and platform from the loaded `libduckdb.so`, not from a
+pin.
+
