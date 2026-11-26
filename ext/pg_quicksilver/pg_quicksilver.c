@@ -2745,7 +2745,7 @@ qs_recovery_blocked(void)
  * candidate at once and goes on to the heap, where it ends like any other.
  */
 static int
-qs_gate(List *heaps, XLogRecPtr now, bool reload, double cost, char *why, size_t whylen)
+qs_gate(List *heaps, XLogRecPtr now, bool reload, bool may_wait, double cost, char *why, size_t whylen)
 {
 	static uint32 wait_event = 0;
 	TimestampTz start = 0;
@@ -2791,14 +2791,15 @@ qs_gate(List *heaps, XLogRecPtr now, bool reload, double cost, char *why, size_t
 		{
 			budget = qs_wait_budget(cost);
 			/*
-			 * No wait while a snapshot is held. The planner and an executor's
-			 * start both run inside one, and PostgreSQL requires a portal's
-			 * snapshot to stay the active one (an assertion-enabled build
-			 * aborted when it was swapped during planning; docs/40, "What the
-			 * wait costs"), so the wait is not taken. Nor inside a
-			 * subtransaction.
+			 * The snapshot is held while we sleep, and is not released or
+			 * replaced: the planner and an executor's start hold the portal's
+			 * snapshot, and PostgreSQL requires that one to stay the active
+			 * one (docs/40, "What the wait costs"). The wait only delays the
+			 * statement; the snapshot it will read is the one it already has,
+			 * and R (the position it must reach) is fixed, so the mirror
+			 * catching up to R is enough. No wait inside a subtransaction.
 			 */
-			if (ActiveSnapshotSet() || IsSubTransaction() || GetCurrentTransactionNestLevel() != 1)
+			if (!may_wait || IsSubTransaction() || GetCurrentTransactionNestLevel() != 1)
 				budget = 0;
 			if (budget <= 0)
 				break;
@@ -3737,7 +3738,8 @@ qs_begin_scan(CustomScanState *node, EState *estate, int eflags)
 			qs_gated_plan = NULL;
 			if (!gated)
 			{
-				state = qs_gate((List *) list_nth(cs->custom_private, 4), qs_current_lsn(), true,
+				/* no wait here: the executor's start holds the portal's snapshot, as it always did */
+				state = qs_gate((List *) list_nth(cs->custom_private, 4), qs_current_lsn(), true, false,
 								cs->scan.plan.total_cost, stale, sizeof(stale));
 				if (state >= 0)
 					why = stale;
@@ -4201,7 +4203,7 @@ qs_decide(Query *orig, PlannedStmt *heap, const char *query_string, int cursorOp
 		/* the position this statement can see is taken once, however often it is decided */
 		if (qs_decide_now == InvalidXLogRecPtr)
 			qs_decide_now = qs_current_lsn();
-		stale = qs_gate(heaps, qs_decide_now, false, heap->planTree->total_cost, detail, sizeof(detail));
+		stale = qs_gate(heaps, qs_decide_now, false, true, heap->planTree->total_cost, detail, sizeof(detail));
 		if (stale >= 0)
 			QS_HEAP(stale, detail, NIL);
 		qs_gated_waited_ms = qs_waited_ms;
