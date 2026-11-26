@@ -265,12 +265,13 @@ again=$(psq $SPORT "SELECT count(*) FROM events_pq" analyst)
 say "7. and NOTHING else is readable, or writable"
 # Each denial must fail WITH ONE OF THE MESSAGES A REFUSAL PRODUCES. A bare
 # ERROR is not enough: a syntax error would otherwise count as a denial.
-DENY_RE='disabled by configuration|Cannot access|Cannot write|locked|permission denied|must be superuser'
+DENY_RE='disabled by configuration|Cannot access|Cannot write|Cannot enable external access|locked|permission denied|must be superuser'
 deny() {
   local label=$1 sql=$2 out
   out=$(psq $SPORT "$sql" analyst)
   if printf '%s' "$out" | grep -qiE "$DENY_RE"; then
-    printf '  denied   %s\n' "$label"
+    # The refusal itself, so the reason is on the record and not only the verdict.
+    printf '  denied   %-36s %s\n' "$label" "$(printf '%s' "$out" | grep -iE "$DENY_RE" | head -1 | cut -c1-150)"
   else
     bad "NOT DENIED for an unprivileged role: $label -> $(printf '%s' "$out" | head -1)"
   fi
@@ -292,11 +293,14 @@ deny "path traversal out of dir"   "SELECT count(*) FROM read_csv('$MIRROR/../st
 deny "symlink out to /etc/passwd"  "SELECT count(*) FROM read_csv('$MIRROR/escape_passwd.csv')"
 deny "symlink out to PGDATA"       "SELECT count(*) FROM read_csv('$MIRROR/escape_pgdata.csv')"
 deny "http exfiltration"           "SELECT count(*) FROM read_csv('https://example.com/x.csv')"
-deny "ATTACH a db file outside"    "SELECT * FROM duckdb.query('ATTACH ''$OUTSIDE/other.duckdb'' AS other (READ_ONLY)')"
-deny "COPY TO a file in the mirror" "SELECT * FROM duckdb.query('COPY (SELECT 1 AS x) TO ''$MIRROR/written_by_analyst.csv''')"
-deny "COPY TO a file outside"      "SELECT * FROM duckdb.query('COPY (SELECT 1 AS x) TO ''$OUTSIDE/written_by_analyst.csv''')"
-deny "DuckDB: widen allowed_directories" "SELECT * FROM duckdb.query('SET allowed_directories=[''/'']')"
-deny "DuckDB: re-enable external access" "SELECT * FROM duckdb.query('SET enable_external_access=true')"
+# duckdb.query takes one SELECT only, so the statements that are not SELECTs go
+# through duckdb.raw_query, which hands any statement to DuckDB itself. A denial
+# therefore comes from DuckDB's enforcement, not from a parser refusal.
+deny "ATTACH a db file outside"    "SELECT duckdb.raw_query('ATTACH ''$OUTSIDE/other.duckdb'' AS other (READ_ONLY)')"
+deny "COPY TO a file in the mirror" "SELECT duckdb.raw_query('COPY (SELECT 1 AS x) TO ''$MIRROR/written_by_analyst.csv''')"
+deny "COPY TO a file outside"      "SELECT duckdb.raw_query('COPY (SELECT 1 AS x) TO ''$OUTSIDE/written_by_analyst.csv''')"
+deny "DuckDB: widen allowed_directories" "SELECT duckdb.raw_query('SET allowed_directories=[''/'']')"
+deny "DuckDB: re-enable external access" "SELECT duckdb.raw_query('SET enable_external_access=true')"
 deny "widen disabled_filesystems"  "SET duckdb.disabled_filesystems=''"
 deny "widen allowed_directories"   "SET duckdb.allowed_directories='/'"
 deny "widen external access"       "SET duckdb.enable_external_access=true"
