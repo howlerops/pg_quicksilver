@@ -728,16 +728,15 @@ what the heap on the same node would have answered: not "identical". It now
 defaults to **0**: a statement is routed only if its mirror has reached
 everything the statement can see on this node when it starts (the replay
 position on a standby; the insert position on a primary, which bounds every
-commit a snapshot can see). A mirror that has not is given a wait and then the heap answers. The wait is at most
-`quicksilver.freshness_wait_max` (500 ms) and `quicksilver.freshness_wait_fraction` (10%) of the
-heap plan's estimated time, which is its total cost times `quicksilver.ms_per_cost_unit`
-(0.005 ms). `quicksilver.freshness_wait` is a floor under that, 0 by default. The wait
-is made only while the statement is being planned, and it holds no snapshot: the
-statement's is given up for the sleep (its xmin is released, so vacuum on the primary and
-replay on the standby are not held back by a waiting statement) and a new one is taken after it,
-and the mirror is then checked against what that snapshot can see. It is interruptible. An
-executor's start does not wait, since its snapshot cannot be given up, and neither does a
-statement inside a subtransaction.
+commit a snapshot can see). A mirror that has not is answered by the heap at once. The router has a
+wait for it, `quicksilver.freshness_wait_fraction` (10%) of the heap plan's
+estimated time (total cost times `quicksilver.ms_per_cost_unit`, 0.005 ms), capped at
+`quicksilver.freshness_wait_max` (500 ms), with `quicksilver.freshness_wait` as a
+floor under it (0 by default). The wait is **not taken** in this build: it would
+have to give up the statement's snapshot, the planner and an executor's start both
+run inside one, and the portal that holds it keeps a pointer to it (see [What the
+wait costs](#what-the-wait-costs)). The settings are there for a build that can
+wait without a snapshot; with this one they do nothing.
 Bounded staleness is something a session asks for: `max_lag > 0` means "a
 routed read may be this much WAL behind the heap on this node". Separately, a
 transaction that has an xid is never routed, whatever
@@ -782,30 +781,42 @@ this.
 
 ### What the wait costs
 
-`validate/real/waitcost.py` on the 10M-row bench cluster (ICU `en-US`, standby),
-while another session commits single-row `UPDATE`s of `public.orders`: 10 and
-100 commits a second, three statements whose heap plans are estimated at about
-54 ms, 1.06 s and 3.1 s. Routed is the number answered by the mirror; latency
-is the client's median, and includes any wait.
+The wait was written first to give up the statement's snapshot while it slept,
+and to take a new one after it. It did wait (a 1 s floor waited about a second
+before the heap answered), and an assertion-enabled build aborted: `TRAP:
+failed Assert("portal->portalSnapshot == GetActiveSnapshot()"), File: pquery.c,
+Line: 1180`, because the portal of the statement keeps a pointer to the
+snapshot it was given, and a replaced snapshot is not that pointer. Keeping the
+pointer keeps the snapshot's xmin, which is the thing a wait must not hold. So
+the wait is not taken in this build: the router waits only where no snapshot is
+held, and the planner and an executor's start always hold one. The cap, the
+fraction and the cost unit are implemented, and do nothing until a build can
+wait without a snapshot.
 
-| commits/s | statement | heap median ms | old default (20 ms) routed, median | new default (10%, cap 500 ms) routed, median |
+`validate/real/waitcost.py` on the 10M-row bench cluster (ICU `en-US`,
+standby), the shipped build, while another session commits single-row `UPDATE`s
+of `public.orders`: 10 and 100 commits a second. The "new default" row is the
+10%, 500 ms setting; it waits zero time here, as does the "old default" row.
+Latency is the client's median in milliseconds.
+
+| commits/s | statement | heap | old default (20 ms floor): routed, median | new default (10%, cap 500 ms): routed, median |
 |---|---|---|---|---|
-| 10 | ~50 ms | 51.3 | 0 of 60, 54.9 | 0 of 60, 54.9 |
-| 10 | ~500 ms | 350.7 | 0 of 30, 342.0 | 0 of 30, 355.4 |
-| 10 | seconds | 3151.8 | 0 of 10, 3174.4 | 0 of 10, 3119.0 |
-| 100 | ~50 ms | 63.2 | 0 of 60, 60.5 | 0 of 60, 55.6 |
-| 100 | ~500 ms | 359.0 | 0 of 30, 323.4 | 0 of 30, 370.1 |
-| 100 | seconds | 2683.5 | 0 of 10, 2880.4 | 0 of 10, 3035.1 |
+| 10 | ~50 ms | 47.3 | 0 of 60, 47.2 | 0 of 60, 51.5 |
+| 10 | ~500 ms | 385.7 | 0 of 30, 677.7 | 0 of 30, 575.3 |
+| 10 | seconds | 2833.9 | 2 of 10, 1650.4 | 0 of 10, 2615.2 |
+| 100 | ~50 ms | 52.7 | 0 of 60, 52.0 | 0 of 60, 54.8 |
+| 100 | ~500 ms | 391.1 | 0 of 30, 321.1 | 0 of 30, 335.9 |
+| 100 | seconds | 2849.7 | 1 of 10, 2689.4 | 0 of 10, 2668.3 |
 
-Nothing was routed under either setting, and the new default does not change
-that. The mirror was 30 to 80 KB of WAL behind on every try, which is a publish
-cycle, not a wait. A separate check on the same cluster, with 20 `count(*)`
-statements over `orders` under the same writes, makes the same point: with
-`freshness_wait = 1s` every statement waited and was then answered by the heap
-(0 of 20 routed, median 1,086 ms); with the proportional wait alone 3 of 20 were
-routed (median 1,112 ms, the heap's own time for that statement being about a
-second under these writes). The steady-write case is the one
-`strict.py` described above, and a wait does not change it.
+Routing is where the mirror happened to be fresh when the statement was
+planned: 0 to 2 of 10 for the statements that take seconds, none for the rest.
+The latency differences are not waits, and they are of the size the heap rows move by
+between runs. The
+mirror was 30 to 80 KB of WAL behind on the statements that were not routed,
+which is a publish cycle. With a 1 s floor the statements waited about a
+second and then the heap answered; with the write load they did not catch up
+(0 of 20 routed; 3 of 20 without the floor, in another run), so a wait would not
+change the steady-write case that `strict.py` described above.
 
 ### A snapshot older than the freshness check had just approved
 
