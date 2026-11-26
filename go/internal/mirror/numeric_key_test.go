@@ -68,6 +68,9 @@ func numericValueKey(t *testing.T, s string) string {
 // random spelling of its value, with compactions and reopens in between. The
 // live rows must match a Go map keyed by the exact value at every check.
 func TestRandomNumericKeySpellingsAgreeWithTheValueModel(t *testing.T) {
+	if testing.Short() {
+		t.Skip("heavy; run without -short")
+	}
 	defer func(prev string) { NumericScale = prev }(NumericScale)
 	NumericScale = ""
 	cols := map[string]string{"k": "numeric", "v": "text"}

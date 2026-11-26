@@ -496,6 +496,9 @@ func (m *kidxModel) truncate() {
 }
 
 func TestKidxModel(t *testing.T) {
+	if testing.Short() {
+		t.Skip("heavy; run without -short")
+	}
 	if !DiskIndex {
 		t.Skip("QS_DISK_INDEX=0")
 	}

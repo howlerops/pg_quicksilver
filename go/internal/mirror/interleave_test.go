@@ -478,6 +478,9 @@ func (w *interleaving) step() {
 }
 
 func TestRandomInterleavingsAgainstAModel(t *testing.T) {
+	if testing.Short() {
+		t.Skip("heavy; run without -short")
+	}
 	seeds, steps := 10, 150
 	if testing.Short() {
 		seeds = 3
