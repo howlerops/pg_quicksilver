@@ -12,6 +12,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/parquet"
 	"github.com/apache/arrow-go/v18/parquet/compress"
 	"github.com/apache/arrow-go/v18/parquet/file"
@@ -404,6 +405,32 @@ func checkLayout(t *testing.T, tbl *Table, path string, notNull bool, shape stri
 			if exact != exactStatistics(dt) {
 				t.Errorf("%s group %d: min/max marked exact is %v, want %v", name, g, exact, exactStatistics(dt))
 			}
+		}
+	}
+}
+
+// The types the footer may call exact, written out rather than read back from
+// exactStatistics, so that a change to that function shows here.
+func TestExactStatisticsByType(t *testing.T) {
+	for _, c := range []struct {
+		name  string
+		dt    arrow.DataType
+		exact bool
+	}{
+		{"bigint", arrow.PrimitiveTypes.Int64, true},
+		{"integer", arrow.PrimitiveTypes.Int32, true},
+		{"smallint", arrow.PrimitiveTypes.Int16, true},
+		{"date", arrow.FixedWidthTypes.Date32, true},
+		{"timestamptz", &arrow.TimestampType{Unit: arrow.Microsecond, TimeZone: "UTC"}, true},
+		{"numeric(12,2) on INT64", &arrow.Decimal128Type{Precision: 12, Scale: 2}, true},
+		{"numeric(38,9) on bytes", &arrow.Decimal128Type{Precision: 38, Scale: 9}, true},
+		{"double", arrow.PrimitiveTypes.Float64, false},
+		{"real", arrow.PrimitiveTypes.Float32, false},
+		{"text", arrow.BinaryTypes.String, false},
+		{"bytea", arrow.BinaryTypes.Binary, false},
+	} {
+		if got := exactStatistics(c.dt); got != c.exact {
+			t.Errorf("%s: exact = %v, want %v", c.name, got, c.exact)
 		}
 	}
 }
