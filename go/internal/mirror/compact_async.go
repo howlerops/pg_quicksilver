@@ -150,7 +150,7 @@ func (t *Table) BeginCompaction() *Compaction {
 		}
 		return m
 	}
-	newID, numeric, hashing := baseID(c.name), t.numericKey, t.elideWorked
+	numeric, hashing := t.numericKey, t.elideWorked
 	// base/... sorts before delta/..., and delta names are a zero-padded
 	// sequence, so this is base first and then deltas oldest to newest.
 	sort.Strings(snapshot)
@@ -210,8 +210,18 @@ func (t *Table) BeginCompaction() *Compaction {
 		// dead and THEN writing the new one, so a compactor reading between
 		// those steps holds both copies. Files are read base-first then deltas
 		// in sequence order, so the last occurrence is the newest.
-		idx := newKeyIndex(sizeHint)
-		var dup []int
+		//
+		// The keys go to the builder of the new base file's index (kidx.go),
+		// which sorts them in bounded runs instead of holding a second map of
+		// the whole table next to the live one, and which reports the
+		// duplicates when it merges: every position whose key appears again at
+		// a higher one.
+		kb := t.newKidxBuilder(c.name, sizeHint, true)
+		defer func() {
+			if c.index == nil {
+				kb.abort()
+			}
+		}()
 		out := 0
 
 		w, err := t.newParquetWriter(filepath.Join(t.Dir, "base", c.name), nil, true)
@@ -236,16 +246,15 @@ func (t *Table) BeginCompaction() *Compaction {
 						if p, ok := overlay[k]; ok {
 							applyPatch(r, p)
 						}
-						if prev, ok := idx.get(k); ok {
-							dup = append(dup, int(prev.Pos))
-						}
-						l := loc{File: newID, Pos: int32(out)}
+						var h uint64
 						if hashing {
 							// A rewrite sees every value, so it is where a
 							// digest forgotten by a partial write comes back.
-							l.Hash, _ = largeHash(r, t.Order)
+							h, _ = largeHash(r, t.Order)
 						}
-						idx.set(k, l)
+						if err := kb.add(k, int32(out), h, false); err != nil {
+							return err
+						}
 						out++
 					}
 					return w.Append(rows)
@@ -276,8 +285,18 @@ func (t *Table) BeginCompaction() *Compaction {
 		// un-rewritten one holding 100,000 MORE rows, and the base file had
 		// shrunk exactly as expected. One file accounted for all of it.
 
+		// After the base file is closed: the index binds to its final size.
+		idx, recDups, extraDups, err := kb.finish()
+		if err != nil {
+			c.err = err
+			return
+		}
+		// The copies superseded within the rewrite are not live in the new
+		// base. The swap writes them to its deletion vector; the index is told
+		// here, so that it answers for the newest copy from the start.
+		idx.markGone(recDups)
 		c.index = idx
-		c.dupDead = dup
+		c.dupDead = append(recDups, extraDups...)
 		c.rowCount = out
 	}(snap)
 	return c
@@ -328,6 +347,8 @@ func (t *Table) AbortCompaction() {
 	go func() {
 		<-c.done
 		_ = os.Remove(filepath.Join(t.Dir, "base", c.name))
+		c.index.close()
+		t.dropKidx(c.name)
 	}()
 }
 
@@ -348,6 +369,8 @@ func (t *Table) FinishCompaction() (int, error) {
 	t.compacting = nil
 	if c.err != nil {
 		_ = os.Remove(filepath.Join(t.Dir, "base", c.name))
+		c.index.close()
+		t.dropKidx(c.name)
 		if c.halted != "" {
 			_ = t.Halt(c.halted)
 		}
@@ -434,7 +457,9 @@ func (t *Table) FinishCompaction() (int, error) {
 	t.patch.deleteWhere(func(p loc) bool { return c.files[p.File] })
 
 	t.noteCompacted(c)
+	old := t.index
 	t.index = c.index // O(1): the rewrite built it
+	old.close()       // the old base file's index; its file goes with the base below
 	t.State.BaseFiles = []string{c.name}
 	t.State.DeltaFiles = keptDeltas
 	t.State.BaseRows = c.rowCount - len(dead)

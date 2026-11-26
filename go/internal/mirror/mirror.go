@@ -247,7 +247,24 @@ func (t *Table) ensureIndex() error {
 	t.patch = newKeyIndex(0)
 	t.rebuildPartialCols()
 
+	// The base file's keys come from its index file, or from the file itself if
+	// that is missing or is not this base file's (kidx.go). Either way they are
+	// not held as map entries: this map is for the deltas, read back below.
+	//
+	// More than one base file is something nothing writes any more, and keeps
+	// the one map it always had.
+	if len(t.State.BaseFiles) == 1 {
+		x, err := t.baseIndex(t.State.BaseFiles[0])
+		if err != nil {
+			t.index, t.patch = nil, nil
+			return err
+		}
+		t.index = x
+	}
 	for _, base := range t.State.BaseFiles {
+		if len(t.State.BaseFiles) == 1 {
+			break // indexed just above
+		}
 		rel := filepath.Join("base", base)
 		id := baseID(base)
 		// ALWAYS from the file. There used to be a persisted index —
@@ -478,6 +495,9 @@ func (t *Table) removeDataFile(rel string) {
 // "harmless" is not a good reason to keep several megabytes per table on a
 // volume sized from a formula that does not know about it.
 func (t *Table) dropIndexJSON(name string) {
+	// And the index this version does write for a base file (kidx.go), which
+	// goes when its base file goes.
+	t.dropKidx(name)
 	_ = os.Remove(filepath.Join(t.Dir, "index", trimParquet(filepath.Base(name))+".idx.json"))
 }
 
@@ -1136,6 +1156,7 @@ func (t *Table) forgetFiles() {
 	t.State.BaseFiles, t.State.DeltaFiles = nil, nil
 	t.State.BaseRows, t.State.DeltaRows = 0, 0
 	t.State.PartialCols, t.State.FileRows, t.State.DVGen = nil, nil, nil
+	t.index.close()
 	t.index, t.patch, t.partialCols = nil, nil, nil
 	t.resetDead()
 }
@@ -1178,21 +1199,27 @@ func (t *Table) Compact() (int, error) {
 	t.State.BaseRows = len(rows)
 	t.State.DeltaRows = 0
 
-	t.index = newKeyIndex(len(rows))
 	// Every patch has just been folded into the whole rows above.
 	t.patch = newKeyIndex(0)
 	t.rebuildPartialCols()
-	id := baseID(name)
+	// The base file's keys go to its index file (kidx.go), not into a map.
+	// Live() returned one row per key, so there are no duplicates to mark.
+	kb := t.newKidxBuilder(name, len(rows), true)
 	for i, r := range rows {
-		k := t.keyOf(r[t.Key])
-		l := loc{File: id, Pos: int32(i)}
+		var h uint64
 		if t.elideWorked {
-			l.Hash, _ = largeHash(r, t.Order)
+			h, _ = largeHash(r, t.Order)
 		}
-		t.index.set(k, l)
+		if err := kb.add(t.keyOf(r[t.Key]), int32(i), h, false); err != nil {
+			kb.abort()
+			return 0, err
+		}
 	}
-	// No index/<stem>.idx.json. See dropIndexJSON.
-	t.dropIndexJSON(name)
+	x, _, _, err := kb.finish()
+	if err != nil {
+		return 0, err
+	}
+	t.index = x
 	return len(rows), t.saveState()
 }
 

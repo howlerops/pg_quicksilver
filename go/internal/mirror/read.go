@@ -165,6 +165,7 @@ func (t *Table) Reload() error {
 		return err
 	}
 	t.State = st
+	t.index.close()
 	t.index, t.patch, t.partialCols = nil, nil, nil
 	t.resetDead()
 	return nil
