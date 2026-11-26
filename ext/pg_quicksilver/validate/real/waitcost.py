@@ -10,8 +10,9 @@ run again and again under three settings:
 
     heap       quicksilver.route = heap: what the statement costs with no router
     fixed      the old default: wait 20 ms whatever the statement costs
-    cost       wait up to freshness_wait_fraction (0.5, and 1.0) of the heap
-               plan's estimated time, capped at freshness_wait_max
+    new        the default: wait up to freshness_wait_fraction (10%) of the
+               heap plan's estimated time (total cost x ms_per_cost_unit),
+               capped at freshness_wait_max (500 ms)
 
 For each: how many were answered by the mirror, and the latency the client
 saw (median, p95), which for a statement that waited and was then answered by
@@ -48,10 +49,9 @@ CONFIGS = [
     ("heap", ["SET quicksilver.route = heap"]),
     ("fixed 20 ms (old default)", ["SET quicksilver.route = auto", "SET quicksilver.freshness_wait = '20ms'",
                                    "SET quicksilver.freshness_wait_fraction = 0"]),
-    ("half the estimate", ["SET quicksilver.route = auto", "RESET quicksilver.freshness_wait",
-                           "SET quicksilver.freshness_wait_fraction = 0.5"]),
-    ("the estimate", ["SET quicksilver.route = auto", "RESET quicksilver.freshness_wait",
-                      "SET quicksilver.freshness_wait_fraction = 1.0"]),
+    ("new default (10%, cap 500 ms)", ["SET quicksilver.route = auto", "RESET quicksilver.freshness_wait",
+                                       "RESET quicksilver.freshness_wait_fraction", "RESET quicksilver.freshness_wait_max",
+                                       "RESET quicksilver.ms_per_cost_unit"]),
 ]
 
 
@@ -86,16 +86,16 @@ rd = psycopg.connect(S, autocommit=True)
 print("settings on the standby: " + ", ".join(
     f"{n.split('.')[1]}={rd.execute('SELECT current_setting(%s)', (n,)).fetchone()[0]}"
     for n in ("quicksilver.max_lag", "quicksilver.freshness_wait", "quicksilver.freshness_wait_fraction",
-              "quicksilver.freshness_wait_max", "quicksilver.cost_unit_ms")))
+              "quicksilver.freshness_wait_max", "quicksilver.ms_per_cost_unit")))
 for name, sql, _, workers in CLASSES:
     rd.execute(f"SET max_parallel_workers_per_gather = {workers}")
     plan = rd.execute("EXPLAIN (FORMAT JSON) " + sql).fetchone()[0][0]["Plan"]
     cost = plan["Total Cost"]
-    unit = float(rd.execute("SHOW quicksilver.cost_unit_ms").fetchone()[0])
+    unit = float(rd.execute("SHOW quicksilver.ms_per_cost_unit").fetchone()[0])
     frac = float(rd.execute("SHOW quicksilver.freshness_wait_fraction").fetchone()[0])
     cap = rd.execute("SELECT setting::int FROM pg_settings WHERE name = 'quicksilver.freshness_wait_max'").fetchone()[0]
-    print(f"  {name:8} heap plan cost {cost:>10.0f}: estimated {cost * unit:6.0f} ms on the heap; waits at most "
-          f"{min(cap, cost * unit * 0.5):.0f} ms at fraction 0.5, {min(cap, cost * unit):.0f} ms at 1.0")
+    print(f"  {name:8} heap plan cost {cost:>10.0f}: estimated {cost * unit:6.0f} ms on the heap; the new default waits at most "
+          f"{min(cap, cost * unit * frac):.0f} ms")
 
 print(f"\n{'writes/s':>9} {'heap class':>10}  {'setting':32} {'routed':>10} {'median ms':>10} {'p95 ms':>9}")
 for rate in [int(x) for x in args.rates.split(",")]:

@@ -129,9 +129,9 @@ static char *qs_min_applied_lsn_str = NULL;
 static XLogRecPtr qs_min_applied_lsn = InvalidXLogRecPtr;
 static bool qs_allow_unsafe = false;
 static bool qs_route_in_xact = true;
-static int	qs_wait_max_ms = 1000;
-static double qs_wait_fraction = 0.5;
-static double qs_cost_unit_ms = 0.002;
+static int	qs_wait_max_ms = 500;
+static double qs_wait_fraction = 0.1;
+static double qs_ms_per_cost_unit = 0.005;
 static bool qs_prefer_custom = true;
 static bool qs_fallback = true;
 static bool qs_log_decisions = false;
@@ -2651,7 +2651,7 @@ qs_xact_cb(XactEvent event, void *arg)
  * Waiting is worth something only in proportion to what routing saves, and
  * what routing saves is bounded by what the heap plan would have taken. So
  * the wait is bounded by a fraction of that (quicksilver.freshness_wait_fraction
- * of the plan's cost, turned into time by quicksilver.cost_unit_ms, which is
+ * of the plan's cost, turned into time by quicksilver.ms_per_cost_unit, which is
  * deliberately low: an under-estimate of the heap waits less) and by an
  * absolute cap (quicksilver.freshness_wait_max). A statement that is cheap
  * on the heap does not wait; one that would take seconds waits long enough
@@ -2666,7 +2666,7 @@ qs_wait_budget(double cost)
 
 	if (qs_wait_fraction > 0 && qs_wait_max_ms > 0 && cost > 0)
 	{
-		double		est = cost * qs_cost_unit_ms * qs_wait_fraction;
+		double		est = cost * qs_ms_per_cost_unit * qs_wait_fraction;
 
 		if (est > (double) qs_wait_max_ms)
 			est = (double) qs_wait_max_ms;
@@ -2745,12 +2745,13 @@ qs_recovery_blocked(void)
  * candidate at once and goes on to the heap, where it ends like any other.
  */
 static int
-qs_gate(List *heaps, XLogRecPtr now, bool reload, double cost, char *why, size_t whylen)
+qs_gate(List *heaps, XLogRecPtr now, bool reload, bool planning, double cost, char *why, size_t whylen)
 {
 	static uint32 wait_event = 0;
 	TimestampTz start = 0;
 	int			budget = -1;
 	bool		sleeping = false;
+	bool		dropped = false;
 	int			state;
 
 	qs_waited_ms = 0;
@@ -2790,6 +2791,14 @@ qs_gate(List *heaps, XLogRecPtr now, bool reload, double cost, char *why, size_t
 		if (budget < 0)
 		{
 			budget = qs_wait_budget(cost);
+			/*
+			 * Only while planning, and only at the top level: there the
+			 * statement's snapshot can be dropped for the wait (below). An
+			 * executor's start holds a snapshot it cannot give up, so it does
+			 * not wait; neither does anything inside a subtransaction.
+			 */
+			if (!planning || IsSubTransaction() || GetCurrentTransactionNestLevel() != 1)
+				budget = 0;
 			if (budget <= 0)
 				break;
 			if (wait_event == 0)
@@ -2809,7 +2818,24 @@ qs_gate(List *heaps, XLogRecPtr now, bool reload, double cost, char *why, size_t
 			strlcat(why, "; not waiting: recovery on this standby is waiting on a conflict", whylen);
 			break;
 		}
+		/*
+		 * The wait holds no snapshot: the statement's is given up for the
+		 * sleep (its xmin is released, so the primary's vacuum and the
+		 * standby's replay are not held back by a statement that is only
+		 * waiting), and a new one is taken after it. The freshness check
+		 * that follows is against the position that snapshot can see, so
+		 * the mirror is checked against what the statement will read.
+		 */
+		dropped = ActiveSnapshotSet();
+		if (dropped)
+			PopActiveSnapshot();
+		CHECK_FOR_INTERRUPTS();
 		(void) ConditionVariableTimedSleep(&qs_shared->reported, Min((long) budget - elapsed, 5L), wait_event);
+		if (dropped)
+		{
+			PushActiveSnapshot(GetTransactionSnapshot());
+			now = qs_current_lsn();
+		}
 	}
 	if (sleeping)
 		ConditionVariableCancelSleep();
@@ -3726,7 +3752,7 @@ qs_begin_scan(CustomScanState *node, EState *estate, int eflags)
 			qs_gated_plan = NULL;
 			if (!gated)
 			{
-				state = qs_gate((List *) list_nth(cs->custom_private, 4), qs_current_lsn(), true,
+				state = qs_gate((List *) list_nth(cs->custom_private, 4), qs_current_lsn(), true, false,
 								cs->scan.plan.total_cost, stale, sizeof(stale));
 				if (state >= 0)
 					why = stale;
@@ -4190,7 +4216,7 @@ qs_decide(Query *orig, PlannedStmt *heap, const char *query_string, int cursorOp
 		/* the position this statement can see is taken once, however often it is decided */
 		if (qs_decide_now == InvalidXLogRecPtr)
 			qs_decide_now = qs_current_lsn();
-		stale = qs_gate(heaps, qs_decide_now, false, heap->planTree->total_cost, detail, sizeof(detail));
+		stale = qs_gate(heaps, qs_decide_now, false, true, heap->planTree->total_cost, detail, sizeof(detail));
 		if (stale >= 0)
 			QS_HEAP(stale, detail, NIL);
 		qs_gated_waited_ms = qs_waited_ms;
@@ -5062,16 +5088,16 @@ _PG_init(void)
 							&qs_fresh_wait_ms, 0, 0, 60000, PGC_USERSET, GUC_UNIT_MS, NULL, NULL, NULL);
 	DefineCustomRealVariable("quicksilver.freshness_wait_fraction",
 							 "A statement waits for its mirror for at most this fraction of the time its heap plan is estimated to take.",
-							 "The estimate is the plan's total cost times quicksilver.cost_unit_ms. 0 turns the proportional wait off.",
-							 &qs_wait_fraction, 0.5, 0.0, 1.0, PGC_USERSET, 0, NULL, NULL, NULL);
+							 "The estimate is the plan's total cost times quicksilver.ms_per_cost_unit. 0 turns the proportional wait off.",
+							 &qs_wait_fraction, 0.1, 0.0, 1.0, PGC_USERSET, 0, NULL, NULL, NULL);
 	DefineCustomIntVariable("quicksilver.freshness_wait_max",
 							"The most a statement waits for its mirror under quicksilver.freshness_wait_fraction.", NULL,
-							&qs_wait_max_ms, 1000, 0, 60000, PGC_USERSET, GUC_UNIT_MS, NULL, NULL, NULL);
-	DefineCustomRealVariable("quicksilver.cost_unit_ms",
+							&qs_wait_max_ms, 500, 0, 60000, PGC_USERSET, GUC_UNIT_MS, NULL, NULL, NULL);
+	DefineCustomRealVariable("quicksilver.ms_per_cost_unit",
 							 "Milliseconds of heap execution per unit of planner cost, for the freshness wait.",
 							 "Set it low: an under-estimate of the heap makes a statement wait less. "
 							 "Measure it with EXPLAIN ANALYZE of the statements that matter (execution time / total cost) and take the smallest.",
-							 &qs_cost_unit_ms, 0.002, 0.0, 1000.0, PGC_USERSET, 0, NULL, NULL, NULL);
+							 &qs_ms_per_cost_unit, 0.005, 0.0, 1000.0, PGC_USERSET, 0, NULL, NULL, NULL);
 	DefineCustomStringVariable("quicksilver.min_applied_lsn",
 							   "Route only to a mirror that has applied at least this LSN (read your writes).", NULL,
 							   &qs_min_applied_lsn_str, "", PGC_USERSET, 0,

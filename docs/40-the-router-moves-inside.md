@@ -685,8 +685,16 @@ what the heap on the same node would have answered: not "identical". It now
 defaults to **0**: a statement is routed only if its mirror has reached
 everything the statement can see on this node when it starts (the replay
 position on a standby; the insert position on a primary, which bounds every
-commit a snapshot can see). A mirror that has not is given
-`quicksilver.freshness_wait` (20 ms; 0 allowed) and then the heap answers.
+commit a snapshot can see). A mirror that has not is given a wait and then the heap answers. The wait is at most
+`quicksilver.freshness_wait_max` (500 ms) and `quicksilver.freshness_wait_fraction` (10%) of the
+heap plan's estimated time, which is its total cost times `quicksilver.ms_per_cost_unit`
+(0.005 ms). `quicksilver.freshness_wait` is a floor under that, 0 by default. The wait
+is made only while the statement is being planned, and it holds no snapshot: the
+statement's is given up for the sleep (its xmin is released, so vacuum on the primary and
+replay on the standby are not held back by a waiting statement) and a new one is taken after it,
+and the mirror is then checked against what that snapshot can see. It is interruptible. An
+executor's start does not wait, since its snapshot cannot be given up, and neither does a
+statement inside a subtransaction.
 Bounded staleness is something a session asks for: `max_lag > 0` means "a
 routed read may be this much WAL behind the heap on this node". Separately, a
 transaction that has an xid is never routed, whatever
@@ -728,6 +736,33 @@ behind a standby that replays in milliseconds; a 200 ms wait gets 42% at a
 cost of 200 ms each. A workload like that either accepts a bound
 (`max_lag`) or is answered by the heap. The default was not loosened to hide
 this.
+
+### What the wait costs
+
+`validate/real/waitcost.py` on the 10M-row bench cluster (ICU `en-US`, standby),
+while another session commits single-row `UPDATE`s of `public.orders`: 10 and
+100 commits a second, three statements whose heap plans are estimated at about
+54 ms, 1.06 s and 3.1 s. Routed is the number answered by the mirror; latency
+is the client's median, and includes any wait.
+
+| commits/s | statement | heap median ms | old default (20 ms) routed, median | new default (10%, cap 500 ms) routed, median |
+|---|---|---|---|---|
+| 10 | ~50 ms | 51.3 | 0 of 60, 54.9 | 0 of 60, 54.9 |
+| 10 | ~500 ms | 350.7 | 0 of 30, 342.0 | 0 of 30, 355.4 |
+| 10 | seconds | 3151.8 | 0 of 10, 3174.4 | 0 of 10, 3119.0 |
+| 100 | ~50 ms | 63.2 | 0 of 60, 60.5 | 0 of 60, 55.6 |
+| 100 | ~500 ms | 359.0 | 0 of 30, 323.4 | 0 of 30, 370.1 |
+| 100 | seconds | 2683.5 | 0 of 10, 2880.4 | 0 of 10, 3035.1 |
+
+Nothing was routed under either setting, and the new default does not change
+that. The mirror was 30 to 80 KB of WAL behind on every try, which is a publish
+cycle, not a wait. A separate check on the same cluster, with 20 `count(*)`
+statements over `orders` under the same writes, makes the same point: with
+`freshness_wait = 1s` every statement waited and was then answered by the heap
+(0 of 20 routed, median 1,086 ms); with the proportional wait alone 3 of 20 were
+routed (median 1,112 ms, the heap's own time for that statement being about a
+second under these writes). The steady-write case is the one
+`strict.py` described above, and a wait does not change it.
 
 ### A snapshot older than the freshness check had just approved
 
