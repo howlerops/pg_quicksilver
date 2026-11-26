@@ -1391,3 +1391,43 @@ package. With `bench/patches/pg_duckdb-1.2.2-allowed-directories.patch` on 1.2.2
 both properties hold: the mirror reads through PostgreSQL for an ordinary role,
 and its denial cases are refused (`bench/results/pg_duckdb_1.2.2_confinement.txt`,
 `bench/scripts/serving_pg17.sh`). The serving job builds that patched 1.2.2.
+
+## Join keys
+
+A join on two uuid columns is compared on the mirror as the sidecar's integer
+companions when both columns are in one join domain (docs/16, "Join domains"):
+`quicksilver.join_domains` holds the columns and their companions, written by
+the sidecar in step with the mirror relations. A companion is exposed by a
+mirror relation after the heap's columns, and only for a statement that can
+use it; a whole-row reference is never routed, so a companion cannot appear
+in a record. Only the join comparison changes. The uuid columns are still
+projected, grouped and filtered as written.
+
+Rewritten: `A.x = B.y` with the default uuid equality, both sides plain
+columns of two different mirrored relations of the same query level, both in
+one domain, in a join condition or as an AND-ed WHERE conjunct, including
+inside a FROM subquery (each level has its own range table). Not rewritten:
+sublinks (IN, EXISTS), a cast on either side, any other operator, a column
+outside the domain, a column whose companion is not complete. The GUC
+`quicksilver.join_domains = off` disables the rewrite; EXPLAIN shows
+`Join keys: N rewritten to companions` when N > 0.
+
+Measured on this host (2,000,000 orders, 100,000 customers, uuid keys, standby;
+median of 7 interleaved runs, client-side): heap 314 ms; routed without the
+rewrite 97 ms; routed with it 47 ms. Both routed answers equal the heap's.
+
+The equality corpus has 75 join statements over the domain
+(`validate/corpus_join.sql`). 60 are routed, 40 of those have a join rewritten,
+and all 75 are identical to the heap; `routed_different` is 0 over the whole
+corpus (1,217 statements, 498 routed).
+
+Under writes that change the join keys, the answer stayed equal to the heap at
+every known-LSN check (`validate/real/joinchurn.py`). When the domain passes its
+key cap it becomes incomplete, its rows leave the registry, and the statements
+go on being routed without the rewrite.
+
+Not done: a jsonb column in any table a join reads keeps the join on the heap.
+The walk visits the join's alias variables, and a jsonb one among them refuses
+the statement even when it is not referenced. Relaxing that needs care: a
+COALESCE from FULL JOIN USING lives in the same alias variables. RIGHT and
+FULL joins are not on the allowlist, so they are answered from the heap.
