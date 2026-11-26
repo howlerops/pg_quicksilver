@@ -31,13 +31,19 @@ type jdTables struct {
 
 func jdOpen(t *testing.T, root string, withDomain bool) *jdTables {
 	t.Helper()
+	return jdOpenMax(t, root, withDomain, 0)
+}
+
+// jdOpenMax is jdOpen with a per-domain key cap (<= 0 means none).
+func jdOpenMax(t *testing.T, root string, withDomain bool, maxKeys int64) *jdTables {
+	t.Helper()
 	h := &jdTables{t: t, root: root, rng: rand.New(rand.NewSource(11))}
 	if withDomain {
 		specs, err := mirror.ParseJoinDomains(jdSpec)
 		if err != nil {
 			t.Fatal(err)
 		}
-		h.jd, err = mirror.OpenJoinDomains(root, specs, 0)
+		h.jd, err = mirror.OpenJoinDomains(root, specs, maxKeys)
 		if err != nil {
 			t.Fatal(err)
 		}

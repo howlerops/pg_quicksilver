@@ -221,10 +221,32 @@ func (t *Table) AttachJoinDomains(jd *JoinDomains) error {
 	return nil
 }
 
+// errCompanionDropped says a row's member has no companion to write: its domain
+// is disabled, or it tripped the cap while this write was in progress. A file
+// must never carry a NULL companion for a non-NULL member, so the writer does not
+// write the row with NULL: the file is written without the companion column.
+// Callers that write a whole batch at once retry without the column (see
+// writeParquetCols); a streaming writer returns the error, and its file is
+// abandoned, as any failed write is.
+var errCompanionDropped = errors.New("join domain: companion dropped; the file is written without it")
+
+// companionsOff reports whether any domain this table belongs to is disabled.
+// Disabled is durable and monotone, so a file written once this is true, and
+// every file after, carries no companion columns at all.
+func (t *Table) companionsOff() bool {
+	for _, d := range t.joinDicts {
+		if off, _ := d.Disabled(); off {
+			return true
+		}
+	}
+	return false
+}
+
 // fileCols is the column list a writer lays out for logical columns cols: the
 // same columns, then one companion per member among them, at the end. Any
 // companions already in cols are dropped first, so it is idempotent. With no
-// domain attached it returns cols unchanged.
+// domain attached it returns cols unchanged. Once a domain this table belongs
+// to is disabled, no companion is laid out at all.
 func (t *Table) fileCols(cols []string) []string {
 	if len(t.joins) == 0 {
 		return cols
@@ -234,6 +256,9 @@ func (t *Table) fileCols(cols []string) []string {
 		if !isCompanion(c) {
 			out = append(out, c)
 		}
+	}
+	if t.companionsOff() {
+		return out
 	}
 	n := len(out)
 	for _, c := range out[:n] {
@@ -246,7 +271,9 @@ func (t *Table) fileCols(cols []string) []string {
 
 // fillCompanions sets each companion in cols from its member's converted value.
 // Called with the row already converted, so the key is the one the file holds.
-// A NULL member, or a disabled domain, writes NULL.
+// A NULL member writes a NULL companion, which is correct. A non-NULL member
+// whose id cannot be assigned because its domain is disabled returns
+// errCompanionDropped: it never writes NULL for it.
 func (t *Table) fillCompanions(cols []string, vals []any) error {
 	for i, name := range cols {
 		if i >= len(vals) || !isCompanion(name) {
@@ -263,7 +290,7 @@ func (t *Table) fillCompanions(cols []string, vals []any) error {
 			continue
 		}
 		if off, _ := b.dict.Disabled(); off {
-			continue
+			return errCompanionDropped
 		}
 		key, err := joinValueKey(vals[j])
 		if err != nil {
@@ -271,7 +298,7 @@ func (t *Table) fillCompanions(cols []string, vals []any) error {
 		}
 		id, err := b.dict.Assign(key)
 		if errors.Is(err, ErrJoinDomainDisabled) {
-			continue
+			return errCompanionDropped
 		}
 		if err != nil {
 			return err

@@ -256,7 +256,14 @@ func (t *Table) newParquetWriterFor(path string, cols []string, durable bool, ro
 	if cols == nil {
 		cols = t.Order
 	}
-	cols = t.fileCols(cols)
+	return t.newParquetWriterLaid(path, t.fileCols(cols), durable, rows)
+}
+
+// newParquetWriterLaid is newParquetWriterFor for cols already laid out by
+// fileCols. A caller that converts values against a layout must write with that
+// same layout: fileCols depends on whether a domain has tripped, so laying it
+// out twice can change the columns between the conversion and the file.
+func (t *Table) newParquetWriterLaid(path string, cols []string, durable bool, rows int) (*parquetWriter, error) {
 	schema := t.arrowSchemaFor(cols)
 
 	// A detached table is a rewrite's private copy; BeginCompaction claimed

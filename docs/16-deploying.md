@@ -1042,10 +1042,42 @@ What it writes:
 - `__qs_d_<column>` (INT64, nullable) in every new data file that carries the
   member. It is NULL where the member is NULL. The mirror's own reads, `Live`,
   verification and the published view never see it.
-- `<mirror>/_domains/<name>/disabled`, if the domain passes its cap. Past the
-  cap no further companions are written (they are NULL), the mirror keeps
-  running, and its tables stay incomplete. Nothing re-enables a disabled
+- `<mirror>/_domains/<name>/disabled`, if the domain passes its cap. The mirror
+  keeps running, and its tables stay incomplete. Nothing re-enables a disabled
   domain, a restart included: the marker is durable.
+
+What happens at the cap is the part that must be right, because a routed join
+compares companions, and a companion that is NULL for a non-NULL value makes
+that row silently fail to match. So the writer never does that:
+
+- A file is never written with a NULL companion for a non-NULL member. A
+  non-NULL member whose id cannot be assigned, because the domain is disabled
+  or it trips the cap part-way through the write, is not written with NULL.
+  The batch is converted again without the companion column and written
+  without it (a batch write), or the streaming write fails and its file is
+  abandoned, to be written again on the next pass, without the column.
+- Any file written once a domain is disabled carries no companion column for
+  it at all. The file's schema says so, and a reader cannot mistake it for a
+  NULL companion.
+- The lake's declaration is decided per manifest, when the manifest is
+  published. A manifest that names a companion-less file does not declare the
+  companion, in the same snapshot, so the lake never exposes a companion column
+  that some of its files do not carry. A query that names the undeclared
+  companion gets an error from DuckDB (a binder error), not NULLs. The registry
+  row in `quicksilver.join_domains` is removed by the sidecar later. Measured
+  (validate/real/joinburst.py, 205 routed comparisons on the standby while the
+  domain tripped at comparison 5): every comparison equal to the heap, and
+  after the trip no join was rewritten to companions; they compare the uuid
+  columns. A window between the trip and the registry removal, in which a
+  routed join names a companion the mirror no longer exposes, is not measured
+  here; the planner fallback for that case is not yet verified.
+
+Tests: `TestJoinDomainCapMidBatch` and `TestJoinDomainCapMidRewrite` (go/internal/mirror)
+trip the cap in the middle of a batch and in the middle of a background rewrite
+and read every file with its hidden column: no row has a non-NULL member and a
+NULL companion. `TestJoinDomainCapTripPublishesNoCompanion`
+(go/internal/ducklake) checks that the first manifest naming a companion-less
+file does not declare the companion, and that DuckDB reading it gets an error.
 
 A table counts as complete for a domain when every file it names that carries
 the member also carries the companion. A table written before the domain was

@@ -1446,10 +1446,17 @@ func (t *Table) writeParquetCols(path string, rows []map[string]any,
 	// disk. The check is the conversion (values.go), so its result is what the
 	// writer is handed and nothing is parsed a second time.
 	vals, err := t.storableRows(t.arrowSchemaFor(cols), cols, rows)
+	if errors.Is(err, errCompanionDropped) {
+		// A join domain tripped part-way through this batch (joindomain.go).
+		// The batch is converted again without the companion columns, so the
+		// file carries none: no row gets a NULL companion for a value it has.
+		cols = t.fileCols(cols)
+		vals, err = t.storableRows(t.arrowSchemaFor(cols), cols, rows)
+	}
 	if err != nil {
 		return err
 	}
-	w, err := t.newParquetWriterFor(path, cols, durable, len(vals))
+	w, err := t.newParquetWriterLaid(path, cols, durable, len(vals))
 	if err != nil {
 		return err
 	}

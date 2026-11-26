@@ -182,8 +182,10 @@ func TestJoinDomainCapIsForever(t *testing.T) {
 		t.Fatal("a disabled domain reports itself complete")
 	}
 
-	// Every row is still there, and a row whose value never got an id has a
-	// NULL companion rather than a wrong one.
+	// Every row is still there. No file carries a NULL companion for a value
+	// that has one: the files written once the domain tripped carry no
+	// companion column at all (joindomain.go, errCompanionDropped).
+	assertNoNullCompanions(t, cust)
 	n := 0
 	if err := cust.forEachLive(true, func(r map[string]any) error {
 		n++
