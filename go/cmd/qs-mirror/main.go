@@ -163,6 +163,14 @@ func main() {
 		os.Exit(1)
 	}
 
+	if err := openLake(ctx, log, o, h); err != nil {
+		log.Error("QS_DUCKLAKE is on and the lake cannot be opened", "err", err)
+		os.Exit(1)
+	}
+	if lake != nil {
+		defer lake.Close()
+	}
+
 	// Halted tables, from the manifests, BEFORE anything connects. Opening a
 	// table needs the source's catalog, and a probe that waits for the source
 	// to answer reports "still bootstrapping" about a Pod whose real condition
@@ -482,6 +490,7 @@ func runMirror(ctx context.Context, log *slog.Logger, o options, h *health.Healt
 		if err != nil {
 			return err
 		}
+		lakeAttach(t)
 		tables[qualified] = t
 	}
 
@@ -690,6 +699,7 @@ func runMirror(ctx context.Context, log *slog.Logger, o options, h *health.Healt
 			"seconds", time.Since(t0).Seconds())
 	}
 
+	lakeReconcile(tables)
 	h.RecordBootstrapped()
 
 	return pump(ctx, log, o, h, conn, st, tables)
@@ -949,6 +959,7 @@ func pump(
 			// until the next write, however long that took to arrive. Idle is
 			// when a rewrite is cheapest and when its result lasts longest.
 			maintain(log, tables, tt)
+			lakeRewrites(log, tables)
 			tt.report(log)
 			continue
 		}
@@ -1050,6 +1061,7 @@ func pump(
 		}
 
 		maintain(log, tables, tt)
+		lakeRewrites(log, tables)
 		tt.report(log)
 
 		// Whatever the barrier cut off is held in `pending` and applied on the

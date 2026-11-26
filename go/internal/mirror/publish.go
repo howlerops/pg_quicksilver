@@ -185,6 +185,9 @@ type publisher struct {
 	now      func() time.Time
 	manual   bool // tests: no timer, reap only when told
 	closed   bool // Table.Close: no timer is armed again
+
+	// lake is the hand-off to a DuckLake publisher, if one asked. See lake.go.
+	lake lakeHook
 }
 
 func (t *Table) publisher() *publisher {
@@ -320,6 +323,7 @@ func (t *Table) publishManifest(st *State, refusal string) error {
 	if err := syncDir(t.Dir); err != nil {
 		return fmt.Errorf("publish snapshot: %w", err)
 	}
+	t.notifyLake(st, refusal)
 
 	named := make(map[string]bool, len(protect))
 	for _, f := range protect {

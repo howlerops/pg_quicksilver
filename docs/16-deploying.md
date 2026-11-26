@@ -220,6 +220,190 @@ throughout the build.
 
 ---
 
+## Publishing the mirror as a DuckLake
+
+Off by default. With `QS_DUCKLAKE=on` the sidecar also publishes every mirrored
+table as a [DuckLake](https://ducklake.select) table: the mirror's own Parquet
+files, hard-linked under `<mirror>/_ducklake/data`, behind a catalog in SQLite
+that the sidecar writes itself (`go/internal/ducklake`, pure Go, no DuckDB in
+the sidecar). Nothing is rewritten. A reader attaches the catalog and reads a
+table:
+
+```
+qs-query -mirror /var/lib/postgresql/data/quicksilver -table public.orders -ducklake
+
+ATTACH 'ducklake:sqlite:/var/lib/postgresql/data/quicksilver/_ducklake/catalog.sqlite' AS "lake" (READ_ONLY);
+-- the table: lake."public"."orders"
+SELECT applied_lsn, manifest_seq, snapshot_id, refusal
+  FROM "__ducklake_metadata_lake".qs_mirror_table WHERE table_name = 'public.orders';
+```
+
+The reason to want it: the generated view of [docs/20](20-serving-the-mirror.md)
+names files, so it describes one manifest and has to be generated again after
+every apply; a view over a DuckLake table names the table and reads the
+current snapshot, always. It is also faster to read once deletes
+exist. Two million rows after 150 applies of 2,000 updates + 400 deletes + 400
+inserts (14 data files, 12 with deletes), python duckdb 2.0.1, `taskset -c 1`,
+one thread, warm, best / median of 5, answers equal:
+
+| | published view | lake table |
+|---|---|---|
+| `count(*)` | 65.5 / 68.2 ms | 2.8 / 2.9 ms |
+| `GROUP BY status` | 83.1 / 84.5 ms | 32.5 / 36.4 ms |
+| `sum(amount)` | 109.5 / 114.6 ms | 63.0 / 63.2 ms |
+| one-month range, count + sum | 114.2 / 119.1 ms | 104.5 / 105.2 ms |
+
+| setting | default | |
+|---|---|---|
+| `QS_DUCKLAKE` | off | `on` publishes every table in `QS_TABLES` |
+| `QS_DUCKLAKE_RETENTION` | `5m` | how long a snapshot stays readable after a newer one replaced it. This, not `QS_RETIRE_GRACE_SECONDS`, is the grace of a lake reader: the lake holds its own link to every file |
+| `QS_DUCKLAKE_PATH` | `<mirror>/_ducklake` | must be on the mirror's filesystem |
+
+**One manifest, one snapshot.** Each manifest the mirror commits is handed to
+the publisher, which brings the lake table to it in one SQLite transaction that
+is one DuckLake snapshot: new files linked and registered with statistics read
+from their Parquet footers, a delete file written for each file whose dead set
+changed, dropped files ended, columns added (with `attmissingval` as the
+DuckLake `initial_default`) or dropped. The snapshot records the manifest's
+`applied_lsn`, and `qs_mirror_table` holds the current one for a freshness
+check. A reader sees a state the mirror was in or the one before it, never
+anything between.
+
+**Not on the apply path.** The hand-off stores a pointer. Publishing happens on
+another goroutine; if it falls behind it publishes the newest manifest and
+skips the ones in between. Measured with the real sidecar on that table, 150
+transactions 0.3 s apart, one run each on a shared 4-core machine:
+
+| | apply tick, median / p95 | apply phase, median / p95 |
+|---|---|---|
+| `QS_DUCKLAKE=on` | 64 / 1380 ms | 59 / 223 ms |
+| off, `QS_PARTIAL_DELTAS=0` (the like-for-like baseline) | 68 / 1168 ms | 66 / 159 ms |
+| off, defaults | 85 / 1339 ms | 82 / 275 ms |
+
+The publish itself, off to the side: median 40 ms, p95 102 ms over 134
+publishes, none coalesced. It follows the number of files whose deletes changed
+in the apply, as the prototype's did (129 ms there).
+
+**What a reader gets when a table must not be served.** A halted table, or one
+being rebuilt with nothing kept to read, is ended in the lake and a view of the
+same name is put in its place whose only effect is to fail with the reason:
+
+```
+Catalog Error: Table with name quicksilver mirror public.orders is halted and
+must not be served: <the halt reason> does not exist!
+```
+
+The same is done for a table that cannot be a DuckLake table as it stands, and
+the sidecar then fixes it by itself:
+
+- **Column-partial patch files.** A DuckLake data file is whole rows, so
+  `QS_DUCKLAKE=on` turns partial deltas off (as `QS_PARTIAL_DELTAS=0`), and what
+  they save on wide rows is given up. A mirror that already holds patch files is
+  refused in the lake, a base rewrite is started, and the table is published
+  when it lands (13 s at two million rows).
+- **Files of different physical types for one column**, which a sidecar upgrade
+  that changes how a type is stored produces. Integers of different widths are
+  published as the wider type, and the column narrows again when the last wide
+  file is gone. A uuid stored as text in older files and as 16 bytes in newer
+  ones is published as `UUID`: DuckDB 2.0.1's DuckLake reads the text files
+  under a `UUID` column correctly, filters included, although its own
+  `ducklake_add_data_files` refuses to register one. Anything else that differs
+  is refused until a base rewrite, started the same way, leaves one type.
+
+**Expiry.** A snapshot is expired once it has been superseded for longer than
+the retention window: its catalog rows go in one transaction, and only after
+that has committed are the files nothing retained can see unlinked. Catalog
+size does not grow with the number of publishes: 483 KB after 1,000 publishes
+and 492 KB after 5,000, at 209 snapshots retained throughout.
+
+**Restart and crash.** Nothing about the lake is kept outside the catalog. A
+publish that dies leaves the previous snapshot as it was, because nothing in
+the catalog changed; the files it had made are unnamed and are removed when the
+lake is next opened. At start the sidecar submits each table's current manifest
+and the lake is brought to it.
+
+**PostgreSQL, through pg_duckdb.** The view is created once:
+
+```
+qs-query -mirror ... -table public.orders -ducklake -engine postgres \
+         -view qs_lake.orders -dsn "$DSN" [-attach-on-login]
+```
+
+pg_duckdb's DuckDB lives in the backend, so the `ATTACH` has to run once in
+every session before the view is used. `qs-query` prints it
+(`SELECT duckdb.raw_query($qs$ ATTACH IF NOT EXISTS ... $qs$)`), and with
+`-attach-on-login` a PostgreSQL 17 login event trigger that runs it for every
+session, on standbys too. The trigger has no `EXCEPTION` block, because
+pg_duckdb refuses subtransactions; it attaches only if the catalog file is
+there, so that a node without a mirror logs in normally. If it ever locks
+sessions out: `event_triggers = off`.
+
+**Metrics**, on the sidecar's `/metrics`, per table:
+`quicksilver_ducklake_published_lsn`, `..._published_manifest_seq` against
+`..._submitted_manifest_seq`, `..._lag_seconds` (how long the oldest
+unpublished manifest has waited), `..._last_publish_seconds`,
+`..._coalesced_total`, `..._publish_errors_total`, `..._refused`; and for the
+lake `quicksilver_ducklake_publish_seconds{quantile}`, the expiry counters and
+`quicksilver_ducklake_catalog_bytes`.
+
+**What it depends on, and what breaks it.**
+
+- *One filesystem.* The lake is hard links. `QS_DUCKLAKE_PATH` on another
+  filesystem is refused at start, with a message that says so; object storage
+  is not supported.
+- *The catalog format.* The sidecar writes DuckLake catalog format **1.1** and
+  refuses, at start and again inside every publish, a catalog that says
+  anything else. A DuckDB new enough to migrate the catalog, attached
+  read-write, would do exactly that: readers must attach `READ_ONLY` (the
+  statement `qs-query` prints does). A format bump is a change to one file,
+  `go/internal/ducklake/catalog.go`, and the conformance test is what says
+  whether it is right.
+- *Readers write `-shm`.* SQLite in WAL mode needs a reader to be able to
+  create `catalog.sqlite-shm` beside the catalog, so a reader needs write
+  permission on `_ducklake/`. In a CNPG Pod the sidecar and PostgreSQL are the
+  same user.
+- *Nothing else may write the lake.* DuckLake's own compaction or expiry would
+  produce a table the next manifest does not describe. A lock file stops a
+  second sidecar; it does not stop DuckDB.
+- A table removed from `QS_TABLES` stays in the lake as it last was.
+
+How it was checked ([`go/ducklake/`](../go/ducklake/README.md) has the commands):
+
+- **Conformance against DuckDB**, in `go test`: a table driven through 1,500
+  random steps (applies, delete-only applies, delta merges, base rewrites with
+  and without an apply in the middle, TRUNCATE, ADD COLUMN with and without a
+  default, DROP COLUMN, halt, rebuild under reused file names), publishing after
+  each. After every publish, python duckdb 2.0.1 confirmed that the lake table
+  equals the mirror's own view (count and a hash of every row) and the test's
+  model; that every retained snapshot still reads as it did when published
+  (10,854 time-travel reads); that every expired one is gone (1,385); that 9,536
+  filtered queries agree with the view; and that the lake directory holds
+  exactly the files the catalog names. `ducklake_list_files` and
+  `ducklake_table_info` agree with the manifest, and the per-file statistics
+  equal the ones DuckDB's own `ducklake_add_data_files` writes for the same
+  files.
+- **Concurrency**: three reader processes querying in a loop for 240 s while
+  the publisher wrote 5,689 snapshots, expired 5,630 and unlinked 17,842 files:
+  23,016 queries, no error, and each of the 12,335 distinct answers was a state
+  the mirror had committed.
+- **pg_duckdb 1.2.0** (DuckDB 2.0.0) attaches the SQLite-catalog lake. A view
+  over `lake.public.orders`, created once, agreed with the heap after each of
+  three rounds of churn, on the primary and on the hot standby, in a session
+  opened before the publishes and in a new one.
+- **The real sidecar**: `qs-verify` MATCH, and the lake against the heap
+  (count, sum, a hash of every row) equal, after churn and after each of six
+  `kill -9` under load. Two of the six were aimed at the moment a publish had
+  written its files and not committed: the lake read as its previous snapshot
+  before the restart, and the two unnamed files were removed at the next open.
+
+Not verified: a lake on anything but a local ext4 volume; a catalog format other
+than 1.1; a reader that outlives the retention window (it is told a file is
+missing); more than one table under churn (three tables in one lake are tested, at rest;
+the conformance test is one table);
+`-attach-on-login` under a connection pooler.
+
+---
+
 ## Verifying the mirror
 
 ```
