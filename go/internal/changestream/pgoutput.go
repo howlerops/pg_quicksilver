@@ -32,6 +32,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/jackc/pglogrepl"
@@ -183,6 +184,15 @@ type Streaming struct {
 	// Guarded by mu.
 	spools []heldSpool
 
+	// SpoolMaxBytes bounds the bytes of every spool file this Streaming has
+	// on disk at once; see budget.go. Zero derives it at Start from
+	// QS_SPOOL_MAX_BYTES or the free space of the spool's volume; negative
+	// means no bound. Set before Start.
+	SpoolMaxBytes int64
+	spoolBytes    atomic.Int64 // every spool file, assembling or held
+	heldBytes     int64        // of which: committed, waiting to be confirmed. Guarded by mu.
+	spoolPaused   bool         // the receiver is not reading because of the budget. Guarded by mu.
+
 	// Receiver goroutine only: the transaction arriving whole between Begin and
 	// Commit, the transactions the server is streaming in progress by xid, and
 	// which of those the current Stream Start..Stop block belongs to.
@@ -311,6 +321,7 @@ func (s *Streaming) Start(ctx context.Context, from pglogrepl.LSN) error {
 	// Whatever is in the spool directory was written by a process that is
 	// gone. None of it was confirmed, so the server is about to send it again.
 	removeSpools(s.SpoolDir)
+	s.resolveSpoolBudget()
 
 	// proto_version 1 delivers a transaction only at its commit, whole, which
 	// made this process's memory O(largest transaction): the walsender spilled
@@ -388,6 +399,13 @@ func (s *Streaming) receive(ctx context.Context) {
 		s.askKeepalive = false
 		send := s.confirmDirty || replyNow || ask || !time.Now().Before(nextStatus)
 		paused := s.MaxBufferedChanges > 0 && s.bufferedChanges >= s.MaxBufferedChanges
+		// The spool budget (budget.go) pauses the same way and for the same
+		// reason, when a confirmation can give bytes back; when none can, the
+		// transactions still arriving do not fit and reading on would only
+		// fill the volume.
+		spoolFull, spoolErr := s.spoolVerdict()
+		s.spoolPaused = spoolFull
+		paused = paused || spoolFull
 		var rctx context.Context
 		var cancel context.CancelFunc
 		if send {
@@ -397,6 +415,14 @@ func (s *Streaming) receive(ctx context.Context) {
 			s.interrupt = cancel
 		}
 		s.mu.Unlock()
+
+		if spoolErr != nil {
+			if cancel != nil {
+				cancel()
+			}
+			s.setErr(spoolErr)
+			return
+		}
 
 		if send {
 			var err error
@@ -504,6 +530,7 @@ func (s *Streaming) releaseSpools(p pglogrepl.LSN) {
 	keep := s.spools[:0]
 	for _, h := range s.spools {
 		if h.next <= p {
+			s.heldBytes -= h.sp.off
 			h.sp.remove()
 		} else {
 			keep = append(keep, h)
@@ -697,6 +724,7 @@ func (s *Streaming) commit(a *assembly, at pglogrepl.LSN) error {
 	s.mu.Lock()
 	if a.txn.spool != nil {
 		s.spools = append(s.spools, heldSpool{at + 1, a.txn.spool})
+		s.heldBytes += a.txn.spool.off
 	}
 	s.buffered = append(s.buffered, a.txn)
 	s.bufferedChanges += weight(&a.txn)
@@ -780,7 +808,7 @@ func (s *Streaming) appendChange(op Op, xid, relID uint32, newTup, oldTup *pglog
 		}
 		// It has outgrown memory. Write out what is held and carry on in the
 		// file; from here the transaction costs one write buffer.
-		sp, err := newSpool(s.SpoolDir)
+		sp, err := newSpoolCounted(s.SpoolDir, &s.spoolBytes)
 		if err != nil {
 			return err
 		}
@@ -794,7 +822,7 @@ func (s *Streaming) appendChange(op Op, xid, relID uint32, newTup, oldTup *pglog
 		return nil
 	}
 	if a.txn.spool == nil {
-		sp, err := newSpool(s.SpoolDir)
+		sp, err := newSpoolCounted(s.SpoolDir, &s.spoolBytes)
 		if err != nil {
 			return err
 		}
@@ -881,6 +909,16 @@ func (s *Streaming) Confirm(ctx context.Context, lsn string) error {
 	p, err := pglogrepl.ParseLSN(lsn)
 	if err != nil {
 		return err
+	}
+	s.mu.Lock()
+	advancing := s.err == nil && p > s.confirmed
+	s.mu.Unlock()
+	if advancing {
+		// Whatever must be durable before the server is told (hooks.go). A
+		// failure leaves the position where it was, which is always safe.
+		if err := runBeforeConfirm(lsn); err != nil {
+			return err
+		}
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()

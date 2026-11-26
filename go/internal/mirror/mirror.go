@@ -106,6 +106,18 @@ type State struct {
 	// schema as if it had always been there, and serves the corruption it
 	// stopped for.
 	Halted string `json:"halted,omitempty"`
+
+	// FileFormat is the writer format version of each data file, by file
+	// name. A file with no entry is legacy: written before versions were
+	// recorded. See format.go.
+	FileFormat map[string]int `json:"file_format,omitempty"`
+
+	// NumericScales records, per unconstrained numeric column, the scale at
+	// which QS_NUMERIC_SCALE was ACCEPTED for it: every value stored was
+	// checked to fit DECIMAL(38,s) exactly, or there was none to check. A
+	// column named by the option and absent here is still served as text. See
+	// numeric_optin.go.
+	NumericScales map[string]int32 `json:"numeric_scales,omitempty"`
 }
 
 type Table struct {
@@ -221,6 +233,18 @@ type Table struct {
 	// rebuilding, when set, is why the published snapshot refuses while a
 	// re-snapshot runs. It is never written to the manifest. See Snapshot.
 	rebuilding string
+
+	// wm is what the root's watermark needs to know about this table, and
+	// savedOnce is whether this process has written its manifest yet: the
+	// first Apply always does, changed or not. See watermark.go.
+	wm        markState
+	savedOnce bool
+
+	// fmtPrev is the writer format version of each file the last manifest
+	// named, and freshContents says the files the next one adds were read
+	// from the source rather than made from those. See format.go.
+	fmtPrev       map[string]int
+	freshContents bool
 }
 
 // ErrNeedsReopen is returned by a Table whose Apply or Snapshot failed part-way.
@@ -249,6 +273,7 @@ func (t *Table) Close() {
 	if t.pub != nil {
 		t.pub.stop()
 	}
+	t.forgetWatermark()
 	t.index.close()
 	t.index, t.patch = nil, nil
 	t.resetDead()
@@ -279,6 +304,20 @@ func New(root, schema, table, key string, cols map[string]string, order []string
 	if b, err := os.ReadFile(t.statePath()); err == nil {
 		_ = json.Unmarshal(b, &t.State)
 	}
+	// The manifest of a table that has been quiet is behind what the table
+	// has applied, by design; the root's watermark says how far (watermark.go).
+	// A watermark that cannot be read speaks for nobody, which errs towards a
+	// re-snapshot.
+	t.wm.disk, t.wm.mem, t.wm.halted = t.State.AppliedLSN, t.State.AppliedLSN, t.State.Halted != ""
+	if w, err := ReadWatermark(root); err == nil {
+		t.State.AppliedLSN = effectiveLSN(t.Qualified, t.State.AppliedLSN, w)
+		t.wm.mem = t.State.AppliedLSN
+	}
+	t.noteFormats()
+	// Decided now, from the manifest just read, and before anything can ask
+	// through a rewrite's detached copy. See numeric_optin.go.
+	t.forgetOptIns()
+	t.primeOptIns()
 	return t, nil
 }
 
@@ -592,6 +631,17 @@ func (t *Table) saveState() error {
 	if t.broken {
 		return ErrNeedsReopen
 	}
+	// Two things the manifest records about its own files, brought up to
+	// date here because this is the one place every manifest passes through:
+	// which writer wrote each (format.go), and which opted-in numeric columns
+	// have been shown to fit their decimal (numeric_optin.go; the scan that
+	// shows it runs once, at the first manifest write of a process).
+	t.stampFormats()
+	if !t.savedOnce {
+		t.resolveOptIns()
+	} else {
+		t.primeOptIns()
+	}
 	b, err := json.MarshalIndent(t.State, "", "  ")
 	if err != nil {
 		return err
@@ -605,6 +655,8 @@ func (t *Table) saveState() error {
 	if err := syncDir(t.Dir); err != nil {
 		return err
 	}
+	t.noteManifest(t.State.AppliedLSN, t.State.Halted)
+	t.savedOnce = true
 	// Only now, with the manifest durable, is there something to publish.
 	return t.publish()
 }
@@ -668,6 +720,7 @@ func (t *Table) Halt(reason string) error {
 	if err := syncDir(t.Dir); err != nil {
 		return err
 	}
+	t.noteManifest(onDisk.AppliedLSN, reason)
 	return t.publishManifest(&onDisk, reason)
 }
 
@@ -772,6 +825,9 @@ type applyRun struct {
 	queued  map[rowKey]bool
 	deletes map[rowKey]bool
 	n       int // changes accumulated since the last flush
+	// any is whether a single change in the batch was for this table. When
+	// none was there is nothing to write, the manifest included.
+	any bool
 
 	stats ApplyStats
 	// doomed are files a TRUNCATE inside this batch orphaned. They are removed
@@ -883,6 +939,21 @@ func (t *Table) apply(txns []changestream.Transaction) (ApplyStats, error) {
 	// changed, then the manifest that names them and the new delta files.
 	pending := t.deferDead
 	t.deferDead = nil
+	if !a.any && len(pending) == 0 && len(a.doomed) == 0 && t.savedOnce && !applyAlwaysSaves {
+		// Nothing in the batch was for this table, so the manifest on disk
+		// describes it exactly as it is, bar the LSN — and the LSN of a table
+		// nothing happened to is what the root's watermark records, once, for
+		// every such table, before the batch is confirmed (watermark.go). A
+		// manifest and a published snapshot per idle table per tick was 4 syncs
+		// each to say nothing.
+		//
+		// The first Apply of a process still writes: its publish is what
+		// collects the files a previous process retired (publisher.sweep).
+		t.State.AppliedLSN = last
+		t.noteApplied(last)
+		a.stats.AppliedLSN = last
+		return a.stats, nil
+	}
 	if len(pending) > 0 {
 		byFile := make(map[fileID][]int, len(pending))
 		for id, set := range pending {
@@ -896,6 +967,7 @@ func (t *Table) apply(txns []changestream.Transaction) (ApplyStats, error) {
 	if err := t.saveState(); err != nil {
 		return ApplyStats{}, err
 	}
+	t.noteApplied(last)
 	// Through the grace, not unlinked: the snapshot published a moment ago
 	// names these, and a reader that started on it is entitled to finish.
 	t.discard(a.doomed)
@@ -906,6 +978,7 @@ func (t *Table) apply(txns []changestream.Transaction) (ApplyStats, error) {
 // add folds one change into the chunk being accumulated.
 func (a *applyRun) add(c changestream.Change) error {
 	t := a.t
+	a.any = true
 	switch c.Op {
 	case changestream.OpInsert, changestream.OpUpdate:
 		k := t.keyOf(c.Row[t.Key])
@@ -1690,21 +1763,47 @@ func (t *Table) mergeGroup(old []string, cols []string) (int, error) {
 		kept = append(kept, d)
 	}
 
-	var rows []map[string]any
+	// THE ROWS ARE NOT HELD. This used to read every row of every file into one
+	// slice of maps, drop the superseded ones, and write the slice: memory in
+	// proportion to the deltas, which at the churn trigger is a fifth of the
+	// TABLE. On a three-million-row table that was a 500,000-row merge and
+	// 780 MB resident, in a sidecar whose default limit is 256Mi and whose
+	// steady state fits in it.
+	//
+	// So it is two passes over files that do not change. The first reads the
+	// key column alone and records, for each key, which live row is its last.
+	// The second streams whole rows a few thousand at a time straight into the
+	// merged file, keeping exactly those. What is held is the keys — the same
+	// map the dedupe below always built — and one piece of one row group.
+	type source struct {
+		path string
+		dead map[int]bool
+	}
+	var sources []source
 	for _, d := range old {
 		rel := filepath.Join("delta", d)
 		dead, derr := t.deadPositions(rel)
 		if derr != nil {
 			return 0, derr
 		}
-		got, err := t.readParquetCols(filepath.Join(t.Dir, rel), dead, cols)
-		if err != nil {
-			if os.IsNotExist(err) {
-				continue
+		sources = append(sources, source{filepath.Join(t.Dir, rel), dead})
+	}
+	// lastAt is, per key, the ordinal of its last live row among the files in
+	// order; in the second pass it becomes the row's position in the merged
+	// file, stored as -1-position so the two cannot be confused.
+	lastAt := map[rowKey]int{}
+	nRows := 0
+	for _, s := range sources {
+		err := t.forEachRowGroup(s.path, s.dead, []string{t.Key}, func(keys []map[string]any, _ int) error {
+			for _, r := range keys {
+				lastAt[t.keyOf(r[t.Key])] = nRows
+				nRows++
 			}
+			return nil
+		})
+		if err != nil && !os.IsNotExist(err) {
 			return 0, err
 		}
-		rows = append(rows, got...)
 	}
 	// DEDUPE. A merge concatenates the live rows of several files, and if a key
 	// is live in two of them both copies land in the merged file — where
@@ -1731,21 +1830,7 @@ func (t *Table) mergeGroup(old []string, cols []string) (int, error) {
 	// This is deliberately a fix at the MERGE rather than at whatever let a key
 	// be live in two files. A merge that cannot express "this row is dead"
 	// must not create the situation that needs it, however the input arose.
-	lastAt := make(map[rowKey]int, len(rows))
-	for i, r := range rows {
-		lastAt[t.keyOf(r[t.Key])] = i
-	}
-	if len(lastAt) != len(rows) {
-		deduped := make([]map[string]any, 0, len(lastAt))
-		for i, r := range rows {
-			if lastAt[t.keyOf(r[t.Key])] == i {
-				deduped = append(deduped, r)
-			}
-		}
-		rows = deduped
-	}
-
-	if len(rows) == 0 {
+	if len(lastAt) == 0 {
 		// everything in them was superseded; just drop the files, and the
 		// placeholder with them since no file takes their place
 		for _, d := range old {
@@ -1766,7 +1851,42 @@ func (t *Table) mergeGroup(old []string, cols []string) (int, error) {
 	t.State.Seq++
 	name := fmt.Sprintf("%06d.parquet", t.State.Seq)
 	rel := filepath.Join("delta", name)
-	if err := t.writeParquetCols(filepath.Join(t.Dir, rel), rows, cols, false); err != nil {
+	w, err := t.newParquetWriterFor(filepath.Join(t.Dir, rel), cols, false, len(lastAt))
+	if err != nil {
+		return 0, err
+	}
+	ord, written := 0, 0
+	keep := make([]map[string]any, 0, rowChunk)
+	for _, s := range sources {
+		isDead := func(p int) bool { return s.dead[p] }
+		err = t.forEachRows(s.path, isDead, cols, rowChunk, func(rows []map[string]any, _ int) error {
+			keep = keep[:0]
+			for _, r := range rows {
+				k := t.keyOf(r[t.Key])
+				if lastAt[k] == ord {
+					keep = append(keep, r)
+					lastAt[k] = -1 - written
+					written++
+				}
+				ord++
+			}
+			return w.Append(keep)
+		})
+		if err != nil && !os.IsNotExist(err) {
+			break
+		}
+		err = nil
+	}
+	if cerr := w.Close(); err == nil {
+		err = cerr
+	}
+	if err == nil && (ord != nRows || written != len(lastAt)) {
+		err = fmt.Errorf("delta merge: the files changed between passes (%d rows then %d, %d of %d keys written)",
+			nRows, ord, written, len(lastAt))
+	}
+	if err != nil {
+		// No manifest names it, and none will.
+		_ = os.Remove(filepath.Join(t.Dir, rel))
 		return 0, err
 	}
 	// The new file is written before the old ones are removed and before the
@@ -1776,9 +1896,8 @@ func (t *Table) mergeGroup(old []string, cols []string) (int, error) {
 	if cols != nil {
 		target = t.patch
 	}
-	for i, r := range rows {
-		k := t.keyOf(r[t.Key])
-		target.set(k, loc{File: id, Pos: int32(i)})
+	for k, at := range lastAt {
+		target.set(k, loc{File: id, Pos: int32(-1 - at)})
 		// A merge moves keys too, and a rewrite in flight has to know. Patches
 		// never move during a rewrite (they only exist inside its snapshot,
 		// which mergeableDeltas excludes), so this is a whole-row question.
@@ -1797,7 +1916,7 @@ func (t *Table) mergeGroup(old []string, cols []string) (int, error) {
 		}
 	}
 	t.State.DeltaFiles = merged
-	t.noteDeltaFile(name, len(rows), cols)
+	t.noteDeltaFile(name, written, cols)
 	t.recountDeltaRows()
 	if err := t.saveState(); err != nil {
 		return 0, err
@@ -1805,7 +1924,7 @@ func (t *Table) mergeGroup(old []string, cols []string) (int, error) {
 	for _, d := range old {
 		t.removeDataFile(filepath.Join("delta", d))
 	}
-	return len(rows), nil
+	return written, nil
 }
 
 // Compaction policy constants. Both bounds exist because the two costs they
@@ -1869,10 +1988,18 @@ func (t *Table) ShouldCompact() bool { return t.CompactReason() != "" }
 //
 // The first two bound how much a busy table carries. Only the third bounds how
 // LONG a quiet one carries it, and it is the one that was missing.
-func (t *Table) CompactReason() string {
+//
+// This is the three triggers; CompactReason itself (compact_cluster.go) asks
+// them first and then whether the base wants re-clustering.
+func (t *Table) compactReason() string {
 	t.noteActivity()
 	if !t.retryAt.IsZero() && t.now().Before(t.retryAt) {
 		return ""
+	}
+	// A column QS_NUMERIC_SCALE was accepted for is still text in files
+	// written before it was; only a rewrite converts them (numeric_optin.go).
+	if t.numericRewriteDue() {
+		return "numeric-opt-in"
 	}
 	if len(t.State.DeltaFiles) > 0 {
 		threshold := t.State.BaseRows / compactChurnRatio

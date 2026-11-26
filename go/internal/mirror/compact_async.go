@@ -28,7 +28,10 @@ package mirror
 // needs no locking, decides which of its rows are actually live.
 
 import (
+	"encoding/json"
+	"errors"
 	"fmt"
+	"log/slog"
 	"maps"
 	"os"
 	"path/filepath"
@@ -55,6 +58,9 @@ type Compaction struct {
 	// clusterBy is the column the rewrite kept the output clustered on, ""
 	// if it wrote the base and then the deltas; clusterWhy is the reason.
 	clusterBy, clusterWhy string
+	// sorted says the rewrite sorted the whole table on clusterBy, because the
+	// base had lost its clustering (compact_cluster.go, "re-clustering").
+	sorted bool
 	// halted is the reason the rewrite met a value the mirror cannot hold. The
 	// rewrite works on a detached copy of the table and cannot halt the real
 	// one; the swap does it, on the apply goroutine.
@@ -149,7 +155,11 @@ func (t *Table) BeginCompaction() *Compaction {
 		}
 		deadSnap[rel] = &deadSet{gen: d.gen, n: d.n, words: append([]uint64(nil), d.words...)}
 	}
-	deadOf := func(rel string) map[int]bool {
+	// As the bitmaps they are. They used to be turned into a map[int]bool per
+	// file read, which for a base with two million dead rows — what the churn
+	// trigger means at ten million — was 74 MB to say what 1.25 MB says.
+	deadOf := func(rel string) func(int) bool { return deadSnap[rel].has }
+	deadMapOf := func(rel string) map[int]bool {
 		d := deadSnap[rel]
 		m := make(map[int]bool, d.n)
 		for _, p := range d.positions() {
@@ -183,12 +193,8 @@ func (t *Table) BeginCompaction() *Compaction {
 			if pcols[rel] == nil {
 				continue
 			}
-			dead, derr := deadOf(rel), error(nil)
-			if derr != nil {
-				c.err = derr
-				return
-			}
-			got, err := t.readParquetCols(filepath.Join(t.Dir, rel), dead, pcols[rel])
+			// A patch file: bounded by the deltas, and read whole.
+			got, err := t.readParquetCols(filepath.Join(t.Dir, rel), deadMapOf(rel), pcols[rel])
 			if err != nil {
 				if os.IsNotExist(err) {
 					continue
@@ -252,12 +258,20 @@ func (t *Table) BeginCompaction() *Compaction {
 			}
 		}
 		c.clusterBy, c.clusterWhy = t.clusterColumn(baseRels)
-		if len(deltaRels) == 0 {
+		// A base that has lost the clustering it had is not merged into: it is
+		// sorted on the column, once, deltas or no deltas (compact_cluster.go).
+		sortCol, sortWhy := t.reclusterColumn(baseRels)
+		sortAll := sortCol != ""
+		if sortAll {
+			c.clusterBy, c.clusterWhy, c.sorted = sortCol, sortWhy, true
+			slog.Info("rewrite re-clusters the base", "table", t.Qualified, "column", sortCol, "why", sortWhy)
+		}
+		if len(deltaRels) == 0 && !sortAll {
 			c.clusterBy = ""
 		}
 		if c.clusterBy != "" {
 			n, err := t.rewriteClustered(c.clusterBy, baseRels, deltaRels, deadOf, overlay,
-				numeric, hashing, kb, w)
+				numeric, hashing, kb, w, sortAll)
 			if err != nil {
 				w.Close()
 				c.err = err
@@ -270,13 +284,7 @@ func (t *Table) BeginCompaction() *Compaction {
 			if pcols[rel] != nil {
 				continue
 			}
-			dead, derr := deadOf(rel), error(nil)
-			if derr != nil {
-				w.Close()
-				c.err = derr
-				return
-			}
-			err := t.forEachRowGroup(filepath.Join(t.Dir, rel), dead, nil,
+			err := t.forEachRows(filepath.Join(t.Dir, rel), deadOf(rel), nil, rowChunk,
 				func(rows []map[string]any, _ int) error {
 					for _, r := range rows {
 						k := keyFor(numeric, r[t.Key])
@@ -409,15 +417,19 @@ func (t *Table) FinishCompaction() (int, error) {
 	}
 	t.compacting = nil
 	if c.err != nil {
-		_ = os.Remove(filepath.Join(t.Dir, "base", c.name))
-		c.index.close()
-		t.dropKidx(c.name)
+		t.discardRewrite(c)
 		if c.halted != "" {
 			_ = t.Halt(c.halted)
 		}
 		return 0, c.err
 	}
+	if t.broken {
+		// Nothing may be saved from this Table, so nothing may be swapped in.
+		t.discardRewrite(c)
+		return 0, ErrNeedsReopen
+	}
 	if err := t.ensureIndex(); err != nil {
+		t.discardRewrite(c)
 		return 0, err
 	}
 
@@ -458,17 +470,48 @@ func (t *Table) FinishCompaction() (int, error) {
 			c.index.len(), len(c.touched), len(c.dupDead), orphan, sample)
 	}
 
+	// THE SWAP, AND WHAT A FAILURE IN IT LEAVES.
+	//
+	// Three things are written here: the new base's vector, the directories
+	// the rewrite's files were created in, and the manifest. Any of them can
+	// fail, and each failure used to return with whatever had been done so far
+	// still done: the new base and its index and vector on disk under no
+	// manifest, or — once memory had been swapped — a Table describing files
+	// its manifest did not, with the old ones never collected.
+	//
+	// So the order is: everything that can fail first, memory last.
+	//
+	//   - The vector fails: nothing of the table has changed. The rewrite's
+	//     output is removed and the table carries on as it was.
+	//   - The manifest fails and the one on disk is still the old one: State is
+	//     put back, the rewrite's output is removed, the table carries on.
+	//   - The manifest fails and the one on disk is the NEW one (it was renamed
+	//     into place and the sync of its directory, or the publication, failed)
+	//     or cannot be read: which set a crash would come back to is not
+	//     knowable from here, so neither is removed. Memory is brought to the
+	//     new set and the Table is marked as needing reopen; the process that
+	//     opens it next reads whichever manifest survived, and its sweep
+	//     (publish.go) collects the files that one does not name.
 	dead := dvSorted(deadSet)
 	if len(dead) > 0 {
 		if err := t.writeDV(t.dvPathGen(newRel, 1), dead); err != nil {
+			t.discardRewrite(c)
 			return 0, err
 		}
+	}
+
+	prev := t.State
+	prev.DVGen = maps.Clone(t.State.DVGen)
+	prev.PartialCols = maps.Clone(t.State.PartialCols)
+	prev.FileRows = maps.Clone(t.State.FileRows)
+	prevPartial := maps.Clone(t.partialCols)
+
+	if len(dead) > 0 {
 		if t.State.DVGen == nil {
 			t.State.DVGen = map[string]int{}
 		}
 		t.State.DVGen[dvStem(newRel)] = 1
 	}
-
 	// Keep every delta written after the rewrite began.
 	var keptDeltas []string
 	for _, d := range t.State.DeltaFiles {
@@ -481,6 +524,28 @@ func (t *Table) FinishCompaction() (int, error) {
 	oldFiles := make([]string, 0, len(c.files))
 	for f := range c.files {
 		oldFiles = append(oldFiles, f.name())
+	}
+	t.State.BaseFiles = []string{c.name}
+	t.State.DeltaFiles = keptDeltas
+	t.State.BaseRows = c.rowCount - len(dead)
+	t.recountDeltaRows()
+	// Whatever was cached for a file of the new base's name is not its vector.
+	t.forgetDead(newRel)
+
+	// State, then memory, then the old files. A crash before the manifest is
+	// replaced leaves the old set intact and the new base as an orphan; a crash
+	// after leaves the new set.
+	//
+	// The new base was fsynced by the goroutine that wrote it, and its vector
+	// just above; both left their directories owed a sync, which saveState
+	// pays before it writes the manifest.
+	saveErr := t.saveState()
+	if saveErr != nil && t.manifestOnDisk(c.name) == manifestOld {
+		t.State, t.partialCols = prev, prevPartial
+		t.forgetDead(newRel)
+		_ = os.Remove(t.statePath() + ".tmp")
+		t.discardRewrite(c)
+		return 0, saveErr
 	}
 
 	// Every patch the rewrite folded in lived in a file it is about to delete,
@@ -501,24 +566,60 @@ func (t *Table) FinishCompaction() (int, error) {
 	old := t.index
 	t.index = c.index // O(1): the rewrite built it
 	old.close()       // the old base file's index; its file goes with the base below
-	t.State.BaseFiles = []string{c.name}
-	t.State.DeltaFiles = keptDeltas
-	t.State.BaseRows = c.rowCount - len(dead)
-	t.recountDeltaRows()
 
-	// State last, then the old files. A crash before this leaves the old set
-	// intact and the new base as an orphan; a crash after leaves the new set.
-	//
-	// The new base was fsynced by the goroutine that wrote it, and its vector
-	// just above; both left their directories owed a sync, which saveState
-	// pays before it writes the manifest.
-	if err := t.saveState(); err != nil {
-		return 0, err
+	if saveErr != nil {
+		// The manifest on disk names the new set, or cannot be read. Both sets
+		// stay where they are; see above.
+		t.broken = true
+		return 0, errors.Join(saveErr, ErrNeedsReopen)
 	}
 	for _, rel := range oldFiles {
 		t.removeDataFile(rel)
 	}
+	if c.sorted {
+		reclusterSorted.Store(t.Dir, c.clusterBy)
+	}
 	return t.State.BaseRows, nil
+}
+
+// discardRewrite removes everything a rewrite that will not be swapped in left
+// on disk: the base file, its key index and anything a build of it left, and
+// its deletion vector. No manifest has named any of it, so nothing waits out a
+// grace.
+func (t *Table) discardRewrite(c *Compaction) {
+	rel := filepath.Join("base", c.name)
+	_ = os.Remove(filepath.Join(t.Dir, rel))
+	c.index.close()
+	t.dropKidx(c.name)
+	for _, dv := range t.dvGlob(rel) {
+		_ = os.Remove(dv)
+	}
+	_ = os.Remove(t.dvPathGen(rel, 1) + ".tmp")
+}
+
+const (
+	manifestUnknown = iota
+	manifestOld
+	manifestNew
+)
+
+// manifestOnDisk says which side of a swap the manifest on disk is on: the new
+// one names the rewrite's base file and the old one does not. Unknown is a
+// manifest that cannot be read, which a failed write must be assumed able to
+// leave.
+func (t *Table) manifestOnDisk(newBase string) int {
+	b, err := os.ReadFile(t.statePath())
+	if err != nil {
+		return manifestUnknown
+	}
+	var st State
+	if err := json.Unmarshal(b, &st); err != nil {
+		return manifestUnknown
+	}
+	if contains(st.BaseFiles, newBase) {
+		return manifestNew
+	}
+	return manifestOld
 }
 
 // Compacting reports whether a background rewrite is in flight.

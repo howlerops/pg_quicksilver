@@ -85,6 +85,12 @@ type Spool struct {
 	defs    []spoolDef
 	touched map[string]bool // qualified names of tables with a change in here
 	buf     []byte
+
+	// acct is the total every spool of one Streaming counts its bytes into
+	// (budget.go), and counted is how many of them are this file's. nil for
+	// a spool nobody budgets: NewSpooledTransaction's.
+	acct    *atomic.Int64
+	counted int64
 }
 
 var spoolSeq atomic.Int64
@@ -96,7 +102,17 @@ func spoolDirOrTemp(dir string) string {
 	return dir
 }
 
-func newSpool(dir string) (*Spool, error) {
+func newSpool(dir string) (*Spool, error) { return newSpoolCounted(dir, nil) }
+
+// count moves this spool's share of the total to its current size.
+func (s *Spool) count(size int64) {
+	if s.acct != nil {
+		s.acct.Add(size - s.counted)
+	}
+	s.counted = size
+}
+
+func newSpoolCounted(dir string, acct *atomic.Int64) (*Spool, error) {
 	dir = spoolDirOrTemp(dir)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, err
@@ -108,7 +124,7 @@ func newSpool(dir string) (*Spool, error) {
 	}
 	return &Spool{
 		path: path, f: f, w: bufio.NewWriterSize(f, 256<<10),
-		ids: map[*relDef]int{}, touched: map[string]bool{},
+		ids: map[*relDef]int{}, touched: map[string]bool{}, acct: acct,
 	}, nil
 }
 
@@ -131,6 +147,7 @@ func (s *Spool) record(payload []byte) error {
 		return err
 	}
 	s.off += int64(n + len(payload))
+	s.count(s.off)
 	return nil
 }
 
@@ -238,6 +255,7 @@ func (s *Spool) truncate(off int64, n int) error {
 		return err
 	}
 	s.off, s.n = off, n
+	s.count(off)
 	// A definition written after the cut is gone with it, and the next change
 	// to that table must write it again.
 	for len(s.defs) > 0 && s.defs[len(s.defs)-1].off >= off {
@@ -266,6 +284,7 @@ func (s *Spool) remove() {
 		s.f = nil
 	}
 	_ = os.Remove(s.path)
+	s.count(0)
 }
 
 func readStr(b []byte) (string, []byte, error) {
