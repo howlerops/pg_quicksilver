@@ -28,6 +28,7 @@ package mirror
 
 import (
 	"fmt"
+	"math/bits"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -262,30 +263,204 @@ func keyStringFor(numeric bool, s string) rowKey {
 // table's row count, and spending it on the integer map of a table keyed by
 // UUID bought several hundred megabytes of empty buckets and left the map that
 // was actually filled to grow from nothing.
+//
+// The maps are no longer the whole index. When `disk` is set, the keys of the
+// base file are in a sorted file (kidx.go) and the maps hold only what is NOT
+// there: every key whose current row is in a delta file, and any key the file
+// cannot represent. The rule that keeps the two from disagreeing is one
+// invariant:
+//
+//	a key is in a map  =>  none of its records in the file is live
+//
+// and "live" is one bit per base position, `gone`. Deleting a key, or moving it
+// to a delta, sets the bit; nothing ever clears one, because a base position
+// that stopped being a key's current row never becomes it again — the next
+// rewrite makes a new file with a new index. So the answer to "where is this
+// key" is the map if it is there, and otherwise the file's record for it unless
+// its bit is set, which are exactly the answers the one big map gave.
+//
+// `gone` is seeded from the deletion vector the manifest names and thereafter
+// kept by set and del themselves, rather than read from the table's dead set on
+// every lookup. The two say the same thing for the base file, but markDead and
+// the index are updated at different moments of an Apply (and of a swap), and
+// an index whose answers depend on which of the two ran first is one every
+// caller would have to be re-read against. It costs a bit per row: 1.25 MB at
+// ten million.
 type keyIndex struct {
 	nums  map[int64]loc
 	uuids map[[2]uint64]loc
 	strs  map[string]loc
 	hint  int
+
+	disk *diskIndex
+	gone []uint64 // one bit per base position: this row is not its key's current one
+	live int      // records of the file whose bit is clear
+	// hashOv holds the digest of a base row where it differs from the one in
+	// the file: learned, or forgotten, since the file was written (elide.go).
+	// Only a patched or elided row gets one, so it is bounded by the deltas.
+	hashOv map[int32]uint64
+	// deadExtras is how many rows of the base file were dead and of a key form
+	// the file does not hold, so that seedGone does not count them against it.
+	deadExtras int
 }
 
 func newKeyIndex(hint int) *keyIndex { return &keyIndex{hint: hint} }
 
+// attach puts a base file's index underneath the maps. Every record starts
+// live; seedGone and markGone say otherwise.
+func (x *keyIndex) attach(d *diskIndex) {
+	x.disk = d
+	x.gone = make([]uint64, (d.rows+63)/64)
+	x.live = d.n
+}
+
+// close releases the mapping. The index must not be used afterwards.
+func (x *keyIndex) close() {
+	if x == nil || x.disk == nil {
+		return
+	}
+	x.disk.close()
+}
+
+func (x *keyIndex) isGone(p int32) bool {
+	w := int(p) >> 6
+	return w < len(x.gone) && x.gone[w]&(1<<(uint(p)&63)) != 0
+}
+
+// setGone marks a base position and reports whether it was clear.
+func (x *keyIndex) setGone(p int) bool {
+	w := p >> 6
+	if w >= len(x.gone) {
+		return false
+	}
+	bit := uint64(1) << (uint(p) & 63)
+	if x.gone[w]&bit != 0 {
+		return false
+	}
+	x.gone[w] |= bit
+	return true
+}
+
+// seedGone applies the base file's dead set as the manifest names it.
+func (x *keyIndex) seedGone(d *deadSet) {
+	if x.disk == nil || d == nil {
+		return
+	}
+	n := 0
+	for w, word := range d.words {
+		for word != 0 {
+			if x.setGone(w<<6 | bits.TrailingZeros64(word)) {
+				n++
+			}
+			word &= word - 1
+		}
+	}
+	x.live -= n - x.deadExtras
+	x.deadExtras = 0
+}
+
+// markGone marks positions of records in the file as not live.
+func (x *keyIndex) markGone(positions []int) {
+	if x.disk == nil {
+		return
+	}
+	for _, p := range positions {
+		if x.setGone(p) {
+			x.live--
+		}
+	}
+}
+
+// diskLive finds the key's live record in the file, if it has one.
+//
+// A key can have more than one record — a rewrite folds in both copies of a row
+// it caught mid-supersede — and at most one of them is live. If the dead set
+// has not said which, the highest position is the newest, as it always was.
+func (x *keyIndex) diskLive(k rowKey) (i int, pos int32, ok bool) {
+	d := x.disk
+	if d == nil || kidxWidth(k) != d.width {
+		return 0, 0, false
+	}
+	kk := toKKey(k)
+	for j := d.lowerBound(kk); j < d.n && d.keyAt(j) == kk; j++ {
+		if p := d.posAt(j); !x.isGone(p) {
+			i, pos, ok = j, p, true
+		}
+	}
+	return i, pos, ok
+}
+
+func (x *keyIndex) diskLoc(i int, pos int32) loc {
+	l := loc{File: x.disk.file, Pos: pos, Hash: x.disk.hashAt(i)}
+	if len(x.hashOv) > 0 {
+		if h, ok := x.hashOv[pos]; ok {
+			l.Hash = h
+		}
+	}
+	return l
+}
+
 func (x *keyIndex) get(k rowKey) (loc, bool) {
 	// Reading a nil map is defined and finds nothing, which is the answer.
+	var l loc
+	var ok bool
 	switch {
 	case k.isNum:
-		l, ok := x.nums[k.num]
-		return l, ok
+		l, ok = x.nums[k.num]
 	case k.isUUID:
-		l, ok := x.uuids[[2]uint64{uint64(k.num), k.lo}]
+		l, ok = x.uuids[[2]uint64{uint64(k.num), k.lo}]
+	default:
+		l, ok = x.strs[k.str]
+	}
+	if ok || x.disk == nil {
 		return l, ok
 	}
-	l, ok := x.strs[k.str]
-	return l, ok
+	if i, pos, ok := x.diskLive(k); ok {
+		return x.diskLoc(i, pos), true
+	}
+	return loc{}, false
 }
 
 func (x *keyIndex) set(k rowKey, l loc) {
+	// A key already in a map has no live record in the file (the invariant
+	// above), so there is nothing to look for there: this is every write after
+	// a key's first since the last rewrite, and every digest noted on a row
+	// that was just written.
+	if x.disk != nil && !x.memHas(k) {
+		if i, pos, ok := x.diskLive(k); ok {
+			if l.File == x.disk.file && l.Pos == pos {
+				// The same row, with something new known about it.
+				if x.diskLoc(i, pos).Hash != l.Hash {
+					if x.hashOv == nil {
+						x.hashOv = map[int32]uint64{}
+					}
+					x.hashOv[pos] = l.Hash
+				}
+				return
+			}
+			// The key's current row is somewhere else now.
+			x.setGone(int(pos))
+			x.live--
+			delete(x.hashOv, pos)
+		}
+	}
+	x.memSet(k, l)
+}
+
+func (x *keyIndex) memHas(k rowKey) bool {
+	var ok bool
+	switch {
+	case k.isNum:
+		_, ok = x.nums[k.num]
+	case k.isUUID:
+		_, ok = x.uuids[[2]uint64{uint64(k.num), k.lo}]
+	default:
+		_, ok = x.strs[k.str]
+	}
+	return ok
+}
+
+func (x *keyIndex) memSet(k rowKey, l loc) {
 	switch {
 	case k.isNum:
 		if x.nums == nil {
@@ -306,6 +481,7 @@ func (x *keyIndex) set(k rowKey, l loc) {
 }
 
 func (x *keyIndex) del(k rowKey) {
+	inMem := x.disk != nil && x.memHas(k)
 	switch {
 	case k.isNum:
 		delete(x.nums, k.num)
@@ -314,9 +490,16 @@ func (x *keyIndex) del(k rowKey) {
 	default:
 		delete(x.strs, k.str)
 	}
+	if x.disk != nil && !inMem {
+		if _, pos, ok := x.diskLive(k); ok {
+			x.setGone(int(pos))
+			x.live--
+			delete(x.hashOv, pos)
+		}
+	}
 }
 
-func (x *keyIndex) len() int { return len(x.nums) + len(x.uuids) + len(x.strs) }
+func (x *keyIndex) len() int { return len(x.nums) + len(x.uuids) + len(x.strs) + x.live }
 
 func (x *keyIndex) each(fn func(rowKey, loc)) {
 	for n, l := range x.nums {
@@ -327,6 +510,13 @@ func (x *keyIndex) each(fn func(rowKey, loc)) {
 	}
 	for s, l := range x.strs {
 		fn(rowKey{str: s}, l)
+	}
+	if d := x.disk; d != nil {
+		for i := 0; i < d.n; i++ {
+			if p := d.posAt(i); !x.isGone(p) {
+				fn(fromKKey(d.width, d.keyAt(i)), x.diskLoc(i, p))
+			}
+		}
 	}
 }
 
@@ -347,6 +537,15 @@ func (x *keyIndex) deleteWhere(pred func(loc) bool) {
 	for s, l := range x.strs {
 		if pred(l) {
 			delete(x.strs, s)
+		}
+	}
+	if d := x.disk; d != nil {
+		for i := 0; i < d.n; i++ {
+			if p := d.posAt(i); !x.isGone(p) && pred(x.diskLoc(i, p)) {
+				x.setGone(int(p))
+				x.live--
+				delete(x.hashOv, p)
+			}
 		}
 	}
 }

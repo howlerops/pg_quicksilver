@@ -80,6 +80,21 @@ func (t *Table) Snapshot(ctx context.Context, conn *pgx.Conn, atLSN string) (int
 	//
 	// docs/25 blamed the per-row map for this shape's 16.5 MB/s and docs/26
 	// recorded that removing it changed nothing. This is where the time was.
+	//
+	// The key column is still not turned into a map here. It IS written, as it
+	// passes, to the base file's index (kidx.go): sorted fixed-width records in
+	// runs of bounded size, so that the first ensureIndex maps a file instead
+	// of reading ten million keys back out of the one just written.
+	var kb *kidxBuilder
+	ki := -1
+	if DiskIndex {
+		kb = t.newKidxBuilder(name, 0, false)
+		for i, c := range t.Order {
+			if c == t.Key {
+				ki = i
+			}
+		}
+	}
 	n := 0
 	for rows.Next() {
 		vals := make([]any, len(t.Order))
@@ -90,6 +105,17 @@ func (t *Table) Snapshot(ctx context.Context, conn *pgx.Conn, atLSN string) (int
 		if err := rows.Scan(ptrs...); err != nil {
 			w.Close()
 			return 0, err
+		}
+		if kb != nil {
+			// A key the index cannot hold makes the builder give the file up,
+			// and ensureIndex reads the column as it always did.
+			if ki < 0 {
+				kb.abort()
+				kb = nil
+			} else if err := kb.add(t.keyOf(vals[ki]), int32(n), 0, false); err != nil || kb.nExtras > 0 {
+				kb.abort()
+				kb = nil
+			}
 		}
 		n++
 		if err := w.AppendValues(vals); err != nil {
@@ -103,6 +129,16 @@ func (t *Table) Snapshot(ctx context.Context, conn *pgx.Conn, atLSN string) (int
 	}
 	if err := w.Close(); err != nil {
 		return 0, err
+	}
+	if kb != nil {
+		// Written and closed again: nothing here needs the index yet, and the
+		// one ensureIndex opens is checked against the base file like any other.
+		// A failure costs only the rebuild.
+		if n == 0 {
+			kb.abort()
+		} else if x, _, _, err := kb.finish(); err == nil {
+			x.close()
+		}
 	}
 
 	if n > 0 {
