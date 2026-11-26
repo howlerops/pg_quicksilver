@@ -73,7 +73,7 @@ import (
 
 var (
 	janitorInterval = envDuration("QS_SLOT_JANITOR_INTERVAL", time.Minute)
-	janitorAfter = envDuration("QS_SLOT_JANITOR_AFTER", 6*time.Hour)
+	janitorAfter    = envDuration("QS_SLOT_JANITOR_AFTER", 6*time.Hour)
 	// The prefix CNPG gives its per-instance physical slots
 	// (replicationSlots.highAvailability.slotPrefix).
 	janitorPhysicalPrefix = env("QS_SLOT_JANITOR_PHYSICAL_PREFIX", "_cnpg_")
