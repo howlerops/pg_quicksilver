@@ -934,3 +934,38 @@ DB_ROUTE=none validate/real/setup.sh && validate/real/primary_report.sh && make 
 CA=/path/to/cassert/prefix validate/real/cassert.sh
 validate/real/teardown.sh
 ```
+
+## pg_duckdb 1.2.2
+
+The pin moved from 1.2.0 (DuckDB 2.0.0) to 1.2.2 (DuckDB 2.0.1), because the
+apt repository no longer serves 1.2.0. This section is the first run of the
+extension against 1.2.2.
+
+**Server.** PostgreSQL 17.12, source build with `--enable-cassert`, in a private
+prefix. The 1.2.2 `pg_duckdb.so`, `libduckdb.so` and the extension's SQL and
+control files were copied into that prefix. The package's `pg_duckdb.so` has
+`RUNPATH=/usr/lib/postgresql/17/lib`, so the server must start with
+`LD_LIBRARY_PATH` pointing at the prefix's `lib`, or it loads the system's
+`libduckdb.so` (1.2.0) instead. `/proc/<pid>/maps` showed the prefix's copy.
+
+| check | output |
+|---|---|
+| `extversion` of `pg_duckdb` | `1.2.2` |
+| `SELECT version()` through `duckdb.query` | `v2.0.1` |
+
+`duckdb.*` settings in 1.2.2 (`SELECT name FROM pg_settings WHERE name LIKE 'duckdb.%'`):
+
+    duckdb.allow_community_extensions    duckdb.allow_unredacted_secrets
+    duckdb.allow_unsigned_extensions     duckdb.allowed_directories
+    duckdb.autoinstall_known_extensions  duckdb.autoload_known_extensions
+    duckdb.azure_transport_option_type   duckdb.convert_unsupported_numeric_to_double
+    duckdb.custom_user_agent             duckdb.default_collation
+    duckdb.disabled_filesystems          duckdb.enable_external_access
+    duckdb.extension_directory           duckdb.force_execution
+    duckdb.force_motherduck_views        duckdb.log_pg_explain
+    duckdb.max_memory                    duckdb.max_temp_directory_size
+    duckdb.max_workers_per_postgres_scan duckdb.memory_limit
+    duckdb.motherduck_session_hint       duckdb.postgres_role
+    duckdb.temporary_directory           duckdb.threads
+    duckdb.threads_for_postgres_scan     duckdb.unsafe_allow_execution_inside_functions
+    duckdb.unsafe_allow_mixed_transactions duckdb.worker_threads
