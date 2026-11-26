@@ -494,10 +494,10 @@ These are the settings of the confined configuration `setup.sh` runs. They
 keep the lake out of everybody else's reach, but on stock 1.2.0 they do not
 give a non-superuser the lake: the missing piece is a pg_duckdb build whose
 unprivileged DuckDB keeps the local file system and is confined to
-`duckdb.allowed_directories`. `bench/patches/pg_duckdb-allowed-directories.patch`
-does that for pg_duckdb 1.1.1 (its README has the reasons); it has not been
-ported to 1.2.0 or built here. Until a build does it, non-superusers stay on
-the heap, and the extension needs no further change for them.
+`duckdb.allowed_directories`. `bench/patches/pg_duckdb-1.2.2-allowed-directories.patch`
+does that for pg_duckdb 1.2.2 (its README has the reasons). The 1.2.0 measurements
+above predate it. Until the patched build is in use, non-superusers stay on the
+heap, and the extension needs no further change for them.
 
 ## What is still not routed, and why
 

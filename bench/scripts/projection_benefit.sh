@@ -95,10 +95,10 @@ say "0. preconditions"
 printf 'host: %s vCPU, %s\n' "$(nproc)" "$(awk '/MemTotal/{print $2, $3}' /proc/meminfo)"
 LIBDIR=$($PG/pg_config --pkglibdir 2>/dev/null) || skip "no PostgreSQL 17 pg_config"
 [ -f "$LIBDIR/pg_duckdb.so" ] || skip "no pg_duckdb.so in $LIBDIR — see bench/patches/README.md"
-# The GUC, not the file: a stock build passes a file check and then fails much
-# later as "permission denied" on the mirror, which reads like a different bug.
-grep -qa "duckdb.allowed_directories" "$LIBDIR/pg_duckdb.so" \
-  || skip "pg_duckdb.so has no duckdb.allowed_directories: stock build, not the patched one"
+# The patch's own message, not the GUC: stock 1.2.2 has duckdb.allowed_directories
+# too, so the GUC would pass on the package this build replaces.
+grep -qa "writes to local files are disabled by configuration" "$LIBDIR/pg_duckdb.so" \
+  || skip "pg_duckdb.so has no confinement patch: stock build, not the patched one"
 
 # Disk, checked here because of how it presents otherwise. The widest scale
 # writes a heap, a basebackup of it, and a mirror; when it runs out, PostgreSQL

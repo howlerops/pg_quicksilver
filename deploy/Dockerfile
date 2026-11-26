@@ -54,6 +54,23 @@ ARG GO_IMAGE=docker.io/library/golang:1.27
 ARG CNPG_BASE=ghcr.io/cloudnative-pg/postgresql:17.12-standard-bookworm
 ARG PG_DUCKDB_DEB_URL=https://repo.pigsty.io/apt/pgsql/bookworm/pool/main/p/pg-duckdb/postgresql-17-pg-duckdb_1.2.2-1PGSTY~bookworm_amd64.deb
 ARG PG_DUCKDB_DEB_SHA256=29d3d9543f7766f87595441f215e8a11390a5bddf7f5950efca47e45f5d34a64
+# PG_DUCKDB_BUILD selects where pg_duckdb comes from in the postgres target.
+#
+#   package (default)  the pinned .deb above: stock 1.2.2. An unprivileged role
+#                      cannot read local files unless it also holds
+#                      pg_write_server_files, so routed reads are superuser-only
+#                      mirror reads. Fast: nothing is compiled.
+#   source             pg_duckdb PG_DUCKDB_TAG, at PG_DUCKDB_COMMIT, with
+#                      bench/patches/pg_duckdb-1.2.2-allowed-directories.patch.
+#                      An unprivileged role reads only duckdb.allowed_directories,
+#                      cannot write, and cannot read anything else. About an hour
+#                      of C++, and it clones from GitHub during the build.
+#
+# The build checks that the tag points at PG_DUCKDB_COMMIT, and the patch must
+# apply to that commit, so changing either pin is a deliberate act.
+ARG PG_DUCKDB_BUILD=package
+ARG PG_DUCKDB_TAG=v1.2.2
+ARG PG_DUCKDB_COMMIT=4e921ffbe4a16b3caec6cf24ca0151fa9d88032d
 
 FROM ${GO_IMAGE} AS build
 WORKDIR /src
@@ -157,9 +174,9 @@ RUN make -C /src/pg_quicksilver PG_CONFIG="/usr/lib/postgresql/${PG_MAJOR}/bin/p
  && make -C /src/pg_quicksilver PG_CONFIG="/usr/lib/postgresql/${PG_MAJOR}/bin/pg_config" with_llvm=no \
       DESTDIR=/out install
 
-# The server with both extensions in it, and nothing else yet.
-FROM ${CNPG_BASE} AS postgres-extensions
-ARG PG_MAJOR
+# pg_duckdb, from the package or from source, as PG_DUCKDB_BUILD says. Each
+# stage is the operand base with pg_duckdb installed and nothing else changed.
+FROM ${CNPG_BASE} AS pg-duckdb-package
 ARG PG_DUCKDB_DEB_URL
 ARG PG_DUCKDB_DEB_SHA256
 USER root
@@ -173,6 +190,69 @@ ADD --checksum=sha256:${PG_DUCKDB_DEB_SHA256} ${PG_DUCKDB_DEB_URL} /tmp/pg_duckd
 RUN apt-get update \
  && apt-get install -y --no-install-recommends /tmp/pg_duckdb.deb \
  && rm -rf /var/lib/apt/lists/* /tmp/pg_duckdb.deb
+USER 26
+
+# The source build, for PG_DUCKDB_BUILD=source. It compiles DuckDB as well, so it
+# is about an hour on four cores. The headers come from the server's own minor,
+# with the same archive fallback as extension-build.
+FROM ${CNPG_BASE} AS duckdb-source-build
+ARG PG_MAJOR
+ARG PG_DUCKDB_TAG
+ARG PG_DUCKDB_COMMIT
+USER root
+# hadolint ignore=DL3008
+RUN set -eux; \
+    . /etc/os-release; \
+    v=$(dpkg-query -W -f='${Version}' "postgresql-${PG_MAJOR}"); \
+    apt-get update; \
+    if ! apt-get install -y --no-install-recommends build-essential ca-certificates cmake git ninja-build pkg-config \
+           libcurl4-openssl-dev liblz4-dev libssl-dev zlib1g-dev "postgresql-server-dev-${PG_MAJOR}=${v}"; then \
+      echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt-archive.postgresql.org/pub/repos/apt ${VERSION_CODENAME}-pgdg-archive main" \
+        > /etc/apt/sources.list.d/pgdg-archive.list; \
+      apt-get update; \
+      apt-get install -y --no-install-recommends build-essential ca-certificates cmake git ninja-build pkg-config \
+           libcurl4-openssl-dev liblz4-dev libssl-dev zlib1g-dev "postgresql-server-dev-${PG_MAJOR}=${v}"; \
+    fi; \
+    rm -rf /var/lib/apt/lists/*
+COPY bench/patches/pg_duckdb-1.2.2-allowed-directories.patch /src/pg_duckdb.patch
+# The tag is cloned and then checked against the commit it names, so a moved tag
+# fails the build instead of changing what is built. The submodule is shallow:
+# the Makefile passes OVERRIDE_GIT_DESCRIBE, so DuckDB does not need the history.
+# hadolint ignore=DL3003
+RUN set -eux; \
+    git clone --depth 1 --branch "${PG_DUCKDB_TAG}" --recurse-submodules --shallow-submodules \
+      https://github.com/duckdb/pg_duckdb /src/pg_duckdb; \
+    test "$(git -C /src/pg_duckdb rev-parse HEAD)" = "${PG_DUCKDB_COMMIT}"; \
+    git -C /src/pg_duckdb apply /src/pg_duckdb.patch
+WORKDIR /src/pg_duckdb
+# `install: install-duckdb` puts libduckdb.so in place with a plain install(1),
+# which does not create its directory under DESTDIR, so it is made first.
+RUN set -eux; \
+    pg=/usr/lib/postgresql/${PG_MAJOR}/bin/pg_config; \
+    mkdir -p "/out$($pg --pkglibdir)" "/out$($pg --sharedir)/extension"; \
+    make -j"$(nproc)" PG_CONFIG="$pg"; \
+    make install DESTDIR=/out PG_CONFIG="$pg"
+USER 26
+
+FROM ${CNPG_BASE} AS pg-duckdb-source
+USER root
+# The runtime libraries the source build links against; the package pulls its own.
+# hadolint ignore=DL3008
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends libcurl4 libssl3 liblz4-1 zlib1g libstdc++6 \
+ && rm -rf /var/lib/apt/lists/*
+COPY --from=duckdb-source-build /out/ /
+USER 26
+
+# The stage the server is built on, chosen by PG_DUCKDB_BUILD. It names a stage
+# of this file, not an image, so the untagged-image rule does not apply.
+# hadolint ignore=DL3006
+FROM pg-duckdb-${PG_DUCKDB_BUILD} AS pg-duckdb
+
+# The server with both extensions in it, and nothing else yet.
+FROM pg-duckdb AS postgres-extensions
+ARG PG_MAJOR
+USER root
 COPY --from=extension-build /out/usr/lib/postgresql/${PG_MAJOR}/lib/pg_quicksilver.so \
      /usr/lib/postgresql/${PG_MAJOR}/lib/
 COPY --from=extension-build /out/usr/share/postgresql/${PG_MAJOR}/extension/pg_quicksilver* \

@@ -143,7 +143,7 @@ spec:
 # it has been run on a cluster:
 #
 #   - a pg_duckdb that confines a role to the mirror's directory
-#     (duckdb.allowed_directories; bench/patches has the patch for 1.1.1);
+#     (duckdb.allowed_directories; bench/patches has the patch for 1.2.2);
 #   - duckdb.postgres_role, naming the role whose members may use DuckDB;
 #   - quicksilver.attach_lakes_for_all = on, which tells the extension that
 #     the build above is what it is running on.

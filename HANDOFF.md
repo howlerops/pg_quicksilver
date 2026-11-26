@@ -240,7 +240,7 @@ bash bench/docker/testbed.sh --shell     # a prompt inside the image
 ```
 
 `Dockerfile.testbed` carries PostgreSQL 17, Go, helm, kubeconform, and — in its
-own cached stage — **pg_duckdb v1.1.1 plus this repo's confinement patch**,
+own cached stage — **pg_duckdb v1.2.2 plus this repo's confinement patch**,
 which is not packaged anywhere and compiles DuckDB with it. That is about an
 hour once, then nothing. It is opt-in for that reason; without `--serving` the
 suite is told `SKIP=serving`, which it prints and counts rather than hiding.

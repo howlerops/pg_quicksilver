@@ -23,40 +23,58 @@
 # Property 1 without property 2 is the privilege escalation the patch exists to
 # avoid. Property 2 without property 1 is a mirror nobody can query.
 #
-# The extension is pg_duckdb v1.1.1 plus
-# bench/patches/pg_duckdb-allowed-directories.patch, built against PostgreSQL 17.
+# The extension is pg_duckdb v1.2.2 plus
+# bench/patches/pg_duckdb-1.2.2-allowed-directories.patch, built against PostgreSQL 17.
 # It is NOT upstream; a run that cannot find it exits 2 as INCOMPLETE rather
 # than reporting success.
+#
+# Environment (all optional):
+#   PG_BIN      directory of the PostgreSQL 17 binaries (default: the system one)
+#   PG_LIBDIR   directory of pg_duckdb.so and libduckdb.so (default: pg_config's
+#               pkglibdir). Set both to a private prefix to run from it; the
+#               server is then started with LD_LIBRARY_PATH=PG_LIBDIR.
+#   STOCK=1     the package is stock pg_duckdb: skip the patch marker check and
+#               expect the unprivileged reads to be DENIED. The run then reports
+#               FAIL on the read, which is the point of running it.
+#   PPORT SPORT HEALTH   ports (default 5455, 5456, 127.0.0.1:9201)
 set -uo pipefail
 
-PG=/usr/lib/postgresql/17/bin
-BASE=/var/lib/postgresql/qs-serve
+PG=${PG_BIN:-/usr/lib/postgresql/17/bin}
+BASE=${BASE:-/var/lib/postgresql/qs-serve}
 PRIMARY=$BASE/primary
 STANDBY=$BASE/standby
 MIRROR=$BASE/mirror
-PPORT=5455
-SPORT=5456
+OUTSIDE=$BASE/outside
+PPORT=${PPORT:-5455}
+SPORT=${SPORT:-5456}
 DB=app
 # 200k is enough to prove correctness and far too small to say anything about
 # speed: at that size everything is in shared_buffers and every query is a
 # rounding error. Section 9 is skipped below 1M for exactly that reason.
 ROWS=${ROWS:-200000}
 GO=$(cd "$(dirname "$0")/../../go" && pwd)
-HEALTH=127.0.0.1:9201
+HEALTH=${HEALTH:-127.0.0.1:9201}
+SIDECAR_PIDFILE=$BASE/qs-mirror.pid
 FAIL=0
 
 say()  { printf '\n== %s ==\n' "$*"; }
 bad()  { printf 'FAIL: %s\n' "$*"; FAIL=1; }
 skip() { printf '\nINCOMPLETE — section skipped, which is NOT a pass: %s\n' "$*"; exit 2; }
+# Every server command runs as postgres with LD_LIBRARY_PATH kept, so a private
+# PG_LIBDIR is found ahead of the RUNPATH the package was linked with.
+pgas() { su -w LD_LIBRARY_PATH postgres -c "$*"; }
 # psq <port> <sql> [user] [db]
-psq()  { su postgres -c "$PG/psql -h /tmp -p $1 -U ${3:-postgres} -d ${4:-$DB} -Atc \"$2\"" 2>&1; }
+psq()  { pgas "$PG/psql -h /tmp -p $1 -U ${3:-postgres} -d ${4:-$DB} -Atc \"$2\"" 2>&1; }
 
 cleanup() {
-  # This run's sidecar only, matched by its own path. A name match would stop
-  # every qs-mirror on the machine, including one someone else is running.
-  pkill -f "^$BASE/qs-mirror\$" 2>/dev/null
-  su postgres -c "$PG/pg_ctl -D $STANDBY -m immediate stop" >/dev/null 2>&1
-  su postgres -c "$PG/pg_ctl -D $PRIMARY -m immediate stop" >/dev/null 2>&1
+  # Only the PIDs this run started: the sidecar's from its pidfile, and the two
+  # servers' from their own data directories. Nothing is matched by name.
+  if [ -f "$SIDECAR_PIDFILE" ]; then
+    kill "$(cat "$SIDECAR_PIDFILE")" 2>/dev/null
+    rm -f "$SIDECAR_PIDFILE"
+  fi
+  pgas "$PG/pg_ctl -D $STANDBY -m immediate stop" >/dev/null 2>&1
+  pgas "$PG/pg_ctl -D $PRIMARY -m immediate stop" >/dev/null 2>&1
   return 0
 }
 trap cleanup EXIT
@@ -66,8 +84,23 @@ say "0. the patched extension, for PostgreSQL 17"
 # Section 9 is a timing comparison, so the machine is part of the result.
 printf 'host: %s vCPU, %s\n' "$(nproc)" "$(awk '/MemTotal/{print $2, $3}' /proc/meminfo)"
 printf 'rows: %s\n' "$ROWS"
-LIBDIR=$($PG/pg_config --pkglibdir 2>/dev/null) || skip "no PostgreSQL 17 pg_config"
+LIBDIR=${PG_LIBDIR:-$($PG/pg_config --pkglibdir 2>/dev/null)} || skip "no PostgreSQL 17 pg_config"
 [ -f "$LIBDIR/pg_duckdb.so" ] || skip "no pg_duckdb.so in $LIBDIR — see bench/patches/README.md"
+export LD_LIBRARY_PATH="$LIBDIR${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+echo "  pg_duckdb.so: $LIBDIR  (server: $PG)"
+if [ "${STOCK:-0}" = 1 ]; then
+  echo "  STOCK=1: no patch check. Expect the unprivileged read to be denied."
+  # The stock build's own version string, so the run can say what it ran.
+  strings_ver=$(grep -ao 'pg_duckdb[^[:cntrl:]]*1\.[0-9]\.[0-9][^[:cntrl:]]*' "$LIBDIR/pg_duckdb.so" | head -1)
+  echo "  stock build marker: ${strings_ver:-none found}"
+else
+  # The marker is the message the patched local file system throws. It is
+  # compiled into the patched build only, so it proves the patch is present,
+  # which the GUC name no longer does: stock 1.2.2 has that GUC too.
+  grep -qa "writes to local files are disabled by configuration" "$LIBDIR/pg_duckdb.so" \
+    || skip "pg_duckdb.so has no confinement patch (no 'writes to local files are disabled' message): stock build"
+  echo "  $LIBDIR/pg_duckdb.so carries the confinement patch"
+fi
 
 # Checking for the GUC rather than for the file. Stock pg_duckdb has no
 # duckdb.allowed_directories at all, so the wrong binary would not fail here —
@@ -89,7 +122,7 @@ $PG/pg_config --version
 say "1. primary on $PPORT, with pg_duckdb preloaded"
 cleanup
 rm -rf "$BASE"; mkdir -p "$BASE"; chown postgres:postgres "$BASE"
-su postgres -c "$PG/initdb -D $PRIMARY -A trust" >/dev/null 2>&1 || skip "initdb failed"
+pgas "$PG/initdb -D $PRIMARY -A trust" >/dev/null 2>&1 || skip "initdb failed"
 
 # The confinement directory is named in the config, not discovered, and it is
 # PGC_POSTMASTER: it cannot be widened later by anything, including a superuser
@@ -105,7 +138,7 @@ EOF
   echo "unix_socket_directories = '/tmp'"; echo "wal_level = logical";
   duck_conf; } >> "$PRIMARY/postgresql.conf"
 
-su postgres -c "$PG/pg_ctl -D $PRIMARY -l $BASE/primary.log -w start" >/dev/null 2>&1 \
+pgas "$PG/pg_ctl -D $PRIMARY -l $BASE/primary.log -w start" >/dev/null 2>&1 \
   || { tail -20 "$BASE/primary.log"; skip "primary would not start with pg_duckdb preloaded"; }
 
 psq $PPORT "CREATE DATABASE $DB" postgres postgres >/dev/null
@@ -143,13 +176,13 @@ say "2. standby on $SPORT"
 psq $PPORT "SELECT pg_create_physical_replication_slot('serve_standby', true)" postgres postgres >/dev/null
 # -c fast: without it pg_basebackup waits on a SPREAD checkpoint, which reads as
 # a hang and has been mistaken for one twice in this repository.
-su postgres -c "$PG/pg_basebackup -D $STANDBY -R -X stream -S serve_standby -c fast \
+pgas "$PG/pg_basebackup -D $STANDBY -R -X stream -S serve_standby -c fast \
   -d 'host=/tmp port=$PPORT user=postgres dbname=postgres'" >/dev/null 2>&1 \
   || skip "pg_basebackup failed"
 { echo "port = $SPORT"; echo "unix_socket_directories = '/tmp'";
   echo "hot_standby_feedback = on"; echo "sync_replication_slots = on"; } \
   >> "$STANDBY/postgresql.conf"
-su postgres -c "$PG/pg_ctl -D $STANDBY -l $BASE/standby.log -w start" >/dev/null 2>&1 \
+pgas "$PG/pg_ctl -D $STANDBY -l $BASE/standby.log -w start" >/dev/null 2>&1 \
   || { tail -20 "$BASE/standby.log"; skip "standby would not start"; }
 [ "$(psq $SPORT 'SELECT pg_is_in_recovery()')" = "t" ] || skip "standby is not in recovery"
 
@@ -159,7 +192,8 @@ say "3. the production sidecar builds the mirror on the standby"
 ( cd "$GO" && go build -o "$BASE/qs-query"  ./cmd/qs-query )  || skip "qs-query did not build"
 chown -R postgres:postgres "$BASE"
 
-su postgres -c "QS_CLUSTER=serve QS_MODE=shadow QS_INGEST=logical \
+# exec: the PID written is the sidecar's own, so cleanup can stop exactly it.
+pgas "echo \$\$ > $SIDECAR_PIDFILE; exec env QS_CLUSTER=serve QS_MODE=shadow QS_INGEST=logical \
   QS_TABLES=public.events QS_SLOT=qs_serve QS_PUBLICATION=qs_serve \
   QS_MIRROR_PATH=$MIRROR QS_FRESHNESS_SLO=30s \
   QS_PRIMARY_HOST=localhost QS_PRIMARY_PORT=$PPORT \
@@ -183,10 +217,10 @@ say "4. publish the mirror as a view on the primary; it replicates"
 # -engine postgres, because the DuckDB view is not valid here: its
 # SET default_null_order is not a PostgreSQL GUC, and a bare column reference
 # inside read_parquet fails as `column "id" does not exist` through pg_duckdb.
-VIEW_SQL=$(su postgres -c "$BASE/qs-query -mirror $MIRROR -table public.events -view events_pq \
+VIEW_SQL=$(pgas "$BASE/qs-query -mirror $MIRROR -table public.events -view events_pq \
   -engine postgres -dsn 'host=/tmp port=$PPORT user=postgres dbname=$DB'" 2>/dev/null) \
   || skip "qs-query produced no view"
-printf '%s\n' "$VIEW_SQL" | su postgres -c "$PG/psql -h /tmp -p $PPORT -U postgres -d $DB -q" \
+printf '%s\n' "$VIEW_SQL" | pgas "$PG/psql -h /tmp -p $PPORT -U postgres -d $DB -q" \
   || skip "the published view would not create"
 
 psq $PPORT "CREATE ROLE duckdb_users" postgres >/dev/null
@@ -228,24 +262,49 @@ again=$(psq $SPORT "SELECT count(*) FROM events_pq" analyst)
 [ "$again" = "$mir_count" ] || bad "second query on a cached instance returned '$again'"
 
 # ---------------------------------------------------------------- property 2
-say "7. and NOTHING else is readable"
+say "7. and NOTHING else is readable, or writable"
+# Each denial must fail WITH ONE OF THE MESSAGES A REFUSAL PRODUCES. A bare
+# ERROR is not enough: a syntax error would otherwise count as a denial.
+DENY_RE='disabled by configuration|Cannot access|Cannot write|locked|permission denied|must be superuser'
 deny() {
   local label=$1 sql=$2 out
   out=$(psq $SPORT "$sql" analyst)
-  if printf '%s' "$out" | grep -qiE "permission|not allowed|denied|cannot access|prohibited|locked|must be superuser|ERROR"; then
+  if printf '%s' "$out" | grep -qiE "$DENY_RE"; then
     printf '  denied   %s\n' "$label"
   else
-    bad "READABLE by an unprivileged role: $label -> $(printf '%s' "$out" | head -1)"
+    bad "NOT DENIED for an unprivileged role: $label -> $(printf '%s' "$out" | head -1)"
   fi
 }
+# Fixtures the denials need, made by root and owned by postgres. A symlink
+# inside the mirror that points OUT of it, and a DuckDB file OUTSIDE it.
+mkdir -p "$OUTSIDE"
+ln -sfn /etc/passwd            "$MIRROR/escape_passwd.csv"
+ln -sfn "$STANDBY/PG_VERSION"  "$MIRROR/escape_pgdata.csv"
+chown -h postgres:postgres "$MIRROR/escape_passwd.csv" "$MIRROR/escape_pgdata.csv"
+chown -R postgres:postgres "$OUTSIDE"
+pgas "python3 -I -c \"import duckdb; duckdb.connect('$OUTSIDE/other.duckdb').close()\"" >/dev/null 2>&1 \
+  || skip "could not create the DuckDB file outside the mirror for the ATTACH case"
+
 deny "/etc/passwd"                 "SELECT count(*) FROM read_csv('/etc/passwd')"
-deny "pg_hba.conf"                 "SELECT count(*) FROM read_csv('$STANDBY/pg_hba.conf')"
-deny "PG_VERSION"                  "SELECT count(*) FROM read_csv('$STANDBY/PG_VERSION')"
+deny "pg_hba.conf (PGDATA)"        "SELECT count(*) FROM read_csv('$STANDBY/pg_hba.conf')"
+deny "PG_VERSION (PGDATA)"         "SELECT count(*) FROM read_csv('$STANDBY/PG_VERSION')"
 deny "path traversal out of dir"   "SELECT count(*) FROM read_csv('$MIRROR/../standby/PG_VERSION')"
+deny "symlink out to /etc/passwd"  "SELECT count(*) FROM read_csv('$MIRROR/escape_passwd.csv')"
+deny "symlink out to PGDATA"       "SELECT count(*) FROM read_csv('$MIRROR/escape_pgdata.csv')"
 deny "http exfiltration"           "SELECT count(*) FROM read_csv('https://example.com/x.csv')"
+deny "ATTACH a db file outside"    "SELECT * FROM duckdb.query('ATTACH ''$OUTSIDE/other.duckdb'' AS other (READ_ONLY)')"
+deny "COPY TO a file in the mirror" "SELECT * FROM duckdb.query('COPY (SELECT 1 AS x) TO ''$MIRROR/written_by_analyst.csv''')"
+deny "COPY TO a file outside"      "SELECT * FROM duckdb.query('COPY (SELECT 1 AS x) TO ''$OUTSIDE/written_by_analyst.csv''')"
+deny "DuckDB: widen allowed_directories" "SELECT * FROM duckdb.query('SET allowed_directories=[''/'']')"
+deny "DuckDB: re-enable external access" "SELECT * FROM duckdb.query('SET enable_external_access=true')"
 deny "widen disabled_filesystems"  "SET duckdb.disabled_filesystems=''"
 deny "widen allowed_directories"   "SET duckdb.allowed_directories='/'"
 deny "widen external access"       "SET duckdb.enable_external_access=true"
+
+# Nothing a denied COPY was meant to create may exist.
+for f in "$MIRROR/written_by_analyst.csv" "$OUTSIDE/written_by_analyst.csv"; do
+  [ -e "$f" ] && bad "a file was written by the unprivileged role: $f"
+done
 
 # Still readable after all of that. Otherwise the denials prove nothing except
 # that the connection broke.
@@ -292,7 +351,7 @@ else
   timed() {
     local port=$1 user=$2 sql=$3 best=999999 t
     for _ in 1 2 3; do
-      t=$(su postgres -c "$PG/psql -h /tmp -p $port -U $user -d $DB -q -c '\\timing on' -c \"$sql\" 2>&1" \
+      t=$(pgas "$PG/psql -h /tmp -p $port -U $user -d $DB -q -c '\\timing on' -c \"$sql\" 2>&1" \
           | sed -n 's/^Time: \([0-9.]*\) ms.*/\1/p' | tail -1)
       [ -n "$t" ] || { echo "ERR"; return; }
       awk -v a="$t" -v b="$best" 'BEGIN{exit !(a<b)}' && best=$t

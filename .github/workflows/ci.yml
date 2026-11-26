@@ -37,7 +37,7 @@
 # measure nothing.
 #
 # That rule is also what produced the `serving` job below. The serving section
-# needs a pg_duckdb that is not packaged anywhere — v1.1.1 plus this
+# needs a pg_duckdb that is not packaged anywhere — v1.2.2 plus this
 # repository's confinement patch — so for weeks it reported INCOMPLETE and took
 # the whole run down with it. There were two ways out: stop asking, or build the
 # thing. It builds the thing.
@@ -537,7 +537,7 @@ jobs:
   # WHERE pg_duckdb COMES FROM, because it is the one dependency with no
   # obvious answer. pg_duckdb's own releases are container images, not
   # packages; PGDG does not carry it; building it is DuckDB's build, an hour
-  # (the `serving` job below does that, for a patched 1.1.1, and caches it).
+  # (the `serving` job below does that, for a patched 1.2.2, and caches it).
   # 1.2.0 is what docs/40 was validated on (the repository has since dropped
   # it; the pin below is the 1.2.2 it serves now), and it came from the apt
   # repository this project's validation hosts use. It is fetched here as ONE
@@ -672,8 +672,8 @@ jobs:
           retention-days: 7
 
   # ---- 6. answering a SELECT through PostgreSQL 17 --------------------------
-  # Its own job because of its own dependency: pg_duckdb v1.1.1 plus
-  # bench/patches/pg_duckdb-allowed-directories.patch, which is not packaged
+  # Its own job because of its own dependency: pg_duckdb v1.2.2 plus
+  # bench/patches/pg_duckdb-1.2.2-allowed-directories.patch, which is not packaged
   # anywhere and has to be compiled — DuckDB included. That is roughly an hour
   # the first time and nothing at all afterwards, because the built extension is
   # cached on the patch's own hash: change the patch and it rebuilds, touch
@@ -723,9 +723,9 @@ jobs:
         uses: actions/cache@v4
         with:
           path: /tmp/pgduck-stage
-          key: pgduck-v1.1.1-pg17-${{ runner.os }}-${{ hashFiles('bench/patches/pg_duckdb-allowed-directories.patch') }}
+          key: pgduck-v1.2.2-pg17-${{ runner.os }}-${{ hashFiles('bench/patches/pg_duckdb-1.2.2-allowed-directories.patch') }}
 
-      - name: build pg_duckdb v1.1.1 with the confinement patch
+      - name: build pg_duckdb v1.2.2 with the confinement patch
         if: steps.ext.outputs.cache-hit != 'true'
         run: |
           set -euo pipefail
@@ -743,15 +743,17 @@ jobs:
           sudo apt-get install -y -qq build-essential cmake ninja-build git \
             pkg-config ccache libssl-dev liblz4-dev libcurl4-openssl-dev zlib1g-dev
 
-          # v1.1.1 is 7b0db3737a1ab2dfb182b742322426e3c4b500af. The submodule is
-          # DuckDB v1.4.3 and is shallow: the Makefile passes
+          # v1.2.2 is 4e921ffbe4a16b3caec6cf24ca0151fa9d88032d. The submodule is
+          # DuckDB 2.0 (8d78114) and is shallow: the Makefile passes
           # OVERRIDE_GIT_DESCRIBE, so DuckDB does not need the history.
-          git clone --depth 1 --branch v1.1.1 \
+          git clone --depth 1 --branch v1.2.2 \
             --recurse-submodules --shallow-submodules \
             https://github.com/duckdb/pg_duckdb /tmp/pg_duckdb
           cd /tmp/pg_duckdb
+          test "$(git rev-parse HEAD)" = 4e921ffbe4a16b3caec6cf24ca0151fa9d88032d \
+            || { echo "::error::v1.2.2 is not the commit this patch was made against"; exit 1; }
           git apply --verbose \
-            "$GITHUB_WORKSPACE/bench/patches/pg_duckdb-allowed-directories.patch"
+            "$GITHUB_WORKSPACE/bench/patches/pg_duckdb-1.2.2-allowed-directories.patch"
 
           export PG_CONFIG=/usr/lib/postgresql/17/bin/pg_config
           make -j"$(nproc)"
@@ -778,9 +780,13 @@ jobs:
           # pipeline reports failure on success, because grep -q exits at the
           # first match and strings dies of SIGPIPE. serving_pg17.sh has the
           # same check and the same comment, for the same reason.
-          grep -qa duckdb.allowed_directories "$lib/pg_duckdb.so" \
-            || { echo "::error::the built pg_duckdb has no duckdb.allowed_directories - the patch did not take"; exit 1; }
-          echo "$lib/pg_duckdb.so carries duckdb.allowed_directories"
+          #
+          # The marker is the patch's own message, not the GUC: stock 1.2.2 has
+          # duckdb.allowed_directories too, so checking for the GUC would pass
+          # on the package this build exists to replace.
+          grep -qa "writes to local files are disabled by configuration" "$lib/pg_duckdb.so" \
+            || { echo "::error::the built pg_duckdb has no confinement patch - the patch did not take"; exit 1; }
+          echo "$lib/pg_duckdb.so carries the confinement patch"
 
       - name: serving
         run: |

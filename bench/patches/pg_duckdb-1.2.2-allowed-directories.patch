@@ -1,0 +1,317 @@
+diff --git a/include/pgduckdb/pgduckdb_confined_fs.hpp b/include/pgduckdb/pgduckdb_confined_fs.hpp
+new file mode 100644
+index 0000000..857181a
+--- /dev/null
++++ b/include/pgduckdb/pgduckdb_confined_fs.hpp
+@@ -0,0 +1,27 @@
++#pragma once
++
++namespace duckdb {
++class DatabaseInstance;
++}
++
++namespace pgduckdb {
++
++/*
++ * Registers the LocalFileSystem that handles every local path. Until
++ * DenyLocalFileWrites() is called it behaves exactly like LocalFileSystem.
++ * Once it is called, every operation that can create, change or remove a local
++ * file fails. Reads are not touched here: they are confined by DuckDB's own
++ * allowed_directories allowlist, which DuckDB enforces on every path.
++ *
++ * It must be registered before the CA certificate file system, so that the
++ * exact CA bundle paths still go to that file system.
++ */
++void RegisterConfinedLocalFileSystem(duckdb::DatabaseInstance &db);
++
++/* Called once the DuckDB configuration is locked for a confined role. */
++void DenyLocalFileWrites();
++
++/* Called when the DuckDB instance is discarded, so the next one starts unrestricted. */
++void AllowLocalFileWrites();
++
++} // namespace pgduckdb
+diff --git a/include/pgduckdb/pgduckdb_duckdb.hpp b/include/pgduckdb/pgduckdb_duckdb.hpp
+index 74318fa..e5ad905 100644
+--- a/include/pgduckdb/pgduckdb_duckdb.hpp
++++ b/include/pgduckdb/pgduckdb_duckdb.hpp
+@@ -56,7 +56,7 @@ public:
+ private:
+ 	DuckDBManager()
+ 	    : extensions_table_current_seq(0), database(nullptr), connection(nullptr), default_dbname("<!UNSET!>"),
+-	      secrets_valid(false) {
++	      secrets_valid(false), filesystem_confined(false) {
+ 	}
+ 
+ 	DuckDBManager(const DuckDBManager &) = delete;
+@@ -101,6 +101,12 @@ private:
+ 	duckdb::unique_ptr<duckdb::Connection> connection;
+ 	std::string default_dbname;
+ 	bool secrets_valid;
++	/*
++	 * Set once the configuration is locked for a role that may read only the
++	 * duckdb.allowed_directories. A locked configuration rejects every SET, so
++	 * a confined instance is never refreshed again.
++	 */
++	bool filesystem_confined;
+ };
+ 
+ } // namespace pgduckdb
+diff --git a/src/pgduckdb_confined_fs.cpp b/src/pgduckdb_confined_fs.cpp
+new file mode 100644
+index 0000000..e742ddf
+--- /dev/null
++++ b/src/pgduckdb_confined_fs.cpp
+@@ -0,0 +1,159 @@
++#include "pgduckdb/pgduckdb_confined_fs.hpp"
++
++#include <atomic>
++#include <string>
++
++#include "duckdb/common/exception.hpp"
++#include "duckdb/common/local_file_system.hpp"
++#include "duckdb/common/memory_mapped_file.hpp"
++#include "duckdb/main/database.hpp"
++
++namespace pgduckdb {
++
++namespace {
++
++/*
++ * One DuckDB instance per backend process, so one flag per process is one flag
++ * per instance. Set only when the configuration has been locked for a role that
++ * may not read or write local files directly.
++ */
++std::atomic<bool> local_writes_denied{false};
++
++/* Anything with a scheme other than file:// belongs to a remote file system. */
++bool
++IsLocalPath(const std::string &path) {
++	return path.find("://") == std::string::npos || path.compare(0, 7, "file://") == 0;
++}
++
++[[noreturn]] void
++ThrowWriteDenied(const std::string &path) {
++	throw duckdb::PermissionException("Cannot write \"%s\": writes to local files are disabled by configuration",
++	                                  path);
++}
++
++/*
++ * A LocalFileSystem that only differs in refusing writes once they are denied.
++ * It keeps the name LocalFileSystem, so duckdb.disabled_filesystems still
++ * disables it by name, exactly as before.
++ */
++class ConfinedLocalFileSystem : public duckdb::LocalFileSystem {
++public:
++	bool
++	CanHandleFile(const std::string &path) override {
++		return IsLocalPath(path);
++	}
++
++	duckdb::unique_ptr<duckdb::FileHandle>
++	OpenFile(const std::string &path, duckdb::FileOpenFlags flags,
++	         duckdb::optional_ptr<duckdb::FileOpener> opener = nullptr) override {
++		if (flags.OpenForWriting() && local_writes_denied.load()) {
++			ThrowWriteDenied(path);
++		}
++		return duckdb::LocalFileSystem::OpenFile(path, flags, opener);
++	}
++
++	duckdb::unique_ptr<duckdb::MemoryMappedFile>
++	MemoryMapFile(const duckdb::OpenFileInfo &file, duckdb::FileOpenFlags flags, const duckdb::MMapOptions &options,
++	              duckdb::optional_ptr<duckdb::FileOpener> opener = nullptr) override {
++		if (flags.OpenForWriting() && local_writes_denied.load()) {
++			ThrowWriteDenied(file.path);
++		}
++		return duckdb::LocalFileSystem::MemoryMapFile(file, flags, options, opener);
++	}
++
++	void
++	CreateDirectory(const std::string &directory, duckdb::optional_ptr<duckdb::FileOpener> opener = nullptr) override {
++		if (local_writes_denied.load()) {
++			ThrowWriteDenied(directory);
++		}
++		duckdb::LocalFileSystem::CreateDirectory(directory, opener);
++	}
++
++	bool
++	CreateDirectoryExtended(const std::string &directory, const duckdb::CreateDirectoryOptions &options,
++	                        duckdb::optional_ptr<duckdb::FileOpener> opener = nullptr) override {
++		if (local_writes_denied.load()) {
++			ThrowWriteDenied(directory);
++		}
++		return duckdb::LocalFileSystem::CreateDirectoryExtended(directory, options, opener);
++	}
++
++	void
++	CreateDirectoriesRecursive(const std::string &path, duckdb::optional_ptr<duckdb::FileOpener> opener = nullptr) override {
++		if (local_writes_denied.load()) {
++			ThrowWriteDenied(path);
++		}
++		duckdb::LocalFileSystem::CreateDirectoriesRecursive(path, opener);
++	}
++
++	void
++	RemoveDirectory(const std::string &directory, duckdb::optional_ptr<duckdb::FileOpener> opener = nullptr) override {
++		if (local_writes_denied.load()) {
++			ThrowWriteDenied(directory);
++		}
++		duckdb::LocalFileSystem::RemoveDirectory(directory, opener);
++	}
++
++	bool
++	RemoveDirectoryExtended(const std::string &directory, const duckdb::RemoveDirectoryOptions &options,
++	                        duckdb::optional_ptr<duckdb::FileOpener> opener = nullptr) override {
++		if (local_writes_denied.load()) {
++			ThrowWriteDenied(directory);
++		}
++		return duckdb::LocalFileSystem::RemoveDirectoryExtended(directory, options, opener);
++	}
++
++	void
++	MoveFile(const std::string &source, const std::string &target,
++	         duckdb::optional_ptr<duckdb::FileOpener> opener = nullptr) override {
++		if (local_writes_denied.load()) {
++			ThrowWriteDenied(target);
++		}
++		duckdb::LocalFileSystem::MoveFile(source, target, opener);
++	}
++
++	void
++	RemoveFile(const std::string &filename, duckdb::optional_ptr<duckdb::FileOpener> opener = nullptr) override {
++		if (local_writes_denied.load()) {
++			ThrowWriteDenied(filename);
++		}
++		duckdb::LocalFileSystem::RemoveFile(filename, opener);
++	}
++
++	/* A cleanup that is refused is reported as nothing removed, not as an error. */
++	bool
++	TryRemoveFile(const std::string &filename, duckdb::optional_ptr<duckdb::FileOpener> opener = nullptr) override {
++		if (local_writes_denied.load()) {
++			return false;
++		}
++		return duckdb::LocalFileSystem::TryRemoveFile(filename, opener);
++	}
++
++	void
++	RemoveFiles(const duckdb::vector<std::string> &filenames,
++	            duckdb::optional_ptr<duckdb::FileOpener> opener = nullptr) override {
++		if (local_writes_denied.load()) {
++			ThrowWriteDenied(filenames.empty() ? std::string() : filenames[0]);
++		}
++		duckdb::LocalFileSystem::RemoveFiles(filenames, opener);
++	}
++};
++
++} // namespace
++
++void
++RegisterConfinedLocalFileSystem(duckdb::DatabaseInstance &db) {
++	db.GetFileSystem().RegisterSubSystem(duckdb::make_uniq<ConfinedLocalFileSystem>());
++}
++
++void
++DenyLocalFileWrites() {
++	local_writes_denied.store(true);
++}
++
++void
++AllowLocalFileWrites() {
++	local_writes_denied.store(false);
++}
++
++} // namespace pgduckdb
+diff --git a/src/pgduckdb_duckdb.cpp b/src/pgduckdb_duckdb.cpp
+index b4c854d..5533f8b 100644
+--- a/src/pgduckdb_duckdb.cpp
++++ b/src/pgduckdb_duckdb.cpp
+@@ -17,6 +17,7 @@
+ #include "pgduckdb/pg/transactions.hpp"
+ #include "pgduckdb/pgduckdb_background_worker.hpp"
+ #include "pgduckdb/pgduckdb_ca_certificate_fs.hpp"
++#include "pgduckdb/pgduckdb_confined_fs.hpp"
+ #include "pgduckdb/pgduckdb_fdw.hpp"
+ #include "pgduckdb/pgduckdb_guc.hpp"
+ #include "pgduckdb/pgduckdb_metadata_cache.hpp"
+@@ -187,6 +188,8 @@ DuckDBManager::Initialize() {
+ 
+ 	database = new duckdb::DuckDB(connection_string, &config);
+ 
++	/* Before the CA certificate file system, which must still win for the bundle paths it handles. */
++	RegisterConfinedLocalFileSystem(*database->instance);
+ 	RegisterCACertificateFileSystem(*database->instance);
+ 
+ 	auto &dbconfig = duckdb::DBConfig::GetConfig(*database->instance);
+@@ -268,6 +271,8 @@ DuckDBManager::Reset() {
+ 	manager_instance.connection = nullptr;
+ 	delete manager_instance.database;
+ 	manager_instance.database = nullptr;
++	manager_instance.filesystem_confined = false;
++	AllowLocalFileWrites();
+ 	UnclaimBgwSessionHint();
+ }
+ 
+@@ -318,9 +323,18 @@ DuckDBManager::InstallExtensions(duckdb::ClientContext &context) {
+ 	}
+ }
+ 
++/*
++ * A role that may not read local files directly, but has duckdb.allowed_directories
++ * set, keeps LocalFileSystem and is confined to those directories instead.
++ */
++static bool
++UseAllowedDirectories() {
++	return !pgduckdb::pg::AllowRawFileAccess() && !IsEmptyString(duckdb_allowed_directories);
++}
++
+ static std::string
+ DisabledFileSystems() {
+-	if (pgduckdb::pg::AllowRawFileAccess()) {
++	if (pgduckdb::pg::AllowRawFileAccess() || UseAllowedDirectories()) {
+ 		return duckdb_disabled_filesystems;
+ 	}
+ 
+@@ -340,8 +354,29 @@ DisabledFileSystems() {
+ 	return "LocalFileSystem," + std::string(duckdb_disabled_filesystems);
+ }
+ 
++/*
++ * Confines the DuckDB instance to duckdb.allowed_directories. The allowlist was
++ * set when the instance was created. DuckDB enforces it on every path (symlinks
++ * and ".." are resolved first), but only while external access is off, so that
++ * is switched off here. The allowlist does not distinguish reads from writes,
++ * so writes are refused by the local file system (pgduckdb_confined_fs.cpp).
++ * The configuration is locked last: a locked configuration rejects every SET,
++ * so nothing can widen the allowlist, turn external access back on, or unlock.
++ */
++static void
++ConfineToAllowedDirectories(duckdb::ClientContext &context) {
++	pgduckdb::DuckDBQueryOrThrow(context, "SET enable_external_access=false");
++	pgduckdb::DuckDBQueryOrThrow(context, "SET lock_configuration=true");
++	pgduckdb::DenyLocalFileWrites();
++}
++
+ void
+ DuckDBManager::RefreshConnectionState(duckdb::ClientContext &context) {
++	/* Locked: every SET below would be rejected, and there is nothing left to refresh. */
++	if (filesystem_confined) {
++		return;
++	}
++
+ 	std::string disabled_filesystems = DisabledFileSystems();
+ 	if (disabled_filesystems != "") {
+ 		/*
+@@ -375,6 +410,12 @@ DuckDBManager::RefreshConnectionState(duckdb::ClientContext &context) {
+ 		LoadSecrets(context);
+ 		secrets_valid = true;
+ 	}
++
++	/* Last: after this, the configuration is locked and no refresh can SET anything. */
++	if (UseAllowedDirectories()) {
++		ConfineToAllowedDirectories(context);
++		filesystem_confined = true;
++	}
+ }
+ 
+ /*
