@@ -1,90 +1,105 @@
-time=2026-11-26T16:08:21.358Z level=INFO msg="quicksilver mirror starting" cluster=qsv pod=s1 mode=shadow ingest=logical tables="[public.t1 public.t2 public.t3]" slo=15s slot=qs_v1_s1 configured_slot=qs_v1
-time=2026-11-26T16:08:21.359Z level=INFO msg="slot janitor on: when this instance is the primary it drops this cluster's Quicksilver slots that nothing will consume again" slots="qs_v1 and qs_v1_*" interval=1m0s wal_limit_bytes=4294967296 inactive_limit=6h0m0s off="QS_SLOT_JANITOR=off"
-time=2026-11-26T16:08:21.417Z level=INFO msg="pg_quicksilver is not installed in this database; no mirror relation is registered (CREATE EXTENSION pg_quicksilver on the primary to route reads; this is looked at again every minute)" database=app
-time=2026-11-26T16:08:21.432Z level=INFO msg="new replication slot; bootstrapping by snapshot" at=0/4034608
-time=2026-11-26T16:08:21.534Z level=INFO msg="snapshot complete" table=public.t3 rows=20000 seconds=0.101206159
-time=2026-11-26T16:08:21.642Z level=INFO msg="snapshot complete" table=public.t1 rows=20000 seconds=0.108327611
-time=2026-11-26T16:08:21.729Z level=INFO msg="snapshot complete" table=public.t2 rows=20000 seconds=0.087343774
-time=2026-11-26T16:08:21.731Z level=INFO msg="key index built" table=public.t1 keys=20000 seconds=0.000907869
-time=2026-11-26T16:08:21.732Z level=INFO msg="key index built" table=public.t2 keys=20000 seconds=0.000947965
-time=2026-11-26T16:08:21.733Z level=INFO msg="key index built" table=public.t3 keys=20000 seconds=0.001018834
-time=2026-11-26T16:08:22.950Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=255 apply_ms=249 head_lsn_ms=6
-time=2026-11-26T16:08:23.755Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=271 apply_ms=271
-time=2026-11-26T16:08:23.998Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=243 apply_ms=242
-time=2026-11-26T16:08:24.277Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=276 apply_ms=267 head_lsn_ms=8
-time=2026-11-26T16:08:24.562Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=284 apply_ms=283 is_primary_ms=1
-time=2026-11-26T16:08:24.835Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=270 apply_ms=261 head_lsn_ms=9
-time=2026-11-26T16:08:25.229Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=393 apply_ms=387 head_lsn_ms=4
-time=2026-11-26T16:08:25.698Z level=INFO msg="merged deltas" table=public.t2 rows=4180 seconds=0.078498944
-time=2026-11-26T16:08:25.698Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=271 apply_ms=192 merge_deltas_ms=78
-time=2026-11-26T16:08:26.075Z level=INFO msg="merged deltas" table=public.t1 rows=5227 seconds=0.064563065
-time=2026-11-26T16:08:26.154Z level=INFO msg="merged deltas" table=public.t3 rows=4800 seconds=0.079355417
-time=2026-11-26T16:08:26.154Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=448 apply_ms=302 merge_deltas_ms=79 merge_deltas_ms=64 head_lsn_ms=1
-time=2026-11-26T16:08:26.479Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=324 apply_ms=322 is_primary_ms=1
-time=2026-11-26T16:08:26.741Z level=ERROR msg="table halted; it is out of service and its changes are discarded until it is rebuilt. The other tables are still mirrored" table=public.t2 reason="halting public.t2: unsupported schema change (RETYPED x integer->bigint); the mirror must be rebuilt" rebuild="create /var/lib/postgresql/qsy1/mirror/s1/public.t2/REBUILD and restart the sidecar"
-time=2026-11-26T16:08:26.778Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=293 apply_ms=247 evolve_ms=43 is_primary_ms=2
-time=2026-11-26T16:08:27.009Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=231 apply_ms=228 head_lsn_ms=2
-time=2026-11-26T16:08:27.792Z level=INFO msg="merged deltas" table=public.t1 rows=13827 seconds=0.234156389
-time=2026-11-26T16:08:27.873Z level=INFO msg="merged deltas" table=public.t3 rows=11826 seconds=0.080519747
-time=2026-11-26T16:08:27.873Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=406 merge_deltas_ms=234 apply_ms=89 merge_deltas_ms=80 head_lsn_ms=2
-time=2026-11-26T16:08:28.078Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=205 apply_ms=204
-time=2026-11-26T16:08:28.387Z level=INFO msg="compaction started" table=public.t1 why=churn base_rows=20000 delta_rows=25006
-2026/11/26 16:08:28 INFO rewrite clustering table=public.t1 column=none why="1 row groups, too few to tell"
-time=2026-11-26T16:08:28.704Z level=INFO msg=compacted table=public.t1 rows=21260 seconds=0.310472026
-time=2026-11-26T16:08:28.704Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=317 apply_ms=271 finish_compaction_ms=44 head_lsn_ms=1
-time=2026-11-26T16:08:28.819Z level=INFO msg="compaction started" table=public.t3 why=churn base_rows=20000 delta_rows=25647
-2026/11/26 16:08:28 INFO rewrite clustering table=public.t3 column=none why="1 row groups, too few to tell"
-time=2026-11-26T16:08:29.068Z level=INFO msg=compacted table=public.t3 rows=21760 seconds=0.244857495
-time=2026-11-26T16:08:29.069Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=210 apply_ms=160 finish_compaction_ms=43 is_primary_ms=5
-time=2026-11-26T16:08:32.502Z level=INFO msg="quicksilver mirror starting" cluster=qsv pod=s1 mode=shadow ingest=logical tables="[public.t1 public.t2 public.t3]" slo=15s slot=qs_v1_s1 configured_slot=qs_v1
-time=2026-11-26T16:08:32.505Z level=INFO msg="slot janitor on: when this instance is the primary it drops this cluster's Quicksilver slots that nothing will consume again" slots="qs_v1 and qs_v1_*" interval=1m0s wal_limit_bytes=4294967296 inactive_limit=6h0m0s off="QS_SLOT_JANITOR=off"
-time=2026-11-26T16:08:32.505Z level=ERROR msg="table is halted in its manifest and stays out of service" table=public.t2 reason="halting public.t2: unsupported schema change (RETYPED x integer->bigint); the mirror must be rebuilt" serve_with_halted_tables=false
-time=2026-11-26T16:08:32.537Z level=INFO msg="pg_quicksilver is not installed in this database; no mirror relation is registered (CREATE EXTENSION pg_quicksilver on the primary to route reads; this is looked at again every minute)" database=app
-time=2026-11-26T16:08:32.537Z level=INFO msg="rebuild requested for a halted table; it will be re-snapshotted" table=public.t2 halted_for="halting public.t2: unsupported schema change (RETYPED x integer->bigint); the mirror must be rebuilt"
-time=2026-11-26T16:08:32.569Z level=WARN msg="not resuming this table from the slot; re-snapshotting it" table=public.t2 why="an operator asked for this halted table to be rebuilt (REBUILD file)" slot=qs_v1_s1 at=0/5FC4DB8
-time=2026-11-26T16:08:32.713Z level=INFO msg="snapshot complete" table=public.t2 rows=22640 seconds=0.143841757
-time=2026-11-26T16:08:32.730Z level=INFO msg="halted table rebuilt from a snapshot and back in service" table=public.t2
-time=2026-11-26T16:08:32.730Z level=INFO msg="resuming from the existing slot" slot=qs_v1_s1 confirmed=0/5F91250
-time=2026-11-26T16:08:32.748Z level=INFO msg="key index built" table=public.t1 keys=22800 seconds=0.017209264
-time=2026-11-26T16:08:32.749Z level=INFO msg="key index built" table=public.t2 keys=22640 seconds=0.000728787
-time=2026-11-26T16:08:32.762Z level=INFO msg="key index built" table=public.t3 keys=22620 seconds=0.012910044
-time=2026-11-26T16:08:44.646Z level=INFO msg="merged deltas" table=public.t1 rows=6395 seconds=0.187415558
-time=2026-11-26T16:08:44.646Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=543 apply_ms=290 merge_deltas_ms=187 head_lsn_ms=47 confirm_ms=17
-time=2026-11-26T16:08:44.854Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=207 apply_ms=207
-time=2026-11-26T16:08:45.295Z level=INFO msg="merged deltas" table=public.t3 rows=924 seconds=0.04245384
-time=2026-11-26T16:08:45.295Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=239 apply_ms=196 merge_deltas_ms=42
-time=2026-11-26T16:08:45.700Z level=INFO msg="merged deltas" table=public.t1 rows=2712 seconds=0.084378486
-time=2026-11-26T16:08:46.086Z level=INFO msg="merged deltas" table=public.t3 rows=6281 seconds=0.059955032
-time=2026-11-26T16:08:46.412Z level=INFO msg="merged deltas" table=public.t2 rows=7961 seconds=0.110396411
-time=2026-11-26T16:08:46.787Z level=INFO msg="merged deltas" table=public.t1 rows=9422 seconds=0.156356675
-time=2026-11-26T16:08:46.787Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=245 merge_deltas_ms=156 apply_ms=87 head_lsn_ms=1
-time=2026-11-26T16:08:47.090Z level=INFO msg="merged deltas" table=public.t3 rows=10624 seconds=0.091201727
-time=2026-11-26T16:08:47.458Z level=INFO msg="merged deltas" table=public.t2 rows=11689 seconds=0.082354903
-time=2026-11-26T16:08:47.458Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=258 apply_ms=173 merge_deltas_ms=82 confirm_ms=1
-time=2026-11-26T16:08:47.669Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=210 apply_ms=208 head_lsn_ms=1
-time=2026-11-26T16:08:47.744Z level=ERROR msg="table halted; it is out of service and its changes are discarded until it is rebuilt. The other tables are still mirrored" table=public.t2 reason="column(s) r were backfilled by a table rewrite; their values never appear in the change stream" rebuild="create /var/lib/postgresql/qsy1/mirror/s1/public.t2/REBUILD and restart the sidecar"
-time=2026-11-26T16:08:47.946Z level=INFO msg="merged deltas" table=public.t1 rows=13747 seconds=0.194580122
-time=2026-11-26T16:08:47.946Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=276 merge_deltas_ms=194 apply_ms=48 evolve_ms=27 head_lsn_ms=5
-time=2026-11-26T16:08:48.506Z level=INFO msg="merged deltas" table=public.t3 rows=15188 seconds=0.176338783
-time=2026-11-26T16:08:48.506Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=373 apply_ms=189 merge_deltas_ms=176 head_lsn_ms=7
-time=2026-11-26T16:08:48.942Z level=INFO msg="merged deltas" table=public.t1 rows=16691 seconds=0.126668848
-time=2026-11-26T16:08:49.086Z level=INFO msg="compaction started" table=public.t3 why=churn base_rows=21760 delta_rows=25218
-2026/11/26 16:08:49 INFO rewrite clustering table=public.t3 column=none why="1 row groups, too few to tell"
-time=2026-11-26T16:08:49.311Z level=INFO msg=compacted table=public.t3 rows=21917 seconds=0.2143592
-time=2026-11-26T16:08:49.377Z level=INFO msg="compaction started" table=public.t1 why=churn base_rows=21260 delta_rows=25156
-2026/11/26 16:08:49 INFO rewrite clustering table=public.t1 column=none why="1 row groups, too few to tell"
-time=2026-11-26T16:08:49.765Z level=INFO msg=compacted table=public.t1 rows=21155 seconds=0.383356421
-time=2026-11-26T16:08:50.667Z level=INFO msg="merged deltas" table=public.t3 rows=3736 seconds=0.062352634
-time=2026-11-26T16:08:51.003Z level=INFO msg="merged deltas" table=public.t1 rows=3525 seconds=0.028964846
-time=2026-11-26T16:08:53.424Z level=INFO msg="quicksilver mirror starting" cluster=qsv pod=s1 mode=shadow ingest=logical tables="[public.t1 public.t2 public.t3]" slo=15s slot=qs_v1_s1 configured_slot=qs_v1
-time=2026-11-26T16:08:53.424Z level=INFO msg="slot janitor on: when this instance is the primary it drops this cluster's Quicksilver slots that nothing will consume again" slots="qs_v1 and qs_v1_*" interval=1m0s wal_limit_bytes=4294967296 inactive_limit=6h0m0s off="QS_SLOT_JANITOR=off"
-time=2026-11-26T16:08:53.424Z level=ERROR msg="table is halted in its manifest and stays out of service" table=public.t2 reason="column(s) r were backfilled by a table rewrite; their values never appear in the change stream" serve_with_halted_tables=false
-time=2026-11-26T16:08:53.456Z level=INFO msg="pg_quicksilver is not installed in this database; no mirror relation is registered (CREATE EXTENSION pg_quicksilver on the primary to route reads; this is looked at again every minute)" database=app
-time=2026-11-26T16:08:53.456Z level=INFO msg="rebuild requested for a halted table; it will be re-snapshotted" table=public.t2 halted_for="column(s) r were backfilled by a table rewrite; their values never appear in the change stream"
-time=2026-11-26T16:08:53.484Z level=WARN msg="not resuming this table from the slot; re-snapshotting it" table=public.t2 why="an operator asked for this halted table to be rebuilt (REBUILD file)" slot=qs_v1_s1 at=0/7B980D0
-time=2026-11-26T16:08:53.633Z level=INFO msg="snapshot complete" table=public.t2 rows=22920 seconds=0.148344456
-time=2026-11-26T16:08:53.637Z level=INFO msg="halted table rebuilt from a snapshot and back in service" table=public.t2
-time=2026-11-26T16:08:53.637Z level=INFO msg="resuming from the existing slot" slot=qs_v1_s1 confirmed=0/7B6C461
-time=2026-11-26T16:08:53.670Z level=INFO msg="key index built" table=public.t1 keys=22940 seconds=0.030424018
-time=2026-11-26T16:08:53.671Z level=INFO msg="key index built" table=public.t2 keys=22920 seconds=0.000658824
-time=2026-11-26T16:08:53.696Z level=INFO msg="key index built" table=public.t3 keys=22860 seconds=0.025691241
+time=2026-11-26T16:09:44.607Z level=INFO msg="quicksilver mirror starting" cluster=qsv pod=s1 mode=shadow ingest=logical tables=[public.items] slo=15s slot=qs_v1_s1 configured_slot=qs_v1
+time=2026-11-26T16:09:44.608Z level=INFO msg="slot janitor on: when this instance is the primary it drops this cluster's Quicksilver slots that nothing will consume again" slots="qs_v1 and qs_v1_*" interval=1m0s wal_limit_bytes=4294967296 inactive_limit=6h0m0s off="QS_SLOT_JANITOR=off"
+time=2026-11-26T16:09:44.676Z level=ERROR msg="mirror stopped" err="ddl setup: ERROR: duplicate key value violates unique constraint \"pg_namespace_nspname_index\" (SQLSTATE 23505)" retry_in=1s
+time=2026-11-26T16:09:45.743Z level=INFO msg="pg_quicksilver is not installed in this database; no mirror relation is registered (CREATE EXTENSION pg_quicksilver on the primary to route reads; this is looked at again every minute)" database=app
+time=2026-11-26T16:09:45.766Z level=INFO msg="new replication slot; bootstrapping by snapshot" at=0/40395C8
+time=2026-11-26T16:09:45.805Z level=INFO msg="snapshot complete" table=public.items rows=10000 seconds=0.039165765
+time=2026-11-26T16:09:45.806Z level=INFO msg="key index built" table=public.items keys=10000 seconds=0.000395706
+time=2026-11-26T16:09:47.028Z level=INFO msg="merged deltas" table=public.items rows=181 seconds=0.014075242
+time=2026-11-26T16:09:47.642Z level=INFO msg="merged deltas" table=public.items rows=527 seconds=0.019364495
+time=2026-11-26T16:09:48.428Z level=INFO msg="merged deltas" table=public.items rows=960 seconds=0.014854076
+time=2026-11-26T16:09:49.167Z level=INFO msg="merged deltas" table=public.items rows=1317 seconds=0.038350579
+time=2026-11-26T16:09:49.843Z level=INFO msg="merged deltas" table=public.items rows=1802 seconds=0.01755971
+time=2026-11-26T16:09:50.557Z level=INFO msg="merged deltas" table=public.items rows=2242 seconds=0.036461397
+time=2026-11-26T16:09:51.274Z level=INFO msg="merged deltas" table=public.items rows=2715 seconds=0.038914271
+time=2026-11-26T16:09:51.950Z level=INFO msg="merged deltas" table=public.items rows=3205 seconds=0.03430339
+time=2026-11-26T16:09:52.639Z level=INFO msg="merged deltas" table=public.items rows=3679 seconds=0.030022574
+time=2026-11-26T16:09:53.341Z level=INFO msg="merged deltas" table=public.items rows=4291 seconds=0.022598983
+time=2026-11-26T16:09:53.962Z level=INFO msg="merged deltas" table=public.items rows=4774 seconds=0.030542639
+time=2026-11-26T16:09:54.725Z level=INFO msg="merged deltas" table=public.items rows=5295 seconds=0.063488307
+time=2026-11-26T16:09:55.477Z level=INFO msg="merged deltas" table=public.items rows=5733 seconds=0.054472171
+time=2026-11-26T16:09:56.098Z level=INFO msg="merged deltas" table=public.items rows=6147 seconds=0.047932834
+time=2026-11-26T16:09:56.858Z level=INFO msg="merged deltas" table=public.items rows=6714 seconds=0.039173974
+time=2026-11-26T16:09:57.611Z level=INFO msg="merged deltas" table=public.items rows=7257 seconds=0.094279586
+time=2026-11-26T16:09:58.197Z level=INFO msg="merged deltas" table=public.items rows=7655 seconds=0.064948109
+time=2026-11-26T16:09:58.967Z level=INFO msg="merged deltas" table=public.items rows=8044 seconds=0.049342109
+time=2026-11-26T16:09:59.736Z level=INFO msg="merged deltas" table=public.items rows=8387 seconds=0.109653638
+time=2026-11-26T16:10:00.430Z level=INFO msg="merged deltas" table=public.items rows=8847 seconds=0.090436597
+time=2026-11-26T16:10:01.098Z level=INFO msg="merged deltas" table=public.items rows=9193 seconds=0.070755116
+time=2026-11-26T16:10:01.813Z level=INFO msg="merged deltas" table=public.items rows=9574 seconds=0.099154645
+time=2026-11-26T16:10:02.549Z level=INFO msg="merged deltas" table=public.items rows=9949 seconds=0.072164234
+time=2026-11-26T16:10:03.093Z level=INFO msg="merged deltas" table=public.items rows=10287 seconds=0.056435531
+time=2026-11-26T16:10:03.925Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=221 apply_ms=212 is_primary_ms=8
+time=2026-11-26T16:10:04.225Z level=INFO msg="merged deltas" table=public.items rows=10584 seconds=0.29094835
+time=2026-11-26T16:10:04.225Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=300 merge_deltas_ms=291 apply_ms=8
+time=2026-11-26T16:10:04.485Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=260 apply_ms=259
+time=2026-11-26T16:10:04.801Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=315 apply_ms=311 head_lsn_ms=4
+time=2026-11-26T16:10:05.112Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=309 apply_ms=308
+time=2026-11-26T16:10:05.376Z level=INFO msg="merged deltas" table=public.items rows=10986 seconds=0.115402985
+time=2026-11-26T16:10:05.928Z level=INFO msg="merged deltas" table=public.items rows=11135 seconds=0.070483645
+time=2026-11-26T16:10:06.582Z level=INFO msg="merged deltas" table=public.items rows=11349 seconds=0.059701633
+time=2026-11-26T16:10:07.324Z level=INFO msg="merged deltas" table=public.items rows=11765 seconds=0.096344586
+time=2026-11-26T16:10:08.011Z level=INFO msg="merged deltas" table=public.items rows=11999 seconds=0.065156074
+time=2026-11-26T16:10:08.715Z level=INFO msg="merged deltas" table=public.items rows=12351 seconds=0.075654519
+time=2026-11-26T16:10:09.456Z level=INFO msg="merged deltas" table=public.items rows=12708 seconds=0.12799408
+time=2026-11-26T16:10:10.119Z level=INFO msg="merged deltas" table=public.items rows=13060 seconds=0.090531497
+time=2026-11-26T16:10:10.825Z level=INFO msg="merged deltas" table=public.items rows=13319 seconds=0.081455541
+time=2026-11-26T16:10:11.591Z level=INFO msg="merged deltas" table=public.items rows=13667 seconds=0.126279789
+time=2026-11-26T16:10:12.185Z level=INFO msg="merged deltas" table=public.items rows=13903 seconds=0.061560241
+time=2026-11-26T16:10:12.942Z level=INFO msg="merged deltas" table=public.items rows=14205 seconds=0.092390707
+time=2026-11-26T16:10:13.537Z level=INFO msg="merged deltas" table=public.items rows=14530 seconds=0.096006662
+time=2026-11-26T16:10:14.321Z level=INFO msg="merged deltas" table=public.items rows=14878 seconds=0.085981372
+time=2026-11-26T16:10:14.931Z level=INFO msg="merged deltas" table=public.items rows=15205 seconds=0.084423536
+time=2026-11-26T16:10:15.675Z level=INFO msg="merged deltas" table=public.items rows=15550 seconds=0.114203738
+time=2026-11-26T16:10:16.476Z level=INFO msg="merged deltas" table=public.items rows=15897 seconds=0.119713317
+time=2026-11-26T16:10:17.167Z level=INFO msg="merged deltas" table=public.items rows=16230 seconds=0.140353265
+time=2026-11-26T16:10:17.843Z level=INFO msg="merged deltas" table=public.items rows=16559 seconds=0.09930085
+time=2026-11-26T16:10:18.457Z level=INFO msg="merged deltas" table=public.items rows=16966 seconds=0.095744362
+time=2026-11-26T16:10:19.266Z level=INFO msg="merged deltas" table=public.items rows=17376 seconds=0.123091894
+time=2026-11-26T16:10:20.123Z level=INFO msg="merged deltas" table=public.items rows=17706 seconds=0.263551559
+time=2026-11-26T16:10:20.123Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=310 merge_deltas_ms=263 apply_ms=46
+time=2026-11-26T16:10:20.586Z level=INFO msg="merged deltas" table=public.items rows=18071 seconds=0.13253202
+time=2026-11-26T16:10:21.288Z level=INFO msg="merged deltas" table=public.items rows=18311 seconds=0.114896266
+time=2026-11-26T16:10:22.038Z level=INFO msg="merged deltas" table=public.items rows=18596 seconds=0.090165208
+time=2026-11-26T16:10:22.764Z level=INFO msg="merged deltas" table=public.items rows=18919 seconds=0.127677094
+time=2026-11-26T16:10:23.430Z level=INFO msg="merged deltas" table=public.items rows=19213 seconds=0.096957571
+time=2026-11-26T16:10:24.036Z level=INFO msg="merged deltas" table=public.items rows=19567 seconds=0.083794312
+time=2026-11-26T16:10:24.850Z level=INFO msg="merged deltas" table=public.items rows=19870 seconds=0.109551198
+time=2026-11-26T16:10:25.670Z level=INFO msg="merged deltas" table=public.items rows=20169 seconds=0.202558974
+time=2026-11-26T16:10:25.670Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=257 merge_deltas_ms=202 apply_ms=52 head_lsn_ms=2
+time=2026-11-26T16:10:26.334Z level=INFO msg="merged deltas" table=public.items rows=20563 seconds=0.191508714
+time=2026-11-26T16:10:26.334Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=220 merge_deltas_ms=191 apply_ms=27 head_lsn_ms=1
+time=2026-11-26T16:10:26.989Z level=INFO msg="merged deltas" table=public.items rows=20805 seconds=0.132431532
+time=2026-11-26T16:10:27.785Z level=INFO msg="merged deltas" table=public.items rows=21105 seconds=0.229626083
+time=2026-11-26T16:10:27.785Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=271 merge_deltas_ms=229 apply_ms=38 is_primary_ms=2
+time=2026-11-26T16:10:28.475Z level=INFO msg="merged deltas" table=public.items rows=21386 seconds=0.130995862
+time=2026-11-26T16:10:28.475Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=224 merge_deltas_ms=131 apply_ms=93
+time=2026-11-26T16:10:29.156Z level=INFO msg="merged deltas" table=public.items rows=21696 seconds=0.215964802
+time=2026-11-26T16:10:29.156Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=243 merge_deltas_ms=216 apply_ms=25 head_lsn_ms=1
+time=2026-11-26T16:10:29.766Z level=INFO msg="merged deltas" table=public.items rows=22077 seconds=0.13553318
+time=2026-11-26T16:10:30.535Z level=INFO msg="merged deltas" table=public.items rows=22364 seconds=0.173507554
+time=2026-11-26T16:10:30.535Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=222 merge_deltas_ms=173 apply_ms=47
+time=2026-11-26T16:10:31.282Z level=INFO msg="merged deltas" table=public.items rows=22728 seconds=0.223523298
+time=2026-11-26T16:10:31.282Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=269 merge_deltas_ms=223 apply_ms=38 head_lsn_ms=6
+time=2026-11-26T16:10:31.859Z level=INFO msg="merged deltas" table=public.items rows=22991 seconds=0.132667027
+time=2026-11-26T16:10:32.642Z level=INFO msg="merged deltas" table=public.items rows=23270 seconds=0.163023539
+time=2026-11-26T16:10:33.447Z level=INFO msg="merged deltas" table=public.items rows=23577 seconds=0.321285194
+time=2026-11-26T16:10:33.447Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=334 merge_deltas_ms=321 apply_ms=11 head_lsn_ms=1
+time=2026-11-26T16:10:33.953Z level=INFO msg="merged deltas" table=public.items rows=23858 seconds=0.105732657
+time=2026-11-26T16:10:34.689Z level=INFO msg="merged deltas" table=public.items rows=24183 seconds=0.14991909
+time=2026-11-26T16:10:35.301Z level=INFO msg="merged deltas" table=public.items rows=24467 seconds=0.136748224
+time=2026-11-26T16:10:35.644Z level=INFO msg="compaction started" table=public.items why=churn base_rows=10000 delta_rows=25022
+2026/11/26 16:10:35 INFO rewrite clustering table=public.items column=none why="1 row groups, too few to tell"
+time=2026-11-26T16:10:36.024Z level=INFO msg=compacted table=public.items rows=32910 seconds=0.364626758
+time=2026-11-26T16:10:37.274Z level=INFO msg="merged deltas" table=public.items rows=381 seconds=0.033625861
+time=2026-11-26T16:10:37.982Z level=INFO msg="merged deltas" table=public.items rows=720 seconds=0.033101967
+time=2026-11-26T16:10:38.671Z level=INFO msg="merged deltas" table=public.items rows=1115 seconds=0.027435337
+time=2026-11-26T16:10:39.369Z level=INFO msg="merged deltas" table=public.items rows=1500 seconds=0.020418519
+time=2026-11-26T16:10:40.981Z level=INFO msg="merged deltas" table=public.items rows=1845 seconds=0.946201889
+time=2026-11-26T16:10:40.981Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=968 merge_deltas_ms=946 apply_ms=21
+time=2026-11-26T16:10:41.268Z level=INFO msg="merged deltas" table=public.items rows=2191 seconds=0.064435035
+time=2026-11-26T16:10:41.998Z level=INFO msg="merged deltas" table=public.items rows=2384 seconds=0.071201794
+time=2026-11-26T16:10:42.698Z level=INFO msg="merged deltas" table=public.items rows=2642 seconds=0.049857502
+time=2026-11-26T16:10:43.398Z level=INFO msg="merged deltas" table=public.items rows=2991 seconds=0.061836952
+time=2026-11-26T16:10:44.045Z level=INFO msg="merged deltas" table=public.items rows=3240 seconds=0.041025254
+time=2026-11-26T16:10:44.762Z level=INFO msg="merged deltas" table=public.items rows=3542 seconds=0.036653836
