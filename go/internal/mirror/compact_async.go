@@ -117,6 +117,11 @@ func (t *Table) BeginCompaction() *Compaction {
 	if len(c.files) == 0 {
 		return nil
 	}
+	// Process-wide: a table that finds the rewrites in flight full waits for its
+	// next tick, and keeps its deltas bounded meanwhile (rewrite_slots.go).
+	if !tryAcquireRewriteSlot() {
+		return nil
+	}
 	// Claimed here, on the apply goroutine: the rewrite writes through a
 	// detached copy of the table, which has no publisher to claim from.
 	t.claim(filepath.Join(t.Dir, "base", c.name))
@@ -151,6 +156,7 @@ func (t *Table) BeginCompaction() *Compaction {
 	for _, rel := range snapshot {
 		d, err := t.deadSetFor(rel)
 		if err != nil {
+			releaseRewriteSlot()
 			return nil
 		}
 		deadSnap[rel] = &deadSet{gen: d.gen, n: d.n, words: append([]uint64(nil), d.words...)}
@@ -182,6 +188,7 @@ func (t *Table) BeginCompaction() *Compaction {
 
 	t.compacting = c
 	go func(t *Table) {
+		defer releaseRewriteSlot() // runs after close(c.done): the slot is the last thing given back
 		defer close(c.done)
 		defer func() { c.halted = t.State.Halted }()
 
