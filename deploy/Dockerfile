@@ -39,6 +39,11 @@
 #               building it is DuckDB's build: an hour of C++. This is the
 #               Debian 12 build from the apt repository the project's
 #               validation hosts use, which is where docs/40's 1.2.0 came from.
+#               THAT REPOSITORY DROPS OLD VERSIONS: the 1.2.0 this was first
+#               pinned to returned 404 within days, so the pin is 1.2.2, the
+#               version it serves now, and it will break again the same way.
+#               docs/40's measurements are on 1.2.0; the extension job in
+#               ci.yml is what says whether a newer one still passes.
 #               Fetched as one file with a checksum rather than by adding the
 #               repository: nothing else from it is wanted, and a checksum is a
 #               stronger pin than a signing key that can sign a newer version.
@@ -47,8 +52,8 @@
 ARG PG_MAJOR=17
 ARG GO_IMAGE=docker.io/library/golang:1.27
 ARG CNPG_BASE=ghcr.io/cloudnative-pg/postgresql:17.12-standard-bookworm
-ARG PG_DUCKDB_DEB_URL=https://repo.pigsty.io/apt/pgsql/bookworm/pool/main/p/pg-duckdb/postgresql-17-pg-duckdb_1.2.0-1PGSTY~bookworm_amd64.deb
-ARG PG_DUCKDB_DEB_SHA256=084aad6d002517fadcd537211f6b53baf50c809f45ba0c7e5dd85ab79346daa6
+ARG PG_DUCKDB_DEB_URL=https://repo.pigsty.io/apt/pgsql/bookworm/pool/main/p/pg-duckdb/postgresql-17-pg-duckdb_1.2.2-1PGSTY~bookworm_amd64.deb
+ARG PG_DUCKDB_DEB_SHA256=29d3d9543f7766f87595441f215e8a11390a5bddf7f5950efca47e45f5d34a64
 
 FROM ${GO_IMAGE} AS build
 WORKDIR /src

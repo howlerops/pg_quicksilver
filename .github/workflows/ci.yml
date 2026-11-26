@@ -538,7 +538,8 @@ jobs:
   # obvious answer. pg_duckdb's own releases are container images, not
   # packages; PGDG does not carry it; building it is DuckDB's build, an hour
   # (the `serving` job below does that, for a patched 1.1.1, and caches it).
-  # 1.2.0 is what docs/40 was validated on, and it came from the apt
+  # 1.2.0 is what docs/40 was validated on (the repository has since dropped
+  # it; the pin below is the 1.2.2 it serves now), and it came from the apt
   # repository this project's validation hosts use. It is fetched here as ONE
   # file by URL with a SHA-256, rather than by adding that repository: nothing
   # else is wanted from it, and a checksum pins harder than a signing key does.
@@ -552,8 +553,8 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 40
     env:
-      PG_DUCKDB_DEB_URL: https://repo.pigsty.io/apt/pgsql/noble/pool/main/p/pg-duckdb/postgresql-17-pg-duckdb_1.2.0-1PGSTY~noble_amd64.deb
-      PG_DUCKDB_DEB_SHA256: 540a1b0de3ea5f1bbd846303f625ae8ca5702bd52ad7431a901564308c363c51
+      PG_DUCKDB_DEB_URL: https://repo.pigsty.io/apt/pgsql/noble/pool/main/p/pg-duckdb/postgresql-17-pg-duckdb_1.2.2-1PGSTY~noble_amd64.deb
+      PG_DUCKDB_DEB_SHA256: 860a1de545beac45a0fc7e8171478f073b4cb1c192bf0a0d1538dc3e5c0003db
       DUCKDB_EXT_DIR: /usr/lib/quicksilver/duckdb-extensions
     steps:
       - uses: actions/checkout@v4
@@ -576,7 +577,7 @@ jobs:
           sudo systemctl stop postgresql || true
           /usr/lib/postgresql/17/bin/postgres --version
 
-      - name: install pg_duckdb 1.2.0
+      - name: install pg_duckdb
         run: |
           set -euo pipefail
           curl -fsSLo /tmp/pg_duckdb.deb "$PG_DUCKDB_DEB_URL"
