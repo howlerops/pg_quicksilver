@@ -154,7 +154,7 @@ func (p *Publisher) apply(ctx context.Context, tx *sql.Tx, snap *head, work *lak
 	}
 	for _, f := range plan.adds {
 		lf := &lakeFile{id: snap.nextFileID, rel: f.mf.Rel, rows: f.info.rows, size: f.info.size,
-			types: f.info.types()}
+			types: f.info.types(), legacyInf: f.info.legacyInfinity()}
 		snap.nextFileID++
 		lf.name = fmt.Sprintf("%s-%d.parquet",
 			strings.ReplaceAll(strings.TrimSuffix(f.mf.Rel, ".parquet"), "/", "-"), lf.id)
@@ -466,15 +466,61 @@ func (p *Publisher) Stats() (map[string]TableStats, GlobalStats) {
 	return out, g
 }
 
+// rewriteAsk is a rewrite NeedsRewrite has asked the sidecar for.
+type rewriteAsk struct {
+	why  string
+	n    int
+	next time.Time // not asked again for the same reason before this
+}
+
+const (
+	rewriteBackoff    = 15 * time.Second
+	rewriteBackoffMax = 15 * time.Minute
+)
+
 // NeedsRewrite reports whether a table is waiting on a base rewrite to become
-// publishable. The sidecar starts one when it is.
+// publishable. The sidecar asks on every maintenance tick and starts one each
+// time the answer is yes, so a yes is a REQUEST, and each is a rewrite of the
+// whole table. It is yes only when
+//
+//   - the manifest the lake stands at needs one, and the lake stands at the
+//     mirror's newest: nothing is waiting to be published, being published,
+//     or waiting to be published AGAIN after failing. A rewrite's own
+//     manifest whose publish failed is the last case. The verdict in hand is
+//     then about the manifest before it, and answering from that started a
+//     full rewrite on every tick for as long as the catalog could not be
+//     written;
+//   - and no rewrite has been asked for, for the same reason, less than a
+//     backoff ago. The reason of a published manifest replaces the one asked
+//     for, so a rewrite whose result is published and needs another for a
+//     DIFFERENT reason gets it at once, and one that left the same reason
+//     behind (or was never started, or failed) is asked for again after 15
+//     seconds, then 30, doubling to 15 minutes.
 func (p *Publisher) NeedsRewrite(qualified string) bool {
+	now := p.opt.Now()
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	st := p.stats[qualified]
-	// Only once the lake has caught up with the mirror: the manifest a
-	// rewrite has just committed may be the one that no longer needs it.
-	return st != nil && st.NeedsRewrite && p.pending[qualified] == nil && !p.busy
+	if st == nil || !st.NeedsRewrite || p.busy ||
+		p.pending[qualified] != nil || p.retry[qualified] != nil {
+		return false
+	}
+	a := p.asks[qualified]
+	if a == nil || a.why != p.why[qualified] {
+		a = &rewriteAsk{why: p.why[qualified]}
+		p.asks[qualified] = a
+	}
+	// A clock that went backwards past the last ask does not hold one up.
+	if a.n > 0 && now.Before(a.next) && now.After(a.next.Add(-rewriteBackoffMax)) {
+		return false
+	}
+	wait := rewriteBackoffMax
+	if a.n < 7 {
+		wait = min(rewriteBackoff<<a.n, rewriteBackoffMax)
+	}
+	a.n++
+	a.next = now.Add(wait)
+	return true
 }
 
 // Counts reads how many rows of each kind the catalog holds.

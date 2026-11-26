@@ -114,6 +114,8 @@ type Publisher struct {
 	pending map[string]*pendingManifest
 	retry   map[string]*pendingManifest
 	busy    bool
+	why     map[string]string      // why the published manifest needs a rewrite, "" if it does not
+	asks    map[string]*rewriteAsk // rewrites asked for and not yet seen to have helped
 	stats   map[string]*TableStats
 	global  GlobalStats
 	recent  []float64 // seconds, a ring of the last publishes
@@ -165,6 +167,7 @@ type lakeFile struct {
 	dvGen     int
 	hasDelete bool
 	types     map[string]string // column name -> DuckLake type, from the footer
+	legacyInf []string          // columns that can hold the old -infinity, from the footer
 }
 
 func (lt *lakeTable) clone() *lakeTable {
@@ -213,6 +216,7 @@ func Open(ctx context.Context, opt Options) (*Publisher, error) {
 		opt: opt, dir: dir, dataDir: filepath.Join(dir, dataDirName),
 		tables:  map[string]*lakeTable{},
 		pending: map[string]*pendingManifest{}, retry: map[string]*pendingManifest{},
+		why: map[string]string{}, asks: map[string]*rewriteAsk{},
 		stats: map[string]*TableStats{}, recent: make([]float64, 4096),
 		wake: make(chan struct{}, 1), stop: make(chan struct{}), done: make(chan struct{}),
 	}
@@ -420,7 +424,7 @@ func (p *Publisher) Publish(ctx context.Context, m *mirror.LakeManifest) (res Re
 	defer p.work.Unlock()
 	start := time.Now()
 	q := m.Qualified()
-	var rewrite bool
+	var rewrite string
 	res, rewrite, err = p.publish(ctx, m)
 	res.Duration = time.Since(start)
 
@@ -435,7 +439,13 @@ func (p *Publisher) Publish(ctx context.Context, m *mirror.LakeManifest) (res Re
 	}
 	st.LastError = ""
 	st.PublishedSeq, st.PublishedLSN = int64(m.Seq), m.AppliedLSN
-	st.Refused, st.NeedsRewrite = res.Refused, rewrite
+	st.Refused, st.NeedsRewrite = res.Refused, rewrite != ""
+	// What was asked for a different reason, or for one that has gone, is
+	// not what is asked now: see NeedsRewrite.
+	if a := p.asks[q]; a != nil && a.why != rewrite {
+		delete(p.asks, q)
+	}
+	p.why[q] = rewrite
 	st.PublishedAt = p.opt.Now()
 	if res.Snapshot != 0 {
 		st.Publishes++
@@ -464,9 +474,9 @@ type planFile struct {
 	lf   *lakeFile
 }
 
-func (p *Publisher) publish(ctx context.Context, m *mirror.LakeManifest) (res Result, rewrite bool, err error) {
+func (p *Publisher) publish(ctx context.Context, m *mirror.LakeManifest) (res Result, rewrite string, err error) {
 	if m.Err != nil {
-		return res, false, fmt.Errorf("manifest could not be described: %w", m.Err)
+		return res, "", fmt.Errorf("manifest could not be described: %w", m.Err)
 	}
 	q := m.Qualified()
 	reason := m.Refusal
@@ -478,7 +488,9 @@ func (p *Publisher) publish(ctx context.Context, m *mirror.LakeManifest) (res Re
 			}
 		}
 		if len(partial) > 0 {
-			rewrite = true
+			// The files are the reason: patches written after a rewrite has
+			// folded these in are another one.
+			rewrite = "patch files " + strings.Join(partial, ",")
 			reason = fmt.Sprintf("it holds column-partial patch files (%s), which are not whole rows and cannot "+
 				"be DuckLake data files; a base rewrite is scheduled and the table is published when it completes",
 				strings.Join(partial, ", "))
@@ -513,12 +525,12 @@ func (p *Publisher) publish(ctx context.Context, m *mirror.LakeManifest) (res Re
 
 	var plan *publishPlan
 	if reason == "" {
-		var mix string
-		if plan, mix, err = p.plan(m, work); err != nil {
+		var mix, why string
+		if plan, mix, why, err = p.plan(m, work); err != nil {
 			return res, rewrite, err
 		}
 		if mix != "" {
-			reason, rewrite = mix, true
+			reason, rewrite = mix, why
 		}
 	}
 
@@ -587,8 +599,10 @@ func (p *Publisher) publish(ctx context.Context, m *mirror.LakeManifest) (res Re
 }
 
 // plan compares the manifest's files with the lake's and settles every
-// column's type. mix is non-empty when the files cannot be one table.
-func (p *Publisher) plan(m *mirror.LakeManifest, work *lakeTable) (plan *publishPlan, mix string, err error) {
+// column's type. mix is non-empty when the files cannot be one table, and
+// why then names the cause without naming the files: a rewrite that leaves
+// the same cause behind is asked for again only after a wait (NeedsRewrite).
+func (p *Publisher) plan(m *mirror.LakeManifest, work *lakeTable) (plan *publishPlan, mix, why string, err error) {
 	plan = &publishPlan{types: map[string]string{}}
 	kept := map[string]bool{}
 	dir := work.dir(p.dataDir)
@@ -598,9 +612,9 @@ func (p *Publisher) plan(m *mirror.LakeManifest, work *lakeTable) (plan *publish
 		st, err := os.Stat(src)
 		if err != nil {
 			if os.IsNotExist(err) {
-				return nil, "", fmt.Errorf("%w: %s", errStale, mf.Rel)
+				return nil, "", "", fmt.Errorf("%w: %s", errStale, mf.Rel)
 			}
-			return nil, "", err
+			return nil, "", "", err
 		}
 		if lf := work.files[mf.Rel]; lf != nil && work.exists {
 			// The same NAME is not the same file: a rebuilt table numbers its
@@ -610,9 +624,9 @@ func (p *Publisher) plan(m *mirror.LakeManifest, work *lakeTable) (plan *publish
 				if lf.types == nil {
 					info, err := readFileInfo(filepath.Join(dir, lf.name))
 					if err != nil {
-						return nil, "", err
+						return nil, "", "", err
 					}
-					lf.types = info.types()
+					lf.types, lf.legacyInf = info.types(), info.legacyInfinity()
 				}
 				plan.keeps = append(plan.keeps, planFile{mf: mf, src: src, lf: lf})
 				kept[mf.Rel] = true
@@ -622,9 +636,9 @@ func (p *Publisher) plan(m *mirror.LakeManifest, work *lakeTable) (plan *publish
 		info, err := readFileInfo(src)
 		if err != nil {
 			if os.IsNotExist(err) {
-				return nil, "", fmt.Errorf("%w: %s", errStale, mf.Rel)
+				return nil, "", "", fmt.Errorf("%w: %s", errStale, mf.Rel)
 			}
-			return nil, "", err
+			return nil, "", "", err
 		}
 		plan.adds = append(plan.adds, planFile{mf: mf, src: src, info: info})
 	}
@@ -637,19 +651,23 @@ func (p *Publisher) plan(m *mirror.LakeManifest, work *lakeTable) (plan *publish
 		sort.Slice(plan.drops, func(i, j int) bool { return plan.drops[i].id < plan.drops[j].id })
 	}
 	for _, c := range m.Columns {
-		typ, from := "", ""
+		// Every file is held against what the mirror writes NOW, not only
+		// against the other files: a table whose files are all of the
+		// previous release is no mix, and is as wrong. Its `real` is a DOUBLE
+		// holding 0.1 where the source value, and the mirror's view, is the
+		// float4; its unconstrained numeric is DECIMAL(38,9), 12.500000000
+		// for the 12.5 the view gives. The mirror reads a file by the
+		// declared type and converts; the lake can only refuse.
+		typ, from := typeOfArrow(c.Type), "what the mirror writes now"
 		see := func(rel string, types map[string]string) {
 			t, ok := types[c.Name]
 			if !ok || mix != "" {
 				return
 			}
-			if typ == "" {
-				typ, from = t, rel
-				return
-			}
 			w, ok := widen(typ, t)
 			if !ok {
-				mix = fmt.Sprintf("its files hold column %q as two types DuckLake cannot read as one column "+
+				why = fmt.Sprintf("two types in column %q", c.Name)
+				mix = fmt.Sprintf("it holds column %q as two types DuckLake cannot read as one column "+
 					"(%s in %s, %s in %s); a base rewrite, which writes every row in the current type, is "+
 					"scheduled and the table is published when it completes", c.Name, typ, from, t, rel)
 				return
@@ -658,19 +676,36 @@ func (p *Publisher) plan(m *mirror.LakeManifest, work *lakeTable) (plan *publish
 				typ, from = w, rel
 			}
 		}
+		// A file of the previous release whose -infinity DuckDB would read
+		// as a finite date (stats.go, legacyInfinity). A file the lake already
+		// holds is looked at too: a lake written before this check has them.
+		old := func(rel string, cols []string) {
+			if mix != "" {
+				return
+			}
+			for _, name := range cols {
+				if name == c.Name {
+					why = fmt.Sprintf("the old -infinity in column %q", c.Name)
+					mix = fmt.Sprintf("its file %s may hold -infinity in column %q as the previous release "+
+						"stored it, which DuckDB reads as a finite date in 290309 BC (5877642 BC for a date) "+
+						"and the mirror's own view corrects per file; a base rewrite, which writes every "+
+						"row in the current form, is scheduled and the table is published when it completes",
+						rel, c.Name)
+				}
+			}
+		}
 		for _, f := range plan.keeps {
 			see(f.mf.Rel, f.lf.types)
+			old(f.mf.Rel, f.lf.legacyInf)
 		}
 		for _, f := range plan.adds {
 			see(f.mf.Rel, f.info.types())
+			old(f.mf.Rel, f.info.legacyInfinity())
 		}
 		if mix != "" {
-			return nil, mix, nil
-		}
-		if typ == "" {
-			typ = typeOfArrow(c.Type)
+			return nil, mix, why, nil
 		}
 		plan.types[c.Name] = typ
 	}
-	return plan, "", nil
+	return plan, "", "", nil
 }

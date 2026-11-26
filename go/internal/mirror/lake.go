@@ -124,7 +124,9 @@ func (t *Table) describe(st *State, refusal string) *LakeManifest {
 	}
 	h := &t.publisher().lake
 	for _, c := range t.Order {
-		col := LakeColumn{Name: c, PGType: t.Columns[c], Type: arrowType(t.Columns[c])}
+		// typeOf, not t.Columns: an unconstrained numeric opted into a
+		// decimal (QS_NUMERIC_SCALE) is written as that decimal.
+		col := LakeColumn{Name: c, PGType: t.Columns[c], Type: arrowType(t.typeOf(c))}
 		if v, ok := st.MissingVals[c]; ok {
 			v := v
 			col.Missing = &v

@@ -820,7 +820,46 @@ func (cr *clusterRewrite) ordered(v any) bool {
 func (cr *clusterRewrite) bucketRows() int { return int(RowGroupRows) }
 
 func (cr *clusterRewrite) bucketPath(b int) string {
-	return fmt.Sprintf("%s.delta%d", cr.prefix, b)
+	return fmt.Sprintf("%s%s%d", cr.prefix, scratchBucket, b)
+}
+
+// A rewrite's buckets are scratch: index/<N>.rewrite-<pid>-<n>.bucket<b>,
+// where N is the base file being written. They used to be <N>.kidx.delta<b>,
+// which reads as part of an index, and which nothing removed after a crash:
+// dropKidx clears the names of ONE sequence number and the replay has moved
+// past it, so up to a fifth of the table stayed on disk for good.
+//
+// The token after "rewrite-" is this process and a counter, so no two
+// rewrites share a prefix, and the prefix is in liveScratch from before the
+// first bucket exists until after the last is removed. The sweep of index/
+// (publish.go) removes every scratch name whose prefix is not there: it
+// cannot take a running rewrite's, whatever it knows about the Table.
+const (
+	scratchMark   = ".rewrite-"
+	scratchBucket = ".bucket"
+)
+
+var (
+	scratchSeq  atomic.Int64
+	liveScratch sync.Map // prefix (absolute path up to scratchBucket) -> struct{}
+)
+
+// newScratchPrefix names and registers the scratch of one rewrite of base.
+func (t *Table) newScratchPrefix(base string) string {
+	p := filepath.Join(t.Dir, "index", fmt.Sprintf("%s%s%d-%d",
+		trimParquet(filepath.Base(base)), scratchMark, os.Getpid(), scratchSeq.Add(1)))
+	liveScratch.Store(p, struct{}{})
+	return p
+}
+
+// scratchLive reports whether an index/ entry is a running rewrite's bucket.
+func scratchLive(path string) bool {
+	i := strings.LastIndex(path, scratchBucket)
+	if i < 0 {
+		return false
+	}
+	_, ok := liveScratch.Load(path[:i])
+	return ok
 }
 
 // spill reads every delta file once and writes each row of the run to its
@@ -1045,6 +1084,10 @@ func (cr *clusterRewrite) groupMedians(rel string, cls *int) (starts []int, meds
 // must know the path they mean to exercise was the one taken.
 var clusteredRewrites atomic.Int64
 
+// afterSpill is for tests: it is called on the rewrite's goroutine once the
+// buckets are on disk, which is where a crash leaves the most behind.
+var afterSpill func(*clusterRewrite)
+
 // rewriteClustered writes the new base with the delta rows merged into the
 // base stream on col. It returns the number of rows written.
 func (t *Table) rewriteClustered(col string, baseRels, deltaRels []string,
@@ -1056,12 +1099,13 @@ func (t *Table) rewriteClustered(col string, baseRels, deltaRels []string,
 	cr := &clusterRewrite{
 		t: t, col: col, numeric: numeric, hashing: hashing,
 		overlay: overlay, kb: kb, w: w, rels: deltaRels,
-		prefix: t.kidxPath(kb.name),
+		prefix: t.newScratchPrefix(kb.name),
 	}
 	defer func() {
 		for b := 0; b < cr.buckets; b++ {
 			_ = os.Remove(cr.bucketPath(b))
 		}
+		liveScratch.Delete(cr.prefix)
 	}()
 
 	// The cap of each base row group, in stream order.
@@ -1112,6 +1156,9 @@ func (t *Table) rewriteClustered(col string, baseRels, deltaRels []string,
 	}()
 	if err := cr.spill(); err != nil {
 		return 0, err
+	}
+	if afterSpill != nil {
+		afterSpill(cr)
 	}
 
 	for _, rel := range baseRels {

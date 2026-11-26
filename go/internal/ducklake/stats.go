@@ -33,6 +33,8 @@ import (
 	"github.com/apache/arrow-go/v18/parquet"
 	"github.com/apache/arrow-go/v18/parquet/file"
 	"github.com/apache/arrow-go/v18/parquet/schema"
+
+	"github.com/howlerops/pg_quicksilver/go/internal/mirror"
 )
 
 type fileInfo struct {
@@ -43,7 +45,33 @@ type fileInfo struct {
 type fileColumn struct {
 	name string
 	typ  string // DuckLake type name
+	// legacyInf: the column can hold -infinity as the previous release wrote
+	// it, which DuckDB reads as a finite date. See legacyInfinity.
+	legacyInf bool
 	columnStat
+}
+
+// legacyInfinity is the columns of the file that can hold -infinity the way
+// the previous release stored it: the smallest integer of the type, where
+// this release and DuckDB use its negated maximum. DuckDB reads the old value
+// as 290309-12-22 (BC) (a date: 5877642-06-25 (BC)), a finite instant that
+// `= '-infinity'` does not find and isfinite() says yes to.
+//
+// The mirror's own view maps the value per file (mirror.ViewSQL). A DuckLake
+// cannot: the file is the table. So such a file makes the table unpublishable
+// until a base rewrite has written the value in the current form. Whether a
+// file can hold one is the mirror's knowledge, and is asked of it
+// (mirror.HoldsLegacyNegInfinity): the footer's minimum, or no statistics to
+// rule it out. +infinity is the largest integer in both releases and in
+// DuckDB, and needs nothing.
+func (fi *fileInfo) legacyInfinity() []string {
+	var out []string
+	for _, c := range fi.cols {
+		if c.legacyInf {
+			out = append(out, c.name)
+		}
+	}
+	return out
 }
 
 func (fi *fileInfo) types() map[string]string {
@@ -83,7 +111,7 @@ func readFileInfo(path string) (*fileInfo, error) {
 			return nil, fmt.Errorf("%s: column %s is nested, which this publisher does not map", path, col.Path())
 		}
 		kind := kindOf(col)
-		fc := fileColumn{name: col.Name(), typ: kind.typ}
+		fc := fileColumn{name: col.Name(), typ: kind.typ, legacyInf: mirror.HoldsLegacyNegInfinity(md, i)}
 		fc.values = fi.rows
 		fc.nullsKnown = true
 		var min, max []byte
@@ -384,10 +412,34 @@ func typeOfArrow(t arrow.DataType) string {
 var intRank = map[string]int{"int8": 1, "int16": 2, "int32": 3, "int64": 4}
 
 // widen is the one column type under which files of type a and of type b can
-// both be read, if there is one. DuckLake reads a file whose integer (or
-// float) is narrower than the column; the other way round it does not:
-// registering a BIGINT file under an INTEGER column is refused with "Expected
-// one of INTEGER, USMALLINT, SMALLINT, UTINYINT, TINYINT, found type BIGINT".
+// both be read, if there is one.
+//
+// The question for every pair is not "does DuckLake read both" but "does one
+// source value read as the SAME value from either form, through a filter, a
+// DISTINCT, a join and an ORDER BY". A pair is here only if a test against
+// DuckDB says yes (TestWidenedColumnsReadAsOneValue); every other mix is
+// refused, and a base rewrite leaves one type.
+//
+//	integers of two widths   the wider. An integer is the same integer at
+//	                         any width. The other way round DuckLake refuses
+//	                         the file: "Expected one of INTEGER, USMALLINT,
+//	                         SMALLINT, UTINYINT, TINYINT, found type BIGINT".
+//	uuid as text and as      uuid. DuckLake's registration function would
+//	16 bytes                 refuse the text file under a UUID column, but its
+//	                         reader casts it, filters included, and the text
+//	                         bounds order as the uuids do: PostgreSQL prints a
+//	                         uuid in lower case, and lower-case hex sorts as
+//	                         the bytes do.
+//
+// NOT float32 with float64, which was here. The previous release stored a
+// `real` by parsing its text as a float64, so 0.1::real is 0.1 in an old
+// file and 0.10000000149011612 (the float4, widened) from a new one under a
+// DOUBLE column: two values for one, `= 0.1` finds only the old rows and
+// DISTINCT counts two (TestRealWidthMixIsNotPublished).
+//
+// The first type given to widen for a column is the one the mirror writes
+// now (plan), so a table whose files are ALL of another form is held to the
+// same question as a mix.
 func widen(a, b string) (string, bool) {
 	if a == b {
 		return a, true
@@ -398,14 +450,6 @@ func widen(a, b string) (string, bool) {
 		}
 		return b, true
 	}
-	if (a == "float32" && b == "float64") || (a == "float64" && b == "float32") {
-		return "float64", true
-	}
-	// A uuid the mirror used to write as text, and now writes as 16 bytes.
-	// DuckLake's registration function would refuse the text file under a
-	// UUID column, but its reader casts it, filters included (DuckDB 2.0.1,
-	// TestFilesOfDifferentPhysicalTypes), and the text bounds order as the
-	// uuids do.
 	if (a == "uuid" && b == "varchar") || (a == "varchar" && b == "uuid") {
 		return "uuid", true
 	}

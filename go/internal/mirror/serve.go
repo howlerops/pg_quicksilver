@@ -48,9 +48,13 @@ import (
 // view is cast to, whatever the file under it holds, and what a file
 // predating an ADD COLUMN is given a typed literal of.
 //
-// It is the right-hand column of the table in types.go. A numeric stored as
-// text reads as DOUBLE — see there for why — and everything else reads as the
-// type it is stored as.
+// It is the right-hand column of the table in types.go: every column reads
+// as the type it is stored as. That includes a numeric stored as text (no
+// declared precision, or more than 38 digits), which reads as VARCHAR, the
+// digits PostgreSQL printed. It used to be cast to DOUBLE here, which turned
+// 1e400 into inf and dropped the digits of anything past the seventeenth,
+// with no error; and the DuckLake of the same mirror published the column as
+// VARCHAR, so the two surfaces disagreed.
 func sqlType(pgType string) string {
 	if k := temporalOf(pgType); k != notTemporal {
 		return temporalSQLType(k)
@@ -60,10 +64,6 @@ func sqlType(pgType string) string {
 	case *arrow.Decimal128Type:
 		return fmt.Sprintf("DECIMAL(%d,%d)", d.Precision, d.Scale)
 	case *arrow.StringType:
-		if _, _, _, isNumeric := numericSpec(pgType); isNumeric &&
-			!strings.HasSuffix(strings.TrimSpace(pgType), "[]") {
-			return "DOUBLE"
-		}
 		return "VARCHAR"
 	}
 	switch dt.ID() {
@@ -171,6 +171,15 @@ func fileTypeKey(col, sqlType string) string { return "\x00type\x00" + col + "\x
 
 func legacyInfKey(col string) string { return "\x00neginf\x00" + col }
 
+// HoldsLegacyNegInfinity reports whether column col of a Parquet file can
+// hold -infinity as the release before temporal.go stored it: the smallest
+// integer of the type, which an engine reads as a finite date in 5877642 BC
+// (290309 BC for a timestamp). ViewSQL maps such a column per file; a reader
+// handed the file itself, which is what a DuckLake is, cannot.
+func HoldsLegacyNegInfinity(md *metadata.FileMetaData, col int) bool {
+	return hasLegacyNegInfinity(md, col, parquetSQLType(md.Schema.Column(col)))
+}
+
 // hasLegacyNegInfinity reports whether a temporal column of this file holds
 // the old -infinity sentinel, the type's minimum, in any row group. The
 // minimum of the domain is the minimum of any chunk that holds it, so the
@@ -228,6 +237,14 @@ func (t *Table) columnExpr(c string, have map[string]bool) string {
 		// PostgreSQL's hex form, `\x` and two digits a byte. A plain cast
 		// would read the backslash as the engine's own escape syntax.
 		expr = fmt.Sprintf("from_hex(substr(%s, 3))", id)
+	case want == "VARCHAR" && isTextNumeric(pg) && hasDecimal(c, have):
+		// An unconstrained numeric an older file holds as DECIMAL(38,9). The
+		// decimal lost the display scale the source had (1.50 was stored as
+		// 1.500000000), so the padding is dropped, exactly as the Go read
+		// path and the next rewrite drop it (normalizeNumeric): one value,
+		// one spelling, whichever file it is read from.
+		v := fmt.Sprintf("CAST(%s AS VARCHAR)", id)
+		expr = fmt.Sprintf("CASE WHEN contains(%s, '.') THEN rtrim(rtrim(%s, '0'), '.') ELSE %s END", v, v, v)
 	default:
 		expr = fmt.Sprintf("CAST(%s AS %s)", id, want)
 	}
@@ -247,6 +264,23 @@ func (t *Table) columnExpr(c string, have map[string]bool) string {
 		return id
 	}
 	return expr + " AS " + id
+}
+
+// isTextNumeric is a numeric column stored as the text PostgreSQL prints.
+func isTextNumeric(pgType string) bool {
+	_, _, _, isNumeric := numericSpec(pgType)
+	return isNumeric && arrowType(pgType).ID() == arrow.STRING
+}
+
+// hasDecimal reports whether the file holds column c as some DECIMAL.
+func hasDecimal(c string, have map[string]bool) bool {
+	prefix := fileTypeKey(c, "DECIMAL(")
+	for k := range have {
+		if strings.HasPrefix(k, prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 // literalExpr is a typed literal for a column a file does not have.

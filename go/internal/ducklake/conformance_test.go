@@ -49,14 +49,24 @@ type harness struct {
 	ncol  int
 	last  *mirror.LakeManifest // the newest manifest the mirror committed
 	onNew func(*mirror.LakeManifest)
+	// infinities makes one temporal value in six -infinity or infinity.
+	infinities bool
 }
 
 func newHarness(t testing.TB, seed int64) *harness {
+	return newHarnessOf(t, seed, false, "id bigint", "v integer", "amount numeric(12,2)",
+		"ts timestamptz", "name text", "flag boolean", "u uuid", "d date")
+}
+
+// newHarnessOf is a harness over the columns given, each "name type".
+func newHarnessOf(t testing.TB, seed int64, infinities bool, cols ...string) *harness {
 	h := &harness{t: t, rng: rand.New(rand.NewSource(seed)), root: t.TempDir(),
-		cols: map[string]string{"id": "bigint", "v": "integer", "amount": "numeric(12,2)",
-			"ts": "timestamptz", "name": "text", "flag": "boolean", "u": "uuid", "d": "date"},
-		order: []string{"id", "v", "amount", "ts", "name", "flag", "u", "d"},
-		model: map[int64]map[string]any{}, next: 1}
+		cols: map[string]string{}, model: map[int64]map[string]any{}, next: 1, infinities: infinities}
+	for _, c := range cols {
+		name, typ, _ := strings.Cut(c, " ")
+		h.cols[name] = typ
+		h.order = append(h.order, name)
+	}
 	h.open()
 	return h
 }
@@ -86,9 +96,28 @@ func (h *harness) row(id int64) map[string]any {
 			r[c] = nil
 			continue
 		}
+		switch typ := h.cols[c]; typ {
+		case "timestamptz", "timestamp", "date":
+			if h.infinities && h.rng.Intn(6) == 0 {
+				r[c] = []string{"-infinity", "infinity"}[h.rng.Intn(2)]
+				continue
+			}
+		}
 		switch h.cols[c] {
 		case "integer":
 			r[c] = strconv.Itoa(h.rng.Intn(2000) - 1000)
+		case "smallint":
+			r[c] = strconv.Itoa(h.rng.Intn(65536) - 32768)
+		case "real":
+			// What float4out prints: the shortest text that reads back as
+			// the same float4. A few values, so that DISTINCT has something
+			// to merge.
+			r[c] = strconv.FormatFloat(float64([]float32{0.1, 1.5, -2.25, 3.3e10, 1e-7, 16777216}[h.rng.Intn(6)]), 'g', -1, 32)
+		case "numeric":
+			r[c] = []string{"12.50", "0.000001", "-7", "100", "0.1", "99999999999999999.123"}[h.rng.Intn(6)]
+		case "timestamp":
+			r[c] = time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC).
+				Add(time.Duration(h.rng.Int63n(5*365*86400)) * time.Second).Format("2006-01-02 15:04:05")
 		case "numeric(12,2)":
 			r[c] = fmt.Sprintf("%d.%02d", h.rng.Intn(100000)-50000, h.rng.Intn(100))
 		case "timestamptz":

@@ -301,14 +301,32 @@ the sidecar then fixes it by itself:
   they save on wide rows is given up. A mirror that already holds patch files is
   refused in the lake, a base rewrite is started, and the table is published
   when it lands (13 s at two million rows).
-- **Files of different physical types for one column**, which a sidecar upgrade
-  that changes how a type is stored produces. Integers of different widths are
-  published as the wider type, and the column narrows again when the last wide
-  file is gone. A uuid stored as text in older files and as 16 bytes in newer
-  ones is published as `UUID`: DuckDB 2.0.1's DuckLake reads the text files
-  under a `UUID` column correctly, filters included, although its own
-  `ducklake_add_data_files` refuses to register one. Anything else that differs
-  is refused until a base rewrite, started the same way, leaves one type.
+- **Files that hold a column another way than the mirror writes it now**, which
+  a sidecar upgrade that changes how a type is stored leaves behind, whether
+  next to newer files or alone. The lake is the files, so it can publish such a
+  table only where one source value reads as the same value from either form,
+  through `=`, a range, `DISTINCT`, a join and `ORDER BY`. Two cases do, each
+  proved against DuckDB 2.0.1 (`TestWidenedColumnsReadAsOneValue`): integers
+  of different widths are published as the wider type, and the column narrows
+  again when the last wide file is gone; and a uuid stored as text in older
+  files is published as `UUID`, which DuckDB's DuckLake reads correctly
+  although its own `ducklake_add_data_files` refuses to register one.
+  Everything else is refused until a base rewrite, started the same way,
+  leaves one form:
+  - `real` held as `DOUBLE` (it reads as `0.1` where the newer files, and the
+    source, hold the float4 `0.1`, which is `0.10000000149011612` as a double:
+    two values for one);
+  - an unconstrained `numeric` held as `DECIMAL(38,9)`, and `bytea` held as text;
+  - a `date`, `timestamp` or `timestamptz` file whose statistics say it may
+    hold `-infinity` as the previous release stored it (the type's minimum),
+    which DuckDB reads as a finite date in 290309 BC. The mirror's own view
+    corrects that per file; a lake cannot.
+
+A rewrite is asked for once per reason. While the publish of the rewrite's own
+manifest is failing (a full disk, say) none is asked for: the publish is
+retried instead. A rewrite that was not started, or that left the same reason
+behind, is asked for again after 15 seconds, then 30, doubling to 15 minutes.
+`quicksilver_ducklake_refused` is 1 for as long as the table waits.
 
 **Expiry.** A snapshot is expired once it has been superseded for longer than
 the retention window: its catalog rows go in one transaction, and only after
@@ -461,7 +479,7 @@ of `go/internal/mirror/types.go`. What a reader sees through DuckDB:
 | `real` / `double precision` | `FLOAT` / `DOUBLE` |
 | `boolean`, `uuid`, `bytea` | `BOOLEAN`, `UUID`, `BLOB` |
 | `numeric(p,s)` with p ≤ 38 | `DECIMAL(p,s)` |
-| `numeric` with no precision, or p > 38 | `DOUBLE`, cast from exact text (below) |
+| `numeric` with no precision, or p > 38 | `VARCHAR`: every digit PostgreSQL printed (below) |
 | `date`, `time`, `timestamp`, `timestamptz` | the same; `infinity` and `-infinity` are DuckDB's own |
 | everything else (`text`, `char(n)`, `jsonb`, enums, arrays, `interval`, `inet`, `money`, …) | `VARCHAR`, the text PostgreSQL prints |
 
@@ -471,15 +489,33 @@ An unconstrained `numeric` column holds whatever it is given: `0.1234567890123`,
 a 40-digit integer, `NaN`. No fixed decimal holds all of those, and the mirror
 used to store such a column as `DECIMAL(38,9)` and **halt the table** on the
 first value that did not fit. It now stores the column as text — exactly what
-PostgreSQL printed, nothing rounded, nothing refused — and the view casts it to
-`DOUBLE`, which is also what DuckDB's own PostgreSQL scanner does with the
-type. The consequences, so that nobody finds them by surprise:
+PostgreSQL printed, nothing rounded, nothing refused — and a reader is given
+exactly that, as `VARCHAR`, through the view and through the DuckLake alike.
 
-- the column no longer halts on anything;
-- a reader gets a number, but a `DOUBLE`: exact to 15–17 significant digits,
-  and `sum()` over it is floating-point. The file still holds every digit
-  (`read_parquet` on it returns the text);
-- aggregating it parses text, which is slower than a decimal column.
+The rule is one per column, decided by the declared type and by
+`QS_NUMERIC_SCALE` and by nothing in the data, so it never changes from one
+file or one day to the next:
+
+| the column is | a reader gets |
+|---|---|
+| `numeric(p,s)`, p ≤ 38 | `DECIMAL(p,s)` |
+| `numeric`, or `numeric(p,s)` with p > 38 | `VARCHAR`, exact |
+| `numeric`, named in `QS_NUMERIC_SCALE` | `DECIMAL(38,s)`, and a halt on a value that does not fit |
+
+The view used to cast the text to `DOUBLE`, as DuckDB's PostgreSQL scanner
+does. That made `1e400` read as `inf` and a 29-digit value lose twelve digits,
+with no error, while the DuckLake of the same mirror said `VARCHAR`. A mirror
+must not differ from its source without saying so, so there is no setting that
+brings the cast back. The consequences, so that nobody finds them by surprise:
+
+- the column no longer halts on anything, and no digit is lost;
+- it is text: `sum(n)` is an error, and `ORDER BY n` and `n > 5` compare
+  strings. A query that wants arithmetic says which arithmetic, and so chooses
+  its own loss: `sum(CAST(n AS DECIMAL(38,6)))` (an error on a value that does
+  not fit, `TRY_CAST` for NULL instead) or `CAST(n AS DOUBLE)` (15–17
+  significant digits);
+- `n = '1.5'` is a comparison of text, and PostgreSQL prints a numeric with the
+  scale it was given: `1.50` is not `1.5`. Cast before comparing values.
 
 When you know a column's scale and want exact decimal arithmetic, opt it in:
 
@@ -528,14 +564,23 @@ as `DECIMAL(38,9)`; they stay as they are until the table's next base rewrite
 (compaction), and until then a table has both kinds of file. The view casts
 every file to the declared type, so readers see the new types from the first
 snapshot the new sidecar publishes, and `qs-verify` compares both kinds.
+(A DuckLake cannot cast: it publishes the mixes it reads correctly and refuses
+the rest until the rewrite, which it asks for itself. See *Publishing the
+mirror as a DuckLake* above.)
+
+An unconstrained `numeric` in an older file lost the scale PostgreSQL printed
+it with (`1.50` was stored as `1.500000000`). It reads as `1.5`, the padding
+dropped, from the old file and from the file the rewrite makes of it; a row
+written after the upgrade reads `1.50`, as the source prints it.
 
 Two things an upgrade does **not** repair, because the old files do not hold
 what the source held. A mirror whose `char(n)` or `inet` columns were loaded by
 the old *snapshot* has them without their padding, or with a `/32` the source
 does not print; `qs-verify` now reports those tables `DIVERGED`, correctly.
 Rebuild them (create `REBUILD` in the table's mirror directory and restart).
-And a reader that depended on an unconstrained `numeric` being `DECIMAL(38,9)`
-should set `QS_NUMERIC_SCALE=9`.
+And a reader that depended on an unconstrained `numeric` being a number
+should set `QS_NUMERIC_SCALE` (`=9` is what it was before: `DECIMAL(38,9)`), or
+cast in its queries; without either the column is `VARCHAR`.
 
 ---
 

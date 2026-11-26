@@ -19,8 +19,8 @@ package mirror
 //	uuid                          FLBA(16) UUID    / arrow.uuid     UUID
 //	bytea                         BYTE_ARRAY       / Binary         BLOB
 //	numeric(p,s), p <= 38         DECIMAL(p,s)     / Decimal128     DECIMAL(p,s)
-//	numeric(p,s), p > 38          BYTE_ARRAY UTF8  / String         DOUBLE (cast)
-//	numeric (unconstrained)       BYTE_ARRAY UTF8  / String         DOUBLE (cast)
+//	numeric(p,s), p > 38          BYTE_ARRAY UTF8  / String         VARCHAR
+//	numeric (unconstrained)       BYTE_ARRAY UTF8  / String         VARCHAR
 //	  ... opted in, QS_NUMERIC_SCALE   DECIMAL(38,s) / Decimal128   DECIMAL(38,s)
 //	date                          INT32 DATE       / Date32         DATE
 //	time                          INT64 TIME(us)   / Time64         TIME
@@ -59,13 +59,24 @@ package mirror
 // integer, NaN. Each of those is a value DECIMAL(38,9) cannot hold, so each
 // halted the table — an ordinary column, an ordinary value, and a mirror that
 // stops. No fixed scale is right for a column whose scale is per value, so
-// the default stores what PostgreSQL prints, exactly, and the view casts it
-// to DOUBLE — which is what DuckDB's own PostgreSQL scanner does with an
-// unconstrained numeric, so a reader gets a number it can sum and compare.
-// The cast is lossy past 15-17 significant digits and aggregation parses text
-// (slower); the file is not lossy. An operator who knows a column's scale opts
-// it into DECIMAL(38,s) with QS_NUMERIC_SCALE, and takes back the halt on a
-// value that does not fit. See docs/16-deploying.md.
+// the default stores what PostgreSQL prints, exactly, and a reader is given
+// exactly that: VARCHAR, through the view and through the DuckLake alike.
+//
+// The view used to cast it to DOUBLE, as DuckDB's own PostgreSQL scanner
+// does. That made 1e400 read as inf and a 29-digit value lose twelve digits,
+// silently, while the DuckLake of the same mirror said VARCHAR. The rule is
+// now one per COLUMN, decided by the declared type and the operator's setting
+// and by nothing in the data, so it cannot change from one file to the next:
+//
+//	numeric(p,s), p <= 38                      DECIMAL(p,s)
+//	numeric, numeric(p,s) with p > 38          VARCHAR, every digit
+//	  ... the column named in QS_NUMERIC_SCALE DECIMAL(38,s), halts on a
+//	                                           value that does not fit
+//
+// A reader who wants arithmetic over a VARCHAR numeric casts in the query,
+// to the type whose loss it has chosen: CAST(n AS DECIMAL(38,6)) or
+// CAST(n AS DOUBLE). There is no setting that makes the mirror approximate.
+// See docs/16-deploying.md.
 //
 // char(n) as text WITH its padding: that is what the output function prints
 // and what the stream delivers. There is no fixed-width character type in
@@ -99,6 +110,12 @@ import (
 // existed. It is set only by tests, which need a mirror in the old
 // representation to run the new readers over.
 var legacyTypes bool
+
+// LegacyWriterForTest switches the writer to the representation of the
+// previous release, or back. It is for tests of other packages that have to
+// publish a mirror an older sidecar wrote (internal/ducklake); nothing else
+// may call it.
+func LegacyWriterForTest(on bool) { legacyTypes = on }
 
 var uuidArrowType = extensions.NewUUIDType()
 
@@ -477,6 +494,21 @@ func coerceFor(want, have arrow.DataType) func(any) any {
 					if u, ok := parseUUIDValue(s); ok {
 						return u
 					}
+				}
+				return v
+			}
+		}
+	case arrow.STRING:
+		// A numeric an older file holds as DECIMAL(38,9) and the table now
+		// declares as text. The decimal lost the display scale the source
+		// had, so its padding is dropped HERE, for every reader: storable did
+		// it only for a value that reached it still typed, and a rewrite
+		// through Live handed it "1.500000000" as a string, which was then
+		// stored as though PostgreSQL had printed it.
+		if have.ID() == arrow.DECIMAL128 {
+			return func(v any) any {
+				if x, ok := v.(decimalValue); ok {
+					return normalizeNumeric(x.String())
 				}
 				return v
 			}

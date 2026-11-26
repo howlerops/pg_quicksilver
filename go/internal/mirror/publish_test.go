@@ -525,6 +525,61 @@ func TestRetireMaxBytesGivesUpTheOldestFirst(t *testing.T) {
 	}
 }
 
+// A retired file the DuckLake still holds a hard link to takes no disk of its
+// own, and unlinking it gives none back. Counted against the cap, it pushed
+// out the files of snapshot.json's readers and freed nothing.
+func TestRetireMaxBytesIgnoresFilesTheLakeLinks(t *testing.T) {
+	tbl, clk := graceTable(t, time.Hour)
+	p := tbl.publisher()
+	lake := t.TempDir()
+	var paths []string
+	for i := 0; i < 5; i++ {
+		path := filepath.Join(tbl.Dir, "delta", fmt.Sprintf("9%05d.parquet", i))
+		if err := os.WriteFile(path, make([]byte, 1000), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if i < 2 { // the lake published these two
+			if err := os.Link(path, filepath.Join(lake, filepath.Base(path))); err != nil {
+				t.Skip("no hard links here: ", err)
+			}
+		}
+		paths = append(paths, path)
+	}
+	p.maxBytes = 2500
+	kept := func() string {
+		var have []bool
+		for _, path := range paths {
+			_, err := os.Stat(path)
+			have = append(have, err == nil)
+		}
+		return fmt.Sprint(have)
+	}
+	for _, path := range paths[:4] {
+		clk.at = clk.at.Add(time.Second)
+		tbl.retire(path)
+	}
+	// 4000 bytes retired, 2000 of them the lake's: nothing is over the cap.
+	if got := kept(); got != "[true true true true true]" {
+		t.Fatalf("with 2000 unlinked bytes under a 2500 cap, kept %s", got)
+	}
+	clk.at = clk.at.Add(time.Second)
+	tbl.retire(paths[4])
+	// 3000 the mirror alone holds: the oldest of THOSE goes, and frees disk.
+	if got := kept(); got != "[true true false true true]" {
+		t.Fatalf("kept %s, expected the oldest file the lake does not link to go", got)
+	}
+	// The lake lets go of one (its own expiry): it counts again.
+	if err := os.Remove(filepath.Join(lake, filepath.Base(paths[0]))); err != nil {
+		t.Fatal(err)
+	}
+	p.mu.Lock()
+	p.enforceCap()
+	p.mu.Unlock()
+	if got := kept(); got != "[false true false true true]" {
+		t.Fatalf("after the lake dropped its link, kept %s", got)
+	}
+}
+
 // TestPublishedSnapshotInDuckDB evaluates published snapshots in a real engine
 // and logs what it says. It needs python with duckdb, so it is opt-in:
 //

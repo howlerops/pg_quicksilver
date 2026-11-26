@@ -341,6 +341,8 @@ func (t *Table) publishManifest(st *State, refusal string) error {
 	if !p.swept && refusal == "" {
 		p.swept = true
 		p.sweep(t.Dir, inflight, t.neverNamed)
+		bases := append(append([]string{}, st.BaseFiles...), t.State.BaseFiles...)
+		sweepIndex(t.Dir, bases, inflight)
 	}
 	p.reap()
 	p.enforceCap()
@@ -467,12 +469,24 @@ func (p *publisher) drop(path string, r *retired) {
 // enforceCap gives up the oldest retirements when the grace is holding more
 // than RetireMaxBytes. Files the published snapshot still names are not
 // candidates: their readers are current, not slow.
+//
+// Neither is a file with another name, which is what a DuckLake's hard link
+// to it is (internal/ducklake). The cap is about disk, and unlinking such a
+// file gives none back: counting it evicted the files of snapshot.json's
+// readers early, to free bytes the lake went on holding. It is looked at
+// only when the total is over the cap, and each time, because the lake drops
+// its link when its own retention says so.
 func (p *publisher) enforceCap() {
 	if p.maxBytes <= 0 || p.bytes <= p.maxBytes {
 		return
 	}
 	var paths []string
+	var linked int64
 	for path, r := range p.pending {
+		if fi, err := os.Lstat(path); err == nil && linkedElsewhere(fi) {
+			linked += r.size
+			continue
+		}
 		if !r.deadline.IsZero() {
 			paths = append(paths, path)
 		}
@@ -481,7 +495,7 @@ func (p *publisher) enforceCap() {
 		return p.pending[paths[i]].deadline.Before(p.pending[paths[j]].deadline)
 	})
 	for _, path := range paths {
-		if p.bytes <= p.maxBytes {
+		if p.bytes-linked <= p.maxBytes {
 			return
 		}
 		p.drop(path, p.pending[path])
@@ -570,6 +584,45 @@ func (p *publisher) sweep(dir, inflight string, neverNamed func(sub, name string
 			p.pending[path] = &retired{size: info.Size(), deadline: deadline, id: info}
 			p.bytes += info.Size()
 		}
+	}
+}
+
+// sweepIndex removes what a crash left under index/: the buckets of a rewrite
+// that never finished, the runs and temporaries of an index build that never
+// did, and the index of a base file the manifest no longer names. None of it
+// has a reader (an index is this process's own), so nothing waits out the
+// grace.
+//
+// It runs where sweep does: once, at the writer's first manifest write, so
+// that qs-query and qs-verify, which open the same directory and write no
+// manifest, never remove anything. What is kept is the index of each base
+// file the manifest names, everything of the rewrite in flight (inflight is
+// its base file's path), and any bucket whose rewrite is registered as
+// running (compact_cluster.go), which is what makes the last safe without
+// trusting this function's idea of what is in flight.
+func sweepIndex(dir string, bases []string, inflight string) {
+	keep := map[string]bool{}
+	for _, b := range bases {
+		keep[trimParquet(filepath.Base(b))+".kidx"] = true
+	}
+	flying := ""
+	if inflight != "" {
+		flying = trimParquet(filepath.Base(inflight)) + ".kidx"
+	}
+	entries, _ := os.ReadDir(filepath.Join(dir, "index"))
+	for _, e := range entries {
+		name := e.Name()
+		path := filepath.Join(dir, "index", name)
+		if e.IsDir() || keep[name] || scratchLive(path) {
+			continue
+		}
+		// The index being built for the new base: the file, its sorted runs
+		// and the temporary the merge writes (kidx.go). Nothing else.
+		if rest, ok := strings.CutPrefix(name, flying); ok && flying != "" &&
+			(rest == "" || strings.HasPrefix(rest, ".run") || strings.HasPrefix(rest, ".tmp")) {
+			continue
+		}
+		_ = os.Remove(path)
 	}
 }
 

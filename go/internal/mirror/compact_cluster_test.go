@@ -79,7 +79,7 @@ func (m *clusterModel) rewrite() *Compaction {
 		m.t.Fatalf("FinishCompaction: %v", err)
 	}
 	// The buckets the delta rows were spilled to are the rewrite's own scratch.
-	if left, _ := filepath.Glob(filepath.Join(m.tbl.Dir, "index", "*.delta*")); len(left) > 0 {
+	if left, _ := filepath.Glob(filepath.Join(m.tbl.Dir, "index", "*.bucket*")); len(left) > 0 {
 		m.t.Errorf("the rewrite left its buckets behind: %v", left)
 	}
 	return c

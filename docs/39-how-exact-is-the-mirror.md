@@ -480,9 +480,13 @@ fixes those and breaks as many (`SELECT ch`, `DISTINCT ch`, `concat_ws`, `LIKE
 '%e'`), because PostgreSQL itself is not consistent about the padding.
 
 What the mirror refuses changed too. An unconstrained `numeric` is stored as
-text and read as DOUBLE, so `NaN`, `Infinity`, 30-digit integers and
-0.33333333333333333333 no longer halt a table (and read to a double's
-precision); `numeric(50,2)` no longer crashes the sidecar; and every probe that
+text, so `NaN`, `Infinity`, 30-digit integers and 0.33333333333333333333 no
+longer halt a table. (When this was measured the view cast that text to DOUBLE
+and they read to a double's precision. It no longer does: the column reads as
+VARCHAR, every digit, through the view and the DuckLake alike, and a query
+that wants arithmetic casts. The counts in this document predate that and
+were not re-run; see docs/16-deploying.md, "`numeric` without a precision".)
+`numeric(50,2)` no longer crashes the sidecar; and every probe that
 `qs-verify` called DIVERGED — `char(8)`, `inet`, four float values — is MATCH.
 Dates and timestamps before 1 AD or beyond year 294247 still halt.
 

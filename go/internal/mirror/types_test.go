@@ -160,9 +160,9 @@ var allTypes = []struct{ name, pg, sql, value, alt string }{
 	{"b", "boolean", "BOOLEAN", "t", "f"},
 	{"ref", "uuid", "UUID", "a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11", "00000000-0000-0000-0000-000000000000"},
 	{"raw", "bytea", "BLOB", `\xdeadbeef00ff`, `\x`},
-	{"n", "numeric", "DOUBLE", "0.123456789012345", "NaN"},
+	{"n", "numeric", "VARCHAR", "0.123456789012345", "NaN"},
 	{"n2", "numeric(12,2)", "DECIMAL(12,2)", "-9999999999.99", "1.50"},
-	{"n50", "numeric(50,2)", "DOUBLE", "123456789012345678901234567890123456789012345678.25", "1.50"},
+	{"n50", "numeric(50,2)", "VARCHAR", "123456789012345678901234567890123456789012345678.25", "1.50"},
 	{"dt", "date", "DATE", "-infinity", "2024-02-29"},
 	{"tm", "time without time zone", "TIME", "24:00:00", "12:34:56.5"},
 	{"ts", "timestamp without time zone", "TIMESTAMP", "-infinity", "1900-01-01 00:00:00.000001"},
@@ -291,12 +291,12 @@ func TestEveryTypeIsStoredAsDeclared(t *testing.T) {
 	for q, want := range map[string]string{
 		`r = CAST('0.1' AS FLOAT)`: "2",
 		`d = 1000000`:              "2",
-		`isnan(n)`:                 "2",
+		`n = 'NaN'`:                "2",
 		`ref = 'A0EEBC99-9C0B-4EF8-BB6D-6BB9BD380A11'`:         "3",
 		`dt = '-infinity' AND ts < '0001-01-01' AND isinf(tz)`: "3",
 		`b`:                     "3",
 		`octet_length(raw) = 6`: "3",
-		`n50 > 1e47 AND n = 0.123456789012345 AND tm = '24:00:00'`: "3",
+		`n50 = '123456789012345678901234567890123456789012345678.25' AND n = '0.123456789012345' AND tm = '24:00:00'`: "3",
 	} {
 		if got := duck(t, `SELECT count(*) FROM (`+sql+`) WHERE `+q); len(got) != 1 || got[0] != want {
 			t.Errorf("WHERE %s counts %v, expected %s", q, got, want)
@@ -923,7 +923,7 @@ func TestUnconstrainedNumericIsTextUnlessOptedIn(t *testing.T) {
 			t.Errorf("numeric %q read back as %q", v, got)
 		}
 	}
-	if s := sqlType("numeric"); s != "DOUBLE" {
+	if s := sqlType("numeric"); s != "VARCHAR" {
 		t.Errorf("an unconstrained numeric is presented as %s", s)
 	}
 
@@ -960,27 +960,28 @@ func TestUnconstrainedNumericIsTextUnlessOptedIn(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(sql, `CAST("rate" AS DECIMAL(38,20))`) || !strings.Contains(sql, `CAST("amount" AS DOUBLE)`) {
+	if !strings.Contains(sql, `CAST("rate" AS DECIMAL(38,20))`) || strings.Contains(sql, `AS DOUBLE`) {
 		t.Errorf("the view does not cast text numerics to their declared types:\n%s", sql)
 	}
 	if haveDuck() {
 		got := duck(t, "SELECT id, amount, rate, typeof(amount), typeof(rate) FROM ("+sql+") ORDER BY id")
 		want := []string{
-			"0\t0.123456789012345\t0.12345678901234500000\tDOUBLE\tDECIMAL(38,20)",
-			"1\t1e-12\t0.00000000000100000000\tDOUBLE\tDECIMAL(38,20)",
-			"5\t1.5\t1.50000000000000000000\tDOUBLE\tDECIMAL(38,20)",
-			"9\t7.0\t0.25000000000000000000\tDOUBLE\tDECIMAL(38,20)",
+			"0\t0.123456789012345\t0.12345678901234500000\tVARCHAR\tDECIMAL(38,20)",
+			"1\t1e-12\t0.00000000000100000000\tVARCHAR\tDECIMAL(38,20)",
+			"5\t1.50\t1.50000000000000000000\tVARCHAR\tDECIMAL(38,20)",
+			"9\t7\t0.25000000000000000000\tVARCHAR\tDECIMAL(38,20)",
 		}
 		if strings.Join(got, "\n") != strings.Join(want, "\n") {
 			t.Errorf("DuckDB reads\n%s\nexpected\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
 		}
-		// And with nothing opted in, the special values are numbers too.
+		// And with nothing opted in, the reader chooses the arithmetic: the
+		// column is the text, exactly, and a cast in the query is exact too.
 		NumericScale = ""
 		defer func() { NumericScale = "" }()
 		tbl4, _ := New(dir, "public", "num", "id", cols, order)
 		sql4, _ := tbl4.ViewSQL()
-		if got := duck(t, "SELECT count(*), sum(amount) FROM ("+sql4+") WHERE id IN (0, 5, 9)"); len(got) != 1 ||
-			got[0] != "3\t8.623456789012344" && got[0] != "3\t8.623456789012345" {
+		if got := duck(t, "SELECT count(*), sum(CAST(amount AS DECIMAL(38,15))), typeof(any_value(amount)) FROM ("+sql4+") WHERE id IN (0, 5, 9)"); len(got) != 1 ||
+			got[0] != "3\t8.623456789012345\tVARCHAR" {
 			t.Errorf("sum over a text numeric = %v", got)
 		}
 	}
