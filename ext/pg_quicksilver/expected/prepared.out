@@ -1,0 +1,350 @@
+-- Prepared statements: the decision is made per execution, with the values.
+-- Customer 1 owns 30% of public.orders (300,000 rows); customer 5 owns 70.
+\set last 'SELECT side, reason FROM quicksilver.last_decision();'
+SET search_path = public;
+SET quicksilver.route = auto;
+PREPARE p(int) AS SELECT count(*), sum(amount) FROM orders WHERE customer_id = $1;
+EXECUTE p(1);
+ count  |     sum      
+--------+--------------
+ 300000 | 149988000.00
+(1 row)
+
+:last
+  side  | reason 
+--------+--------
+ mirror | routed
+(1 row)
+
+EXECUTE p(5);
+ count |   sum    
+-------+----------
+    70 | 34685.70
+(1 row)
+
+:last
+ side |      reason       
+------+-------------------
+ heap | cheap on the heap
+(1 row)
+
+-- past the fifth execution the plan cache would settle on a generic plan and
+-- stop asking; the extension prices that plan out, so it keeps asking
+EXECUTE p(1);
+ count  |     sum      
+--------+--------------
+ 300000 | 149988000.00
+(1 row)
+
+EXECUTE p(5);
+ count |   sum    
+-------+----------
+    70 | 34685.70
+(1 row)
+
+EXECUTE p(1);
+ count  |     sum      
+--------+--------------
+ 300000 | 149988000.00
+(1 row)
+
+EXECUTE p(5);
+ count |   sum    
+-------+----------
+    70 | 34685.70
+(1 row)
+
+EXECUTE p(5);
+ count |   sum    
+-------+----------
+    70 | 34685.70
+(1 row)
+
+EXECUTE p(5);
+ count |   sum    
+-------+----------
+    70 | 34685.70
+(1 row)
+
+:last
+ side |      reason       
+------+-------------------
+ heap | cheap on the heap
+(1 row)
+
+EXECUTE p(1);
+ count  |     sum      
+--------+--------------
+ 300000 | 149988000.00
+(1 row)
+
+:last
+  side  | reason 
+--------+--------
+ mirror | routed
+(1 row)
+
+EXECUTE p(NULL);
+ count | sum 
+-------+-----
+     0 |    
+(1 row)
+
+:last
+ side |      reason       
+------+-------------------
+ heap | cheap on the heap
+(1 row)
+
+SELECT generic_plans, custom_plans FROM pg_prepared_statements WHERE name = 'p';
+ generic_plans | custom_plans 
+---------------+--------------
+             0 |           10
+(1 row)
+
+-- a generic plan has no values to judge by: heap, always
+SET plan_cache_mode = force_generic_plan;
+SELECT quicksilver.forget_last();
+ forget_last 
+-------------
+ 
+(1 row)
+
+EXECUTE p(1);
+ count  |     sum      
+--------+--------------
+ 300000 | 149988000.00
+(1 row)
+
+-- (the cached generic plan is reused without planning, so there is no new decision)
+:last
+ side | reason 
+------+--------
+(0 rows)
+
+EXPLAIN (COSTS OFF) EXECUTE p(1);
+                      QUERY PLAN                      
+------------------------------------------------------
+ Aggregate
+   ->  Bitmap Heap Scan on orders
+         Recheck Cond: (customer_id = $1)
+         ->  Bitmap Index Scan on orders_customer_idx
+               Index Cond: (customer_id = $1)
+(5 rows)
+
+SET plan_cache_mode = force_custom_plan;
+EXECUTE p(1);
+ count  |     sum      
+--------+--------------
+ 300000 | 149988000.00
+(1 row)
+
+:last
+  side  | reason 
+--------+--------
+ mirror | routed
+(1 row)
+
+RESET plan_cache_mode;
+-- a one-row lookup is the same plan for every value: it is left alone
+PREPARE pk(bigint) AS SELECT id, status FROM orders WHERE id = $1;
+EXECUTE pk(1);
+ id | status 
+----+--------
+  1 | paid
+(1 row)
+
+EXECUTE pk(2);
+ id | status  
+----+---------
+  2 | shipped
+(1 row)
+
+EXECUTE pk(3);
+ id |  status  
+----+----------
+  3 | returned
+(1 row)
+
+EXECUTE pk(4);
+ id | status 
+----+--------
+  4 | new
+(1 row)
+
+EXECUTE pk(5);
+ id | status 
+----+--------
+  5 | paid
+(1 row)
+
+EXECUTE pk(6);
+ id | status  
+----+---------
+  6 | shipped
+(1 row)
+
+EXECUTE pk(7);
+ id |  status  
+----+----------
+  7 | returned
+(1 row)
+
+:last
+ side |      reason       
+------+-------------------
+ heap | cheap on the heap
+(1 row)
+
+SELECT generic_plans > 0 AS went_generic FROM pg_prepared_statements WHERE name = 'pk';
+ went_generic 
+--------------
+ t
+(1 row)
+
+-- the extended protocol, unnamed statement
+SELECT count(*), sum(amount) FROM orders WHERE customer_id = $1 \bind 1 \g
+ count  |     sum      
+--------+--------------
+ 300000 | 149988000.00
+(1 row)
+
+:last
+  side  | reason 
+--------+--------
+ mirror | routed
+(1 row)
+
+SELECT count(*), sum(amount) FROM orders WHERE customer_id = $1 \bind 5 \g
+ count |   sum    
+-------+----------
+    70 | 34685.70
+(1 row)
+
+:last
+ side |      reason       
+------+-------------------
+ heap | cheap on the heap
+(1 row)
+
+-- parameters of several types
+SELECT count(*) FROM orders WHERE customer_id = $1 AND amount > $2 AND status = $3 AND created_at >= $4 \bind 1 '500.00' 'paid' '2024-01-02 00:00:00+00' \g
+ count 
+-------
+ 23180
+(1 row)
+
+:last
+  side  | reason 
+--------+--------
+ mirror | routed
+(1 row)
+
+SELECT count(*) FROM orders WHERE customer_id = $1 AND (note = $2 OR amount >= $3) \bind 1 'n-7' '999.00' \g
+ count 
+-------
+   300
+(1 row)
+
+:last
+  side  | reason 
+--------+--------
+ mirror | routed
+(1 row)
+
+SET quicksilver.route = heap;
+SELECT count(*) FROM orders WHERE customer_id = $1 AND amount > $2 AND status = $3 AND created_at >= $4 \bind 1 '500.00' 'paid' '2024-01-02 00:00:00+00' \g
+ count 
+-------
+ 23180
+(1 row)
+
+SELECT count(*) FROM orders WHERE customer_id = $1 AND (note = $2 OR amount >= $3) \bind 1 'n-7' '999.00' \g
+ count 
+-------
+   300
+(1 row)
+
+SET quicksilver.route = auto;
+-- an untyped parameter that PostgreSQL resolves to something not allowlisted
+SELECT count(*) FROM orders WHERE note LIKE $1 \bind 'n-1%' \g
+ count  
+--------
+ 100000
+(1 row)
+
+:last
+ side |             reason             
+------+--------------------------------
+ heap | construct not on the allowlist
+(1 row)
+
+-- a parameter's value reaches the mirror as that value (the mirror's rows say so)
+SET client_min_messages = warning;
+CREATE SCHEMA qt;
+CREATE SCHEMA qtm;
+CREATE TABLE qt.h (id int PRIMARY KEY, a int, b text);
+INSERT INTO qt.h SELECT g, g * 10, 'heap' FROM generate_series(1, 4) g;
+CREATE VIEW qtm.h AS SELECT r['id']::int AS id, r['a']::int AS a, r['b']::text AS b
+  FROM duckdb.query($$ SELECT * FROM (VALUES (1, 10, 'mirror'), (2, 20, 'mirror'), (3, 30, 'it''s'), (4, 40, NULL)) t(id, a, b) $$) r;
+SELECT quicksilver.register_mirror('qt.h', 'qtm.h', 1000000000000);
+ register_mirror 
+-----------------
+ 
+(1 row)
+
+SELECT quicksilver.report_applied_lsn('qt.h', pg_current_wal_lsn());
+ report_applied_lsn 
+--------------------
+ 
+(1 row)
+
+SET quicksilver.route = mirror;
+PREPARE m(int, text) AS SELECT id, a, b FROM qt.h WHERE a > $1 AND (b = $2 OR b IS NULL) ORDER BY id;
+EXECUTE m(5, 'mirror');
+ id | a  |   b    
+----+----+--------
+  1 | 10 | mirror
+  2 | 20 | mirror
+  4 | 40 | 
+(3 rows)
+
+EXECUTE m(25, 'it''s');
+ id | a  |  b   
+----+----+------
+  3 | 30 | it's
+  4 | 40 | 
+(2 rows)
+
+EXECUTE m(25, NULL);
+ id | a  | b 
+----+----+---
+  4 | 40 | 
+(1 row)
+
+EXECUTE m(-2147483648, 'a''; DROP TABLE qt.h; --');
+ id | a  | b 
+----+----+---
+  4 | 40 | 
+(1 row)
+
+:last
+  side  | reason 
+--------+--------
+ mirror | routed
+(1 row)
+
+SELECT count(*) FROM qt.h;
+ count 
+-------
+     4
+(1 row)
+
+DEALLOCATE ALL;
+DROP SCHEMA qt, qtm CASCADE;
+SELECT quicksilver.prune();
+ prune 
+-------
+     1
+(1 row)
+

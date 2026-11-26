@@ -1,5 +1,12 @@
 # 38 — A router in front
 
+> **Superseded by [40 — The router moves inside](40-the-router-moves-inside.md).**
+> The open problem this document ends on (a proxy cannot know which statements
+> DuckDB answers as PostgreSQL does) is addressed there by a PostgreSQL
+> extension that decides with the typed query tree and routes only what is on a
+> verified allowlist. `go/cmd/qs-router` is kept as the record of what a proxy
+> can and cannot do; what follows is unchanged.
+
 An experiment: one endpoint, and each statement goes to the heap or to the
 mirror on its own. It works, it is in [`go/cmd/qs-router`](../go/cmd/qs-router),
 and **it should not be shipped as it is**. The routing is sound. What it routes
