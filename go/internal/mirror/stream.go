@@ -15,8 +15,12 @@ package mirror
 // holds one row group rather than one table.
 
 import (
+	"bytes"
 	"context"
+	"encoding/binary"
+	"fmt"
 	"io"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -58,6 +62,11 @@ type parquetWriter struct {
 	// pqarrow close it, because a file is not finished when its footer is
 	// written: it is finished when fsync has returned. See Close.
 	f *os.File
+	// groups counts the row groups written, and nanChunks names the float
+	// column chunks among them that hold a NaN. See dropNaNStatistics.
+	groups    int
+	floatCols []int
+	nanChunks [][2]int
 }
 
 // ---- making a write durable ------------------------------------------------
@@ -225,6 +234,13 @@ var SnappyDeltas = os.Getenv("QS_SNAPPY_DELTAS") == "1"
 // it is closed, because a delta is named by the manifest exactly as a base
 // file is.
 func (t *Table) newParquetWriter(path string, cols []string, durable bool) (*parquetWriter, error) {
+	return t.newParquetWriterFor(path, cols, durable, 0)
+}
+
+// newParquetWriterFor is newParquetWriter for a caller that knows how many
+// rows it is about to write (0: it does not). The count sizes the bloom
+// filters and nothing else.
+func (t *Table) newParquetWriterFor(path string, cols []string, durable bool, rows int) (*parquetWriter, error) {
 	if cols == nil {
 		cols = t.Order
 	}
@@ -243,17 +259,125 @@ func (t *Table) newParquetWriter(path string, cols []string, durable bool) (*par
 	if SnappyDeltas && !durable {
 		codec = compress.Codecs.Snappy
 	}
-	props := parquet.NewWriterProperties(
+	opts := []parquet.WriterProperty{
 		parquet.WithCompression(codec),
 		parquet.WithCompressionLevel(ZstdLevel),
 		parquet.WithMaxRowGroupLength(RowGroupRows),
-	)
+	}
+	// Bloom filters on the key and on uuid columns (types.go, BloomColumns),
+	// sized by what a chunk holds rather than by the worst case, because most
+	// files this writes are small: a delta of 40 rows must not carry a filter
+	// built for 65,536.
+	//
+	// A delta's row count is known before it is opened, and its filter is
+	// sized for exactly that many values — 32 bytes for a handful. A snapshot
+	// or a rewrite streams, so it uses the ADAPTIVE builder: a ladder of sizes
+	// from one full row group's worth down, of which the smallest that still
+	// meets the false-positive rate is written. The ladder's bottom rung is
+	// about 2 KB, which is why the known count is used where there is one.
+	if bloom := t.bloomColumnsFor(cols); len(bloom) > 0 {
+		opts = append(opts, parquet.WithMaxBloomFilterBytes(bloomMaxBytes()))
+		for _, c := range bloom {
+			opts = append(opts,
+				parquet.WithBloomFilterEnabledFor(c, true),
+				parquet.WithBloomFilterFPPFor(c, bloomFPP))
+			if rows > 0 && int64(rows) < RowGroupRows {
+				opts = append(opts, parquet.WithBloomFilterNDVFor(c, int64(rows)))
+			} else {
+				opts = append(opts,
+					parquet.WithAdaptiveBloomFilterEnabledFor(c, true),
+					parquet.WithBloomFilterCandidatesFor(c, bloomCandidates()))
+			}
+		}
+	}
+	props := parquet.NewWriterProperties(opts...)
 	w, err := pqarrow.NewFileWriter(schema, keepOpen{f}, props, pqarrow.DefaultWriterProps())
 	if err != nil {
 		f.Close()
 		return nil, err
 	}
-	return &parquetWriter{w: w, schema: schema, cols: cols, tbl: t, f: f}, nil
+	pw := &parquetWriter{w: w, schema: schema, cols: cols, tbl: t, f: f}
+	for i, fld := range schema.Fields() {
+		if id := fld.Type.ID(); id == arrow.FLOAT32 || id == arrow.FLOAT64 {
+			pw.floatCols = append(pw.floatCols, i)
+		}
+	}
+	return pw, nil
+}
+
+// bloomFPP is the false-positive rate a filter is sized for: one row group in
+// a hundred is read for a value it does not hold.
+const bloomFPP = 0.01
+
+// bloomCandidates is how many sizes the adaptive builder keeps: one per
+// halving from bloomMaxBytes down to 64 bytes.
+func bloomCandidates() int {
+	n := 1
+	for b := bloomMaxBytes(); b > 64; b >>= 1 {
+		n++
+	}
+	return n
+}
+
+// dropNaNStatistics removes the min/max statistics of every float column
+// chunk that holds a NaN, by rewriting the footer of the file just closed.
+//
+// The Parquet writer computes a float chunk's min and max over its non-NaN
+// values, as the format's specification asks. To PostgreSQL — and to DuckDB —
+// NaN is a value, equal to itself and greater than every other, so a chunk
+// holding {1, 2, NaN} with statistics [1, 2] tells the engine that `d = 'NaN'`
+// and `d > 1e300` cannot match there, and it skips the row group. The row is
+// in the file and the query does not return it.
+//
+// No statistics is the only answer the format has: a NaN in max is something
+// readers are told to ignore, and +Infinity is still below NaN. The writer
+// decides per FILE whether a column has statistics, and a file is being
+// streamed when its first NaN arrives, so the decision is applied afterwards,
+// to exactly the chunks concerned: the footer is the last thing in the file,
+// and replacing it leaves every page where it was. Chunks without a NaN keep
+// their statistics and prune as before.
+func (pw *parquetWriter) dropNaNStatistics(f *os.File) error {
+	md, err := pw.w.FileMetadata()
+	if err != nil || md == nil {
+		return err
+	}
+	for _, c := range pw.nanChunks {
+		g, col := c[0], c[1]
+		if g >= len(md.RowGroups) || col >= len(md.RowGroups[g].Columns) {
+			continue
+		}
+		if cm := md.RowGroups[g].Columns[col].MetaData; cm != nil {
+			cm.Statistics = nil
+		}
+	}
+	size, err := f.Seek(0, io.SeekEnd)
+	if err != nil {
+		return err
+	}
+	// footer | 4-byte length | "PAR1"
+	var tail [8]byte
+	if _, err := f.ReadAt(tail[:], size-8); err != nil {
+		return err
+	}
+	if string(tail[4:]) != "PAR1" {
+		return fmt.Errorf("%s: not a plaintext Parquet footer", f.Name())
+	}
+	start := size - 8 - int64(binary.LittleEndian.Uint32(tail[:4]))
+	if start < 4 {
+		return fmt.Errorf("%s: footer length is larger than the file", f.Name())
+	}
+	var buf bytes.Buffer
+	n, err := md.WriteTo(&buf, nil)
+	if err != nil {
+		return err
+	}
+	binary.LittleEndian.PutUint32(tail[:4], uint32(n))
+	buf.Write(tail[:])
+	if err := f.Truncate(start); err != nil {
+		return err
+	}
+	_, err = f.WriteAt(buf.Bytes(), start)
+	return err
 }
 
 // Append takes ownership of nothing: rows are flattened to column order on the
@@ -313,6 +437,16 @@ func (pw *parquetWriter) flush(n int) error {
 			appendValue(bld.Field(i), pw.schema.Field(i).Type, vals[i])
 		}
 	}
+	// n never exceeds RowGroupRows, so this record is exactly one row group.
+	for _, i := range pw.floatCols {
+		for _, vals := range pw.pending[:n] {
+			if isNaN(vals[i]) {
+				pw.nanChunks = append(pw.nanChunks, [2]int{pw.groups, i})
+				break
+			}
+		}
+	}
+	pw.groups++
 	rec := bld.NewRecord()
 	err := pw.w.Write(rec)
 	rec.Release()
@@ -351,6 +485,9 @@ func (pw *parquetWriter) Close() error {
 	}
 	f := pw.f
 	pw.f = nil
+	if err == nil && len(pw.nanChunks) > 0 {
+		err = pw.dropNaNStatistics(f)
+	}
 	if err == nil {
 		err = syncFile(f)
 	}
@@ -413,6 +550,9 @@ func (t *Table) forEachRowGroup(path string, dead map[int]bool, cols []string,
 		}
 	}
 
+	// An older file holds some types in another form; see coerceFor.
+	coerce := t.coercions(schema, colIdx, colName)
+
 	md := rdr.MetaData()
 	start := 0
 	for g := 0; g < md.NumRowGroups(); g++ {
@@ -445,7 +585,11 @@ func (t *Table) forEachRowGroup(path string, dead map[int]bool, cols []string,
 			}
 			m := make(map[string]any, len(want))
 			for ci, name := range colName {
-				m[name] = chunkedValue(tbl.Column(ci).Data(), i)
+				v := chunkedValue(tbl.Column(ci).Data(), i)
+				if coerce != nil && coerce[ci] != nil && v != nil {
+					v = coerce[ci](v)
+				}
+				m[name] = v
 			}
 			rows = append(rows, t.fillMissing(m, want, fill))
 		}
@@ -478,4 +622,14 @@ func (t *Table) fillMissing(m map[string]any, want []string, fill bool) map[stri
 		}
 	}
 	return m
+}
+
+func isNaN(v any) bool {
+	switch x := v.(type) {
+	case float64:
+		return math.IsNaN(x)
+	case float32:
+		return x != x
+	}
+	return false
 }

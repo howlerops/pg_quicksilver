@@ -11,7 +11,15 @@ The rest — 308 statements, 42.3% — return the same values under a different 
 and two thirds of those (208) differ only in that an `integer` came back as a
 `bigint`. Count those as fine and the mirror agrees on **379 of 728 (52.1%)**.
 
-Everything here comes from
+> **Those are the numbers that prompted a change, not the current ones.** The
+> type mapping was changed in response (declared integer and float widths,
+> native `uuid` and `bytea`, DuckDB's `-infinity`, the snapshot reading each
+> type's output form), and the committed results are from after it: **381 exact
+> (52.3%)**. The before/after is in
+> [After the type-mapping change](#after-the-type-mapping-change) at the end;
+> the body below describes the mirror as it was measured first.
+
+Everything here came from
 [`bench/exactness/results/results.json`](../bench/exactness/results/results.json),
 written by [`bench/exactness/run.py`](../bench/exactness/run.py); the per-statement
 tables are in the generated
@@ -418,3 +426,65 @@ DuckDB's own.
   those three the control cannot separate the mapping from the engine, and their
   causes were assigned by hand.
 - **One version of each engine**, one time zone, two locales.
+
+---
+
+## After the type-mapping change
+
+The mapping in `go/internal/mirror/types.go` replaced the one measured above,
+and the suite was run again, unchanged, on the same engines.
+
+| outcome | before | after | typed control |
+|---|---:|---:|---:|
+| exact | 171 (23.5%) | **381 (52.3%)** | 411 |
+| same values, different column name | 2 | 2 | 2 |
+| same values, different type | 308 (42.3%) | 117 (16.1%) | 102 |
+| &nbsp;&nbsp;of which only the integer width differs | 208 | 24 | |
+| different value | 127 (17.4%) | 109 (15.0%) | 108 |
+| error on mirror only | 97 | 96 | 82 |
+| error on source only | 9 | 5 | 5 |
+| error on both | 14 | 18 | 18 |
+
+The mirror is now within 30 statements of the typed control, which is the same
+DuckDB over the source's own types: what is left is mostly DuckDB.
+
+**Type-only differences caused by the mapping: 206 → 18.** The 24 that still
+differ in integer width are DuckDB's own derivations (`sum(integer)` is a
+HUGEINT, `count(*)` a BIGINT). The 18 are json, arrays, enums and `interval`
+read as VARCHAR.
+
+**Wrong values caused by the mapping: 39 → 20.** Of the 39, 24 are gone:
+
+| cause | was | now |
+|---|---:|---:|
+| `-infinity` written as the type's minimum | 11 | 0 |
+| `char(n)` stored without its padding by the snapshot | 9 | 3 + 4 new |
+| enum read as VARCHAR | 8 | 8 |
+| `real` stored as DOUBLE | 4 | 0 |
+| `inet` stored as its `::text` by the snapshot | 3 | 2 + 1 new |
+| `uuid` read as VARCHAR | 1 | 0 |
+| NaN pruned by Parquet statistics | 1 | 0 |
+| unconstrained `numeric` as DECIMAL(38,9) | 1 | 1 |
+| `interval` read as VARCHAR | 1 | 1 |
+
+The five new ones are the honest price of the fix for `char(n)` and `inet`, not
+a regression in what is stored. The snapshot used to store `col::text` — which
+strips a `char(n)`'s padding and adds `/32` to a host address — so statements
+that *ask* for that cast (`ch::text`, `ch || '|'`, `ch = 'ab'`, `ip::text`)
+agreed with PostgreSQL on snapshot rows by accident and disagreed on every row
+that arrived over the stream. Both paths now store what PostgreSQL prints, the
+two halves of a column agree, `qs-verify` says MATCH, and a VARCHAR holding the
+padded value does not reproduce bpchar's rules: `=` ignoring trailing blanks, a
+cast to text stripping them. Stripping in the view instead was counted: it
+fixes those and breaks as many (`SELECT ch`, `DISTINCT ch`, `concat_ws`, `LIKE
+'%e'`), because PostgreSQL itself is not consistent about the padding.
+
+What the mirror refuses changed too. An unconstrained `numeric` is stored as
+text and read as DOUBLE, so `NaN`, `Infinity`, 30-digit integers and
+0.33333333333333333333 no longer halt a table (and read to a double's
+precision); `numeric(50,2)` no longer crashes the sidecar; and every probe that
+`qs-verify` called DIVERGED — `char(8)`, `inet`, four float values — is MATCH.
+Dates and timestamps before 1 AD or beyond year 294247 still halt.
+
+Still on the list above, untouched: enums (the mirror is not given the label
+order), `interval`, arrays and json as native types.

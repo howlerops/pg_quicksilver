@@ -47,18 +47,18 @@ join-008	type mapping	enum read as VARCHAR: sorts and compares alphabetically, n
 lim-016	type mapping	enum read as VARCHAR: sorts and compares alphabetically, not in enum order
 cmp-036	DuckDB semantics	an enum compared with a string literal is compared as text, on the mirror's VARCHAR and on a native DuckDB ENUM alike
 cond-033	DuckDB semantics	an enum compared with a string literal is compared as text, on the mirror's VARCHAR and on a native DuckDB ENUM alike
-cmp-030	type mapping	char(n) stored without its padding by the snapshot (as col::text); bpchar comparison and length rules are lost
-cmp-032	type mapping	char(n) stored without its padding by the snapshot (as col::text); bpchar comparison and length rules are lost
-cmp-033	type mapping	char(n) stored without its padding by the snapshot (as col::text); bpchar comparison and length rules are lost
-str-044	type mapping	char(n) stored without its padding by the snapshot (as col::text); bpchar comparison and length rules are lost
-str-064	type mapping	char(n) stored without its padding by the snapshot (as col::text); bpchar comparison and length rules are lost
-set-017	type mapping	char(n) stored without its padding by the snapshot (as col::text); bpchar comparison and length rules are lost
-set-018	type mapping	char(n) stored without its padding by the snapshot (as col::text); bpchar comparison and length rules are lost
-col-012	type mapping	char(n) stored without its padding by the snapshot (as col::text); bpchar comparison and length rules are lost
-col-031	type mapping	char(n) stored without its padding by the snapshot (as col::text); bpchar comparison and length rules are lost
-cmp-052	type mapping	inet stored as its ::text cast by the snapshot: host addresses gain /32
-lim-034	type mapping	inet stored as its ::text cast by the snapshot: host addresses gain /32
-col-015	type mapping	inet stored as its ::text cast by the snapshot: host addresses gain /32
+cmp-030	type mapping	char(n) is VARCHAR holding the padded value PostgreSQL prints: bpchar rules (trailing blanks ignored by =, stripped by a cast to text, by || and by upper()) are not reproduced
+cmp-032	type mapping	char(n) is VARCHAR holding the padded value PostgreSQL prints: bpchar rules (trailing blanks ignored by =, stripped by a cast to text, by || and by upper()) are not reproduced
+cmp-033	type mapping	char(n) is VARCHAR holding the padded value PostgreSQL prints: bpchar rules (trailing blanks ignored by =, stripped by a cast to text, by || and by upper()) are not reproduced
+str-044	type mapping	char(n) is VARCHAR holding the padded value PostgreSQL prints: bpchar rules (trailing blanks ignored by =, stripped by a cast to text, by || and by upper()) are not reproduced
+str-064	type mapping	char(n) is VARCHAR holding the padded value PostgreSQL prints: bpchar rules (trailing blanks ignored by =, stripped by a cast to text, by || and by upper()) are not reproduced
+set-017	type mapping	char(n) is VARCHAR holding the padded value PostgreSQL prints: bpchar rules (trailing blanks ignored by =, stripped by a cast to text, by || and by upper()) are not reproduced
+set-018	type mapping	char(n) is VARCHAR holding the padded value PostgreSQL prints: bpchar rules (trailing blanks ignored by =, stripped by a cast to text, by || and by upper()) are not reproduced
+col-012	type mapping	char(n) is VARCHAR holding the padded value PostgreSQL prints: bpchar rules (trailing blanks ignored by =, stripped by a cast to text, by || and by upper()) are not reproduced
+col-031	type mapping	char(n) is VARCHAR holding the padded value PostgreSQL prints: bpchar rules (trailing blanks ignored by =, stripped by a cast to text, by || and by upper()) are not reproduced
+cmp-052	type mapping	inet is VARCHAR holding what PostgreSQL prints: it sorts and compares as text, and ::text does not add the /32 PostgreSQL adds
+lim-034	type mapping	inet is VARCHAR holding what PostgreSQL prints: it sorts and compares as text, and ::text does not add the /32 PostgreSQL adds
+col-015	type mapping	inet is VARCHAR holding what PostgreSQL prints: it sorts and compares as text, and ::text does not add the /32 PostgreSQL adds
 cast-009	type mapping	-infinity (date, timestamp, timestamptz) is written as INT_MIN, which DuckDB reads as a finite date in 5877642 BC / 290309 BC
 cast-010	type mapping	-infinity (date, timestamp, timestamptz) is written as INT_MIN, which DuckDB reads as a finite date in 5877642 BC / 290309 BC
 cast-011	type mapping	-infinity (date, timestamp, timestamptz) is written as INT_MIN, which DuckDB reads as a finite date in 5877642 BC / 290309 BC
@@ -76,7 +76,7 @@ cmp-046	type mapping	real stored as DOUBLE: the float4 rounding PostgreSQL appli
 ari-047	type mapping	real stored as DOUBLE: the float4 rounding PostgreSQL applies is gone
 agg-015	type mapping	real stored as DOUBLE: the float4 rounding PostgreSQL applies is gone
 join-012	type mapping	real stored as DOUBLE: the float4 rounding PostgreSQL applies is gone
-cast-003	type mapping	unconstrained numeric stored as DECIMAL(38,9): text output carries nine decimals
+cast-003	type mapping	unconstrained numeric is exact text read as DOUBLE: a cast to text renders the double (6119030.0), not the numeric
 cmp-043	type mapping	Parquet statistics: a filter that selects NaN is pruned (min/max exclude NaN), so the NaN row is not returned
 ari-001	DuckDB semantics	`/` on integers is fractional division (SET integer_division = true restores PostgreSQL's)
 ari-002	DuckDB semantics	`/` on integers is fractional division (SET integer_division = true restores PostgreSQL's)
@@ -129,3 +129,9 @@ json-032	DuckDB semantics	json ->> re-renders numbers (2.50 becomes 2.5)
 fn-001	DuckDB semantics	a set-returning function in the SELECT list returns one row holding a list
 fn-029	environment	current_database() / current_user describe the DuckDB session, not the source
 fn-030	environment	current_database() / current_user describe the DuckDB session, not the source
+cmp-031	type mapping	char(n) is VARCHAR holding the padded value PostgreSQL prints: bpchar rules (trailing blanks ignored by =, stripped by a cast to text, by || and by upper()) are not reproduced
+str-062	type mapping	char(n) is VARCHAR holding the padded value PostgreSQL prints: bpchar rules (trailing blanks ignored by =, stripped by a cast to text, by || and by upper()) are not reproduced
+str-063	type mapping	char(n) is VARCHAR holding the padded value PostgreSQL prints: bpchar rules (trailing blanks ignored by =, stripped by a cast to text, by || and by upper()) are not reproduced
+join-015	type mapping	char(n) is VARCHAR holding the padded value PostgreSQL prints: bpchar rules (trailing blanks ignored by =, stripped by a cast to text, by || and by upper()) are not reproduced
+cast-016	type mapping	inet is VARCHAR holding what PostgreSQL prints: it sorts and compares as text, and ::text does not add the /32 PostgreSQL adds
+cast-017	DuckDB semantics	BLOB -> text renders upper-case \\xC4 escapes; PostgreSQL prints lower-case hex

@@ -264,13 +264,104 @@ manual; see the next section.
 
 ---
 
+## How types are stored
+
+A column is stored in the query engine's native type when that type holds every
+value of the PostgreSQL type exactly, and otherwise as the text PostgreSQL
+prints. The full table, and the reason for each row, is the comment at the top
+of `go/internal/mirror/types.go`. What a reader sees through DuckDB:
+
+| PostgreSQL | DuckDB reads |
+|---|---|
+| `smallint` / `integer` / `bigint` | `SMALLINT` / `INTEGER` / `BIGINT` |
+| `real` / `double precision` | `FLOAT` / `DOUBLE` |
+| `boolean`, `uuid`, `bytea` | `BOOLEAN`, `UUID`, `BLOB` |
+| `numeric(p,s)` with p ≤ 38 | `DECIMAL(p,s)` |
+| `numeric` with no precision, or p > 38 | `DOUBLE`, cast from exact text (below) |
+| `date`, `time`, `timestamp`, `timestamptz` | the same; `infinity` and `-infinity` are DuckDB's own |
+| everything else (`text`, `char(n)`, `jsonb`, enums, arrays, `interval`, `inet`, `money`, …) | `VARCHAR`, the text PostgreSQL prints |
+
+### `numeric` without a precision
+
+An unconstrained `numeric` column holds whatever it is given: `0.1234567890123`,
+a 40-digit integer, `NaN`. No fixed decimal holds all of those, and the mirror
+used to store such a column as `DECIMAL(38,9)` and **halt the table** on the
+first value that did not fit. It now stores the column as text — exactly what
+PostgreSQL printed, nothing rounded, nothing refused — and the view casts it to
+`DOUBLE`, which is also what DuckDB's own PostgreSQL scanner does with the
+type. The consequences, so that nobody finds them by surprise:
+
+- the column no longer halts on anything;
+- a reader gets a number, but a `DOUBLE`: exact to 15–17 significant digits,
+  and `sum()` over it is floating-point. The file still holds every digit
+  (`read_parquet` on it returns the text);
+- aggregating it parses text, which is slower than a decimal column.
+
+When you know a column's scale and want exact decimal arithmetic, opt it in:
+
+```
+QS_NUMERIC_SCALE=public.orders.amount=4,public.fx.rate=12
+QS_NUMERIC_SCALE=9        # every unconstrained numeric: the behaviour before this change
+```
+
+A column named there is stored as `DECIMAL(38,s)`, reads as that, and takes
+back the halt: a value with more than `s` fractional digits, more than `38-s`
+integer digits, `NaN` or `Infinity` halts the table (next section). Better
+still, declare the precision in PostgreSQL — `numeric(18,4)` needs no setting.
+Changing the setting on an existing mirror is safe: files written the other way
+are cast by the view and converted at the next rewrite.
+
+### Bloom filters
+
+Every data file carries a Parquet bloom filter on the primary-key column and on
+every other `uuid` column (the usual shape of a foreign key). A point lookup or
+a selective join on such a column then skips the row groups that cannot hold
+the value, which min/max statistics never do for a random key. The cost is about
+two bytes per row per filtered column (1% false-positive rate). Measured on 2M
+uuid-keyed rows with a uuid foreign key (DuckDB 2.0.1, one thread, best of 5;
+`TestWriteUUIDBenchMirrors` writes the three mirrors):
+
+| | uuid as text (before) | uuid native, no filters | uuid native + filters |
+|---|---:|---:|---:|
+| orders file | 94.3 MB | 83.1 MB | 91.2 MB |
+| `WHERE id = …` | 126 ms | 39 ms | 9.9 ms (1 of 31 row groups read) |
+| `WHERE customer = …` | 306 ms | 71 ms | 20 ms |
+| join to 200k customers, grouped | 274 ms | 117 ms | 120 ms |
+
+The two filters cost 8.1 MB, 2.0 bytes per row each. To choose the columns
+yourself:
+
+```
+QS_BLOOM_COLUMNS=public.orders=customer_id,sku;public.events=-
+QS_BLOOM_COLUMNS=off
+```
+
+### Upgrading a mirror written by an older sidecar
+
+Nothing is rewritten on upgrade. Older files hold every integer as `BIGINT`,
+every float as `DOUBLE`, `uuid` and `bytea` as text and unconstrained `numeric`
+as `DECIMAL(38,9)`; they stay as they are until the table's next base rewrite
+(compaction), and until then a table has both kinds of file. The view casts
+every file to the declared type, so readers see the new types from the first
+snapshot the new sidecar publishes, and `qs-verify` compares both kinds.
+
+Two things an upgrade does **not** repair, because the old files do not hold
+what the source held. A mirror whose `char(n)` or `inet` columns were loaded by
+the old *snapshot* has them without their padding, or with a `/32` the source
+does not print; `qs-verify` now reports those tables `DIVERGED`, correctly.
+Rebuild them (create `REBUILD` in the table's mirror directory and restart).
+And a reader that depended on an unconstrained `numeric` being `DECIMAL(38,9)`
+should set `QS_NUMERIC_SCALE=9`.
+
+---
+
 ## A halted table
 
 A table halts when the mirror cannot represent the source faithfully: an
 unsupported schema change (above), a value the column type cannot store exactly
-(`NaN` or `Infinity` in a `numeric`, more digits than the mirror's decimal
-holds), a timestamp or date out of range. The halt is durable and it belongs to
-**that table only**.
+(`NaN` in a `numeric(12,2)`, a value with more digits than a column opted into
+`QS_NUMERIC_SCALE` holds), a timestamp or date out of range. The halt is durable
+and it belongs to **that table only**.
 
 What the sidecar does:
 

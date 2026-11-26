@@ -253,10 +253,13 @@ func TestTypedValuesRenderAsTheirText(t *testing.T) {
 			t.Errorf("temporal %q: String=%q Sprint=%q render=%q", c.in, v.String(), fmt.Sprint(v), renderValue(v))
 		}
 	}
-	// The native fast paths in renderValue say what fmt said.
-	for _, f := range []float64{0, 1.5, -0.25, 1e20, 1e21, 1e-7, 123456789.125, 100, 1e6, math.NaN(), math.Inf(1), math.Inf(-1), math.MaxFloat64, 5e-324} {
-		if got, want := renderValue(f), normalizeNumeric(fmt.Sprint(f)); got != want {
-			t.Errorf("renderValue(%v) = %q, was %q", f, got, want)
+	// A float renders as PostgreSQL prints it, not as fmt does: this loop used
+	// to pin renderValue to fmt.Sprint, which is 1e+06 for a value float8out
+	// prints as 1000000 (TestFloatsRenderAsPostgresPrintsThem).
+	for f, want := range map[float64]string{0: "0", 1.5: "1.5", -0.25: "-0.25",
+		1e20: "1e+20", 1e-7: "1e-07", 123456789.125: "123456789.125", 100: "100", 1e6: "1000000"} {
+		if got := renderValue(f); got != want {
+			t.Errorf("renderValue(%v) = %q, want %q", f, got, want)
 		}
 	}
 	for _, n := range []int64{0, -1, 42, math.MaxInt64, math.MinInt64} {
@@ -271,21 +274,26 @@ func TestTypedValuesRenderAsTheirText(t *testing.T) {
 // including for the perfectly good row that arrived in the same batch.
 func TestUnrepresentableValuesHaltAndWriteNothing(t *testing.T) {
 	for _, c := range []struct{ pgType, value string }{
-		{"numeric", "0.123456789012345"},                 // was stored as 0.123456789
-		{"numeric", "1e-12"},                             // was stored as 0
-		{"numeric", "NaN"},                               // was NULL
-		{"numeric(12,2)", "NaN"},                         // was NULL
-		{"numeric", "123456789012345678901234567890123"}, // 33 digits; was NULL
-		{"numeric", "Infinity"},
-		{"numeric", "-Infinity"},
+		{"numeric(38,9)", "0.123456789012345"},                 // was stored as 0.123456789
+		{"numeric(38,9)", "1e-12"},                             // was stored as 0
+		{"numeric(38,9)", "NaN"},                               // was NULL
+		{"numeric(12,2)", "NaN"},                               // was NULL
+		{"numeric(38,9)", "123456789012345678901234567890123"}, // 33 digits; was NULL
+		{"numeric(38,9)", "Infinity"},
+		{"numeric(38,9)", "-Infinity"},
 		{"numeric(12,2)", "1.005"},
 		{"numeric(4,2)", "100.00"},
 		{"numeric(10,0)", "0.5"},
-		{"numeric", "12 apples"},
-		{"numeric", ""},
+		{"numeric(38,9)", "12 apples"},
+		{"numeric(38,9)", ""},
 		{"bigint", "9223372036854775808"},
 		{"bigint", "1.5"},
 		{"integer", "12x"},
+		{"integer", "2147483648"},
+		{"smallint", "32768"},
+		{"real", "1e39"},
+		{"uuid", "not-a-uuid"},
+		{"bytea", "plain"},
 		{"double precision", "one"},
 		{"double precision", "1e999"},
 		{"boolean", "maybe"},
@@ -333,7 +341,7 @@ func TestUnrepresentableValuesHaltAndWriteNothing(t *testing.T) {
 
 	// The snapshot's path into the writer, which no part of Apply covers.
 	t.Run("AppendValues", func(t *testing.T) {
-		cols := map[string]string{"id": "bigint", "v": "numeric"}
+		cols := map[string]string{"id": "bigint", "v": "numeric(38,9)"}
 		dir := t.TempDir()
 		tbl, err := New(dir, "public", "r", "id", cols, []string{"id", "v"})
 		if err != nil {
@@ -355,10 +363,25 @@ func TestUnrepresentableValuesHaltAndWriteNothing(t *testing.T) {
 // spelled.
 func TestRepresentableValuesAreStillAccepted(t *testing.T) {
 	cases := []struct{ pgType, value, want string }{
-		{"numeric", "0.123456789", "0.123456789"},
-		{"numeric", "0.1234567890000", "0.123456789"}, // zeros below the scale lose nothing
-		{"numeric", "1e3", "1000"},
-		{"numeric", "12345678901234567890123456789", "12345678901234567890123456789"}, // 29 digits: the most Decimal(38,9) has room for
+		{"numeric(38,9)", "0.123456789", "0.123456789"},
+		{"numeric(38,9)", "0.1234567890000", "0.123456789"}, // zeros below the scale lose nothing
+		{"numeric(38,9)", "1e3", "1000"},
+		{"numeric(38,9)", "12345678901234567890123456789", "12345678901234567890123456789"}, // 29 digits: the most Decimal(38,9) has room for
+		// An unconstrained numeric is text, and holds what DECIMAL(38,9) halted on.
+		{"numeric", "0.123456789012345", "0.123456789012345"},
+		{"numeric", "NaN", "NaN"},
+		{"numeric", "123456789012345678901234567890123456789012", "123456789012345678901234567890123456789012"},
+		{"numeric(50,2)", "1.50", "1.5"},
+		{"smallint", "-32768", "-32768"},
+		{"integer", "2147483647", "2147483647"},
+		{"real", "1e+06", "1e+06"},
+		{"real", "3.4028235e+38", "3.4028235e+38"},
+		{"double precision", "1000000", "1000000"},
+		{"double precision", "123456789.12345679", "123456789.12345679"},
+		{"double precision", "-Infinity", "-Infinity"},
+		{"uuid", "a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11", "a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11"},
+		{"bytea", `\xdeadbeef00`, `\xdeadbeef00`},
+		{"bytea", `\x`, `\x`},
 		{"numeric(12,2)", "-9999999999.99", "-9999999999.99"},
 		{"numeric(12,2)", "5", "5"},
 		{"bigint", " 42 ", "42"},

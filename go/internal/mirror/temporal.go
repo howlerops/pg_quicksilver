@@ -22,8 +22,8 @@ package mirror
 // WHAT CANNOT BE REPRESENTED. PostgreSQL's temporal range is wider than an
 // Arrow timestamp's, and it has two values that are not instants at all:
 //
-//   - `infinity` and `-infinity`. These round-trip exactly, as the largest and
-//     smallest int64, which is how PostgreSQL stores them too.
+//   - `infinity` and `-infinity`. These round-trip exactly, as the integers
+//     DuckDB uses for them (see posInfinity below).
 //   - years before 1 AD (`0044-03-15 ... BC`) and beyond year 294247. These do
 //     not, and the mirror HALTS rather than storing something else. A halt is
 //     durable, says which table, column and value caused it, and is recovered by
@@ -47,23 +47,36 @@ import (
 // which is what every mirror written before this did.
 var TemporalTypes = os.Getenv("QS_TEMPORAL_TYPES") != "0"
 
-// PostgreSQL's infinity, stored the way PostgreSQL stores it: the extremes of
-// the integer domain. Arrow has no notion of an infinite instant, so these are
-// ordinary values to every engine — which is the correct behaviour, because
-// they sort and compare exactly as they should.
+// PostgreSQL's infinities, stored the way DUCKDB stores them, so that the
+// engine reading the file and the one that wrote the value agree on what it
+// is: +infinity is the largest integer of the domain, and -infinity is its
+// NEGATION — one above the smallest.
+//
+// -infinity used to be the smallest integer itself, which is how PostgreSQL
+// holds it and not how DuckDB does: DuckDB read math.MinInt64 microseconds as
+// an ordinary instant in 290309 BC and math.MinInt32 days as a date in
+// 5877642 BC. Eleven statements of bench/exactness returned that date. The
+// alternative was to refuse infinities like any other unrepresentable value;
+// they are stored instead because they ARE representable, exactly, in the one
+// engine the view is written for, and `valid_until = 'infinity'` is too
+// ordinary a row to halt a table over.
+//
+// The old sentinels are still READ as -infinity (arrayValue), because files
+// holding them are not rewritten on upgrade, and a view over such a file maps
+// them for the engine (serve.go).
 const (
-	posInfinity int64 = math.MaxInt64
-	negInfinity int64 = math.MinInt64
+	posInfinity       int64 = math.MaxInt64
+	negInfinity       int64 = -math.MaxInt64
+	legacyNegInfinity int64 = math.MinInt64
 )
 
 // A date is stored in 32 bits, so its infinities are the extremes of THAT
-// domain. They used to be the 64-bit ones narrowed by a conversion, which is
-// not an extreme of anything: `infinity` in a date column was stored as day -1
-// and read back as 1969-12-31. Neither sentinel collides with a real date —
-// PostgreSQL's last one, 5874897-12-31, is day 2,145,031,948.
+// domain. Neither collides with a real date — PostgreSQL's last one,
+// 5874897-12-31, is day 2,145,031,948.
 const (
-	posInfinityDate int64 = math.MaxInt32
-	negInfinityDate int64 = math.MinInt32
+	posInfinityDate       int64 = math.MaxInt32
+	negInfinityDate       int64 = -math.MaxInt32
+	legacyNegInfinityDate int64 = math.MinInt32
 )
 
 // dateDays turns what parseTemporal returns for a date into what a Date32
@@ -72,7 +85,10 @@ func dateDays(n int64) (int64, bool) {
 	switch n {
 	case posInfinity:
 		return posInfinityDate, true
-	case negInfinity:
+	case negInfinity, legacyNegInfinity:
+		if legacyTypes {
+			return legacyNegInfinityDate, true
+		}
 		return negInfinityDate, true
 	}
 	return n, n > negInfinityDate && n < posInfinityDate
@@ -187,6 +203,9 @@ func parseTemporal(k temporalKind, s string) (int64, bool) {
 	case "infinity":
 		return posInfinity, true
 	case "-infinity":
+		if legacyTypes {
+			return legacyNegInfinity, true
+		}
 		return negInfinity, true
 	}
 	switch k {
@@ -238,8 +257,8 @@ func microsOf(t time.Time) (int64, bool) {
 	// nudged by a microsecond rather than lied about.
 	if us == posInfinity {
 		us--
-	} else if us == negInfinity {
-		us++
+	} else if us <= negInfinity {
+		us = negInfinity + 1
 	}
 	return us, true
 }
@@ -251,7 +270,7 @@ func renderTemporal(k temporalKind, v int64) string {
 	switch v {
 	case posInfinity:
 		return "infinity"
-	case negInfinity:
+	case negInfinity, legacyNegInfinity:
 		return "-infinity"
 	}
 	switch k {
@@ -266,7 +285,7 @@ func renderTemporal(k temporalKind, v int64) string {
 		switch v {
 		case posInfinityDate:
 			return "infinity"
-		case negInfinityDate:
+		case negInfinityDate, legacyNegInfinityDate:
 			return "-infinity"
 		}
 		return time.Unix(v*86400, 0).UTC().Format("2006-01-02")

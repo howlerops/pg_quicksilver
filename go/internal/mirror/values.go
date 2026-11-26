@@ -35,6 +35,7 @@ package mirror
 
 import (
 	"fmt"
+	"math"
 	"math/big"
 	"strconv"
 	"strings"
@@ -42,6 +43,7 @@ import (
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/arrow/array"
 	"github.com/apache/arrow-go/v18/arrow/decimal128"
+	"github.com/apache/arrow-go/v18/arrow/extensions"
 )
 
 // decimalValue is a decimal as Parquet stores it. Comparable, so a row holding
@@ -70,6 +72,10 @@ func plainValue(v any) any {
 		return x.String()
 	case temporalValue:
 		return x.String()
+	case uuidValue:
+		return x.String()
+	case binaryValue:
+		return x.String()
 	}
 	return v
 }
@@ -79,7 +85,7 @@ func plainValue(v any) any {
 func plainRow(r map[string]any) {
 	for c, v := range r {
 		switch v.(type) {
-		case decimalValue, temporalValue:
+		case decimalValue, temporalValue, uuidValue, binaryValue:
 			r[c] = plainValue(v)
 		}
 	}
@@ -117,26 +123,97 @@ func storable(dt arrow.DataType, v any) (any, bool) {
 	}
 	switch d := dt.(type) {
 	case *arrow.StringType:
+		switch x := v.(type) {
+		case decimalValue:
+			// A numeric column that an older file held as DECIMAL(38,9) and
+			// this one holds as text. The decimal lost the display scale the
+			// source had (1.50 was stored as 1.500000000), so the padding is
+			// dropped rather than written out as though PostgreSQL printed it.
+			return normalizeNumeric(x.String()), true
+		case float32:
+			return pgFloat(float64(x), 32), true
+		case float64:
+			return pgFloat(x, 64), true
+		}
 		return v, true // appendNative renders whatever this is
-	case *arrow.Int64Type:
+	case *arrow.Int64Type, *arrow.Int32Type, *arrow.Int16Type:
+		var n int64
 		switch x := v.(type) {
 		case int64:
+			// Already native — a value read from a file on its way to the
+			// next. Handed back as it came, so the rewrite does not box it
+			// again; only the width is checked.
+			switch dt.ID() {
+			case arrow.INT32:
+				return v, x >= math.MinInt32 && x <= math.MaxInt32
+			case arrow.INT16:
+				return v, x >= math.MinInt16 && x <= math.MaxInt16
+			}
 			return v, true
 		case int:
-			return int64(x), true
+			n = int64(x)
 		case int32:
-			return int64(x), true
+			n = int64(x)
+		case int16:
+			n = int64(x)
+		default:
+			var err error
+			if n, err = strconv.ParseInt(strings.TrimSpace(textOf(v)), 10, 64); err != nil {
+				return nil, false
+			}
 		}
-		n, err := strconv.ParseInt(strings.TrimSpace(textOf(v)), 10, 64)
-		return n, err == nil
+		// Every integer travels as an int64 and is narrowed by the builder, so
+		// the range is checked here: a value the declared width cannot hold
+		// is refused, not wrapped.
+		switch dt.ID() {
+		case arrow.INT32:
+			return n, n >= math.MinInt32 && n <= math.MaxInt32
+		case arrow.INT16:
+			return n, n >= math.MinInt16 && n <= math.MaxInt16
+		}
+		return n, true
 	case *arrow.Float64Type:
-		if _, ok := v.(float64); ok {
+		switch x := v.(type) {
+		case float64:
 			return v, true
+		case float32:
+			return float64(x), true
 		}
 		// ParseFloat reads NaN, Infinity and -Infinity, which float8 holds and
 		// so does this column. Out of range is an error, not ±Inf.
 		f, err := strconv.ParseFloat(strings.TrimSpace(textOf(v)), 64)
 		return f, err == nil
+	case *arrow.Float32Type:
+		switch x := v.(type) {
+		case float32:
+			return v, true
+		case float64:
+			// From a file that stored this `real` as a DOUBLE. The double was
+			// parsed from the float4's own shortest text, so narrowing it gives
+			// the float4 back; a double that is no float4's text is refused.
+			f := float32(x)
+			return f, float64(f) == x || math.IsNaN(x) ||
+				pgFloat(float64(f), 32) == pgFloat(x, 64)
+		}
+		f, err := strconv.ParseFloat(strings.TrimSpace(textOf(v)), 32)
+		return float32(f), err == nil
+	case *arrow.BinaryType:
+		switch x := v.(type) {
+		case binaryValue:
+			return v, true
+		case []byte:
+			return binaryValue(x), true
+		}
+		b, ok := parseBytea(textOf(v))
+		return b, ok
+	case arrow.ExtensionType:
+		if d.ExtensionName() == uuidArrowType.ExtensionName() {
+			if _, ok := v.(uuidValue); ok {
+				return v, true
+			}
+			u, ok := parseUUIDValue(textOf(v))
+			return u, ok
+		}
 	case *arrow.BooleanType:
 		if _, ok := v.(bool); ok {
 			return v, true
@@ -153,6 +230,11 @@ func storable(dt arrow.DataType, v any) (any, bool) {
 	case *arrow.Decimal128Type:
 		if x, ok := v.(decimalValue); ok && x.prec == d.Precision && x.scale == d.Scale {
 			return v, true
+		}
+		if x, ok := v.(decimalValue); ok {
+			// Another scale — an older file's DECIMAL(38,9), say. Its text is
+			// exact, and parseDecimalExact refuses what the new scale drops.
+			v = x.String()
 		}
 		n, ok := parseDecimalExact(textOf(v), d.Precision, d.Scale)
 		return decimalValue{num: n, prec: d.Precision, scale: d.Scale}, ok
@@ -279,9 +361,14 @@ func appendNative(b array.Builder, v any) bool {
 	case *array.StringBuilder:
 		// pgoutput delivers every value as text, so this is the hot path and
 		// fmt.Sprint on an interface holding a string is pure overhead.
-		if s, ok := v.(string); ok {
-			bb.Append(s)
-		} else {
+		switch x := v.(type) {
+		case string:
+			bb.Append(x)
+		case float32:
+			bb.Append(pgFloat(float64(x), 32))
+		case float64:
+			bb.Append(pgFloat(x, 64))
+		default:
 			bb.Append(fmt.Sprint(v))
 		}
 		return true
@@ -290,9 +377,34 @@ func appendNative(b array.Builder, v any) bool {
 			bb.Append(n)
 			return true
 		}
+	case *array.Int32Builder:
+		if n, ok := v.(int64); ok && n >= math.MinInt32 && n <= math.MaxInt32 {
+			bb.Append(int32(n))
+			return true
+		}
+	case *array.Int16Builder:
+		if n, ok := v.(int64); ok && n >= math.MinInt16 && n <= math.MaxInt16 {
+			bb.Append(int16(n))
+			return true
+		}
 	case *array.Float64Builder:
 		if f, ok := v.(float64); ok {
 			bb.Append(f)
+			return true
+		}
+	case *array.Float32Builder:
+		if f, ok := v.(float32); ok {
+			bb.Append(f)
+			return true
+		}
+	case *array.BinaryBuilder:
+		if b, ok := v.(binaryValue); ok {
+			bb.Append([]byte(b))
+			return true
+		}
+	case *extensions.UUIDBuilder:
+		if u, ok := v.(uuidValue); ok {
+			bb.AppendBytes(u)
 			return true
 		}
 	case *array.BooleanBuilder:

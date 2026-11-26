@@ -5,9 +5,9 @@
   "value": "ab      ",
   "outcome": "mirrored",
   "reason": "",
-  "verify": "DIVERGED",
+  "verify": "MATCH",
   "mirror_type": "VARCHAR",
-  "snapshot_row": "ab",
+  "snapshot_row": "ab      ",
   "stream_row": "ab      "
  },
  {
@@ -38,7 +38,7 @@
   "value": "1000000",
   "outcome": "mirrored",
   "reason": "",
-  "verify": "DIVERGED",
+  "verify": "MATCH",
   "mirror_type": "DOUBLE",
   "snapshot_row": "1000000",
   "stream_row": "1000000"
@@ -49,7 +49,7 @@
   "value": "123456789.12345679",
   "outcome": "mirrored",
   "reason": "",
-  "verify": "DIVERGED",
+  "verify": "MATCH",
   "mirror_type": "DOUBLE",
   "snapshot_row": "123456789.12345679",
   "stream_row": "123456789.12345679"
@@ -60,7 +60,7 @@
   "value": "Infinity",
   "outcome": "mirrored",
   "reason": "",
-  "verify": "DIVERGED",
+  "verify": "MATCH",
   "mirror_type": "DOUBLE",
   "snapshot_row": "Infinity",
   "stream_row": "Infinity"
@@ -82,9 +82,9 @@
   "value": "192.168.1.7",
   "outcome": "mirrored",
   "reason": "",
-  "verify": "DIVERGED",
+  "verify": "MATCH",
   "mirror_type": "VARCHAR",
-  "snapshot_row": "192.168.1.7/32",
+  "snapshot_row": "192.168.1.7",
   "stream_row": "192.168.1.7"
  },
  {
@@ -124,67 +124,67 @@
   "probe": "probe_numeric_30digits",
   "type": "numeric",
   "value": "123456789012345678901234567890",
-  "outcome": "halted",
-  "reason": "halting public.probe_numeric_30digits: column \"v\" (numeric) holds \"123456789012345678901234567890\", which the mirror's column type decimal(38, 9) cannot store exactly. Storing NULL or a rounded value instead would be silently wrong",
-  "verify": null,
-  "mirror_type": null,
-  "snapshot_row": null,
-  "stream_row": null
+  "outcome": "mirrored",
+  "reason": "",
+  "verify": "MATCH",
+  "mirror_type": "DOUBLE",
+  "snapshot_row": "1.2345678901234568e+29",
+  "stream_row": "1.2345678901234568e+29"
  },
  {
   "probe": "probe_numeric_div",
   "type": "numeric",
   "value": "0.33333333333333333333",
-  "outcome": "halted",
-  "reason": "halting public.probe_numeric_div: column \"v\" (numeric) holds \"0.33333333333333333333\", which the mirror's column type decimal(38, 9) cannot store exactly. Storing NULL or a rounded value instead would be silently wrong",
-  "verify": null,
-  "mirror_type": null,
-  "snapshot_row": null,
-  "stream_row": null
+  "outcome": "mirrored",
+  "reason": "",
+  "verify": "MATCH",
+  "mirror_type": "DOUBLE",
+  "snapshot_row": "0.3333333333333333",
+  "stream_row": "0.3333333333333333"
  },
  {
   "probe": "probe_numeric_inf",
   "type": "numeric",
   "value": "Infinity",
-  "outcome": "halted",
-  "reason": "halting public.probe_numeric_inf: column \"v\" (numeric) holds \"Infinity\", which the mirror's column type decimal(38, 9) cannot store exactly. Storing NULL or a rounded value instead would be silently wrong",
-  "verify": null,
-  "mirror_type": null,
-  "snapshot_row": null,
-  "stream_row": null
+  "outcome": "mirrored",
+  "reason": "",
+  "verify": "MATCH",
+  "mirror_type": "DOUBLE",
+  "snapshot_row": "Infinity",
+  "stream_row": "Infinity"
  },
  {
   "probe": "probe_numeric_nan",
   "type": "numeric",
   "value": "NaN",
-  "outcome": "halted",
-  "reason": "halting public.probe_numeric_nan: column \"v\" (numeric) holds \"NaN\", which the mirror's column type decimal(38, 9) cannot store exactly. Storing NULL or a rounded value instead would be silently wrong",
-  "verify": null,
-  "mirror_type": null,
-  "snapshot_row": null,
-  "stream_row": null
+  "outcome": "mirrored",
+  "reason": "",
+  "verify": "MATCH",
+  "mirror_type": "DOUBLE",
+  "snapshot_row": "NaN",
+  "stream_row": "NaN"
  },
  {
   "probe": "probe_numeric_p50",
   "type": "numeric(50,2)",
   "value": "1.50",
-  "outcome": "crashed",
-  "reason": "panic: runtime error: slice bounds out of range [-5:] (the sidecar process exited)",
-  "verify": null,
-  "mirror_type": null,
-  "snapshot_row": null,
-  "stream_row": null
+  "outcome": "mirrored",
+  "reason": "",
+  "verify": "MATCH",
+  "mirror_type": "DOUBLE",
+  "snapshot_row": "1.5",
+  "stream_row": "1.5"
  },
  {
   "probe": "probe_numeric_scale15",
   "type": "numeric",
   "value": "0.123456789012345",
-  "outcome": "halted",
-  "reason": "halting public.probe_numeric_scale15: column \"v\" (numeric) holds \"0.123456789012345\", which the mirror's column type decimal(38, 9) cannot store exactly. Storing NULL or a rounded value instead would be silently wrong",
-  "verify": null,
-  "mirror_type": null,
-  "snapshot_row": null,
-  "stream_row": null
+  "outcome": "mirrored",
+  "reason": "",
+  "verify": "MATCH",
+  "mirror_type": "DOUBLE",
+  "snapshot_row": "0.123456789012345",
+  "stream_row": "0.123456789012345"
  },
  {
   "probe": "probe_real_inf",
@@ -192,8 +192,8 @@
   "value": "-Infinity",
   "outcome": "mirrored",
   "reason": "",
-  "verify": "DIVERGED",
-  "mirror_type": "DOUBLE",
+  "verify": "MATCH",
+  "mirror_type": "FLOAT",
   "snapshot_row": "-Infinity",
   "stream_row": "-Infinity"
  },
@@ -204,7 +204,7 @@
   "outcome": "mirrored",
   "reason": "",
   "verify": "MATCH",
-  "mirror_type": "DOUBLE",
+  "mirror_type": "FLOAT",
   "snapshot_row": "3.4028235e+38",
   "stream_row": "3.4028235e+38"
  },

@@ -263,7 +263,7 @@ func New(root, schema, table, key string, cols map[string]string, order []string
 		Order:     order,
 		Dir:       filepath.Join(root, schema+"."+table),
 	}
-	t.numericKey = arrowType(cols[key]) == arrow.PrimitiveTypes.Int64
+	t.numericKey = isIntegerType(arrowType(cols[key]))
 	for _, sub := range []string{"base", "delta", "dv", "index"} {
 		if err := os.MkdirAll(filepath.Join(t.Dir, sub), 0o755); err != nil {
 			return nil, err
@@ -713,54 +713,10 @@ func (t *Table) arrowSchemaFor(cols []string) *arrow.Schema {
 	fields := make([]arrow.Field, 0, len(cols))
 	for _, name := range cols {
 		fields = append(fields, arrow.Field{
-			Name: name, Type: arrowType(t.Columns[name]), Nullable: true,
+			Name: name, Type: arrowType(t.typeOf(name)), Nullable: true,
 		})
 	}
 	return arrow.NewSchema(fields, nil)
-}
-
-func arrowType(pgType string) arrow.DataType {
-	// Temporal types first: see temporal.go for why they were text until
-	// docs/22 made parsing them a fact rather than a guess.
-	if k := temporalOf(pgType); k != notTemporal {
-		return temporalArrowType(k)
-	}
-	s := strings.ToLower(strings.TrimSpace(pgType))
-	// An ARRAY is text, whatever it is an array of. The cases below match on a
-	// prefix, so numeric(10,2)[] and double precision[] used to come out as a
-	// decimal and a float; the value {1.00,2.50} is neither, and once a value
-	// that cannot be stored exactly became a halt rather than a NULL, every
-	// table with such a column stopped on its first row.
-	if strings.HasSuffix(s, "[]") {
-		return arrow.BinaryTypes.String
-	}
-	switch {
-	case strings.HasPrefix(s, "numeric"), strings.HasPrefix(s, "decimal"):
-		prec, scale := int32(38), int32(9)
-		if i := strings.Index(s, "("); i >= 0 {
-			if j := strings.Index(s, ")"); j > i {
-				parts := strings.SplitN(s[i+1:j], ",", 2)
-				if p, err := strconv.Atoi(strings.TrimSpace(parts[0])); err == nil {
-					prec = int32(p)
-				}
-				if len(parts) == 2 {
-					if sc, err := strconv.Atoi(strings.TrimSpace(parts[1])); err == nil {
-						scale = int32(sc)
-					}
-				}
-			}
-		}
-		return &arrow.Decimal128Type{Precision: prec, Scale: scale}
-	case s == "smallint", s == "int", s == "integer", s == "bigint",
-		s == "int2", s == "int4", s == "int8":
-		return arrow.PrimitiveTypes.Int64
-	case s == "bool", s == "boolean":
-		return arrow.FixedWidthTypes.Boolean
-	case strings.HasPrefix(s, "double"), s == "real":
-		return arrow.PrimitiveTypes.Float64
-	default:
-		return arrow.BinaryTypes.String
-	}
 }
 
 // ---- write path -----------------------------------------------------------
@@ -1379,7 +1335,7 @@ func (t *Table) writeParquetCols(path string, rows []map[string]any,
 	if err != nil {
 		return err
 	}
-	w, err := t.newParquetWriter(path, cols, durable)
+	w, err := t.newParquetWriterFor(path, cols, durable, len(vals))
 	if err != nil {
 		return err
 	}

@@ -207,8 +207,8 @@ func formatUUID(hi, lo uint64) string {
 	return string(b[:])
 }
 
-// keyOf converts a raw key value — text from pgoutput, an int64 from Parquet —
-// into the table's key form.
+// keyOf converts a raw key value — text from pgoutput, an int64 or a 16-byte
+// uuid from Parquet — into the table's key form.
 func (t *Table) keyOf(v any) rowKey { return keyFor(t.numericKey, v) }
 
 // keyFor is keyOf without a Table, so the background compactor can build keys
@@ -228,6 +228,17 @@ func keyFor(numeric bool, v any) rowKey {
 		return keyFor(numeric, int64(x))
 	case string:
 		return keyStringFor(numeric, x)
+	case uuidValue:
+		// A uuid from a file that stores it as 16 bytes. The same key as its
+		// text, which is how it arrives from pgoutput and from an older file.
+		hi, lo := x.halves()
+		return rowKey{num: int64(hi), lo: lo, isUUID: true}
+	case float64:
+		// As PostgreSQL prints it, which is how the same key arrives from
+		// pgoutput: fmt's 1e+06 is not the text of 1000000.
+		return keyStringFor(numeric, pgFloat(x, 64))
+	case float32:
+		return keyStringFor(numeric, pgFloat(float64(x), 32))
 	default:
 		return keyStringFor(numeric, fmt.Sprint(x))
 	}

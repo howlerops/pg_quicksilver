@@ -14,6 +14,7 @@ import (
 
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/arrow/array"
+	"github.com/apache/arrow-go/v18/arrow/extensions"
 	"github.com/apache/arrow-go/v18/arrow/memory"
 	"github.com/apache/arrow-go/v18/parquet/file"
 	"github.com/apache/arrow-go/v18/parquet/pqarrow"
@@ -68,16 +69,45 @@ func arrayValue(a arrow.Array, i int) any {
 	// what the checksum compares against the source — but a compaction can
 	// append it to the next file without formatting and re-parsing it, which
 	// was half the cost of a rewrite. See values.go.
+	//
+	// -infinity is normalised here: a file written before temporal.go changed
+	// its sentinel holds the type's minimum, and everything past this point —
+	// the checksum, the next file — sees one -infinity, not two.
 	case *array.Timestamp:
-		return temporalValue{k: temporalKindOf(v.DataType()), v: int64(v.Value(i))}
+		n := int64(v.Value(i))
+		if n == legacyNegInfinity {
+			n = negInfinity
+		}
+		return temporalValue{k: temporalKindOf(v.DataType()), v: n}
 	case *array.Date32:
-		return temporalValue{k: kindDate, v: int64(v.Value(i))}
+		n := int64(v.Value(i))
+		if n == legacyNegInfinityDate {
+			n = negInfinityDate
+		}
+		return temporalValue{k: kindDate, v: n}
 	case *array.Time64:
 		return temporalValue{k: kindTime, v: int64(v.Value(i))}
+	// Every integer width comes back as an int64, which is what a key, a
+	// comparison and the writer all take; the builder narrows it again.
 	case *array.Int64:
 		return v.Value(i)
+	case *array.Int32:
+		return int64(v.Value(i))
+	case *array.Int16:
+		return int64(v.Value(i))
 	case *array.Float64:
 		return v.Value(i)
+	case *array.Float32:
+		return v.Value(i)
+	case *extensions.UUIDArray:
+		return uuidValue(v.Value(i))
+	case *array.FixedSizeBinary:
+		if b := v.Value(i); len(b) == 16 {
+			return uuidValue(b)
+		}
+		return binaryValue(v.Value(i))
+	case *array.Binary:
+		return binaryValue(v.Value(i))
 	case *array.Boolean:
 		return v.Value(i)
 	case *array.String:
@@ -304,7 +334,13 @@ func renderValue(v any) string {
 	case int64:
 		return strconv.FormatInt(x, 10)
 	case float64:
-		return normalizeNumeric(strconv.FormatFloat(x, 'g', -1, 64))
+		return pgFloat(x, 64)
+	case float32:
+		return pgFloat(float64(x), 32)
+	case uuidValue:
+		return x.String()
+	case binaryValue:
+		return x.String()
 	case decimalValue:
 		return normalizeNumeric(x.String())
 	case temporalValue:
@@ -426,6 +462,7 @@ func (t *Table) readRowsAt(rel string, positions []int, cols []string) (map[int]
 		}
 	}
 
+	coerce := t.coercions(schema, colIdx, colName)
 	out := make(map[int]map[string]any, len(positions))
 	for g, ps := range byGroup {
 		tbl, err := ar.ReadRowGroups(context.Background(), colIdx, []int{g})
@@ -440,7 +477,11 @@ func (t *Table) readRowsAt(rel string, positions []int, cols []string) (map[int]
 			}
 			m := make(map[string]any, len(colName))
 			for ci := range colName {
-				m[colName[ci]] = chunkedValue(tbl.Column(ci).Data(), local)
+				v := chunkedValue(tbl.Column(ci).Data(), local)
+				if coerce != nil && coerce[ci] != nil && v != nil {
+					v = coerce[ci](v)
+				}
+				m[colName[ci]] = v
 			}
 			out[p] = m
 		}

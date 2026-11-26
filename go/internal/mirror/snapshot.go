@@ -26,6 +26,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/jackc/pgx/v5"
 )
@@ -118,14 +119,7 @@ func (t *Table) canHold(paths []string) bool {
 }
 
 func (t *Table) snapshotRows(ctx context.Context, conn *pgx.Conn, atLSN string) (int, error) {
-	sel := ""
-	for i, c := range t.Order {
-		if i > 0 {
-			sel += ", "
-		}
-		sel += `"` + c + `"::text`
-	}
-	rows, err := conn.Query(ctx, fmt.Sprintf("SELECT %s FROM %s", sel, t.Qualified))
+	rows, err := sourceQuery(ctx, conn, t.Qualified, t.Order)
 	if err != nil {
 		return 0, err
 	}
@@ -179,15 +173,7 @@ func (t *Table) snapshotRows(ctx context.Context, conn *pgx.Conn, atLSN string) 
 	}
 	n := 0
 	for rows.Next() {
-		vals := make([]any, len(t.Order))
-		ptrs := make([]any, len(t.Order))
-		for i := range vals {
-			ptrs[i] = &vals[i]
-		}
-		if err := rows.Scan(ptrs...); err != nil {
-			w.Close()
-			return 0, err
-		}
+		vals := outputText(rows, len(t.Order))
 		if kb != nil {
 			// A key the index cannot hold makes the builder give the file up,
 			// and ensureIndex reads the column as it always did.
@@ -236,6 +222,70 @@ func (t *Table) snapshotRows(ctx context.Context, conn *pgx.Conn, atLSN string) 
 	t.State.DeltaRows = 0
 	t.State.AppliedLSN = atLSN
 	return n, t.finishSnapshot()
+}
+
+// sourceQuery reads a table as the text of each type's OUTPUT FUNCTION, which
+// is what pgoutput sends for the same value.
+//
+// It used to select `col::text`, and a cast to text is a different function
+// from the one that prints a value. For most types they agree. Where they do
+// not, the snapshot stored one spelling and the stream another in the same
+// column, and the mirror disagreed with itself:
+//
+//	type        col::text          output function (and pgoutput)
+//	char(8)     ab                 ab······  (padded to 8)
+//	inet        192.168.1.7/32     192.168.1.7
+//	boolean     true               t
+//	"char"[]    differ in quoting, likewise any array of the above
+//
+// There is no cast that fixes this for every type, including ones defined
+// tomorrow, and there does not need to be one: the simple query protocol
+// returns every column in TEXT format, and text format IS the output
+// function's result. So the columns are selected bare and read raw. The
+// session settings that shape that text — DateStyle, IntervalStyle,
+// extra_float_digits, bytea_output — are pinned on every connection by
+// internal/pgtext, for the stream and for this alike.
+func sourceQuery(ctx context.Context, conn *pgx.Conn, qualified string, order []string) (pgx.Rows, error) {
+	sel := make([]string, len(order))
+	for i, c := range order {
+		sel[i] = sqlIdent(c)
+	}
+	return conn.Query(ctx, "SELECT "+strings.Join(sel, ", ")+" FROM "+qualified,
+		pgx.QueryExecModeSimpleProtocol)
+}
+
+// outputText is one row of a sourceQuery: a string per column, nil for NULL.
+// The raw values are only valid until the next row, so they are copied.
+func outputText(rows pgx.Rows, n int) []any {
+	raw := rows.RawValues()
+	vals := make([]any, n)
+	for i := 0; i < n && i < len(raw); i++ {
+		if raw[i] != nil {
+			vals[i] = string(raw[i])
+		}
+	}
+	return vals
+}
+
+// SourceRows streams a table from PostgreSQL in the form the mirror stores
+// it: one value per column of order, text as the type's output function
+// prints it, nil for NULL. A verifier that reads the source any other way —
+// `col::text`, say — compares the mirror against a spelling the mirror was
+// never sent.
+func SourceRows(ctx context.Context, conn *pgx.Conn, qualified string,
+	order []string, fn func(vals []any) error,
+) error {
+	rows, err := sourceQuery(ctx, conn, qualified, order)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		if err := fn(outputText(rows, len(order))); err != nil {
+			return err
+		}
+	}
+	return rows.Err()
 }
 
 // finishSnapshot writes the manifest of the new contents, which is also what
