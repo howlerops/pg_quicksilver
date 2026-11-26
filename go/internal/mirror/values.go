@@ -521,6 +521,9 @@ func (t *Table) storableValues(schema *arrow.Schema, cols []string, vals []any) 
 		}
 		vals[i] = c
 	}
+	if t != nil && len(t.joins) > 0 {
+		return t.fillCompanions(cols, vals)
+	}
 	return nil
 }
 

@@ -375,6 +375,10 @@ func (t *Table) rewriteSnapshot() *Table {
 		notNull:    maps.Clone(t.notNull),
 		decimalKey: t.decimalKey,
 		detached:   true,
+		// The join bindings are read-only once attached, so the rewrite shares
+		// them: a rewrite that dropped them would write files with no companion.
+		joins:     t.joins,
+		joinDicts: t.joinDicts,
 	}
 	s.State.MissingVals = maps.Clone(t.State.MissingVals)
 	return s

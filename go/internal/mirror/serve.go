@@ -494,7 +494,13 @@ func ColumnsFromFiles(root, schema, table string) (map[string]string, []string, 
 		path := candidates[i]
 		cols, order, err := schemaOf(path)
 		if err == nil {
-			return cols, order, nil
+			// A join domain's hidden companions are not the table's columns.
+			for c := range cols {
+				if isCompanion(c) {
+					delete(cols, c)
+				}
+			}
+			return cols, fileSchemaCols(order), nil
 		}
 	}
 	return nil, nil, fmt.Errorf("no readable whole-row file in %s", dir)
