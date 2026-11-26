@@ -4607,7 +4607,13 @@ qs_ExplainOneQuery(Query *query, int cursorOptions, IntoClause *into, ExplainSta
 	}
 	PG_END_TRY();
 
-	if (qs_last.fresh && !qs_last.mirror)
+	/*
+	 * In text format these follow the plan. In JSON, XML or YAML the plan's
+	 * group has been closed by ExplainOnePlan already, so a property written
+	 * here would sit outside it and make the document invalid: there, the
+	 * decision is only in quicksilver.last_decision().
+	 */
+	if (qs_last.fresh && !qs_last.mirror && es->format == EXPLAIN_FORMAT_TEXT)
 	{
 		ExplainPropertyText("Quicksilver",
 							psprintf("heap (%s)", qs_reason_names[qs_last.reason]), es);

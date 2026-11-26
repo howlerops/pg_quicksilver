@@ -79,6 +79,20 @@ SELECT pg_read_file('/tmp/qs_regress/explain.out')::jsonb -> 0 -> 'Plan' ->> 'No
  Custom Scan
 (1 row)
 
+-- a statement the heap answers (a lookup): the JSON parses too; the decision is text only there
+\pset format unaligned
+\t on
+\o /tmp/qs_regress/explain_heap.out
+EXPLAIN (FORMAT JSON) SELECT * FROM public.orders WHERE id = 4242;
+\o
+\t off
+\pset format aligned
+SELECT pg_read_file('/tmp/qs_regress/explain_heap.out')::jsonb -> 0 -> 'Plan' ->> 'Node Type' AS heap_json_top_node;
+ heap_json_top_node 
+--------------------
+ Index Scan
+(1 row)
+
 \o /tmp/qs_regress/explain.out
 EXPLAIN (ANALYZE, VERBOSE, BUFFERS, WAL, SETTINGS, FORMAT YAML) :q;
 EXPLAIN (ANALYZE, FORMAT XML) :q;
