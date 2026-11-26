@@ -1,0 +1,39 @@
+-- A DuckDB out-of-memory on a routed statement is answered from the heap, as any
+-- other mirror failure is, with one WARNING per backend naming the class. The
+-- statement needs no more memory than the heap does, so its answer is the heap's.
+-- Superuser only: the limits are pg_duckdb settings, read when DuckDB starts in
+-- the backend, so they are set before this session's first routed statement.
+-- (The session ends with them in force: a DuckDB that has started cannot be
+-- given a new limit without duckdb.recycle_ddb(), which this file does not use.)
+\set VERBOSITY terse
+SET quicksilver.route = auto;
+SET duckdb.max_memory = '1MB';
+SET duckdb.memory_limit = '1MB';
+-- DuckDB cannot work within the limit: the heap answers, with the same rows, and
+-- the one WARNING names the class
+SELECT count(*), sum(amount) FROM orders;
+WARNING:  quicksilver answered from the heap: the mirror failed with DuckDB "Out of Memory Error"
+  count  |     sum      
+---------+--------------
+ 1000000 | 499995000.00
+(1 row)
+
+SELECT side, reason FROM quicksilver.last_decision();
+ side |            reason            
+------+------------------------------
+ heap | the mirror could not plan it
+(1 row)
+
+-- the same backend again: the heap answers, and the WARNING is not repeated
+SELECT count(*), sum(amount) FROM orders;
+  count  |     sum      
+---------+--------------
+ 1000000 | 499995000.00
+(1 row)
+
+SELECT side, reason FROM quicksilver.last_decision();
+ side |            reason            
+------+------------------------------
+ heap | the mirror could not plan it
+(1 row)
+

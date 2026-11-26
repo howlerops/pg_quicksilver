@@ -3819,9 +3819,30 @@ qs_mirror_error_ok(ErrorData *ed)
 	if (strncmp(ed->message, "(PGDuckDB/", 10) != 0)
 		return false;
 	if (strstr(ed->message, "INTERRUPT Error") || strstr(ed->message, "Query cancelled") ||
-		strstr(ed->message, "Out of Memory Error") ||
-		strstr(ed->message, "INTERNAL Error") || strstr(ed->message, "FATAL Error"))
+		strstr(ed->message, "FATAL Error"))
 		return false;
+	/*
+	 * DuckDB ran out of memory (a session's duckdb.max_memory, or the lake's
+	 * working set) or hit one of its own internal errors. Every caller of this
+	 * is before the first row of the statement has been returned, so the heap
+	 * can answer it as it answers any other mirror failure: the statement needs
+	 * no more than the heap does. The class is logged once per backend, so that
+	 * a mirror that keeps failing this way is visible without a line per query.
+	 */
+	if (strstr(ed->message, "Out of Memory Error") || strstr(ed->message, "INTERNAL Error"))
+	{
+		static bool warned = false;
+
+		if (!warned)
+		{
+			const char *cls = strstr(ed->message, "Out of Memory Error") ? "Out of Memory Error" : "INTERNAL Error";
+
+			warned = true;
+			ereport(WARNING,
+					(errmsg("quicksilver answered from the heap: the mirror failed with DuckDB \"%s\"", cls),
+					 errdetail("This is logged once per backend. The statement itself was answered correctly.")));
+		}
+	}
 	return true;
 }
 
