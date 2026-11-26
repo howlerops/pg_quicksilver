@@ -242,6 +242,10 @@ func isIntegerType(dt arrow.DataType) bool {
 // parsing, and HALTS on a value with more fractional digits than s, more than
 // 38-s integer digits, NaN or Infinity. A column not named is stored as text
 // and halts on nothing.
+//
+// Naming a column that already holds data does not take effect by itself:
+// the stored values are checked first, and the option is refused for a
+// column one of them does not fit. See numeric_optin.go.
 var NumericScale = os.Getenv("QS_NUMERIC_SCALE")
 
 // numericScaleFor is the opted-in scale for one column, if any.
@@ -270,19 +274,17 @@ func numericScaleFor(spec, qualified, col string) (int32, bool) {
 }
 
 // typeOf is the declared type of a column as the mirror stores it: the
-// catalog's, except that an unconstrained numeric the operator opted in reads
-// as numeric(38,s). Everything that decides a representation asks this rather
+// catalog's, except that an unconstrained numeric the operator opted in, and
+// whose stored values have been shown to fit (numeric_optin.go), reads as
+// numeric(38,s). Everything that decides a representation asks this rather
 // than t.Columns.
 func (t *Table) typeOf(col string) string {
 	pg := t.Columns[col]
 	if NumericScale == "" {
 		return pg
 	}
-	if _, _, declared, ok := numericSpec(pg); ok && !declared &&
-		!strings.HasSuffix(strings.TrimSpace(pg), "[]") {
-		if s, ok := numericScaleFor(NumericScale, t.Qualified, col); ok {
-			return "numeric(38," + strconv.Itoa(int(s)) + ")"
-		}
+	if s, ok := t.optScale(col); ok && t.optedIn(col, s) {
+		return "numeric(38," + strconv.Itoa(int(s)) + ")"
 	}
 	return pg
 }

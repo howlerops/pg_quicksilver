@@ -255,6 +255,9 @@ func (l *Logical) Transactions(ctx context.Context) ([]Transaction, error) {
 // Confirm consumes everything through lsn. Call only after the mirror write is
 // durable; confirming early is how a crash loses data.
 func (l *Logical) Confirm(ctx context.Context, lsn string) error {
+	if err := runBeforeConfirm(lsn); err != nil {
+		return err
+	}
 	rows, err := l.conn.Query(ctx, fmt.Sprintf(
 		`SELECT 1 FROM pg_logical_slot_get_changes($1,$2,NULL,%s)`, slotOpts),
 		l.slot, lsn)

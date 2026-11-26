@@ -944,14 +944,20 @@ func TestUnconstrainedNumericIsTextUnlessOptedIn(t *testing.T) {
 		t.Errorf("a value with more digits than the opted-in scale was accepted: %v", err)
 	}
 	NumericScale = "9"
-	if got := arrowType(tbl2.typeOf("rate")).String(); got != "decimal(38, 9)" {
+	tbl4, _ := New(t.TempDir(), "public", "num", "id", cols, order)
+	if got := arrowType(tbl4.typeOf("rate")).String(); got != "decimal(38, 9)" {
 		t.Errorf("QS_NUMERIC_SCALE=9 should make every unconstrained numeric DECIMAL(38,9), got %s", got)
 	}
 
-	// The same mirror, opted in after the fact: the text files are cast by
-	// the view and converted by the next write.
+	// The same mirror, opted in after the fact, once the rows that do not fit
+	// are gone: the stored values are checked at the first manifest write
+	// (numeric_optin.go), and from then the text files are cast by the view
+	// and converted by the next rewrite.
 	NumericScale = "public.num.rate=20"
 	tbl3, _ := New(dir, "public", "num", "id", cols, order)
+	if got := arrowType(tbl3.typeOf("rate")).String(); got != "utf8" {
+		t.Fatalf("a column holding unchecked text was exposed as %s before any check", got)
+	}
 	tapply(t, tbl3, 10, typedChange(changestream.OpDelete, "num", map[string]any{"id": "2"}),
 		typedChange(changestream.OpDelete, "num", map[string]any{"id": "3"}),
 		typedChange(changestream.OpDelete, "num", map[string]any{"id": "4"}),
