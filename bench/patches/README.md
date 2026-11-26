@@ -67,3 +67,13 @@ this patch exists to fix.
 
 **Status:** prototype, not upstreamed. Intended as the basis for an upstream PR — see
 [docs/12](../../docs/12-s5-serving-path.md) for what would need adding first.
+
+## Is the patch still needed on pg_duckdb 1.2.2?
+
+Checked, and not yet: pg_duckdb 1.2.2 has `duckdb.allowed_directories`, but on it
+an unprivileged role still cannot read a mirror through `duckdb.query`. The local
+filesystem stays disabled unless the role holds both `pg_read_server_files` and
+`pg_write_server_files`, which is the stock gate this patch exists to avoid. The
+measurements are in [docs/40](../../docs/40-the-router-moves-inside.md), section
+"pg_duckdb 1.2.2". Until that is resolved, this patch is still the only build the
+`serving` job can use, so it stays.

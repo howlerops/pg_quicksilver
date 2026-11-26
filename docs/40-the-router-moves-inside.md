@@ -992,3 +992,23 @@ and a ducklake:sqlite: lake reads back`. The script needed no change: it takes
 the DuckDB version and platform from the loaded `libduckdb.so`, not from a
 pin.
 
+**Serving path on 1.2.2 (`bench/scripts/serving_pg17.sh`).** The job cannot move
+to the stock package. The 1.2.2 binary does contain `duckdb.allowed_directories`,
+and it is documented as "always allowed for file access, even when
+enable_external_access is false". Its effect on an unprivileged role was
+measured on a scratch 1.2.2 server with `duckdb.allowed_directories` set to a
+directory holding a parquet file, and `duckdb.enable_external_access = off`:
+
+| role | `duckdb.query('... read_parquet(...)')` |
+|---|---|
+| superuser | 5 rows |
+| member of `duckdb_users` only | `Permission Error: File system LocalFileSystem has been disabled by configuration` |
+| plus `pg_read_server_files` | same error |
+| plus `pg_read_server_files` and `pg_write_server_files` | 5 rows |
+
+The last row is the stock gate (`AllowRawFileAccess`, both roles together), and
+it is the escalation the patch exists to avoid. So on 1.2.2 the setting does
+not give an unprivileged role read access to the mirror alone, and the serving
+job keeps the patched v1.1.1 build for now. The first property the script asserts
+does not hold on 1.2.2 as configured. The script's denial cases were not
+run on 1.2.2, because the mirror read failed first.
