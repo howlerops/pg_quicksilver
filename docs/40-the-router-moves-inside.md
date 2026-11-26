@@ -616,6 +616,24 @@ checksum. Cut the lake's file short while its rows were arriving, the client got
 the error after 2,326,528 rows, none twice; inside a transaction block the heap
 answered the whole 10M rows (75.6 s) and the block went on.
 
+## Not done: top-N seeding
+
+`ORDER BY col DESC LIMIT n` on the mirror is not seeded with a bound from the
+row groups. A seed would be `col >= T` with T taken from the row-group minimums,
+so that DuckDB reads only the groups that can hold the top rows. It is not
+implemented, because T must account for deleted rows (a group's minimum may be
+one that a delete has since removed, so T must be lower than any live row would
+need) and for NULL ordering (`DESC` puts NULLs first in PostgreSQL, so a bound on
+the non-null values alone would drop them).
+
+Measured on the 10M-row cluster above, with `amount` (numeric), `ORDER BY amount
+DESC LIMIT 10`, one session each: the mirror 352 ms the first time and 62 to
+75 ms after that; the heap 969 to 987 ms. The 1,100 ms figure this section was
+meant to record is not what this run shows, so it is not repeated here: a
+seed would be worth less than the sketch assumed, and it should be measured
+again before anybody builds it. The 13 to 20 ms for a bound taken from the
+row-group minimums is not re-measured here either.
+
 ## Running it
 
 The stand-in path, as it was run for the sections above. Its views are
