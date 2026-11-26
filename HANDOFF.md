@@ -408,8 +408,8 @@ Docker daemon and no Kubernetes.
 
 *Run, and passing:* `actionlint`, `hadolint`, `shellcheck` (warning level, as
 `lint` runs it), `helm lint`, `helm template`, `validate_manifests.sh`;
-`go build`, `go vet`, `go test -short ./...` (every package `ok`, including the
-DuckLake tests against DuckDB 2.0.1); `go/fidelity`; the Dockerfile's Go build
+`go build`, `go vet`, `go test -short ./...` and `go test -short -race ./internal/... ./cmd/...`
+(every package `ok`, including the DuckLake tests against DuckDB 2.0.1); `go/fidelity`; the Dockerfile's Go build
 commands and its extension build stage, run as written outside Docker
 (`CGO_ENABLED=0`, PGXS with `DESTDIR` into a scratch directory); the extension's
 DuckDB install and offline verify, run as the `postgres` user with `unshare -n`,
@@ -435,9 +435,9 @@ the copy to root), fixed in `deploy/duckdb-extensions.sh`.
 - `release.yml`'s new image push, and the pinned pg_duckdb packages: their URLs
   returned HTTP 404 from the development host, so neither the Debian 12 nor the
   Ubuntu 24.04 checksum has been checked against its file.
-- the `full` job, and `go test -race -short` on every package (the race run was
-  started but its result is not recorded here); `ducklake`'s exact CI step was
-  run as the `-short` suite, not as the job.
+- the `full` job (`go test ./...` without `-short`, 60 minutes) and the sharded
+  `race-mirror` jobs, which were not run here; `ducklake`'s exact CI step was
+  run as part of the `-short` suite, not as its own job.
 
 *Known before the first run:*
 
