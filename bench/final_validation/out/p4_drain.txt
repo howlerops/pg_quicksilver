@@ -1,0 +1,4 @@
+drain: applied LSN 2/FE219670 reached 2/FE213368 after 9.21 s; lag_bytes 1872
+drain wall seconds from sidecar start: 9.4
+cgroup after drain: usage 1017565184 max 1073745920 failcnt 34051
+sidecar VmHWM 883132 kB

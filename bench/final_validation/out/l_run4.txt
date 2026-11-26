@@ -1,0 +1,40 @@
+1. fv.lines on the primary (5800 is gone; promoted primary is 5801)
+2. sidecar3 restarted with join domains
+cat: /var/lib/postgresql/qsfinal/mirror4.pid: No such file or directory
+cat: /var/lib/postgresql/qsfinal/mirror4.pid: No such file or directory
+mirror4 pid 20399
+mirror4 ready
+join_domains rows (primary 5801, standby 5806): 2 / 2
+fv.events|id|ev|__qs_d_id
+fv.lines|event_id|ev|__qs_d_event_id
+--- EXPLAIN with join domains (standby 5806)
+Custom Scan (QuicksilverRoute)
+  Quicksilver: mirror
+  Quicksilver Reason: 281214 rows from mirrored tables, over 50000
+  Join keys: 1 rewritten to companions
+╭─ Hash Join ────────┴────────────────────╮
+│ Join Type: INNER                        │
+                    ->  Parallel Hash Join
+                          Hash Cond: (l.event_id = e.id)
+                          ->  Parallel Hash
+probe exit 0
+[probe0] plan: Custom Scan (QuicksilverRoute) | Quicksilver: mirror | Quicksilver Reason: 281214 rows from mirrored tables, over 50000
+[probe0] last_decision: heap / quicksilver.route = heap
+[probe0] rows routed=1 heap=1 EQUAL
+[probe0] routed_to_mirror=True
+
+problems 0
+--- sidecar3 with QS_JOIN_DOMAINS unset
+mirror4 pid 20736
+mirror4 ready
+join_domains rows after restart without the variable: 0
+Custom Scan (QuicksilverRoute)
+  Quicksilver: mirror
+  Quicksilver Reason: 281214 rows from mirrored tables, over 50000
+probe exit 0
+[probe0] plan: Custom Scan (QuicksilverRoute) | Quicksilver: mirror | Quicksilver Reason: 281214 rows from mirrored tables, over 50000
+[probe0] last_decision: heap / quicksilver.route = heap
+[probe0] rows routed=1 heap=1 EQUAL
+[probe0] routed_to_mirror=True
+
+problems 0

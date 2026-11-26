@@ -1,0 +1,274 @@
+time=2026-11-26T21:43:16.419Z level=INFO msg="memory sizing" limit_bytes=14338371584 limit_source="cgroup v1 memory.limit_in_bytes (own cgroup)" max_tick_changes=250000 max_pending_changes=1000000 gomemlimit_set=true gomemlimit_bytes=11470697264
+time=2026-11-26T21:43:16.419Z level=INFO msg="quicksilver mirror starting" cluster=qsint pod=qsint-2 mode=shadow ingest=logical tables="[public.orders public.customers public.qs_types ex.t_num ex.t_str ex.t_time ex.t_doc ex.customers ex.orders]" slo=30s slot=qs_int_qsint_2 configured_slot=qs_int
+time=2026-11-26T21:43:16.439Z level=INFO msg="ducklake publishing on" catalog=/var/lib/postgresql/qsfinal/mirror/_ducklake/catalog.sqlite format=1.1 retention=1m0s attach="ATTACH 'ducklake:sqlite:/var/lib/postgresql/qsfinal/mirror/_ducklake/catalog.sqlite' AS \"lake\" (READ_ONLY);"
+time=2026-11-26T21:43:16.439Z level=INFO msg="slot janitor on: when this instance is the primary it drops this cluster's Quicksilver slots that nothing will consume again" slots="qs_int and qs_int_*" interval=1m0s wal_limit_bytes=4294967296 inactive_limit=6h0m0s off="QS_SLOT_JANITOR=off"
+time=2026-11-26T21:43:16.571Z level=INFO msg="pg_quicksilver registry brought to the mirrored tables" schema=quicksilver_mirror created="[ex.customers ex.orders ex.t_doc ex.t_num ex.t_str ex.t_time public.customers public.orders public.qs_types]" unchanged=0 dropped=[] lake=/var/lib/postgresql/qsfinal/mirror/_ducklake/catalog.sqlite
+time=2026-11-26T21:43:16.584Z level=INFO msg="new replication slot; bootstrapping by snapshot" at=0/60771F0
+time=2026-11-26T21:43:16.747Z level=INFO msg="snapshot complete" table=public.qs_types rows=20005 seconds=0.163429958
+time=2026-11-26T21:43:16.760Z level=INFO msg="snapshot complete" table=ex.t_num rows=2000 seconds=0.012525182
+time=2026-11-26T21:43:16.770Z level=INFO msg="snapshot complete" table=ex.t_time rows=2000 seconds=0.010432247
+time=2026-11-26T21:43:16.788Z level=INFO msg="snapshot complete" table=ex.t_doc rows=1000 seconds=0.018190561
+time=2026-11-26T21:43:16.793Z level=INFO msg="snapshot complete" table=ex.customers rows=300 seconds=0.00427912
+time=2026-11-26T21:43:17.290Z level=INFO msg="snapshot complete" table=public.orders rows=200000 seconds=0.497310798
+time=2026-11-26T21:43:17.302Z level=INFO msg="snapshot complete" table=ex.t_str rows=2007 seconds=0.011558383
+time=2026-11-26T21:43:17.313Z level=INFO msg="snapshot complete" table=ex.orders rows=3000 seconds=0.010788928
+time=2026-11-26T21:43:17.334Z level=INFO msg="snapshot complete" table=public.customers rows=10000 seconds=0.021906716
+time=2026-11-26T21:43:17.335Z level=INFO msg="key index built" table=ex.customers keys=300 seconds=0.000357726
+time=2026-11-26T21:43:17.336Z level=INFO msg="key index built" table=ex.orders keys=3000 seconds=0.000317705
+time=2026-11-26T21:43:17.336Z level=INFO msg="key index built" table=ex.t_doc keys=1000 seconds=0.000345265
+time=2026-11-26T21:43:17.336Z level=INFO msg="key index built" table=ex.t_num keys=2000 seconds=0.00029887
+time=2026-11-26T21:43:17.337Z level=INFO msg="key index built" table=ex.t_str keys=2007 seconds=0.000232394
+time=2026-11-26T21:43:17.337Z level=INFO msg="key index built" table=ex.t_time keys=2000 seconds=0.000294013
+time=2026-11-26T21:43:17.337Z level=INFO msg="key index built" table=public.customers keys=10000 seconds=0.000329111
+time=2026-11-26T21:43:17.340Z level=INFO msg="key index built" table=public.orders keys=200000 seconds=0.002829515
+time=2026-11-26T21:43:17.341Z level=INFO msg="key index built" table=public.qs_types keys=20005 seconds=0.000960489
+time=2026-11-26T21:44:47.376Z level=INFO msg="memory sizing" limit_bytes=14338371584 limit_source="cgroup v1 memory.limit_in_bytes (own cgroup)" max_tick_changes=250000 max_pending_changes=1000000 gomemlimit_set=true gomemlimit_bytes=11470697264
+time=2026-11-26T21:44:47.376Z level=INFO msg="quicksilver mirror starting" cluster=qsint pod=qsint-2 mode=shadow ingest=logical tables="[public.orders public.customers public.qs_types ex.t_num ex.t_str ex.t_time ex.t_doc ex.customers ex.orders fv.events fv.accounts fv.lookup]" slo=30s slot=qs_int_qsint_2 configured_slot=qs_int
+time=2026-11-26T21:44:47.378Z level=INFO msg="ducklake publishing on" catalog=/var/lib/postgresql/qsfinal/mirror/_ducklake/catalog.sqlite format=1.1 retention=1m0s attach="ATTACH 'ducklake:sqlite:/var/lib/postgresql/qsfinal/mirror/_ducklake/catalog.sqlite' AS \"lake\" (READ_ONLY);"
+time=2026-11-26T21:44:47.378Z level=INFO msg="slot janitor on: when this instance is the primary it drops this cluster's Quicksilver slots that nothing will consume again" slots="qs_int and qs_int_*" interval=1m0s wal_limit_bytes=4294967296 inactive_limit=6h0m0s off="QS_SLOT_JANITOR=off"
+time=2026-11-26T21:44:47.457Z level=INFO msg="pg_quicksilver registry brought to the mirrored tables" schema=quicksilver_mirror created="[fv.accounts fv.events fv.lookup]" unchanged=9 dropped=[] lake=/var/lib/postgresql/qsfinal/mirror/_ducklake/catalog.sqlite
+time=2026-11-26T21:44:47.474Z level=WARN msg="not resuming this table from the slot; re-snapshotting it" table=fv.accounts why="the table was added to a slot that already exists and has never been snapshotted" slot=qs_int_qsint_2 at=0/D0B7590
+time=2026-11-26T21:44:47.950Z level=INFO msg="snapshot complete" table=fv.accounts rows=200000 seconds=0.475950709
+time=2026-11-26T21:44:47.950Z level=WARN msg="not resuming this table from the slot; re-snapshotting it" table=fv.events why="the table was added to a slot that already exists and has never been snapshotted" slot=qs_int_qsint_2 at=0/D0B7590
+time=2026-11-26T21:44:48.436Z level=INFO msg="snapshot complete" table=fv.events rows=200000 seconds=0.485563461
+time=2026-11-26T21:44:48.436Z level=WARN msg="not resuming this table from the slot; re-snapshotting it" table=fv.lookup why="the table was added to a slot that already exists and has never been snapshotted" slot=qs_int_qsint_2 at=0/D0B7590
+time=2026-11-26T21:44:48.440Z level=INFO msg="snapshot complete" table=fv.lookup rows=500 seconds=0.004268221
+time=2026-11-26T21:44:48.440Z level=INFO msg="resuming from the existing slot" slot=qs_int_qsint_2 confirmed=0/D065020
+time=2026-11-26T21:44:48.441Z level=INFO msg="key index built" table=ex.customers keys=300 seconds=0.000251712
+time=2026-11-26T21:44:48.442Z level=INFO msg="key index built" table=ex.orders keys=3000 seconds=0.00027241
+time=2026-11-26T21:44:48.442Z level=INFO msg="key index built" table=ex.t_doc keys=1007 seconds=0.000545664
+time=2026-11-26T21:44:48.443Z level=INFO msg="key index built" table=ex.t_num keys=2015 seconds=0.000561608
+time=2026-11-26T21:44:48.443Z level=INFO msg="key index built" table=ex.t_str keys=2007 seconds=0.000176726
+time=2026-11-26T21:44:48.443Z level=INFO msg="key index built" table=ex.t_time keys=2016 seconds=0.000394018
+time=2026-11-26T21:44:48.448Z level=INFO msg="key index built" table=fv.accounts keys=200000 seconds=0.004384306
+time=2026-11-26T21:44:48.451Z level=INFO msg="key index built" table=fv.events keys=200000 seconds=0.0033926
+time=2026-11-26T21:44:48.451Z level=INFO msg="key index built" table=fv.lookup keys=500 seconds=0.000105029
+time=2026-11-26T21:44:48.452Z level=INFO msg="key index built" table=public.customers keys=10000 seconds=0.000294309
+time=2026-11-26T21:44:48.455Z level=INFO msg="key index built" table=public.orders keys=200000 seconds=0.003129444
+time=2026-11-26T21:44:48.457Z level=INFO msg="key index built" table=public.qs_types keys=20005 seconds=0.001772416
+time=2026-11-26T21:46:41.271Z level=INFO msg="compaction started" table=fv.events why=idle base_rows=200000 delta_rows=8969
+2026/11/26 21:46:41 INFO rewrite clustering table=fv.events column=at why="row-group ranges overlap on 0.0% of pairs over 4 groups (id 100.0%, amount 100.0%, note 100.0%)"
+2026/11/26 21:46:41 INFO clustered rewrite table=fv.events column=at rows=203500 delta_rows=8872 unordered=0 scan_seconds=0.007206061 buckets=2 spill_seconds=0.015654068 load_seconds=0.005775292 sorted=false seconds=0.352506375
+time=2026-11-26T21:46:41.877Z level=INFO msg=compacted table=fv.events rows=203500 seconds=0.603646981
+time=2026-11-26T21:47:11.471Z level=INFO msg="compaction started" table=fv.lookup why=idle base_rows=500 delta_rows=253
+2026/11/26 21:47:11 INFO rewrite clustering table=fv.lookup column=none why="1 row groups, too few to tell"
+time=2026-11-26T21:47:11.676Z level=INFO msg=compacted table=fv.lookup rows=550 seconds=0.204616778
+time=2026-11-26T21:47:41.870Z level=INFO msg="compaction started" table=ex.t_num why=idle base_rows=2000 delta_rows=609
+2026/11/26 21:47:41 INFO rewrite clustering table=ex.t_num column=none why="1 row groups, too few to tell"
+time=2026-11-26T21:47:42.075Z level=INFO msg=compacted table=ex.t_num rows=2015 seconds=0.203992708
+time=2026-11-26T21:47:52.565Z level=INFO msg="memory sizing" limit_bytes=14338371584 limit_source="cgroup v1 memory.limit_in_bytes (own cgroup)" max_tick_changes=250000 max_pending_changes=1000000 gomemlimit_set=true gomemlimit_bytes=11470697264
+time=2026-11-26T21:47:52.565Z level=INFO msg="quicksilver mirror starting" cluster=qsint pod=qsint-2 mode=shadow ingest=logical tables="[public.orders public.customers public.qs_types ex.t_num ex.t_str ex.t_time ex.t_doc ex.customers ex.orders fv.events fv.accounts fv.lookup]" slo=30s slot=qs_int_qsint_2 configured_slot=qs_int
+time=2026-11-26T21:47:52.568Z level=INFO msg="ducklake publishing on" catalog=/var/lib/postgresql/qsfinal/mirror/_ducklake/catalog.sqlite format=1.1 retention=1m0s attach="ATTACH 'ducklake:sqlite:/var/lib/postgresql/qsfinal/mirror/_ducklake/catalog.sqlite' AS \"lake\" (READ_ONLY);"
+time=2026-11-26T21:47:52.568Z level=INFO msg="slot janitor on: when this instance is the primary it drops this cluster's Quicksilver slots that nothing will consume again" slots="qs_int and qs_int_*" interval=1m0s wal_limit_bytes=4294967296 inactive_limit=6h0m0s off="QS_SLOT_JANITOR=off"
+time=2026-11-26T21:47:52.620Z level=INFO msg="pg_quicksilver registry brought to the mirrored tables" schema=quicksilver_mirror created=[] unchanged=12 dropped=[] lake=/var/lib/postgresql/qsfinal/mirror/_ducklake/catalog.sqlite
+time=2026-11-26T21:47:52.627Z level=INFO msg="resuming from the existing slot" slot=qs_int_qsint_2 confirmed=0/F152C08
+time=2026-11-26T21:47:52.628Z level=INFO msg="key index built" table=ex.customers keys=300 seconds=0.000267934
+time=2026-11-26T21:47:52.630Z level=INFO msg="key index built" table=ex.orders keys=3000 seconds=0.001824759
+time=2026-11-26T21:47:52.632Z level=INFO msg="key index built" table=ex.t_doc keys=1007 seconds=0.002291986
+time=2026-11-26T21:47:52.634Z level=INFO msg="key index built" table=ex.t_num keys=2015 seconds=0.001345118
+time=2026-11-26T21:47:52.634Z level=INFO msg="key index built" table=ex.t_str keys=2007 seconds=0.000595346
+time=2026-11-26T21:47:52.636Z level=INFO msg="key index built" table=ex.t_time keys=2016 seconds=0.001496472
+time=2026-11-26T21:47:52.654Z level=INFO msg="key index built" table=fv.accounts keys=204500 seconds=0.018150098
+time=2026-11-26T21:47:52.659Z level=INFO msg="key index built" table=fv.events keys=203500 seconds=0.004843994
+time=2026-11-26T21:47:52.660Z level=INFO msg="key index built" table=fv.lookup keys=550 seconds=0.000386193
+time=2026-11-26T21:47:52.661Z level=INFO msg="key index built" table=public.customers keys=10000 seconds=0.000892907
+time=2026-11-26T21:47:52.686Z level=INFO msg="key index built" table=public.orders keys=204720 seconds=0.025104069
+time=2026-11-26T21:47:52.686Z level=INFO msg="key index built" table=public.qs_types keys=20005 seconds=0.000513063
+time=2026-11-26T21:48:22.899Z level=INFO msg="compaction started" table=fv.accounts why=idle base_rows=200000 delta_rows=6992
+2026/11/26 21:48:22 INFO rewrite clustering table=fv.accounts column=code why="row-group ranges overlap on 16.7% of pairs over 4 groups (balance 100.0%, opened 100.0%, label 100.0%)"
+2026/11/26 21:48:23 INFO clustered rewrite table=fv.accounts column=code rows=204500 delta_rows=6958 unordered=0 scan_seconds=0.006609196 buckets=0 spill_seconds=0.00788271 load_seconds=0 sorted=false seconds=0.486056709
+time=2026-11-26T21:48:23.519Z level=INFO msg=compacted table=fv.accounts rows=204500 seconds=0.61394295
+time=2026-11-26T21:48:33.609Z level=INFO msg="memory sizing" limit_bytes=14338371584 limit_source="cgroup v1 memory.limit_in_bytes (own cgroup)" max_tick_changes=250000 max_pending_changes=1000000 gomemlimit_set=true gomemlimit_bytes=11470697264
+time=2026-11-26T21:48:33.609Z level=INFO msg="quicksilver mirror starting" cluster=qsint pod=qsint-2 mode=shadow ingest=logical tables="[public.orders public.customers public.qs_types ex.t_num ex.t_str ex.t_time ex.t_doc ex.customers ex.orders fv.events fv.accounts fv.lookup]" slo=30s slot=qs_int_qsint_2 configured_slot=qs_int
+time=2026-11-26T21:48:33.612Z level=INFO msg="ducklake: removing a file no snapshot names" file=public/orders/delta-000005-90.g5-217-delete.parquet
+time=2026-11-26T21:48:33.613Z level=INFO msg="ducklake: removing a file no snapshot names" file=public/orders/delta-000006-117.g4-218-delete.parquet
+time=2026-11-26T21:48:33.613Z level=INFO msg="ducklake: removing a file no snapshot names" file=public/orders/delta-000008-138.g3-219-delete.parquet
+time=2026-11-26T21:48:33.613Z level=INFO msg="ducklake: removing a file no snapshot names" file=public/orders/delta-000009-162.g2-220-delete.parquet
+time=2026-11-26T21:48:33.613Z level=INFO msg="ducklake: removing a file no snapshot names" file=public/orders/delta-000010-192.g1-221-delete.parquet
+time=2026-11-26T21:48:33.613Z level=INFO msg="ducklake: removing a file no snapshot names" file=public/orders/delta-000011-216.parquet
+time=2026-11-26T21:48:33.613Z level=INFO msg="ducklake publishing on" catalog=/var/lib/postgresql/qsfinal/mirror/_ducklake/catalog.sqlite format=1.1 retention=1m0s attach="ATTACH 'ducklake:sqlite:/var/lib/postgresql/qsfinal/mirror/_ducklake/catalog.sqlite' AS \"lake\" (READ_ONLY);"
+time=2026-11-26T21:48:33.613Z level=INFO msg="slot janitor on: when this instance is the primary it drops this cluster's Quicksilver slots that nothing will consume again" slots="qs_int and qs_int_*" interval=1m0s wal_limit_bytes=4294967296 inactive_limit=6h0m0s off="QS_SLOT_JANITOR=off"
+time=2026-11-26T21:48:33.675Z level=INFO msg="pg_quicksilver registry brought to the mirrored tables" schema=quicksilver_mirror created=[] unchanged=12 dropped=[] lake=/var/lib/postgresql/qsfinal/mirror/_ducklake/catalog.sqlite
+time=2026-11-26T21:48:33.682Z level=INFO msg="resuming from the existing slot" slot=qs_int_qsint_2 confirmed=0/123C0779
+time=2026-11-26T21:48:33.683Z level=INFO msg="key index built" table=ex.customers keys=300 seconds=0.000225243
+time=2026-11-26T21:48:33.687Z level=INFO msg="key index built" table=ex.orders keys=3000 seconds=0.003726906
+time=2026-11-26T21:48:33.688Z level=INFO msg="key index built" table=ex.t_doc keys=1007 seconds=0.000944506
+time=2026-11-26T21:48:33.694Z level=INFO msg="key index built" table=ex.t_num keys=2015 seconds=0.005575013
+time=2026-11-26T21:48:33.696Z level=INFO msg="key index built" table=ex.t_str keys=2007 seconds=0.002060536
+time=2026-11-26T21:48:33.697Z level=INFO msg="key index built" table=ex.t_time keys=2016 seconds=0.000789418
+time=2026-11-26T21:48:33.713Z level=INFO msg="key index built" table=fv.accounts keys=208100 seconds=0.016320764
+time=2026-11-26T21:48:33.735Z level=INFO msg="key index built" table=fv.events keys=206300 seconds=0.021829496
+time=2026-11-26T21:48:33.740Z level=INFO msg="key index built" table=fv.lookup keys=590 seconds=0.004988326
+time=2026-11-26T21:48:33.743Z level=INFO msg="key index built" table=public.customers keys=10000 seconds=0.00339123
+time=2026-11-26T21:48:33.807Z level=INFO msg="key index built" table=public.orders keys=208340 seconds=0.063323073
+time=2026-11-26T21:48:33.808Z level=INFO msg="key index built" table=public.qs_types keys=20005 seconds=0.001385019
+time=2026-11-26T21:48:34.055Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=219 apply_ms=204 is_primary_ms=11 head_lsn_ms=1
+time=2026-11-26T21:48:34.254Z level=INFO msg="compaction started" table=public.orders why=churn base_rows=200000 delta_rows=40231
+2026/11/26 21:48:34 INFO rewrite clustering table=public.orders column=created_at why="row-group ranges overlap on 0.0% of pairs over 4 groups (id 0.0%, note 83.3%, customer_id 100.0%)"
+2026/11/26 21:48:34 INFO clustered rewrite table=public.orders column=created_at rows=211564 delta_rows=28059 unordered=0 scan_seconds=0.011557668 buckets=4 spill_seconds=0.089792915 load_seconds=0.02275911 sorted=false seconds=0.605288495
+time=2026-11-26T21:48:35.046Z level=INFO msg=compacted table=public.orders rows=211564 seconds=0.787857961
+time=2026-11-26T21:49:04.576Z level=INFO msg="memory sizing" limit_bytes=14338371584 limit_source="cgroup v1 memory.limit_in_bytes (own cgroup)" max_tick_changes=250000 max_pending_changes=1000000 gomemlimit_set=true gomemlimit_bytes=11470697264
+time=2026-11-26T21:49:04.576Z level=INFO msg="quicksilver mirror starting" cluster=qsint pod=qsint-2 mode=shadow ingest=logical tables="[public.orders public.customers public.qs_types ex.t_num ex.t_str ex.t_time ex.t_doc ex.customers ex.orders fv.events fv.accounts fv.lookup]" slo=30s slot=qs_int_qsint_2 configured_slot=qs_int
+time=2026-11-26T21:49:04.579Z level=INFO msg="ducklake publishing on" catalog=/var/lib/postgresql/qsfinal/mirror/_ducklake/catalog.sqlite format=1.1 retention=1m0s attach="ATTACH 'ducklake:sqlite:/var/lib/postgresql/qsfinal/mirror/_ducklake/catalog.sqlite' AS \"lake\" (READ_ONLY);"
+time=2026-11-26T21:49:04.579Z level=INFO msg="slot janitor on: when this instance is the primary it drops this cluster's Quicksilver slots that nothing will consume again" slots="qs_int and qs_int_*" interval=1m0s wal_limit_bytes=4294967296 inactive_limit=6h0m0s off="QS_SLOT_JANITOR=off"
+time=2026-11-26T21:49:04.632Z level=INFO msg="pg_quicksilver registry brought to the mirrored tables" schema=quicksilver_mirror created=[] unchanged=12 dropped=[] lake=/var/lib/postgresql/qsfinal/mirror/_ducklake/catalog.sqlite
+time=2026-11-26T21:49:04.640Z level=INFO msg="resuming from the existing slot" slot=qs_int_qsint_2 confirmed=0/13B5D830
+time=2026-11-26T21:49:04.641Z level=INFO msg="key index built" table=ex.customers keys=300 seconds=0.0005143
+time=2026-11-26T21:49:04.642Z level=INFO msg="key index built" table=ex.orders keys=3000 seconds=0.001242409
+time=2026-11-26T21:49:04.644Z level=INFO msg="key index built" table=ex.t_doc keys=1007 seconds=0.001534489
+time=2026-11-26T21:49:04.650Z level=INFO msg="key index built" table=ex.t_num keys=2015 seconds=0.006658353
+time=2026-11-26T21:49:04.651Z level=INFO msg="key index built" table=ex.t_str keys=2007 seconds=0.000473673
+time=2026-11-26T21:49:04.652Z level=INFO msg="key index built" table=ex.t_time keys=2016 seconds=0.001440468
+time=2026-11-26T21:49:04.674Z level=INFO msg="key index built" table=fv.accounts keys=211700 seconds=0.02160386
+time=2026-11-26T21:49:04.698Z level=INFO msg="key index built" table=fv.events keys=209100 seconds=0.024073479
+time=2026-11-26T21:49:04.700Z level=INFO msg="key index built" table=fv.lookup keys=630 seconds=0.001382537
+time=2026-11-26T21:49:04.702Z level=INFO msg="key index built" table=public.customers keys=10000 seconds=0.002492675
+time=2026-11-26T21:49:04.705Z level=INFO msg="key index built" table=public.orders keys=211564 seconds=0.003312802
+time=2026-11-26T21:49:04.706Z level=INFO msg="key index built" table=public.qs_types keys=20005 seconds=0.000690935
+time=2026-11-26T21:49:34.922Z level=INFO msg="compaction started" table=public.customers why=idle base_rows=10000 delta_rows=130
+2026/11/26 21:49:34 INFO rewrite clustering table=public.customers column=none why="1 row groups, too few to tell"
+time=2026-11-26T21:49:35.123Z level=INFO msg=compacted table=public.customers rows=10000 seconds=0.20108444
+time=2026-11-26T21:49:39.623Z level=INFO msg="memory sizing" limit_bytes=14338371584 limit_source="cgroup v1 memory.limit_in_bytes (own cgroup)" max_tick_changes=250000 max_pending_changes=1000000 gomemlimit_set=true gomemlimit_bytes=11470697264
+time=2026-11-26T21:49:39.624Z level=INFO msg="quicksilver mirror starting" cluster=qsint pod=qsint-2 mode=shadow ingest=logical tables="[public.orders public.customers public.qs_types ex.t_num ex.t_str ex.t_time ex.t_doc ex.customers ex.orders fv.events fv.accounts fv.lookup]" slo=30s slot=qs_int_qsint_2 configured_slot=qs_int
+time=2026-11-26T21:49:39.627Z level=INFO msg="ducklake publishing on" catalog=/var/lib/postgresql/qsfinal/mirror/_ducklake/catalog.sqlite format=1.1 retention=1m0s attach="ATTACH 'ducklake:sqlite:/var/lib/postgresql/qsfinal/mirror/_ducklake/catalog.sqlite' AS \"lake\" (READ_ONLY);"
+time=2026-11-26T21:49:39.627Z level=INFO msg="slot janitor on: when this instance is the primary it drops this cluster's Quicksilver slots that nothing will consume again" slots="qs_int and qs_int_*" interval=1m0s wal_limit_bytes=4294967296 inactive_limit=6h0m0s off="QS_SLOT_JANITOR=off"
+time=2026-11-26T21:49:39.689Z level=INFO msg="pg_quicksilver registry brought to the mirrored tables" schema=quicksilver_mirror created=[] unchanged=12 dropped=[] lake=/var/lib/postgresql/qsfinal/mirror/_ducklake/catalog.sqlite
+time=2026-11-26T21:49:39.696Z level=INFO msg="resuming from the existing slot" slot=qs_int_qsint_2 confirmed=0/13C45B70
+time=2026-11-26T21:49:39.697Z level=INFO msg="key index built" table=ex.customers keys=300 seconds=0.000255255
+time=2026-11-26T21:49:39.697Z level=INFO msg="key index built" table=ex.orders keys=3000 seconds=0.00024569
+time=2026-11-26T21:49:39.700Z level=INFO msg="key index built" table=ex.t_doc keys=1007 seconds=0.002471502
+time=2026-11-26T21:49:39.707Z level=INFO msg="key index built" table=ex.t_num keys=2015 seconds=0.00734135
+time=2026-11-26T21:49:39.707Z level=INFO msg="key index built" table=ex.t_str keys=2007 seconds=0.000147514
+time=2026-11-26T21:49:39.708Z level=INFO msg="key index built" table=ex.t_time keys=2016 seconds=0.000458521
+time=2026-11-26T21:49:39.732Z level=INFO msg="key index built" table=fv.accounts keys=211700 seconds=0.023808814
+time=2026-11-26T21:49:39.756Z level=INFO msg="key index built" table=fv.events keys=209100 seconds=0.023894894
+time=2026-11-26T21:49:39.757Z level=INFO msg="key index built" table=fv.lookup keys=630 seconds=0.001614873
+time=2026-11-26T21:49:39.758Z level=INFO msg="key index built" table=public.customers keys=10000 seconds=0.000271698
+time=2026-11-26T21:49:39.761Z level=INFO msg="key index built" table=public.orders keys=211564 seconds=0.003353345
+time=2026-11-26T21:49:39.762Z level=INFO msg="key index built" table=public.qs_types keys=20005 seconds=0.000691033
+time=2026-11-26T21:50:00.650Z level=INFO msg="memory sizing" limit_bytes=14338371584 limit_source="cgroup v1 memory.limit_in_bytes (own cgroup)" max_tick_changes=250000 max_pending_changes=1000000 gomemlimit_set=true gomemlimit_bytes=11470697264
+time=2026-11-26T21:50:00.650Z level=INFO msg="quicksilver mirror starting" cluster=qsint pod=qsint-2 mode=shadow ingest=logical tables="[public.orders public.customers public.qs_types ex.t_num ex.t_str ex.t_time ex.t_doc ex.customers ex.orders fv.events fv.accounts fv.lookup]" slo=30s slot=qs_int_qsint_2 configured_slot=qs_int
+time=2026-11-26T21:50:00.654Z level=INFO msg="ducklake publishing on" catalog=/var/lib/postgresql/qsfinal/mirror/_ducklake/catalog.sqlite format=1.1 retention=1m0s attach="ATTACH 'ducklake:sqlite:/var/lib/postgresql/qsfinal/mirror/_ducklake/catalog.sqlite' AS \"lake\" (READ_ONLY);"
+time=2026-11-26T21:50:00.654Z level=INFO msg="slot janitor on: when this instance is the primary it drops this cluster's Quicksilver slots that nothing will consume again" slots="qs_int and qs_int_*" interval=1m0s wal_limit_bytes=4294967296 inactive_limit=6h0m0s off="QS_SLOT_JANITOR=off"
+time=2026-11-26T21:50:00.713Z level=INFO msg="pg_quicksilver registry brought to the mirrored tables" schema=quicksilver_mirror created=[] unchanged=12 dropped=[] lake=/var/lib/postgresql/qsfinal/mirror/_ducklake/catalog.sqlite
+time=2026-11-26T21:50:00.719Z level=INFO msg="resuming from the existing slot" slot=qs_int_qsint_2 confirmed=0/1433ED31
+time=2026-11-26T21:50:00.720Z level=INFO msg="key index built" table=ex.customers keys=300 seconds=0.000294582
+time=2026-11-26T21:50:00.722Z level=INFO msg="key index built" table=ex.orders keys=3000 seconds=0.001249619
+time=2026-11-26T21:50:00.724Z level=INFO msg="key index built" table=ex.t_doc keys=1007 seconds=0.002023614
+time=2026-11-26T21:50:00.736Z level=INFO msg="key index built" table=ex.t_num keys=2015 seconds=0.012048514
+time=2026-11-26T21:50:00.736Z level=INFO msg="key index built" table=ex.t_str keys=2007 seconds=0.000282409
+time=2026-11-26T21:50:00.738Z level=INFO msg="key index built" table=ex.t_time keys=2016 seconds=0.00166696
+time=2026-11-26T21:50:00.777Z level=INFO msg="key index built" table=fv.accounts keys=215300 seconds=0.038766142
+time=2026-11-26T21:50:00.832Z level=INFO msg="key index built" table=fv.events keys=211900 seconds=0.054816543
+time=2026-11-26T21:50:00.834Z level=INFO msg="key index built" table=fv.lookup keys=670 seconds=0.002026299
+time=2026-11-26T21:50:00.834Z level=INFO msg="key index built" table=public.customers keys=10000 seconds=0.000853612
+time=2026-11-26T21:50:00.870Z level=INFO msg="key index built" table=public.orders keys=214961 seconds=0.035563051
+time=2026-11-26T21:50:00.871Z level=INFO msg="key index built" table=public.qs_types keys=20005 seconds=0.00081668
+time=2026-11-26T21:50:01.107Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=211 apply_ms=197 is_primary_ms=8 head_lsn_ms=2
+time=2026-11-26T21:50:03.399Z level=INFO msg="merged deltas" table=fv.lookup rows=100 seconds=0.007760124
+time=2026-11-26T21:50:03.448Z level=INFO msg="merged deltas" table=fv.events rows=10910 seconds=0.049067879
+time=2026-11-26T21:50:03.479Z level=INFO msg="merged deltas" table=fv.accounts rows=9807 seconds=0.030696188
+time=2026-11-26T21:50:03.488Z level=INFO msg="merged deltas" table=ex.t_num rows=237 seconds=0.008824193
+time=2026-11-26T21:50:03.488Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=231 apply_ms=133 merge_deltas_ms=49 merge_deltas_ms=30 merge_deltas_ms=8 merge_deltas_ms=7 confirm_ms=1
+time=2026-11-26T21:50:04.140Z level=INFO msg="compaction started" table=public.orders why=churn base_rows=211564 delta_rows=44839
+2026/11/26 21:50:04 INFO rewrite clustering table=public.orders column=created_at why="row-group ranges overlap on 0.0% of pairs over 4 groups (id 0.0%, customer_id 100.0%, status 100.0%)"
+2026/11/26 21:50:04 INFO clustered rewrite table=public.orders column=created_at rows=221582 delta_rows=42261 unordered=0 scan_seconds=0.025649019 buckets=6 spill_seconds=0.086944153 load_seconds=0.0350401 sorted=false seconds=0.543392163
+time=2026-11-26T21:50:04.882Z level=INFO msg=compacted table=public.orders rows=218794 seconds=0.737109484
+time=2026-11-26T21:50:07.754Z level=INFO msg="merged deltas" table=public.customers rows=110 seconds=0.008760177
+time=2026-11-26T21:50:07.754Z level=INFO msg="compaction started" table=fv.events why=churn base_rows=203500 delta_rows=41349
+2026/11/26 21:50:07 INFO rewrite clustering table=fv.events column=at why="row-group ranges overlap on 0.0% of pairs over 4 groups (id 100.0%, amount 100.0%, note 100.0%)"
+2026/11/26 21:50:08 INFO clustered rewrite table=fv.events column=at rows=222400 delta_rows=39855 unordered=0 scan_seconds=0.041309474 buckets=5 spill_seconds=0.085395698 load_seconds=0.029802008 sorted=false seconds=0.498748852
+time=2026-11-26T21:50:08.496Z level=INFO msg="merged deltas" table=fv.lookup rows=289 seconds=0.006184977
+time=2026-11-26T21:50:08.514Z level=INFO msg=compacted table=fv.events rows=221310 seconds=0.752830032
+time=2026-11-26T21:50:08.592Z level=INFO msg="merged deltas" table=fv.accounts rows=23245 seconds=0.077759697
+time=2026-11-26T21:50:08.592Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=200 apply_ms=96 merge_deltas_ms=78 finish_compaction_ms=17 merge_deltas_ms=6 confirm_ms=1
+time=2026-11-26T21:50:11.950Z level=INFO msg="compaction started" table=fv.accounts why=churn base_rows=204500 delta_rows=41499
+2026/11/26 21:50:11 INFO rewrite clustering table=fv.accounts column=code why="row-group ranges overlap on 16.7% of pairs over 4 groups (balance 100.0%, opened 100.0%, label 100.0%)"
+2026/11/26 21:50:12 INFO clustered rewrite table=fv.accounts column=code rows=234200 delta_rows=40958 unordered=0 scan_seconds=0.029406783 buckets=5 spill_seconds=0.071505707 load_seconds=0.024903037 sorted=false seconds=0.552155557
+time=2026-11-26T21:50:12.675Z level=INFO msg="merged deltas" table=public.customers rows=180 seconds=0.005870312
+time=2026-11-26T21:50:12.690Z level=INFO msg=compacted table=fv.accounts rows=233702 seconds=0.730559323
+time=2026-11-26T21:50:13.412Z level=INFO msg="merged deltas" table=fv.lookup rows=316 seconds=0.008007576
+time=2026-11-26T21:50:14.133Z level=INFO msg="compaction started" table=public.orders why=churn base_rows=218794 delta_rows=45970
+2026/11/26 21:50:14 INFO clustered rewrite table=public.orders column=created_at rows=226467 delta_rows=42945 unordered=0 scan_seconds=0.02368511 buckets=6 spill_seconds=0.121298496 load_seconds=0.039005181 sorted=false seconds=0.635172606
+time=2026-11-26T21:50:14.891Z level=INFO msg=compacted table=public.orders rows=223370 seconds=0.752088711
+time=2026-11-26T21:50:17.831Z level=INFO msg="merged deltas" table=public.customers rows=250 seconds=0.009517314
+time=2026-11-26T21:50:18.547Z level=INFO msg="merged deltas" table=fv.lookup rows=340 seconds=0.016463283
+time=2026-11-26T21:50:19.349Z level=INFO msg="merged deltas" table=fv.events rows=13562 seconds=0.062381774
+time=2026-11-26T21:50:23.094Z level=INFO msg="merged deltas" table=public.customers rows=320 seconds=0.010639638
+time=2026-11-26T21:50:36.295Z level=INFO msg="compaction started" table=ex.t_num why=idle base_rows=2015 delta_rows=2015
+2026/11/26 21:50:36 INFO rewrite clustering table=ex.t_num column=none why="1 row groups, too few to tell"
+time=2026-11-26T21:50:36.499Z level=INFO msg=compacted table=ex.t_num rows=2015 seconds=0.203332177
+time=2026-11-26T21:50:53.095Z level=INFO msg="compaction started" table=fv.events why=idle base_rows=221310 delta_rows=36896
+2026/11/26 21:50:53 INFO clustered rewrite table=fv.events column=at rows=237100 delta_rows=35956 unordered=0 scan_seconds=0.031234246 buckets=5 spill_seconds=0.088226957 load_seconds=0.026906471 sorted=false seconds=0.573959231
+time=2026-11-26T21:50:53.907Z level=INFO msg=compacted table=fv.events rows=237100 seconds=0.802489632
+time=2026-11-26T21:51:09.409Z level=INFO msg="compaction started" table=fv.events why=churn base_rows=0 delta_rows=200000
+time=2026-11-26T21:51:09.409Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=1062 apply_ms=1059 confirm_ms=1
+2026/11/26 21:51:09 INFO rewrite clustering table=fv.events column=none why="no base file yet"
+time=2026-11-26T21:51:09.899Z level=INFO msg=compacted table=fv.events rows=200000 seconds=0.489039902
+time=2026-11-26T21:51:23.296Z level=INFO msg="compaction started" table=public.orders why=idle base_rows=223370 delta_rows=39761
+2026/11/26 21:51:23 INFO clustered rewrite table=public.orders column=created_at rows=227712 delta_rows=37383 unordered=0 scan_seconds=0.01688796 buckets=5 spill_seconds=0.076739741 load_seconds=0.026377655 sorted=false seconds=0.503578554
+time=2026-11-26T21:51:23.905Z level=INFO msg=compacted table=public.orders rows=227712 seconds=0.604253688
+time=2026-11-26T21:51:35.893Z level=INFO msg="schema evolved at a DDL barrier" table=fv.accounts change="added tier text" backfilled=map[tier:std]
+time=2026-11-26T21:51:35.910Z level=INFO msg="pg_quicksilver registry brought to the mirrored tables" schema=quicksilver_mirror created=[fv.accounts] unchanged=11 dropped=[] lake=/var/lib/postgresql/qsfinal/mirror/_ducklake/catalog.sqlite
+time=2026-11-26T21:51:36.860Z level=INFO msg="merged deltas" table=fv.accounts rows=10861 seconds=0.06413136
+time=2026-11-26T21:51:36.866Z level=INFO msg="merged deltas" table=fv.lookup rows=444 seconds=0.005838904
+time=2026-11-26T21:52:08.095Z level=INFO msg="compaction started" table=fv.lookup why=idle base_rows=550 delta_rows=1317
+2026/11/26 21:52:08 INFO rewrite clustering table=fv.lookup column=none why="1 row groups, too few to tell"
+time=2026-11-26T21:52:08.299Z level=INFO msg=compacted table=fv.lookup rows=1060 seconds=0.202405051
+time=2026-11-26T21:52:08.299Z level=INFO msg="compaction started" table=fv.accounts why=idle base_rows=233702 delta_rows=29659
+2026/11/26 21:52:08 INFO clustered rewrite table=fv.accounts column=code rows=250402 delta_rows=27895 unordered=0 scan_seconds=0.028553444 buckets=4 spill_seconds=0.065840252 load_seconds=0.019912767 sorted=false seconds=0.59333952
+time=2026-11-26T21:52:09.105Z level=INFO msg=compacted table=fv.accounts rows=250402 seconds=0.798270442
+time=2026-11-26T21:52:23.923Z level=ERROR msg="table halted; it is out of service and its changes are discarded until it is rebuilt. The other tables are still mirrored" table=fv.lookup reason="halting fv.lookup: unsupported schema change (RETYPED id integer->bigint); the mirror must be rebuilt" rebuild="create /var/lib/postgresql/qsfinal/mirror/fv.lookup/REBUILD and restart the sidecar"
+time=2026-11-26T21:52:23.937Z level=INFO msg="pg_quicksilver registry brought to the mirrored tables" schema=quicksilver_mirror created=[] unchanged=11 dropped=[fv.lookup] lake=/var/lib/postgresql/qsfinal/mirror/_ducklake/catalog.sqlite
+time=2026-11-26T21:52:42.670Z level=INFO msg="memory sizing" limit_bytes=14338371584 limit_source="cgroup v1 memory.limit_in_bytes (own cgroup)" max_tick_changes=250000 max_pending_changes=1000000 gomemlimit_set=true gomemlimit_bytes=11470697264
+time=2026-11-26T21:52:42.671Z level=INFO msg="quicksilver mirror starting" cluster=qsint pod=qsint-2 mode=shadow ingest=logical tables="[public.orders public.customers public.qs_types ex.t_num ex.t_str ex.t_time ex.t_doc ex.customers ex.orders fv.events fv.accounts fv.lookup]" slo=30s slot=qs_int_qsint_2 configured_slot=qs_int
+time=2026-11-26T21:52:42.674Z level=INFO msg="ducklake publishing on" catalog=/var/lib/postgresql/qsfinal/mirror/_ducklake/catalog.sqlite format=1.1 retention=1m0s attach="ATTACH 'ducklake:sqlite:/var/lib/postgresql/qsfinal/mirror/_ducklake/catalog.sqlite' AS \"lake\" (READ_ONLY);"
+time=2026-11-26T21:52:42.674Z level=INFO msg="slot janitor on: when this instance is the primary it drops this cluster's Quicksilver slots that nothing will consume again" slots="qs_int and qs_int_*" interval=1m0s wal_limit_bytes=4294967296 inactive_limit=6h0m0s off="QS_SLOT_JANITOR=off"
+time=2026-11-26T21:52:42.674Z level=ERROR msg="table is halted in its manifest and stays out of service" table=fv.lookup reason="halting fv.lookup: unsupported schema change (RETYPED id integer->bigint); the mirror must be rebuilt" serve_with_halted_tables=true
+time=2026-11-26T21:52:42.733Z level=INFO msg="pg_quicksilver registry brought to the mirrored tables" schema=quicksilver_mirror created=[] unchanged=11 dropped=[] lake=/var/lib/postgresql/qsfinal/mirror/_ducklake/catalog.sqlite
+time=2026-11-26T21:52:42.733Z level=INFO msg="rebuild requested for a halted table; it will be re-snapshotted" table=fv.lookup halted_for="halting fv.lookup: unsupported schema change (RETYPED id integer->bigint); the mirror must be rebuilt"
+time=2026-11-26T21:52:42.748Z level=WARN msg="not resuming this table from the slot; re-snapshotting it" table=fv.lookup why="an operator asked for this halted table to be rebuilt (REBUILD file)" slot=qs_int_qsint_2 at=0/1B36A900
+time=2026-11-26T21:52:42.758Z level=INFO msg="snapshot complete" table=fv.lookup rows=1080 seconds=0.009636145
+time=2026-11-26T21:52:42.760Z level=INFO msg="halted table rebuilt from a snapshot and back in service" table=fv.lookup
+time=2026-11-26T21:52:42.760Z level=INFO msg="resuming from the existing slot" slot=qs_int_qsint_2 confirmed=0/1B352DB0
+time=2026-11-26T21:52:42.761Z level=INFO msg="key index built" table=ex.customers keys=300 seconds=0.000220594
+time=2026-11-26T21:52:42.762Z level=INFO msg="key index built" table=ex.orders keys=3000 seconds=0.000165023
+time=2026-11-26T21:52:42.763Z level=INFO msg="key index built" table=ex.t_doc keys=1007 seconds=0.001367533
+time=2026-11-26T21:52:42.768Z level=INFO msg="key index built" table=ex.t_num keys=2015 seconds=0.004835636
+time=2026-11-26T21:52:42.769Z level=INFO msg="key index built" table=ex.t_str keys=2007 seconds=0.000845283
+time=2026-11-26T21:52:42.771Z level=INFO msg="key index built" table=ex.t_time keys=2016 seconds=0.001780365
+time=2026-11-26T21:52:42.783Z level=INFO msg="key index built" table=fv.accounts keys=252202 seconds=0.012523347
+time=2026-11-26T21:52:42.801Z level=INFO msg="key index built" table=fv.events keys=203500 seconds=0.017941356
+time=2026-11-26T21:52:42.801Z level=INFO msg="key index built" table=fv.lookup keys=1080 seconds=0.000192324
+time=2026-11-26T21:52:42.804Z level=INFO msg="key index built" table=public.customers keys=10000 seconds=0.002916646
+time=2026-11-26T21:52:42.829Z level=INFO msg="key index built" table=public.orders keys=230333 seconds=0.024904608
+time=2026-11-26T21:52:42.830Z level=INFO msg="key index built" table=public.qs_types keys=20005 seconds=0.000633338
+time=2026-11-26T21:52:42.848Z level=INFO msg="pg_quicksilver registry brought to the mirrored tables" schema=quicksilver_mirror created=[fv.lookup] unchanged=11 dropped=[] lake=/var/lib/postgresql/qsfinal/mirror/_ducklake/catalog.sqlite
+time=2026-11-26T21:53:13.050Z level=INFO msg="compaction started" table=fv.events why=idle base_rows=200000 delta_rows=8969
+2026/11/26 21:53:13 INFO rewrite clustering table=fv.events column=at why="row-group ranges overlap on 0.0% of pairs over 4 groups (id 100.0%, amount 100.0%, note 100.0%)"
+2026/11/26 21:53:13 INFO clustered rewrite table=fv.events column=at rows=203500 delta_rows=7327 unordered=0 scan_seconds=0.004183917 buckets=0 spill_seconds=0.008034687 load_seconds=0 sorted=false seconds=0.315600078
+time=2026-11-26T21:53:13.456Z level=INFO msg=compacted table=fv.events rows=203500 seconds=0.402533744
+time=2026-11-26T21:53:21.236Z level=INFO msg="compaction started" table=fv.accounts why=churn base_rows=250402 delta_rows=502798
+time=2026-11-26T21:53:21.237Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=3400 apply_ms=3396 confirm_ms=3
+2026/11/26 21:53:21 INFO rewrite clustering table=fv.accounts column=code why="row-group ranges overlap on 16.7% of pairs over 4 groups (tier 50.0%, balance 100.0%, opened 100.0%)"
+2026/11/26 21:53:24 INFO clustered rewrite table=fv.accounts column=code rows=752202 delta_rows=502794 unordered=0 scan_seconds=0.582810756 buckets=21 spill_seconds=1.053831715 load_seconds=0.436656614 sorted=false seconds=3.325045408
+time=2026-11-26T21:53:25.765Z level=INFO msg=compacted table=fv.accounts rows=252202 seconds=4.521421271
+time=2026-11-26T21:53:25.777Z level=INFO msg="compaction started" table=fv.accounts why=churn base_rows=252202 delta_rows=500000
+time=2026-11-26T21:53:25.777Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=4540 apply_ms=3471 finish_compaction_ms=1053 begin_compaction_ms=11 confirm_ms=2
+2026/11/26 21:53:25 INFO rewrite clustering table=fv.accounts column=code why="row-group ranges overlap on 1.5% of pairs over 12 groups (label 45.5%, tier 69.7%, opened 81.8%)"
+2026/11/26 21:53:25 INFO rewrite re-clusters the base table=fv.accounts column=opened why="declustered on opened: 45% of row-group pairs overlap beyond the 36.4% a clustered file of 12 groups shows; 67% of the groups are still in order"
+2026/11/26 21:53:29 INFO clustered rewrite table=fv.accounts column=opened rows=752202 delta_rows=500000 unordered=0 scan_seconds=0.533343413 buckets=12 spill_seconds=1.555792705 load_seconds=1.487505426 sorted=true seconds=3.582867469
+time=2026-11-26T21:53:29.653Z level=INFO msg=compacted table=fv.accounts rows=752202 seconds=3.885981284
+time=2026-11-26T21:53:43.250Z level=INFO msg="compaction started" table=public.customers why=idle base_rows=10000 delta_rows=450
+2026/11/26 21:53:43 INFO rewrite clustering table=public.customers column=none why="1 row groups, too few to tell"
+time=2026-11-26T21:53:43.452Z level=INFO msg=compacted table=public.customers rows=10000 seconds=0.201377057
+time=2026-11-26T21:54:13.449Z level=INFO msg="compaction started" table=public.orders why=idle base_rows=227712 delta_rows=16646
+2026/11/26 21:54:13 INFO rewrite clustering table=public.orders column=created_at why="row-group ranges overlap on 0.0% of pairs over 4 groups (id 0.0%, customer_id 100.0%, status 100.0%)"
+2026/11/26 21:54:13 INFO clustered rewrite table=public.orders column=created_at rows=230333 delta_rows=11746 unordered=0 scan_seconds=0.005427688 buckets=2 spill_seconds=0.032479816 load_seconds=0.010462888 sorted=false seconds=0.389848452
+time=2026-11-26T21:54:14.055Z level=INFO msg=compacted table=public.orders rows=230333 seconds=0.602536882
+time=2026-11-26T21:54:43.849Z level=INFO msg="compaction started" table=ex.t_num why=idle base_rows=2015 delta_rows=593
+2026/11/26 21:54:43 INFO rewrite clustering table=ex.t_num column=none why="1 row groups, too few to tell"
+time=2026-11-26T21:54:44.053Z level=INFO msg=compacted table=ex.t_num rows=2015 seconds=0.203521088
+time=2026-11-26T21:54:59.460Z level=ERROR msg="mirror stopped" err="receive message failed: unexpected EOF" retry_in=1s
+time=2026-11-26T21:55:00.471Z level=INFO msg="this node is the primary — standing down; the mirror is built on replicas"
+time=2026-11-26T21:55:00.493Z level=WARN msg="dropped this Pod's replication slot; the mirror will rebuild from a snapshot when this node is next a replica" slot=qs_int_qsint_2 why="this node was promoted and no longer consumes it"

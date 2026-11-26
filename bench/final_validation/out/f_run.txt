@@ -1,0 +1,32 @@
+ALTER TABLE
+altered fv.lookup.id to bigint
+writes exit 0
+--- readyz (HTTP 200):
+ready= True
+halted_tables= {"fv.lookup": "halting fv.lookup: unsupported schema change (RETYPED id integer->bigint); the mirror must be rebuilt"}
+reason= lag 0.1s within SLO 30.0s; DEGRADED, serving the other tables (QS_SERVE_WITH_HALTED_TABLES): 1 table is halted and not mirrored: fv.lookup (halting fv.lookup: unsupported schema change (RETYPED id integer->bigint); the mirror must be rebuilt)
+--- metrics:
+quicksilver_halted_tables 1
+--- log:
+time=2026-11-26T21:52:23.923Z level=ERROR msg="table halted; it is out of service and its changes are discarded until it is rebuilt. The other tables are still mirrored" table=fv.lookup reason="halting fv.lookup: unsupported schema change (RETYPED id integer->bigint); the mirror must be rebuilt" rebuild="create /var/lib/postgresql/qsfinal/mirror/fv.lookup/REBUILD and restart the sidecar"
+--- while halted:
+== f_halted
+qs-verify: 11 MATCH, 0 other
+tables 11 different 0
+lake_vs_heap exit 0
+different 0
+  [agg_status] kind=qualifying routed_to_mirror=True
+  [agg_events_amount] kind=qualifying routed_to_mirror=True
+  [agg_accounts] kind=qualifying routed_to_mirror=True
+--- rebuild:
+-rw-r--r-- 1 postgres root 0 Nov 26 21:52 /var/lib/postgresql/qsfinal/mirror/fv.lookup/REBUILD
+restarted sidecar pid 26180
+ready
+== f_rebuilt
+qs-verify: 12 MATCH, 0 other
+tables 12 different 0
+lake_vs_heap exit 0
+different 0
+  [agg_status] kind=qualifying routed_to_mirror=True
+  [agg_events_amount] kind=qualifying routed_to_mirror=True
+  [agg_accounts] kind=qualifying routed_to_mirror=True

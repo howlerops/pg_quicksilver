@@ -1,0 +1,17 @@
+round 0: committed
+round 1: committed
+round 2: committed
+Traceback (most recent call last):
+  File "/home/user/pg_quicksilver/.claude/worktrees/agent-ab06d673e4f515e4a/bench/final_validation/scripts/fv_mixed.py", line 54, in <module>
+    run(a.port, a.rounds, a.seed)
+    ~~~^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/user/pg_quicksilver/.claude/worktrees/agent-ab06d673e4f515e4a/bench/final_validation/scripts/fv_mixed.py", line 24, in run
+    cur.execute("DELETE FROM fv.events WHERE id IN (SELECT id FROM fv.events ORDER BY md5(id::text || 'd' || %s) LIMIT 300)", (str(r),))
+    ~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.13/site-packages/psycopg/cursor.py", line 117, in execute
+    raise ex.with_traceback(None)
+psycopg.errors.DeadlockDetected: deadlock detected
+DETAIL:  Process 9943 waits for ShareLock on transaction 1082; blocked by process 9942.
+Process 9942 waits for ShareLock on transaction 1081; blocked by process 9943.
+HINT:  See server log for query details.
+CONTEXT:  while deleting tuple (701,19) in relation "events"

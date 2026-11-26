@@ -1,0 +1,22 @@
+ALTER TABLE
+added column
+writes exit 0
+INSERT 0 2
+explicit inserts ok
+UPDATE 4733
+updated
+probe exit 0
+[probe0] plan: Custom Scan (QuicksilverRoute) | Quicksilver: mirror | Quicksilver Reason: 145706 rows from mirrored tables, over 50000
+[probe0] last_decision: heap / quicksilver.route = heap
+[probe0] rows routed=3 heap=3 EQUAL
+[probe0] routed_to_mirror=True
+
+problems 0
+== e
+qs-verify: 12 MATCH, 0 other
+tables 12 different 0
+lake_vs_heap exit 0
+different 0
+  [agg_status] kind=qualifying routed_to_mirror=True
+  [agg_events_amount] kind=qualifying routed_to_mirror=True
+  [agg_accounts] kind=qualifying routed_to_mirror=True

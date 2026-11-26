@@ -1,0 +1,37 @@
+[agg_status] plan: Custom Scan (QuicksilverRoute) | Quicksilver: mirror | Quicksilver Reason: 139511 rows from mirrored tables, over 50000
+[agg_status] last_decision: heap / quicksilver.route = heap
+[agg_status] rows routed=4 heap=4 EQUAL
+[agg_status] kind=qualifying routed_to_mirror=True
+
+[agg_events_amount] plan: Custom Scan (QuicksilverRoute) | Quicksilver: mirror | Quicksilver Reason: 80155 rows from mirrored tables, over 50000
+[agg_events_amount] last_decision: heap / quicksilver.route = heap
+[agg_events_amount] rows routed=1 heap=1 EQUAL
+[agg_events_amount] kind=qualifying routed_to_mirror=True
+
+[agg_accounts] plan: Custom Scan (QuicksilverRoute) | Quicksilver: mirror | Quicksilver Reason: 319290 rows from mirrored tables, over 50000
+[agg_accounts] last_decision: heap / quicksilver.route = heap
+[agg_accounts] rows routed=1137 heap=1137 EQUAL
+[agg_accounts] kind=qualifying routed_to_mirror=True
+
+[agg_events_at] plan: Quicksilver: heap (the mirror could not plan it) | Quicksilver Detail: (PGDuckDB/CreatePlan) Prepared query returned an error: Parser Error: syntax error at or near ">="
+[agg_events_at] last_decision: heap / quicksilver.route = heap
+[agg_events_at] rows routed=1 heap=1 EQUAL
+[agg_events_at] kind=qualifying routed_to_mirror=False
+
+[pk_accounts] plan: Quicksilver: heap (cheap on the heap) | Quicksilver Detail: cost 8 under 10000, 1 rows from mirrored tables under 50000
+[pk_accounts] last_decision: heap / quicksilver.route = heap
+[pk_accounts] rows routed=1 heap=1 EQUAL
+[pk_accounts] kind=point routed_to_mirror=False
+
+[pk_orders] plan: Quicksilver: heap (cheap on the heap) | Quicksilver Detail: cost 8 under 10000, 1 rows from mirrored tables under 50000
+[pk_orders] last_decision: heap / quicksilver.route = heap
+[pk_orders] rows routed=1 heap=1 EQUAL
+[pk_orders] kind=point routed_to_mirror=False
+
+[pk_events] plan: Quicksilver: heap (cheap on the heap) | Quicksilver Detail: cost 8 under 10000, 1 rows from mirrored tables under 50000
+[pk_events] last_decision: heap / quicksilver.route = heap
+[pk_events] rows routed=1 heap=1 EQUAL
+[pk_events] kind=point routed_to_mirror=False
+
+different 0
+routing exit 0

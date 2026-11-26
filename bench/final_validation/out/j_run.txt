@@ -1,0 +1,24 @@
+1. stop the old primary (fast) so that it cannot keep writing
+server stopped
+2. promote the standby on port 5801
+server promoted
+old sidecar pid 26180 STILL RUNNING
+   sidecar log, after promotion:
+time=2026-11-26T21:54:59.460Z level=ERROR msg="mirror stopped" err="receive message failed: unexpected EOF" retry_in=1s
+time=2026-11-26T21:55:00.471Z level=INFO msg="this node is the primary — standing down; the mirror is built on replicas"
+time=2026-11-26T21:55:00.493Z level=WARN msg="dropped this Pod's replication slot; the mirror will rebuild from a snapshot when this node is next a replica" slot=qs_int_qsint_2 why="this node was promoted and no longer consumes it"
+3. primary is now: f in recovery
+4. new standby from the promoted server
+basebackup ok
+standby2 started on 5803
+   standby2 in recovery: t
+5. sidecar on standby2 (slot qs_int2, mirror /var/lib/postgresql/qsfinal/mirror2)
+   sidecar2 pid 28993
+{"ready":true,"reason":"lag 0.0s within SLO 30.0s","applied_lsn":"","head_lsn":"","lag_bytes":0,"lag_seconds":0.019610666,"compaction_backlog":0,"diverged":false,"bootstrapped":true,"verified_seconds_ago":0,"slot_retained_bytes":0}
+
+6. checks against the new primary (5801), the new standby (5803), mirror2
+== j
+qs-verify: 12 MATCH, 0 other
+tables 12 different 0
+lake_vs_heap exit 0
+different 0
