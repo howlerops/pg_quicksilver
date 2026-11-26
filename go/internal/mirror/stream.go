@@ -66,6 +66,9 @@ type parquetWriter struct {
 	// converts once on the way in; the snapshot, whose rows arrive from a scan
 	// already in order, never builds a map at all.
 	pending [][]any
+	// pendingBytes is rowBytes summed over pending, kept as rows come and go so
+	// that drain need not scan them.
+	pendingBytes int64
 	// f is the file underneath w. The writer keeps it, rather than letting
 	// pqarrow close it, because a file is not finished when its footer is
 	// written: it is finished when fsync has returned. See Close.
@@ -445,6 +448,9 @@ func (pw *parquetWriter) Append(rows []map[string]any) error {
 // caller that had to check them before it opened the file.
 func (pw *parquetWriter) appendStorable(vals [][]any) error {
 	pw.pending = append(pw.pending, vals...)
+	for _, row := range vals {
+		pw.pendingBytes += rowBytes(row)
+	}
 	return pw.drain()
 }
 
@@ -461,12 +467,56 @@ func (pw *parquetWriter) AppendValues(vals []any) error {
 		return err
 	}
 	pw.pending = append(pw.pending, vals)
+	pw.pendingBytes += rowBytes(vals)
 	return pw.drain()
 }
 
+// rowGroupBytes caps one row group at this many bytes of values, as rowBytes
+// counts them; QS_ROW_GROUP_BYTES, default 32 MiB. A reader decodes a row group
+// whole, so its memory is the group's size, and 65,536 rows of a wide table (a
+// 5 KB row, as the four-table run wrote) is 370 MB: one rewrite that read it held
+// that, and its builders, at once. Groups of the byte cap are read in the
+// same way and cost the same metadata per group; no reader assumes a fixed count.
+var rowGroupBytes = envInt("QS_ROW_GROUP_BYTES", 32<<20)
+
+// rowBytes is the size of a row's values as the writer will hold them: the
+// length of each text or bytes value, and 8 for anything else.
+func rowBytes(row []any) int64 {
+	var n int64
+	for _, v := range row {
+		switch x := v.(type) {
+		case string:
+			n += int64(len(x))
+		case []byte:
+			n += int64(len(x))
+		default:
+			n += 8
+		}
+	}
+	return n
+}
+
+// drain writes the row groups that are complete: RowGroupRows rows, or fewer
+// when they reach rowGroupBytes first. The rest waits for more rows or Close.
 func (pw *parquetWriter) drain() error {
-	for len(pw.pending) >= int(RowGroupRows) {
-		if err := pw.flush(int(RowGroupRows)); err != nil {
+	for len(pw.pending) > 0 {
+		n := 0
+		switch {
+		case len(pw.pending) >= int(RowGroupRows):
+			n = int(RowGroupRows)
+		case pw.pendingBytes >= rowGroupBytes:
+			var size int64
+			for i, row := range pw.pending {
+				if size += rowBytes(row); size >= rowGroupBytes {
+					n = i + 1
+					break
+				}
+			}
+		}
+		if n == 0 {
+			return nil
+		}
+		if err := pw.flush(n); err != nil {
 			return err
 		}
 	}
@@ -506,6 +556,9 @@ func (pw *parquetWriter) flush(n int) error {
 	}
 	// Drop the references so the rows just written can be collected rather than
 	// pinned by the tail of the buffer for the length of the rewrite.
+	for _, vals := range pw.pending[:n] {
+		pw.pendingBytes -= rowBytes(vals)
+	}
 	rest := copy(pw.pending, pw.pending[n:])
 	for i := rest; i < len(pw.pending); i++ {
 		pw.pending[i] = nil

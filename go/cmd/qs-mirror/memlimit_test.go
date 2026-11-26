@@ -25,6 +25,9 @@ func fakeCgroup(t *testing.T, files map[string]string) string {
 const mi = 1 << 20
 
 func TestDetectMemoryFromCgroupFiles(t *testing.T) {
+	// The fake root is the only cgroup this test looks at, not the test runner's own.
+	defer func(s string) { selfCgroupFile = s }(selfCgroupFile)
+	selfCgroupFile = ""
 	cases := []struct {
 		name  string
 		files map[string]string
@@ -123,5 +126,40 @@ func TestGCLimitIsEightyPercentUnlessSetByOperator(t *testing.T) {
 	}
 	if got := gcLimit(memoryLimit{Bytes: 1000, Source: "GOMEMLIMIT"}, false); got != 0 {
 		t.Errorf("a limit that came from GOMEMLIMIT is not re-applied, got %d", got)
+	}
+}
+
+// The process's own cgroup counts, and a larger limit above it does not: a
+// sidecar placed in a 1 GiB cgroup below an 8 GiB root must size for 1 GiB.
+func TestDetectMemoryUsesOwnCgroupBelowRoot(t *testing.T) {
+	const gib = 1 << 30
+	saved := selfCgroupFile
+	defer func() { selfCgroupFile = saved }()
+
+	root := fakeCgroup(t, map[string]string{
+		"memory/memory.limit_in_bytes":       "8589934592\n",
+		"memory/qsmem/memory.limit_in_bytes": "1073741824\n",
+	})
+	self := filepath.Join(t.TempDir(), "cgroup")
+	if err := os.WriteFile(self, []byte("9:cpu,cpuacct:/\n2:memory:/qsmem\n1:name=systemd:/\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	selfCgroupFile = self
+	want := memoryLimit{Bytes: gib, Source: "cgroup v1 memory.limit_in_bytes (own cgroup)"}
+	if got := detectMemory(root, ""); got != want {
+		t.Errorf("v1 own cgroup: detectMemory = %+v, want %+v", got, want)
+	}
+
+	// v2: the unified line names the cgroup, and its memory.max is the limit.
+	root2 := fakeCgroup(t, map[string]string{
+		"apps/pod/memory.max": "1073741824\n",
+		"memory.max":          "max\n",
+	})
+	if err := os.WriteFile(self, []byte("0::/apps/pod\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	want2 := memoryLimit{Bytes: gib, Source: "cgroup v2 memory.max (own cgroup)"}
+	if got := detectMemory(root2, ""); got != want2 {
+		t.Errorf("v2 own cgroup: detectMemory = %+v, want %+v", got, want2)
 	}
 }

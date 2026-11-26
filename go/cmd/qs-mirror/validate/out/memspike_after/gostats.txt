@@ -1,0 +1,14 @@
+== heap.1.debug1.txt
+# Sys = 1628670600
+# HeapAlloc = 1254512328
+# HeapIdle = 349003776
+# HeapInuse = 1259905024
+# HeapReleased = 150609920
+# NextGC = 1600199594
+== heap.2.debug1.txt
+# Sys = 2057540328
+# HeapAlloc = 1459233048
+# HeapIdle = 565534720
+# HeapInuse = 1467129856
+# HeapReleased = 212844544
+# NextGC = 1734105818

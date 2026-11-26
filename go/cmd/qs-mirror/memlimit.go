@@ -18,6 +18,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime/debug"
+	"slices"
 	"strconv"
 	"strings"
 )
@@ -44,8 +45,17 @@ type memoryLimit struct {
 // at fake files.
 var cgroupRoot = "/sys/fs/cgroup"
 
+// selfCgroupFile is where the process finds the cgroup it is in. A variable so
+// the test can leave the test runner's own cgroup out of it; "" leaves it out.
+var selfCgroupFile = "/proc/self/cgroup"
+
 // detectMemory reads the limit. gomemlimit is the GOMEMLIMIT value (empty if
 // unset), root the cgroup filesystem root.
+//
+// The limit is the smallest finite one among the root's memory files and the
+// process's own cgroup's (ownCgroupFiles). The root alone is not enough: outside
+// a container namespace the root's limit is the machine's, and a sidecar placed
+// in a limited cgroup below it would otherwise size itself for the whole host.
 func detectMemory(root, gomemlimit string) memoryLimit {
 	if b, ok := parseGoMemLimit(gomemlimit); ok {
 		return memoryLimit{Bytes: b, Source: "GOMEMLIMIT"}
@@ -54,6 +64,8 @@ func detectMemory(root, gomemlimit string) memoryLimit {
 		{filepath.Join(root, "memory.max"), "cgroup v2 memory.max"},
 		{filepath.Join(root, "memory", "memory.limit_in_bytes"), "cgroup v1 memory.limit_in_bytes"},
 	}
+	candidates = append(candidates, ownCgroupFiles(root)...)
+	var best memoryLimit
 	for _, c := range candidates {
 		raw, err := os.ReadFile(c.path)
 		if err != nil {
@@ -61,16 +73,47 @@ func detectMemory(root, gomemlimit string) memoryLimit {
 		}
 		s := strings.TrimSpace(string(raw))
 		if s == "max" {
-			return memoryLimit{} // v2: explicitly unlimited
+			continue // v2: explicitly unlimited
 		}
 		n, err := strconv.ParseInt(s, 10, 64)
 		if err != nil || n <= 0 || n >= 1<<60 {
-			// v1 writes a huge sentinel for "no limit"; that is no limit.
-			return memoryLimit{}
+			continue // v1 writes a huge sentinel for "no limit"
 		}
-		return memoryLimit{Bytes: n, Source: c.source}
+		if best.Bytes == 0 || n < best.Bytes {
+			best = memoryLimit{Bytes: n, Source: c.source}
+		}
 	}
-	return memoryLimit{}
+	return best
+}
+
+// ownCgroupFiles are the memory limit files of the cgroup this process is in,
+// found from selfCgroupFile: the v2 line "0::/path" gives root/path/memory.max,
+// and the v1 line "N:memory:/path" gives root/memory/path/memory.limit_in_bytes.
+func ownCgroupFiles(root string) []struct{ path, source string } {
+	if selfCgroupFile == "" {
+		return nil
+	}
+	raw, err := os.ReadFile(selfCgroupFile)
+	if err != nil {
+		return nil
+	}
+	var out []struct{ path, source string }
+	for _, line := range strings.Split(string(raw), "\n") {
+		parts := strings.SplitN(line, ":", 3)
+		if len(parts) != 3 {
+			continue
+		}
+		dir := filepath.Clean(parts[2])
+		switch {
+		case parts[1] == "": // cgroup v2 unified hierarchy
+			out = append(out, struct{ path, source string }{
+				filepath.Join(root, dir, "memory.max"), "cgroup v2 memory.max (own cgroup)"})
+		case slices.Contains(strings.Split(parts[1], ","), "memory"): // cgroup v1 memory controller
+			out = append(out, struct{ path, source string }{
+				filepath.Join(root, "memory", dir, "memory.limit_in_bytes"), "cgroup v1 memory.limit_in_bytes (own cgroup)"})
+		}
+	}
+	return out
 }
 
 // parseGoMemLimit accepts what the runtime accepts for GOMEMLIMIT: a byte count
