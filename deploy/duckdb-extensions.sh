@@ -124,6 +124,15 @@ SQL
 got=$(printf '%s\n' "$got" | tail -1)
 [ "$got" = 1000 ] || { echo "FAIL: a DuckLake on a SQLite catalog read back '$got', not 1000" >&2; exit 1; }
 
+if [ "$mode" = install ]; then
+  # DuckDB writes the files 0600 into 0700 directories. That suits a directory
+  # the server writes into; it does not suit one the image hands to someone
+  # else. Both deploy/Dockerfile and the extension job copy this directory
+  # root-owned, and PostgreSQL (UID 26) would then be able to open neither the
+  # directories nor the files, so verify would fail. Readable by everyone,
+  # writable by nobody here.
+  chmod -R a+rX "$dir"
+fi
 echo "files:"
 find "$dir" -type f -printf '  %10s  %P\n' | sort -k2
 case "$mode" in
