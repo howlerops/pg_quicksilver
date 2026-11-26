@@ -98,6 +98,9 @@ su postgres -c "$PG/pg_ctl -D $BASE/standby -l $BASE/standby.log -w start" >/dev
 
 ( cd "$REPO/go" && go build -o "$BASE/qs-mirror" ./cmd/qs-mirror && go build -o "$BASE/qs-query" ./cmd/qs-query && go build -o "$BASE/qs-verify" ./cmd/qs-verify ) || die build
 chown -R postgres:postgres "$BASE"
+if [ "${JOIN_DOMAINS:-off}" = on ]; then
+  su postgres -c "PGOPTIONS='-c search_path=ex' $PG/psql -X -h /tmp -p $PPORT -U postgres -d $DB -q -v ON_ERROR_STOP=1 -f $HERE/join_tables.sql" || die "ex join tables"
+fi
 "$HERE/sidecar.sh" start || die "sidecar never ready"
 # The tricky rows arrive over the replication stream, as in bench/exactness.
 [ "$DATASET" = bench ] || su postgres -c "PGOPTIONS='-c search_path=ex' $PG/psql -X -h /tmp -p $PPORT -U postgres -d $DB -q -v ON_ERROR_STOP=1 -f $BASE/sql/data_special.sql" || die "ex special"
