@@ -537,6 +537,12 @@ this; moving `mirrorPath` to one would.
 | `serveWithHaltedTables` | `false` | `QS_SERVE_WITH_HALTED_TABLES` | keep the Pod ready with a halted table. With the extension that table is answered from the heap on that Pod, so there this is safe |
 | `extension` | `auto` | `QS_EXTENSION` | `auto`: register mirror relations and report applied LSNs if `pg_quicksilver` is installed, do nothing and say so once if it is not. `off`: never touch it |
 | `sidecarMemory` | `1Gi` | request, limit, `GOMEMLIMIT` | see below |
+| `slotJanitor` | on | `QS_SLOT_JANITOR` | `off` stops the sidecar dropping the replication slots of Pods that are gone; their WAL is then kept until someone drops them |
+| `slotJanitorAfter` | `6h` | `QS_SLOT_JANITOR_AFTER` | inactivity before such a slot is dropped; at least `1m` |
+| `autoRebuildLegacy` | `"false"` | `QS_AUTO_REBUILD_LEGACY` | rebuild a table holding data from an older writer at start (see *Files from an older sidecar*) |
+| `bloomColumns` | the sidecar's default | `QS_BLOOM_COLUMNS` | the bloom filter columns, in the sidecar's spelling (see *Bloom filters*) |
+| `clusterBy` | the sidecar's default | `QS_CLUSTER_BY` | the clustering column per table, `schema.table=column,…`, or `none` for a table that should not be clustered |
+| `numericScale` | unset | `QS_NUMERIC_SCALE` | the opt-in decimal scale for `numeric` columns (see *`numeric` without a precision*) |
 
 A value that is not a boolean, a duration or a quantity is refused at
 admission; the sidecar itself would have read it as off.

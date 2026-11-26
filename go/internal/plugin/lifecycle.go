@@ -220,6 +220,7 @@ func MirrorSidecar(clusterName string, cfg Config) *corev1.Container {
 	if cfg.DuckLake && cfg.DuckLakeRetention > 0 {
 		c.Env = append(c.Env, corev1.EnvVar{Name: "QS_DUCKLAKE_RETENTION", Value: cfg.DuckLakeRetention.String()})
 	}
+	c.Env = append(c.Env, switchEnv(cfg)...)
 	return c
 }
 

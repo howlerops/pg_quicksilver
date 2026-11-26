@@ -146,6 +146,12 @@ plugin parameter is set there, on the Cluster, not in this chart's values:
 | `ducklakeRetention` | the sidecar's 5m | at least `10s`, and only with `ducklake` |
 | `serveWithHaltedTables` | `"false"` | keep the Pod ready with one table halted; safe with the extension |
 | `extension` | `auto` | `off` stops the sidecar touching `pg_quicksilver` |
+| `slotJanitor` | on | `off` (`QS_SLOT_JANITOR`): stop dropping the slots of Pods that are gone. Off lets their WAL pile up |
+| `slotJanitorAfter` | `6h` | `QS_SLOT_JANITOR_AFTER`: inactivity before a slot of a gone Pod is dropped; at least `1m` |
+| `autoRebuildLegacy` | `"false"` | `QS_AUTO_REBUILD_LEGACY`: re-snapshot a table holding data from an older writer, instead of only reporting it |
+| `bloomColumns` | the sidecar's default | `QS_BLOOM_COLUMNS`: `schema.table=col,col;…`, `-` for none, `off` for all |
+| `clusterBy` | the sidecar's default | `QS_CLUSTER_BY`: `schema.table=column,…`, `none` for no clustering |
+| `numericScale` | unset | `QS_NUMERIC_SCALE`: a scale `0`–`38` for every unconstrained `numeric`, or `schema.table.column=scale,…` |
 | `database`, `credentialsSecret`, `slotName`, `publication`, `mirrorPath`, `ingest` | | [docs/16](https://github.com/howlerops/pg_quicksilver/blob/main/docs/16-deploying.md#enabling-it-on-a-cluster) |
 
 They are strings: `ducklake: "true"`, with the quotes. An unknown parameter or

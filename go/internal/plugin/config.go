@@ -138,6 +138,24 @@ type Config struct {
 	// the extension is installed in the database and does nothing when it is
 	// not; off never touches it.
 	Extension string
+
+	// The sidecar's remaining switches, each documented in docs/16 and passed
+	// through unchanged (switches.go). Empty or zero means the sidecar's own
+	// default.
+	//
+	// SlotJanitor is on or off (QS_SLOT_JANITOR), SlotJanitorAfter the
+	// inactivity window (QS_SLOT_JANITOR_AFTER).
+	SlotJanitor      string
+	SlotJanitorAfter time.Duration
+	// AutoRebuildLegacy rebuilds a table holding data from an older writer
+	// (QS_AUTO_REBUILD_LEGACY). Off by default.
+	AutoRebuildLegacy bool
+	// BloomColumns, ClusterBy and NumericScale are the sidecar's own
+	// per-column overrides, in the spelling the sidecar reads
+	// (QS_BLOOM_COLUMNS, QS_CLUSTER_BY, QS_NUMERIC_SCALE).
+	BloomColumns string
+	ClusterBy    string
+	NumericScale string
 }
 
 // Defaults that apply when a parameter is absent.
@@ -238,6 +256,16 @@ func ParseConfig(clusterName string, params map[string]string) Config {
 	if d, err := time.ParseDuration(get("ducklakeRetention", "")); err == nil {
 		cfg.DuckLakeRetention = d
 	}
+	cfg.SlotJanitor = get("slotJanitor", "")
+	if d, err := time.ParseDuration(get("slotJanitorAfter", "")); err == nil {
+		cfg.SlotJanitorAfter = d
+	}
+	if b, err := strconv.ParseBool(get("autoRebuildLegacy", "false")); err == nil {
+		cfg.AutoRebuildLegacy = b
+	}
+	cfg.BloomColumns = get("bloomColumns", "")
+	cfg.ClusterBy = get("clusterBy", "")
+	cfg.NumericScale = get("numericScale", "")
 
 	for _, t := range strings.Split(get("tables", ""), ",") {
 		if t = strings.TrimSpace(t); t != "" {
@@ -282,6 +310,8 @@ func Validate(cluster *apiv1.Cluster, params map[string]string) []*operator.Vali
 		"database": true, "credentialsSecret": true, "sidecarMemory": true,
 		"ducklake": true, "ducklakeRetention": true,
 		"serveWithHaltedTables": true, "extension": true,
+		"slotJanitor": true, "slotJanitorAfter": true, "autoRebuildLegacy": true,
+		"bloomColumns": true, "clusterBy": true, "numericScale": true,
 	}
 	for k := range params {
 		if !known[k] {
@@ -380,6 +410,7 @@ func Validate(cluster *apiv1.Cluster, params map[string]string) []*operator.Vali
 	default:
 		add("extension", cfg.Extension, "must be one of: auto, off")
 	}
+	validateSwitches(params, add)
 	if raw, ok := params["sidecarMemory"]; ok && strings.TrimSpace(raw) != "" {
 		if q, err := resource.ParseQuantity(strings.TrimSpace(raw)); err != nil {
 			add("sidecarMemory", raw, "must be a Kubernetes quantity, for example 2Gi")
