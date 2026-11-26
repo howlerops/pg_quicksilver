@@ -46,6 +46,27 @@ SELECT pg_current_wal_lsn()::text;
 Q
 )
 wait_mirror s1 public.orders "$TARGET" 120 && echo "s1 caught up"
+# The failover slot reaches the standby through slot synchronisation, and the
+# standby only accepts it once it has replayed past the slot's position. The
+# slot was created after the standby started, so write until it is synced.
+echo "--- wait until the standby has synced qs_v1_s1 (failover slot)"
+for _ in $(seq 240); do
+  n=$(sql 5601 postgres <<'Q'
+SELECT count(*) FROM pg_replication_slots WHERE slot_name = 'qs_v1_s1' AND synced;
+Q
+)
+  [ "$n" = 1 ] && { echo "synced"; break; }
+  sql 5600 app <<'Q' >/dev/null
+INSERT INTO orders SELECT g, g, 'pre ' || g FROM generate_series(20001, 20010) g;
+DELETE FROM orders WHERE id BETWEEN 20001 AND 20010;
+Q
+  sleep 0.5
+done
+TARGET=$(sql 5600 app <<'Q'
+SELECT pg_current_wal_lsn()::text;
+Q
+)
+wait_mirror s1 public.orders "$TARGET" 120 && echo "s1 caught up again"
 echo "--- before the failover: verify on the primary"
 verify s1 public.orders 5600
 echo "--- before the failover: slots on the primary"
