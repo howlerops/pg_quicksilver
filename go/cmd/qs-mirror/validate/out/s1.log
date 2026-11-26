@@ -1,0 +1,6 @@
+time=2026-11-26T15:52:18.697Z level=INFO msg="quicksilver mirror starting" cluster=qsv pod=s1 mode=shadow ingest=logical tables=[public.t1] slo=15s slot=qs_v1_s1 configured_slot=qs_v1
+time=2026-11-26T15:52:18.697Z level=INFO msg="slot janitor on: when this instance is the primary it drops this cluster's Quicksilver slots that nothing will consume again" slots="qs_v1 and qs_v1_*" interval=1m0s wal_limit_bytes=4294967296 inactive_limit=6h0m0s off="QS_SLOT_JANITOR=off"
+time=2026-11-26T15:52:18.732Z level=INFO msg="pg_quicksilver is not installed in this database; no mirror relation is registered (CREATE EXTENSION pg_quicksilver on the primary to route reads; this is looked at again every minute)" database=app
+time=2026-11-26T15:52:18.780Z level=INFO msg="new replication slot; bootstrapping by snapshot" at=0/4036098
+time=2026-11-26T15:52:18.785Z level=INFO msg="snapshot complete" table=public.t1 rows=0 seconds=0.004720019
+time=2026-11-26T15:52:18.785Z level=INFO msg="key index built" table=public.t1 keys=0 seconds=3.709e-06

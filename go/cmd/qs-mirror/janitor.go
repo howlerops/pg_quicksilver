@@ -26,7 +26,7 @@ package main
 //   - it retains at least QS_MAX_SLOT_WAL_BYTES. That is the limit at which the
 //     sidecar that owns it would drop it itself (slotguard.go); the janitor is
 //     that guard for a sidecar that is not running to apply it.
-//   - it has been inactive for QS_SLOT_JANITOR_INACTIVE (default 6h) AND no
+//   - it has been inactive for QS_SLOT_JANITOR_AFTER (default 6h) AND no
 //     instance of the cluster by that name is known to this server.
 //
 // WHO IS A CURRENT MEMBER, without the Kubernetes API. PostgreSQL knows two
@@ -73,7 +73,7 @@ import (
 
 var (
 	janitorInterval = envDuration("QS_SLOT_JANITOR_INTERVAL", time.Minute)
-	janitorInactive = envDuration("QS_SLOT_JANITOR_INACTIVE", 6*time.Hour)
+	janitorAfter = envDuration("QS_SLOT_JANITOR_AFTER", 6*time.Hour)
 	// The prefix CNPG gives its per-instance physical slots
 	// (replicationSlots.highAvailability.slotPrefix).
 	janitorPhysicalPrefix = env("QS_SLOT_JANITOR_PHYSICAL_PREFIX", "_cnpg_")
@@ -261,7 +261,7 @@ func newJanitor(log *slog.Logger, o options) *janitor {
 			"cluster's Quicksilver slots that nothing will consume again",
 			"slots", sanitiseSlotPart(o.slotBase)+" and "+sanitiseSlotPart(o.slotBase)+"_*",
 			"interval", janitorInterval, "wal_limit_bytes", maxSlotWAL,
-			"inactive_limit", janitorInactive, "off", "QS_SLOT_JANITOR=off")
+			"inactive_limit", janitorAfter, "off", "QS_SLOT_JANITOR=off")
 	} else {
 		log.Warn("slot janitor off (QS_SLOT_JANITOR): a slot whose Pod is gone pins WAL " +
 			"on the primary until someone drops it; set max_slot_wal_keep_size")
@@ -331,7 +331,7 @@ func (j *janitor) run(ctx context.Context) error {
 	}
 
 	in := janitorInput{Base: j.o.slotBase, MaxWAL: maxSlotWAL,
-		MaxInactive: janitorInactive, PhysicalPrefix: janitorPhysicalPrefix}
+		MaxInactive: janitorAfter, PhysicalPrefix: janitorPhysicalPrefix}
 	in.Slots, err = j.readSlots(ctx, conn)
 	if err != nil {
 		return err

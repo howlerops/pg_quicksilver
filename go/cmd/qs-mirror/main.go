@@ -788,7 +788,7 @@ func pump(
 	for {
 		// A backlog (what a DDL or size barrier cut off) is applied at once;
 		// otherwise wait to be told there is something, or for the fallback.
-		why, werr := waitForWork(ctx, ready, ticker.C, len(pending) > 0, applyCoalesce)
+		why, werr := waitForWork(ctx, ready, ticker.C, len(pending) > 0, wakeCoalesce)
 		if werr != nil {
 			return werr
 		}

@@ -25,14 +25,14 @@ import (
 	"time"
 )
 
-// applyCoalesce is how long the loop waits, after it is told a transaction is
+// wakeCoalesce is how long the loop waits, after it is told a transaction is
 // buffered, before it takes what is there. It is the whole of the deliberate
 // delay on the path and it is what keeps a burst efficient: every tick that
 // applies something writes a delta file and fsyncs a manifest per table, so
 // commits arriving a millisecond apart are better taken together. 0 is allowed
 // and means "take each as it comes". Batching beyond this is what it always
 // was: whatever arrives while a tick is applying is taken whole by the next.
-var applyCoalesce = envDuration0("QS_APPLY_COALESCE", 2*time.Millisecond)
+var wakeCoalesce = envDuration0("QS_WAKE_COALESCE", 2*time.Millisecond)
 
 // pumpFallbackInterval is the ticker: how often the loop runs when nothing
 // woke it.
