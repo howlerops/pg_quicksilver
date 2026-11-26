@@ -140,7 +140,7 @@ plugin parameter is set there, on the Cluster, not in this chart's values:
 | `tables` | required | `schema.table,…`, unquoted lowercase, single-column primary key |
 | `mode` | `shadow` | `off`, `shadow`, `takeover` (needs `acknowledgeOLTPRegression: "true"`) |
 | `freshnessSLO` | `30s` | in `takeover`, a mirror behind this leaves `-ro` |
-| `sidecarMemory` | `1Gi` | request and limit; 300 bytes per live row, see below |
+| `sidecarMemory` | `1Gi` | request and limit; 110 bytes per live row, measured at 3M rows, see below |
 | `sidecarImage` | this chart's `image.mirror` | |
 | `ducklake` | `"false"` | also publish every table as a DuckLake table; required for routing |
 | `ducklakeRetention` | the sidecar's 5m | at least `10s`, and only with `ducklake` |
@@ -268,7 +268,7 @@ grows fastest. Set the PostgreSQL parameter.
     - name: quicksilver.howlerops.io
       parameters:
         tables: public.events
-        sidecarMemory: 3Gi      # 300 bytes per live row at the peak; this is 10M rows
+        sidecarMemory: 320Mi    # 110 bytes per live row at the peak; this is 3M rows, the size measured
 ```
 
 The sidecar's heap is dominated by one structure — the key index, one entry per
@@ -284,17 +284,22 @@ That is 42 bytes per live row of live heap, and roughly twice that resident.
 The mirror weighed 120 MB on disk and the sidecar peaked at 1,854 MB, so
 **sizing from the mirror's size on disk is wrong by an order of magnitude.**
 
-That profile is the steady state. The limit has to hold the peak, which is
-catching up and rewriting the base at the same time: 2,972 and 3,040 MB at
-10.5M rows (`bench/engine_compare/merged_build/out/p2_summary.txt`), 290 bytes
-per row. So budget **300 bytes per live row**; the default went from 256Mi to
-1Gi for that reason.
+That profile is the steady state. The limit has to hold the peak. The one
+sizing rule, measured at **3M rows only**: a table of 3M narrow rows with a
+UUID key, through the initial snapshot, a 200,000-change backlog drain and a
+base rewrite, peaked at 251 MiB resident (about 88 bytes per row). Every phase
+completed at 256Mi, 384Mi, 512Mi and 1Gi. Budget **110 bytes per live row**,
+which is 1.25 times that peak.
 
-| rows | `sidecarMemory` |
+| rows (measured) | `sidecarMemory` |
 |---|---|
-| up to 3.5M | `1Gi` (the default) |
-| 10M | `3Gi` |
-| 20M | `6Gi` |
+| 3M | `320Mi` |
+
+The default is `1Gi`, above that. The rule is not extrapolated: above 3M rows,
+or for wide rows, it has not been measured. An older measurement at 10.5M rows
+(`bench/engine_compare/merged_build/out/p2_summary.txt`, 2,972 and 3,040 MB, 290
+bytes per row, during a catch-up of 3.5 GB of WAL) is not reproduced by this one,
+so for a larger mirror measure it on your own row shape before choosing a limit.
 
 **`kubectl top` after a restart is now a usable second opinion**, because the
 key index is built *before* `/readyz` passes. RSS at readiness is the RSS the

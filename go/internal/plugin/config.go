@@ -179,12 +179,13 @@ const (
 	//	                                                  ~290 bytes/row
 	//
 	// and METRICS.md puts RSS at readiness at 90 to 130 bytes per live row. A
-	// limit is for the peak: a sidecar that is OOM-killed in the middle of a
-	// base rewrite restarts, rewrites again and is killed again. So the rule
-	// is 300 bytes per live row across the mirrored tables, and the default
-	// is the smallest round value that holds a few million rows through a
-	// rewrite: 1Gi is 3.5M rows by that rule (256Mi was under 900k), and about
-	// 8M at steady state. Past that, set sidecarMemory; see docs/16.
+	// limit is for the peak. The rule is the one measured at 3M rows (docs/16,
+	// "Sizing sidecarMemory"): a peak of 88 bytes per live row, budgeted at
+	// 110 bytes per live row, which is 320Mi at 3M rows. It is not extrapolated:
+	// above 3M rows, or for wide rows, it has not been measured, and an older
+	// 10.5M-row measurement of 290 bytes per row is not reproduced by it. The
+	// default is 1Gi, above that budget, and the operator sets sidecarMemory for
+	// a larger mirror.
 	DefaultSidecarMemory = "1Gi"
 
 	// ExtensionAuto and ExtensionOff are the values of the `extension`
@@ -415,8 +416,8 @@ func Validate(cluster *apiv1.Cluster, params map[string]string) []*operator.Vali
 		if q, err := resource.ParseQuantity(strings.TrimSpace(raw)); err != nil {
 			add("sidecarMemory", raw, "must be a Kubernetes quantity, for example 2Gi")
 		} else if q.Cmp(resource.MustParse("128Mi")) < 0 {
-			add("sidecarMemory", raw, "must be at least 128Mi; size it at about 300 bytes "+
-				"per live row across the mirrored tables")
+			add("sidecarMemory", raw, "must be at least 128Mi; size it at about 110 bytes "+
+				"per live row across the mirrored tables (measured at 3M rows; see docs/16)")
 		}
 	}
 

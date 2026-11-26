@@ -109,16 +109,16 @@ func TestLakeAndExtensionSettingsAreValidated(t *testing.T) {
 	}
 }
 
-// 256Mi was sized from the key index at readiness. The measured peak is
-// during catch-up with a base rewrite: 3,040 MB at 10.5M rows, 290 bytes per
-// row (bench/engine_compare/merged_build/out/p2_summary.txt). The default has
-// to hold a few million rows through that, and the old one held under 900k.
-func TestDefaultSidecarMemoryHoldsAMirrorThroughARewrite(t *testing.T) {
-	const peakBytesPerRow = 3040 << 20 / 10_500_000 // measured, rounded down
+// The sizing rule is the one measured at 3M rows (docs/16, "Sizing
+// sidecarMemory"): a peak of about 88 bytes per live row through a snapshot, a
+// 200,000-change backlog and a base rewrite, budgeted at 110 bytes per row. The
+// default has to hold the 3M rows that were measured.
+func TestDefaultSidecarMemoryHoldsTheMeasuredMirror(t *testing.T) {
+	const budgetBytesPerRow = 110
 	def := resource.MustParse(DefaultSidecarMemory)
-	if rows := def.Value() / peakBytesPerRow; rows < 3_000_000 {
-		t.Errorf("the default sidecar memory %s holds %d rows at the measured peak of %d bytes per row; "+
-			"want at least 3M", DefaultSidecarMemory, rows, peakBytesPerRow)
+	if rows := def.Value() / budgetBytesPerRow; rows < 3_000_000 {
+		t.Errorf("the default sidecar memory %s holds %d rows at %d bytes per row; "+
+			"want at least the 3M rows measured", DefaultSidecarMemory, rows, budgetBytesPerRow)
 	}
 	res := sidecarResources(ParseConfig("c", map[string]string{"tables": "public.m"}))
 	req, lim := res.Requests[corev1.ResourceMemory], res.Limits[corev1.ResourceMemory]
