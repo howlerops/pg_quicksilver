@@ -124,6 +124,7 @@ func main() {
 	log := slog.New(slog.NewTextHandler(os.Stdout, nil))
 	o := loadOptions()
 	changestream.SpoolDir = filepath.Join(o.mirrorPath, ".spool")
+	logMemorySizing(log)
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
