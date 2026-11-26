@@ -163,6 +163,13 @@ func main() {
 		log.Error("unsupported ingest mode", "ingest", o.ingest)
 		os.Exit(1)
 	}
+	// Join domains (experimental, off unless QS_JOIN_DOMAINS is set).
+	specs, maxKeys, err := joinDomainSettings()
+	if err != nil {
+		log.Error("join domains", "err", err)
+		os.Exit(1)
+	}
+	joinDomainSpecs, joinDomainMax = specs, maxKeys
 
 	if err := openLake(ctx, log, o, h); err != nil {
 		log.Error("QS_DUCKLAKE is on and the lake cannot be opened", "err", err)
@@ -181,6 +188,7 @@ func main() {
 	h.AddMetrics(legacy.Metrics)
 	jan := newJanitor(log, o)
 	h.AddMetrics(jan.Metrics)
+	h.AddMetrics(joinDomainMetrics.Metrics)
 
 	// Halted tables, from the manifests, BEFORE anything connects. Opening a
 	// table needs the source's catalog, and a probe that waits for the source
@@ -488,6 +496,12 @@ func runMirror(ctx context.Context, log *slog.Logger, o options, h *health.Healt
 			t.Close()
 		}
 	}()
+	// Join domains, if any are configured. Opened per run, like the tables.
+	jd, err := openJoinDomains(log, o.mirrorPath, joinDomainSpecs, joinDomainMax)
+	if err != nil {
+		return fmt.Errorf("join domains: %w", err)
+	}
+	defer jd.Close()
 	for _, qualified := range o.tables {
 		schema, name, ok := strings.Cut(qualified, ".")
 		if !ok {
@@ -504,6 +518,9 @@ func runMirror(ctx context.Context, log *slog.Logger, o options, h *health.Healt
 		t, err := mirror.New(o.mirrorPath, schema, name, key, cols, order)
 		if err != nil {
 			return err
+		}
+		if err := t.AttachJoinDomains(jd); err != nil {
+			return fmt.Errorf("%s: %w", qualified, err)
 		}
 		lakeAttach(t)
 		tables[qualified] = t

@@ -178,7 +178,7 @@ func (t *Table) classifyPartial(upserts map[rowKey]map[string]any) (map[rowKey]b
 // columns their change carried. The read path reads them once per scan rather
 // than seeking into them per row, because a patch stands on a base row and
 // random access into Parquet costs a row group either way.
-func (t *Table) patchOverlay() (map[rowKey]map[string]any, error) {
+func (t *Table) patchOverlay(withCompanions bool) (map[rowKey]map[string]any, error) {
 	if len(t.State.PartialCols) == 0 {
 		return nil, nil
 	}
@@ -192,6 +192,9 @@ func (t *Table) patchOverlay() (map[rowKey]map[string]any, error) {
 		dead, err := t.deadPositions(rel)
 		if err != nil {
 			return nil, err
+		}
+		if withCompanions {
+			cols = t.fileCols(cols)
 		}
 		rows, err := t.readParquetCols(filepath.Join(t.Dir, rel), dead, cols)
 		if err != nil {

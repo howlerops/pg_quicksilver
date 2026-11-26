@@ -239,11 +239,18 @@ func (t *Table) ReadLiveWithRetry(reset func(), fn func(map[string]any) error) e
 // verification tool that cannot run at the size it is verifying is worse than
 // none: it turns "too big to check" into "wrong".
 func (t *Table) ForEachLive(fn func(map[string]any) error) error {
+	return t.forEachLive(false, fn)
+}
+
+// forEachLive is ForEachLive. With withCompanions the rows also carry each join
+// domain's companion columns, read from the files and from patches; the public
+// walk never does. Only the tests and the companion checks ask for it.
+func (t *Table) forEachLive(withCompanions bool, fn func(map[string]any) error) error {
 	// Patches are folded in first, then merged onto the whole rows as those
 	// stream past. A patch always stands on a row in a BASE file (partial.go),
 	// so this is one pass over small files plus one pass over the table — not a
 	// seek into a delta per row, which would cost a row group every time.
-	overlay, err := t.patchOverlay()
+	overlay, err := t.patchOverlay(withCompanions)
 	if err != nil {
 		return err
 	}
@@ -273,7 +280,8 @@ func (t *Table) ForEachLive(fn func(map[string]any) error) error {
 		// readParquet's only contribution was to append them all back into one
 		// slice. qs-verify's own comment claimed both sides stream; its
 		// accumulator did, and this did not.
-		err := t.forEachRowGroup(filepath.Join(t.Dir, rel), dead, nil,
+		want, fill := t.liveCols(withCompanions)
+		err := t.forEachRowsDead(filepath.Join(t.Dir, rel), dead, want, fill,
 			func(rows []map[string]any, _ int) error {
 				for _, r := range rows {
 					if overlay != nil {

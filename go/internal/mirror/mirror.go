@@ -162,6 +162,14 @@ type Table struct {
 	// to render a file name.
 	partialCols map[fileID][]string
 
+	// joins is the join domain each member column belongs to, nil unless a
+	// JoinDomains is attached. joinDicts is the distinct dictionaries among
+	// them, synced in saveState. joinFileCache is DomainComplete's per-file
+	// column sets. See joindomain.go.
+	joins         map[string]joinBinding
+	joinDicts     []*joinDict
+	joinFileCache map[string]fileColSet
+
 	// sawLarge is whether any row of this table has ever carried a column big
 	// enough to be worth not rewriting. Until one does, elide.go costs nothing
 	// and does nothing.
@@ -657,6 +665,11 @@ func (t *Table) saveState() error {
 	if err := syncOwedDirs(t.Dir); err != nil {
 		return err
 	}
+	// A join dictionary's new ids are durable before a manifest can name a
+	// file that holds them. See joindomain.go.
+	if err := t.syncJoinDicts(); err != nil {
+		return err
+	}
 	if err := writeFileAtomic(t.statePath(), b); err != nil {
 		return err
 	}
@@ -773,6 +786,10 @@ func (t *Table) ArrowSchema() *arrow.Schema { return t.arrowSchemaFor(t.Order) }
 func (t *Table) arrowSchemaFor(cols []string) *arrow.Schema {
 	fields := make([]arrow.Field, 0, len(cols))
 	for _, name := range cols {
+		if isCompanion(name) {
+			fields = append(fields, arrow.Field{Name: name, Type: arrow.PrimitiveTypes.Int64, Nullable: true})
+			continue
+		}
 		fields = append(fields, arrow.Field{
 			Name: name, Type: arrowType(t.typeOf(name)), Nullable: !t.required(name),
 		})
@@ -1414,6 +1431,7 @@ func (t *Table) writeParquetCols(path string, rows []map[string]any,
 	if cols == nil {
 		cols = t.Order
 	}
+	cols = t.fileCols(cols)
 	// A value the column cannot hold is caught BEFORE anything is written, so
 	// the mirror halts with the file untouched rather than half a batch on
 	// disk. The check is the conversion (values.go), so its result is what the

@@ -255,6 +255,7 @@ func (t *Table) newParquetWriterFor(path string, cols []string, durable bool, ro
 	if cols == nil {
 		cols = t.Order
 	}
+	cols = t.fileCols(cols)
 	schema := t.arrowSchemaFor(cols)
 
 	// A detached table is a rewrite's private copy; BeginCompaction claimed
@@ -463,6 +464,9 @@ func (pw *parquetWriter) appendStorable(vals [][]any) error {
 // small columns. Bootstrap is per-row CPU bound (docs/25), and this is the
 // per-row work.
 func (pw *parquetWriter) AppendValues(vals []any) error {
+	if extra := len(pw.cols) - len(vals); extra > 0 {
+		vals = append(vals, make([]any, extra)...)
+	}
 	if err := pw.tbl.storableValues(pw.schema, pw.cols, vals); err != nil {
 		return err
 	}
@@ -657,11 +661,20 @@ const rowChunk = 4096
 func (t *Table) forEachRows(path string, isDead func(int) bool, cols []string, chunk int,
 	fn func(rows []map[string]any, firstPos int) error,
 ) error {
-	dead := func(p int) bool { return isDead != nil && isDead(p) }
 	want, fill := cols, false
 	if want == nil {
 		want, fill = t.Order, true
 	}
+	return t.forEachRowsWant(path, isDead, want, fill, chunk, fn)
+}
+
+// forEachRowsWant is forEachRows with the column list and the fill decision
+// given rather than derived from nil. The whole-row read of the live walk uses
+// it to add the companion columns.
+func (t *Table) forEachRowsWant(path string, isDead func(int) bool, want []string, fill bool, chunk int,
+	fn func(rows []map[string]any, firstPos int) error,
+) error {
+	dead := func(p int) bool { return isDead != nil && isDead(p) }
 
 	f, err := os.Open(path)
 	if err != nil {

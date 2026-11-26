@@ -1014,6 +1014,56 @@ snapshot.
 
 ---
 
+## Join domains (EXPERIMENTAL, off by default)
+
+> EXPERIMENTAL. Off unless `QS_JOIN_DOMAINS` is set. With it unset the sidecar
+> writes the same files, manifest and behaviour as before.
+
+A join on two `uuid` columns spends most of its time hashing 16-byte keys. A
+join domain names the columns whose values are compared for equality (a key
+and the foreign keys that reference it), and the sidecar gives each one a
+hidden companion column holding a dense integer id for the value. A join on
+the companions compares integers.
+
+```sh
+QS_JOIN_DOMAINS='cust=public.customers.id,public.orders.customer_id'
+QS_JOIN_DOMAIN_MAX_KEYS=5000000   # default; per domain
+```
+
+Each entry is `name=schema.table.column,...`, separated by `;`. Only `uuid`
+columns are accepted, and a column belongs to one domain. A bad value, or a
+member that is not `uuid`, stops the sidecar at start.
+
+What it writes:
+
+- `<mirror>/_domains/<name>/dict.log`: one 16-byte record per value, in the
+  order first seen. The id of a value is its record number, and never changes.
+  The log is synced before any manifest that names a file holding one of its ids.
+- `__qs_d_<column>` (INT64, nullable) in every new data file that carries the
+  member. It is NULL where the member is NULL. The mirror's own reads, `Live`,
+  verification and the published view never see it.
+- `<mirror>/_domains/<name>/disabled`, if the domain passes its cap. Past the
+  cap no further companions are written (they are NULL), the mirror keeps
+  running, and its tables stay incomplete. Nothing re-enables a disabled
+  domain, a restart included: the marker is durable.
+
+A table counts as complete for a domain when every file it names that carries
+the member also carries the companion. A table written before the domain was
+switched on is incomplete until its next base rewrite, which writes the
+companion, and no older delta files remain. The lake declares a companion only
+for a complete column; an incomplete one is not declared, and its files are
+read by their logical columns alone. Metrics: `quicksilver_join_domain_keys` and
+`quicksilver_join_domain_disabled`, one series per domain.
+
+Measured on this tree (single thread, best of 5, DuckDB 2.0.1, 50k customers
+and 500k orders, both tables complete): the uuid join takes 30.1 ms and the
+companion join 8.4 ms, the same 500,000 rows and the same sum. The companions
+add 1.09 MB to the orders base file (+12.6%) and about 2 KB to customers.
+
+Not verified: a crash of the whole host, as opposed to the fsync failures the
+tests inject; joins from engines other than DuckDB; domains across more than
+two tables in production volume.
+
 ## Running the cluster test
 
 - **GitHub Actions**: the `cluster-e2e` workflow, by hand. `images: source`
