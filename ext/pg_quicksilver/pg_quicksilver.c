@@ -128,7 +128,28 @@ static int	qs_fresh_wait_ms = 0;
 static char *qs_min_applied_lsn_str = NULL;
 static XLogRecPtr qs_min_applied_lsn = InvalidXLogRecPtr;
 static bool qs_allow_unsafe = false;
-static bool qs_route_in_xact = true;
+/*
+ * quicksilver.route_in_transaction: off never routes inside a transaction
+ * block. safe (the default) and on route there when the statement's state
+ * allows it, which is one test: READ COMMITTED, no transaction id yet (nothing
+ * written), no subtransaction open (qs_state_blocks). on keeps its name and
+ * its meaning; it is not superuser-only.
+ */
+typedef enum
+{
+	QS_XACT_OFF,
+	QS_XACT_SAFE,
+	QS_XACT_ON,
+} QsRouteInXact;
+
+static const struct config_enum_entry qs_route_in_xact_options[] = {
+	{"off", QS_XACT_OFF, false},
+	{"safe", QS_XACT_SAFE, false},
+	{"on", QS_XACT_ON, false},
+	{NULL, 0, false}
+};
+
+static int	qs_route_in_xact = QS_XACT_SAFE;
 static int	qs_wait_max_ms = 500;
 static double qs_wait_fraction = 0.1;
 static double qs_ms_per_cost_unit = 0.005;
@@ -2867,7 +2888,9 @@ qs_state_blocks(const char **detail)
 	/*
 	 * A transaction that has an xid has written, or is about to: the mirror
 	 * is built from committed changes and cannot show it its own. Whatever
-	 * quicksilver.route_in_transaction says.
+	 * quicksilver.route_in_transaction says. The three conditions of `safe`
+	 * (READ COMMITTED, no xid, no subtransaction) are the checks above and
+	 * apply to every setting but off.
 	 */
 	if (TransactionIdIsValid(GetTopTransactionIdIfAny()))
 	{
@@ -2876,7 +2899,7 @@ qs_state_blocks(const char **detail)
 	}
 	if (qs_in_block())
 	{
-		if (!qs_route_in_xact)
+		if (qs_route_in_xact == QS_XACT_OFF)
 		{
 			*detail = "quicksilver.route_in_transaction is off";
 			return QR_XACT_BLOCK;
@@ -5093,11 +5116,12 @@ _PG_init(void)
 							 "With quicksilver.route = mirror, route statements the allowlist does not cover.",
 							 "For generating and testing the allowlist only: answers may differ from the heap's.",
 							 &qs_allow_unsafe, false, PGC_SUSET, 0, NULL, NULL, NULL);
-	DefineCustomBoolVariable("quicksilver.route_in_transaction",
+	DefineCustomEnumVariable("quicksilver.route_in_transaction",
 							 "Route inside a transaction block where that is safe.",
-							 "READ COMMITTED, no savepoint open, nothing written yet. The mirror's answer is taken whole when the statement starts "
-							 "and DuckDB's transaction is ended with it, so a later SAVEPOINT, write or EXPLAIN finds pg_duckdb idle.",
-							 &qs_route_in_xact, true, PGC_USERSET, 0, NULL, NULL, NULL);
+							 "off: never inside a transaction block. safe (default): inside one that is READ COMMITTED, has no transaction id "
+							 "(nothing written) and no savepoint open. on: the same test. The mirror's answer is taken whole when the statement "
+							 "starts and DuckDB's transaction is ended with it, so a later SAVEPOINT, write or EXPLAIN finds pg_duckdb idle.",
+							 &qs_route_in_xact, QS_XACT_SAFE, qs_route_in_xact_options, PGC_USERSET, 0, NULL, NULL, NULL);
 	DefineCustomBoolVariable("quicksilver.prefer_custom_plans",
 							 "Keep the plan cache planning routable prepared statements with their parameter values.", NULL,
 							 &qs_prefer_custom, true, PGC_USERSET, 0, NULL, NULL, NULL);

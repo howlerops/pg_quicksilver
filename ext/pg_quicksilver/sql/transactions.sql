@@ -135,6 +135,9 @@ SELECT b, count(*) FROM qt.h GROUP BY b;
 
 
 -- ---------------------------------------------------------------- what may follow a routed read in the same block
+-- the default, from here on (the RESET above): safe, so every block below that has
+-- not opted out is routed where its state allows it
+SHOW quicksilver.route_in_transaction;
 \set VERBOSITY terse
 CREATE TABLE qt.w (i int);
 \set r 'SELECT b, count(*) FROM qt.h GROUP BY b;'
