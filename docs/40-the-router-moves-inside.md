@@ -458,6 +458,47 @@ asked.
 - The registry, the allowlist, `register_mirror`, `report_applied_lsn` and
   `quicksilver.allow_unsafe` are refused to an ordinary role.
 
+**Roles that are not superusers are never routed.** This is the one part of
+the requirement that stock pg_duckdb 1.2.0 does not allow, measured on this
+cluster (`sql/unprivileged.sql`, which proves the heap answer for each case):
+
+- A role with `SELECT` on the heap table and no membership of
+  `duckdb.postgres_role`: pg_duckdb refuses DuckDB to it (`DuckDB execution is
+  not allowed because you have not been granted the duckdb.postgres_role`).
+  Running the mirror as the bootstrap superuser inside the router does not
+  help: the same refusal came back from pg_duckdb's planning call.
+- A member of `duckdb.postgres_role`: its DuckDB has no local file system
+  (`File system LocalFileSystem has been disabled by configuration`), with
+  `duckdb.enable_external_access = off` and `duckdb.allowed_directories` set to
+  the lake's directory. So it cannot read the lake either.
+- Granting `pg_read_server_files` and `pg_write_server_files` would give it the
+  file system back, and with it `COPY` from and to any file the server can
+  reach. That is not a setting an operator should take.
+
+The router therefore answers every role that is not a superuser from the heap
+(reason: "the role is not a superuser"), with the heap's rows, the heap's
+error and the heap's plan, and it never asks the mirror for them. A row that
+the mirror would have added, or hid, is never seen by such a role
+(`sql/permissions.sql` fabricates one to show it).
+
+What an operator would have to set, and what would still be missing:
+
+```
+shared_preload_libraries = 'pg_duckdb,pg_quicksilver'
+duckdb.enable_external_access = off           # as validate/real/setup.sh sets it
+duckdb.allowed_directories = '<the lake directory>'
+duckdb.postgres_role = '<a role no application role is a member of>'
+```
+
+These are the settings of the confined configuration `setup.sh` runs. They
+keep the lake out of everybody else's reach, but on stock 1.2.0 they do not
+give a non-superuser the lake: the missing piece is a pg_duckdb build whose
+unprivileged DuckDB keeps the local file system and is confined to
+`duckdb.allowed_directories`. `bench/patches/pg_duckdb-allowed-directories.patch`
+does that for pg_duckdb 1.1.1 (its README has the reasons); it has not been
+ported to 1.2.0 or built here. Until a build does it, non-superusers stay on
+the heap, and the extension needs no further change for them.
+
 ## What is still not routed, and why
 
 - **Most SQL.** Division, `avg`, float and double, `varchar(n)`, `char`,
