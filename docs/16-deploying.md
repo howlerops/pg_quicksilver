@@ -468,9 +468,9 @@ What the target does, and what is pinned (the `ARG`s at the top of the file):
 | | pinned to | |
 |---|---|---|
 | base | `ghcr.io/cloudnative-pg/postgresql:17.12-standard-bookworm` | by PostgreSQL **minor**: the extension is compiled against that minor's headers, installed at exactly the server's package version (PGDG, falling back to its archive suite) |
-| pg_duckdb | 1.2.0, one `.deb` by URL and SHA-256 | pg_duckdb publishes container images, not packages, and PGDG does not carry it; this is the Debian 12 build from the apt repository the validation hosts use. Fetched as one checksummed file rather than by adding the repository |
+| pg_duckdb | 1.2.0, one `.deb` by URL and SHA-256 | pg_duckdb publishes container images, not packages, and PGDG does not carry it. The image takes the Debian 12 (bookworm) build; the `extension` job in CI takes the Ubuntu 24.04 (noble) build of the same version, with its own URL and checksum. Each is fetched as one checksummed file rather than by adding the repository. Neither URL was reachable from the development host (HTTP 404), so the checksums are unverified until CI runs |
 | `pg_quicksilver` | this checkout | PGXS in a build stage (`with_llvm=no`), three files copied out |
-| DuckDB's `ducklake` and `sqlite` | whatever DuckDB 2.0.0's repository serves on the day of the build | installed by pg_duckdb's own DuckDB into `/usr/lib/quicksilver/duckdb-extensions`, then made root-owned. DuckDB decides the `v2.0.0/linux_amd64/` layout, so this stays right when the package moves |
+| DuckDB's `ducklake` and `sqlite` | whatever DuckDB 2.0.0's repository serves on the day of the build | installed by pg_duckdb's own DuckDB into `/usr/lib/quicksilver/duckdb-extensions`. DuckDB writes them 0600, so `install` makes them readable by everyone, and the directory is then copied root-owned. DuckDB decides the `v2.0.0/linux_amd64/` layout, so this stays right when the package moves |
 
 Nothing about CloudNativePG's contract changes: same base, UID 26, same `PATH`,
 no `ENTRYPOINT`, and nothing added outside `/usr`.
@@ -490,13 +490,7 @@ on a machine with the server headers, the three files above in `pg_config
 --pkglibdir` and `--sharedir`'s `extension/`, and `deploy/duckdb-extensions.sh
 install <dir>` as the `postgres` user.
 
-*Checked here, without Docker:* every command of the build stages was run on
-the development host (Go binaries with cgo off; the extension with PGXS and
-`DESTDIR`, producing the layout the `COPY`s expect), and the script's `install`
-then `verify` under `unshare -n` with a root-owned directory, with the control
-that `install` **fails** under `unshare -n`. `hadolint` passes. *Not checked
-until CI builds it:* the image itself, on Debian 12 with the Debian build of the
-package.
+*Checked on the development host, without Docker* (Ubuntu 24.04, PostgreSQL 17.12, pg_duckdb 1.2.0): the Go commands of the build stage, as written, with `CGO_ENABLED=0`; the extension with PGXS and `DESTDIR` into a scratch directory, giving the layout the `COPY`s expect; `deploy/duckdb-extensions.sh install` as the `postgres` user, then `verify` under `unshare -n`, as `postgres`, against a root-owned directory, and the control that `install` **fails** under `unshare -n`. That check found a real defect: DuckDB's files were 0600, so the server could not open them after the copy to root. `install` now makes them readable (commit `48cc589`). `hadolint` passes. *Not checked until CI builds it:* the image itself, the `RUN --network=none` stages under BuildKit, the pinned CloudNativePG base (`17.12-standard-bookworm`, which needs the registry), and the pinned pg_duckdb packages.
 
 **The Cluster.**
 
@@ -863,6 +857,28 @@ snapshot.
 
 ---
 
+## Running the cluster test
+
+- **GitHub Actions**: the `cluster-e2e` workflow, by hand. `images: source`
+  builds this checkout and side-loads it into kind; `images: published`, the
+  default, and what a release triggers, pulls `version` from ghcr with the
+  workflow's own token.
+- **A host with Docker and kind**: `bash bench/docker/cluster_kind.sh`, about
+  45 minutes; `KEEP=1` leaves the cluster up. It checks for Docker, cgroups and
+  `CAP_SYS_RESOURCE` first, and exits INCOMPLETE rather than failing halfway.
+- **Any cluster**: `KUBECONFIG=… VERSION=<a published version> GHCR_USER=… GHCR_TOKEN=… bash
+  bench/scripts/cluster_e2e.sh` pulls a published version. With images already
+  on the nodes, `LOCAL_IMAGES=1 ROLL_IMAGE=<a second tag>` says so in the output.
+  `SCOPE=legacy` is for 0.0.3 and earlier; the default follows the version.
+- **No cluster**: `sudo bash bench/scripts/cluster_e2e_selftest.sh` runs the
+  slot, verify, routing, halt and REBUILD sections against a primary, a standby
+  and the sidecar on this host. It needs PostgreSQL 17 with pg_duckdb and
+  pg_quicksilver installed. Set `DUCKDB_EXT_DIR` to also check that DuckDB's
+  extensions are carried rather than fetched.
+
+A failed run leaves its logs in `$ARTIFACTS` (default `/tmp/qs-cluster-e2e`),
+and the workflow uploads them.
+
 ## What has not been verified
 
 Stated plainly, because a deployment guide that implies more than was tested is
@@ -975,12 +991,14 @@ other direction.
   on a three-instance Cluster built from the operand image (per-Pod slots,
   `qs-verify` MATCH in both replica Pods, an aggregate through `-ro` routed and
   equal to the primary's, a key lookup on the heap, a halt and its `REBUILD`, a
-  switchover, a scale-down), and
+  switchover, a scale-down, the roll and the takeover gate), and
   [`cluster-e2e`](../.github/workflows/cluster-e2e.yml) now runs it on pull
   requests. It was written where no Pod can start. What stands in for a run:
   [`cluster_e2e_selftest.sh`](../bench/scripts/cluster_e2e_selftest.sh) runs
   the slot, verify, routing, halt and REBUILD sections of that same script
-  against a real primary, standby and sidecar, and passes; the Kubernetes half
+  against a real primary, standby and sidecar, and passes (run by hand on the
+  development host, with `DUCKDB_EXT_DIR` set; `make installcheck` passes 10 of
+  10 against the same cluster); the Kubernetes half
   (admission, Pods, Services, the second replica, switchover, scale-down) has
   been linted and read, not run. Treat the first cluster-e2e run of this as
   the first run.

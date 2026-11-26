@@ -384,8 +384,12 @@ Two workflows on a pull request, and what each job is evidence of.
 
 | Job | Proves |
 |---|---|
-| `test` | every Go package builds, vets and passes, with explicit timeouts; the DuckLake publisher against DuckDB 2.0.1 (four named tests must PASS, not skip); `cmd/qs-mirror` under `-race`; every feature flag off |
-| `race (0..2/3)` | `internal/mirror` under `-race`, split across three jobs by [`go_test_shard.sh`](bench/scripts/go_test_shard.sh), which takes the test list from the package at run time and fails if the shards do not partition it |
+| `test` | every Go package builds, vets and passes with `-short`, with explicit timeouts |
+| `ducklake` | the DuckLake publisher against DuckDB 2.0.1: four named tests must PASS, not skip |
+| `full` | every Go test without `-short`, the heavy ones included (`-timeout 60m`) |
+| `flags-off` | `internal/mirror` with every escape-hatch flag set. **Red on this tree**, see below |
+| `race` | the `-short` tests of `internal/...` and `cmd/...` under `-race` |
+| `race-mirror (0..2/3)` | the full `internal/mirror` suite under `-race`, split across three jobs by [`go_test_shard.sh`](bench/scripts/go_test_shard.sh), which takes the test list from the package at run time and fails if the shards do not partition it |
 | `cnpgi` | the CNPG-I handshake and Pod facts against the operator's own code |
 | `manifests` | `helm lint`; kubeconform; both examples against CloudNativePG's CRD; the chart's rendering; that the chart, the examples, the Dockerfile and the cluster test agree on the operand image, its extension directory and the preload order |
 | `lint` | `actionlint` on the workflows, `hadolint` on the Dockerfile, `shellcheck` on the scripts CI runs and any a pull request changes |
@@ -402,16 +406,18 @@ weekly, and on demand. Its eleven sections are listed at the top of
 **What was run here, and what was not.** This was written in a sandbox with no
 Docker daemon and no Kubernetes.
 
-*Run, and passing:* `actionlint`, `hadolint`, `shellcheck`, `helm lint`,
-`validate_manifests.sh` (and that it fails on four seeded mistakes);
-`go build`, `go vet`, `go test ./...`, the DuckLake conformance tests, the
-whole `-race` suite and one of its three shards through the shard script;
-`go/fidelity`; every command of the Dockerfile's Go and extension build stages;
-`deploy/duckdb-extensions.sh install` then `verify` under `unshare -n` with a
-root-owned directory, and its control; `make installcheck` (10 of 10);
-`bench/exactness --selfcheck`; `cluster_e2e_selftest.sh`, plus controls showing
-its assertions fail on an orphaned slot, a diverged mirror and an unrouted read;
-`release.yml`'s version guard, replayed.
+*Run, and passing:* `actionlint`, `hadolint`, `shellcheck` (warning level, as
+`lint` runs it), `helm lint`, `helm template`, `validate_manifests.sh`;
+`go build`, `go vet`, `go test -short ./...` (every package `ok`, including the
+DuckLake tests against DuckDB 2.0.1); `go/fidelity`; the Dockerfile's Go build
+commands and its extension build stage, run as written outside Docker
+(`CGO_ENABLED=0`, PGXS with `DESTDIR` into a scratch directory); the extension's
+DuckDB install and offline verify, run as the `postgres` user with `unshare -n`,
+and its control; `make installcheck` (10 of 10) against the
+`validate/real` cluster; `cluster_e2e_selftest.sh` (PASS, with
+`DUCKDB_EXT_DIR`).
+The verify run found a real defect (DuckDB's 0600 files were unreadable after
+the copy to root), fixed in `deploy/duckdb-extensions.sh`.
 
 *Not run, and so unverified until CI does:*
 
@@ -426,19 +432,25 @@ its assertions fail on an orphaned slot, a diverged mirror and an unrouted read;
 - the workflows as workflows: triggers, path filters, the concurrency
   expression, artifact upload, the `images` job's cache scopes, and every
   step's behaviour on a GitHub-hosted runner (`sudo unshare -n`, system `pip`);
-- `release.yml`'s new image push.
+- `release.yml`'s new image push, and the pinned pg_duckdb packages: their URLs
+  returned HTTP 404 from the development host, so neither the Debian 12 nor the
+  Ubuntu 24.04 checksum has been checked against its file.
+- the `full` job, and `go test -race -short` on every package (the race run was
+  started but its result is not recorded here); `ducklake`'s exact CI step was
+  run as the `-short` suite, not as the job.
 
 *Known before the first run:*
 
-- `ci`'s **"every feature flag off"** step fails on this tree, for a reason
-  that is not this change's: four tests in `go/internal/mirror`
-  (`TestEveryTypeIsStoredAsDeclared`, `TestOldFilesAndNewCoexist`,
-  `TestNegativeInfinityIsStoredAsTheEngineReadsIt` and
-  `TestClusteredRewriteKeepsRanges/tie-goes-to-time`) assert native temporal
-  types and do not skip under `QS_TEMPORAL_TYPES=0`, as their neighbours do
-  for their own flags. The step skips those four by name and says so in an
-  annotation; the fix is a `t.Skip` in each, and then the list in `ci.yml`
-  goes.
+- `ci`'s **`flags-off`** job fails on this tree, and the cause is in
+  `go/internal/mirror`, not in CI. Four tests there assert native temporal types
+  and do not skip under `QS_TEMPORAL_TYPES=0`, as their neighbours do for their
+  own flags: `TestEveryTypeIsStoredAsDeclared`,
+  `TestOldFilesAndNewCoexist`, `TestNegativeInfinityIsStoredAsTheEngineReadsIt`
+  and `TestClusteredRewriteKeepsRanges`. Run here with the flags set, the first
+  three report `is stored as VARCHAR, expected DATE` and the fourth reports a
+  clustering mismatch. The fix is in those tests (a `t.Skip` on the flag, or the
+  feature honouring it), not in the workflow. The workflow does **not** skip them:
+  an earlier version of this note said it did, and that was never implemented.
 - **There is no slot janitor in this build.** Sections 8 and 9 assert slot
   state and mark the janitor check NOT RUN. The script detects a janitor by
   the plugin reporting a parameter with "janitor" in its name

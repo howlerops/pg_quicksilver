@@ -111,7 +111,10 @@ else. [`examples/cluster-routed.yaml`](examples/cluster-routed.yaml) also publis
 mirror as a DuckLake and routes reads to it from inside PostgreSQL, which needs the
 operand image (`pg_quicksilver-postgres:17-<version>`, first published with `0.0.4`).
 
-To run the verification yourself, in Docker: **[HANDOFF.md](HANDOFF.md)**.
+To run the verification yourself, in Docker: **[HANDOFF.md](HANDOFF.md)**. The
+cluster test runs three instances on a kind cluster, from the `cluster-e2e` workflow or
+`bash bench/docker/cluster_kind.sh`; [docs/16](docs/16-deploying.md#running-the-cluster-test)
+says how to run it against any cluster.
 
 ---
 
@@ -120,7 +123,7 @@ To run the verification yourself, in Docker: **[HANDOFF.md](HANDOFF.md)**.
 - **[METRICS.md](METRICS.md)** — every measurement, the script that produced it, its raw
   output under [`bench/results/`](bench/results/), and a section on what the numbers do
   **not** say.
-- **[docs/](docs/README.md)** — 37 documents. The 20s and 30s are mostly post-mortems:
+- **[docs/](docs/README.md)** — 40 documents. The 20s and 30s are mostly post-mortems:
   something measured that turned out to be wrong, and what it cost to find out.
 - Charts are **generated from the measurement files**, never drawn
   ([`plot_projection.py`](bench/scripts/plot_projection.py)). No figure here is typed by hand.
