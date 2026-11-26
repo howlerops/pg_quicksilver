@@ -1138,7 +1138,8 @@ directory holding a parquet file, and `duckdb.enable_external_access = off`:
 
 The last row is the stock gate (`AllowRawFileAccess`, both roles together), and
 it is the escalation the patch exists to avoid. So on 1.2.2 the setting does
-not give an unprivileged role read access to the mirror alone, and the serving
-job keeps the patched v1.1.1 build for now. The first property the script asserts
-does not hold on 1.2.2 as configured. The script's denial cases were not
-run on 1.2.2, because the mirror read failed first.
+not give an unprivileged role read access to the mirror alone. That is the stock
+package. With `bench/patches/pg_duckdb-1.2.2-allowed-directories.patch` on 1.2.2,
+both properties hold: the mirror reads through PostgreSQL for an ordinary role,
+and its denial cases are refused (`bench/results/pg_duckdb_1.2.2_confinement.txt`,
+`bench/scripts/serving_pg17.sh`). The serving job builds that patched 1.2.2.

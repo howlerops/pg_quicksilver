@@ -788,6 +788,36 @@ jobs:
             || { echo "::error::the built pg_duckdb has no confinement patch - the patch did not take"; exit 1; }
           echo "$lib/pg_duckdb.so carries the confinement patch"
 
+      # The denial list on a throwaway cluster with the settings a routed
+      # deployment has: pg_duckdb preloaded, duckdb.postgres_role, and the lake
+      # as duckdb.allowed_directories. The script creates the ordinary role and
+      # the files, and expects those settings; it does not set them.
+      - name: confinement check for an ordinary role
+        run: |
+          set -euo pipefail
+          bin=/usr/lib/postgresql/17/bin
+          work=/tmp/pgd-confine
+          port=5690
+          sudo -H python3 -m pip install --quiet --break-system-packages duckdb==2.0.1
+          rm -rf "$work"
+          mkdir -p "$work/lake" "$work/outside"
+          sudo install -d -o postgres -g postgres -m 700 "$work/data"
+          sudo -u postgres "$bin/initdb" -D "$work/data" -U postgres -A trust -E UTF8 >/dev/null
+          sudo -u postgres tee -a "$work/data/postgresql.conf" >/dev/null <<CONF
+          port = $port
+          listen_addresses = '127.0.0.1'
+          unix_socket_directories = '$work'
+          shared_preload_libraries = 'pg_duckdb'
+          duckdb.postgres_role = 'duckdb_users'
+          duckdb.allowed_directories = '$work/lake/'
+          CONF
+          sudo -u postgres "$bin/pg_ctl" -D "$work/data" -l "$work/server.log" -w -t 60 start
+          trap 'sudo -u postgres "$bin/pg_ctl" -D "$work/data" -m fast -w stop || true' EXIT
+          sudo -u postgres "$bin/psql" -h 127.0.0.1 -p "$port" -U postgres -X -q -v ON_ERROR_STOP=1 \
+            -c "CREATE EXTENSION pg_duckdb"
+          LAKE_DIR="$work/lake" OUTSIDE_DIR="$work/outside" \
+            bash bench/scripts/pg_duckdb_confinement_check.sh "$bin" "$port"
+
       - name: serving
         run: |
           rc=0

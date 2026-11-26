@@ -232,6 +232,12 @@ RUN set -eux; \
     mkdir -p "/out$($pg --pkglibdir)" "/out$($pg --sharedir)/extension"; \
     make -j"$(nproc)" PG_CONFIG="$pg"; \
     make install DESTDIR=/out PG_CONFIG="$pg"
+# The same check as the serving job in ci.yml: the patch's own message, because
+# stock 1.2.2 also has duckdb.allowed_directories. A build without the patch
+# fails here, not later in a query.
+RUN set -eux; \
+    lib="/out$(/usr/lib/postgresql/${PG_MAJOR}/bin/pg_config --pkglibdir)"; \
+    grep -qa "writes to local files are disabled by configuration" "${lib}/pg_duckdb.so"
 USER 26
 
 FROM ${CNPG_BASE} AS pg-duckdb-source
