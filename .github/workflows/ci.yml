@@ -11,9 +11,12 @@
 # standby. They are separate jobs so that a missing PGDG package cannot be
 # mistaken for a broken mirror.
 #
-#   test         build, vet, every Go package's tests, the DuckLake
-#                conformance tests against a real DuckDB
-#   race         go/internal/mirror under the race detector, in three shards
+#   test         build, vet, every Go package's tests with -short
+#   ducklake     the DuckLake conformance tests against a real DuckDB
+#   full         every Go test, the heavy ones included, without -short
+#   flags-off    internal/mirror with each escape-hatch flag set
+#   race         -short tests of internal/... and cmd/... under the race detector
+#   race-mirror  the full internal/mirror suite under the race detector, in three shards
 #   cnpgi        the CNPG-I handshake against the operator's own code
 #   manifests    the chart and both example Clusters
 #   lint         the workflows, the Dockerfile and the scripts themselves
@@ -88,7 +91,10 @@ jobs:
       - name: vet
         run: go -C go vet ./...
 
-      # Every package but internal/ducklake, which has the next step to itself.
+      # -short skips the heavy tests (the cost measurements, the model-based
+      # interleavings, the kidx model). They are not dropped: the `full` job
+      # below runs every test without -short, and `race-mirror` runs the mirror's
+      # tests under the race detector.
       #
       # -timeout is explicit everywhere in this file. go test's default is ten
       # minutes PER PACKAGE, and internal/mirror is close enough to it that a
@@ -100,15 +106,35 @@ jobs:
       - name: test
         env:
           QS_DUCKDB_PYTHON: python3
-        run: |
-          # shellcheck disable=SC2046  # one argument per package is the point
-          go -C go test $(go -C go list ./... | grep -v '/internal/ducklake$') -count=1 -timeout 20m
+        run: go -C go test -short -count=1 -timeout 20m ./...
 
-      # The DuckLake publisher against DuckDB itself: 1,500 random steps with a
-      # read-back after each, the upgrade paths, three concurrent readers. The
-      # check after the run is the one that matters: these four are the tests
-      # that skip when the reader cannot start (no python, no duckdb module, no
-      # route to DuckDB's extension repository), and "ok" is printed either way.
+  # ---- 1a. the DuckLake tests, against DuckDB ---------------------------------
+  # The DuckLake publisher against DuckDB itself: 1,500 random steps with a
+  # read-back after each, the upgrade paths, three concurrent readers. The
+  # check after the run is the one that matters: these four are the tests
+  # that skip when the reader cannot start (no python, no duckdb module, no
+  # route to DuckDB's extension repository), and "ok" is printed either way.
+  ducklake:
+    name: DuckLake conformance against DuckDB
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go/go.mod
+          cache-dependency-path: go/go.sum
+
+      # Pinned: 2.0.1 is the DuckDB the catalog format (1.1) was verified
+      # against, and a newer DuckDB may want a newer catalog. Installed for
+      # every user because other jobs run their python under sudo, and
+      # --break-system-packages because the runner's python is the
+      # distribution's.
+      - name: python with duckdb
+        run: |
+          sudo -H python3 -m pip install --quiet --break-system-packages duckdb==2.0.1
+          python3 -c "import duckdb; print('duckdb', duckdb.__version__)"
+
       - name: DuckLake conformance against DuckDB
         run: |
           set -o pipefail
@@ -120,27 +146,71 @@ jobs:
               || { echo "::error::$t did not PASS (skipped, or absent): the lake was not compared with DuckDB"; exit 1; }
           done
 
-      # The sidecar's own package under the race detector; internal/mirror's
-      # race run is the `race` job below, in shards.
-      - name: race, cmd/qs-mirror
-        run: go -C go test ./cmd/qs-mirror -race -count=1 -timeout 10m
+  # ---- 1b. every test, heavy ones included --------------------------------------
+  # The unit job runs -short. This one runs everything else: the cost
+  # measurements, the model-based interleavings and the kidx model of
+  # internal/mirror, which -short skips. Without this job those tests would
+  # run only when somebody ran them by hand.
+  full:
+    name: full suite, without -short
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go/go.mod
+          cache-dependency-path: go/go.sum
+      - name: python with duckdb
+        run: |
+          sudo -H python3 -m pip install --quiet --break-system-packages duckdb==2.0.1
+          python3 -c "import duckdb; print('duckdb', duckdb.__version__)"
+      - name: test, every package, no -short
+        env:
+          QS_DUCKDB_PYTHON: python3
+        run: go -C go test ./... -count=1 -timeout 60m
 
-      # The escape hatches have to keep working or they are not escape hatches.
-      # Each of these flags is the documented recovery from a halt or a
-      # regression, and a recovery path that only runs when someone remembers is
-      # not a recovery path.
-      - name: every feature flag off
+  # ---- 1c. the escape hatches ----------------------------------------------------
+  # The escape hatches have to keep working or they are not escape hatches.
+  # Each of these flags is the documented recovery from a halt or a
+  # regression, and a recovery path that only runs when someone remembers is
+  # not a recovery path.
+  flags-off:
+    name: every feature flag off
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go/go.mod
+          cache-dependency-path: go/go.sum
+      - name: test internal/mirror with every flag off
         run: |
           env QS_TEMPORAL_TYPES=0 QS_PARTIAL_DELTAS=0 QS_ELIDE_UNCHANGED=0 \
               QS_SNAPPY_DELTAS=1 QS_MAX_TICK_CHANGES=0 QS_MAX_MERGE_FILES=0 \
               go -C go test ./internal/mirror -count=1 -timeout 20m
 
-  # ---- 1b. the race detector, in shards ---------------------------------------
+  # ---- 1d. the race detector ---------------------------------------------------
   # The race detector earns its runtime here specifically: the apply goroutine
   # and the background compactor share a manifest, and the bugs that come from
   # getting that wrong do not fail a test, they produce a mirror that answers
-  # with a superseded value.
-  #
+  # with a superseded value. -short keeps this job to the fast tests; the full
+  # mirror suite under -race is race-mirror below.
+  race:
+    name: race (short)
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go/go.mod
+          cache-dependency-path: go/go.sum
+      - name: race
+        run: go -C go test -short -race -count=1 -timeout 30m ./internal/... ./cmd/...
+
+  # ---- 1e. the full mirror suite under the race detector, in shards ------------
   # It also costs: go/internal/mirror under -race measured 610 s on two cores,
   # past go test's default ten-minute timeout, which is how it "timed out once
   # under load". Four tests are over half of that (TestCompactionCost 118 s,
@@ -153,8 +223,8 @@ jobs:
   # checks that before running anything, and fails a shard that ran fewer tests
   # than it was given. A test added tomorrow is in a shard tomorrow.
   # bench/scripts/race_test_weights.txt only balances them.
-  race:
-    name: race (${{ matrix.shard }}/3)
+  race-mirror:
+    name: race, full mirror (${{ matrix.shard }}/3)
     runs-on: ubuntu-latest
     timeout-minutes: 30
     strategy:
