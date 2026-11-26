@@ -487,3 +487,50 @@ func TestNotNullColumnAddedLater(t *testing.T) {
 		t.Fatalf("price: %v required %v", pt, req)
 	}
 }
+
+// A patch that does not carry a NOT NULL column is not a NULL for it: the
+// patch is written without the column, the row keeps the value it has, and
+// the same patch with the column set to NULL is refused.
+func TestPatchWithoutANotNullColumn(t *testing.T) {
+	dir := t.TempDir()
+	tbl, err := New(dir, "public", "o", "id", ordersCols, ordersOrder)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { tbl.Close() }()
+	ins := func(r map[string]any) changestream.Change {
+		return changestream.Change{Op: changestream.OpInsert, Schema: "public", Table: "o", Row: r, Key: r}
+	}
+	upd := func(r map[string]any) changestream.Change {
+		return changestream.Change{Op: changestream.OpUpdate, Schema: "public", Table: "o", Row: r, Key: r}
+	}
+	tbl.SetNotNull(ordersNotNull...)
+	tapply(t, tbl, 1, ins(orderRow(1, 0)), ins(orderRow(2, 0)))
+	before := liveText(t, tbl)
+
+	// status (NOT NULL) and doc (nullable) absent from the patch.
+	r := orderRow(1, 1)
+	delete(r, "status")
+	delete(r, "doc")
+	tapply(t, tbl, 2, upd(r))
+	f := dataFiles(tbl)[len(dataFiles(tbl))-1]
+	if cols := tbl.partialColsOf(f); cols == nil || containsStr(cols, "status") {
+		t.Fatalf("the last file is not a patch without status: %v", cols)
+	}
+	after := liveText(t, tbl)
+	if after["1"]["amount"] == before["1"]["amount"] {
+		t.Fatal("the patch did not change amount")
+	}
+	if after["1"]["status"] != before["1"]["status"] || after["1"]["doc"] != before["1"]["doc"] {
+		t.Fatalf("a patch without status and doc changed them: status %q -> %q, doc %q -> %q",
+			before["1"]["status"], after["1"]["status"], before["1"]["doc"], after["1"]["doc"])
+	}
+
+	// The same patch with status NULL is a NULL in a NOT NULL column.
+	bad := orderRow(2, 2)
+	bad["status"] = nil
+	if _, err := tbl.Apply([]changestream.Transaction{{CommitLSN: "0/3", NextLSN: "0/3",
+		Changes: []changestream.Change{upd(bad)}}}); !IsNotNullViolation(err) {
+		t.Fatalf("a patch that sets status NULL: err = %v", err)
+	}
+}

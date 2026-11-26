@@ -113,7 +113,9 @@ func matrixColumns() []matrixCol {
 		{"c_numeric", "numeric", []string{"NaN", "Infinity", "1e-12", "0.1234567890123", "12345678901234567890123456789012345678901234"},
 			func(r *rand.Rand) string { return randNumeric(r, 20, r.Intn(8)) }},
 		{"c_date", "date", []string{"0001-01-01", "9999-12-31", "infinity", "-infinity", "1970-01-01", "1969-12-31"},
-			func(r *rand.Rand) string { return fmt.Sprintf("%04d-%02d-%02d", 1+r.Intn(9999), 1+r.Intn(12), 1+r.Intn(28)) }},
+			func(r *rand.Rand) string {
+				return fmt.Sprintf("%04d-%02d-%02d", 1+r.Intn(9999), 1+r.Intn(12), 1+r.Intn(28))
+			}},
 		{"c_time", "time without time zone", []string{"00:00:00", "23:59:59.999999", "12:00:00"},
 			func(r *rand.Rand) string {
 				return fmt.Sprintf("%02d:%02d:%02d.%06d", r.Intn(24), r.Intn(60), r.Intn(60), r.Intn(1000000))
