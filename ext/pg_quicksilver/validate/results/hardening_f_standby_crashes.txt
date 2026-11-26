@@ -1,0 +1,9 @@
+2026-11-26 22:51:06.128 UTC [18071] LOG:  server process (PID 28874) was terminated by signal 11: Segmentation fault
+2026-11-26 22:51:06.128 UTC [18071] DETAIL:  Failed process was running: 
+	SELECT quicksilver.report_applied_lsn(c.oid, v.lsn)
+	  FROM unnest($1::text[], $2::text[], $3::pg_lsn[]) AS v(s, t, lsn)
+--
+2026-11-26 22:52:45.418 UTC [5787] LOG:  server process (PID 6532) was terminated by signal 11: Segmentation fault
+2026-11-26 22:52:45.418 UTC [5787] DETAIL:  Failed process was running: SELECT side || '|' || reason FROM quicksilver.last_decision();
+2026-11-26 22:52:45.418 UTC [5787] LOG:  terminating any other active server processes
+2026-11-26 22:52:45.423 UTC [5787] LOG:  all server processes terminated; reinitializing

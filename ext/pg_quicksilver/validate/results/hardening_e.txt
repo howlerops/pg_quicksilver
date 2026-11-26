@@ -1,0 +1,347 @@
+-- Experiment e: kept plan versus new data. ONE session, as app, on the STANDBY (run.sh 5861 app e.sql).
+-- Each round: e_round.sh (run by a psql backslash-bang command) inserts 1,000 rows on the primary and waits until
+-- the standby has replayed that commit and the orders mirror has an applied LSN at or past it. Then EXECUTE q (the
+-- kept plan) is compared with the heap count of the same statement in this session. 20 rounds.
+\set VERBOSITY terse
+PREPARE q AS SELECT count(*) FROM public.orders;
+PREPARE
+\echo == round 1
+== round 1
+\! /home/user/pg_quicksilver/.claude/worktrees/agent-aad78140159c1c478/ext/pg_quicksilver/validate/real/hardening/e_round.sh
+e_round: committed at 0/F7EDB90; mirror and standby replay at or past it: t
+EXECUTE q \gset m_
+SELECT side || ' / ' || reason AS d FROM quicksilver.last_decision() \gset
+SET quicksilver.route = heap;
+SET
+SELECT count(*) AS h FROM public.orders \gset
+RESET quicksilver.route;
+RESET
+SELECT :m_count::bigint AS kept_plan_count, :h::bigint AS heap_count, :m_count::bigint = :h::bigint AS equal, :'d' AS decision_for_execute;
+ kept_plan_count | heap_count | equal | decision_for_execute 
+-----------------+------------+-------+----------------------
+         1010000 |    1010000 | t     | mirror / routed
+(1 row)
+
+\echo == round 2
+== round 2
+\! /home/user/pg_quicksilver/.claude/worktrees/agent-aad78140159c1c478/ext/pg_quicksilver/validate/real/hardening/e_round.sh
+e_round: committed at 0/F833A30; mirror and standby replay at or past it: t
+EXECUTE q \gset m_
+SELECT side || ' / ' || reason AS d FROM quicksilver.last_decision() \gset
+SET quicksilver.route = heap;
+SET
+SELECT count(*) AS h FROM public.orders \gset
+RESET quicksilver.route;
+RESET
+SELECT :m_count::bigint AS kept_plan_count, :h::bigint AS heap_count, :m_count::bigint = :h::bigint AS equal, :'d' AS decision_for_execute;
+ kept_plan_count | heap_count | equal | decision_for_execute 
+-----------------+------------+-------+----------------------
+         1011000 |    1011000 | t     | mirror / routed
+(1 row)
+
+\echo == round 3
+== round 3
+\! /home/user/pg_quicksilver/.claude/worktrees/agent-aad78140159c1c478/ext/pg_quicksilver/validate/real/hardening/e_round.sh
+e_round: committed at 0/F8795E0; mirror and standby replay at or past it: t
+EXECUTE q \gset m_
+SELECT side || ' / ' || reason AS d FROM quicksilver.last_decision() \gset
+SET quicksilver.route = heap;
+SET
+SELECT count(*) AS h FROM public.orders \gset
+RESET quicksilver.route;
+RESET
+SELECT :m_count::bigint AS kept_plan_count, :h::bigint AS heap_count, :m_count::bigint = :h::bigint AS equal, :'d' AS decision_for_execute;
+ kept_plan_count | heap_count | equal | decision_for_execute 
+-----------------+------------+-------+----------------------
+         1012000 |    1012000 | t     | mirror / routed
+(1 row)
+
+\echo == round 4
+== round 4
+\! /home/user/pg_quicksilver/.claude/worktrees/agent-aad78140159c1c478/ext/pg_quicksilver/validate/real/hardening/e_round.sh
+e_round: committed at 0/F8BF4D0; mirror and standby replay at or past it: t
+EXECUTE q \gset m_
+SELECT side || ' / ' || reason AS d FROM quicksilver.last_decision() \gset
+SET quicksilver.route = heap;
+SET
+SELECT count(*) AS h FROM public.orders \gset
+RESET quicksilver.route;
+RESET
+SELECT :m_count::bigint AS kept_plan_count, :h::bigint AS heap_count, :m_count::bigint = :h::bigint AS equal, :'d' AS decision_for_execute;
+ kept_plan_count | heap_count | equal | decision_for_execute 
+-----------------+------------+-------+----------------------
+         1013000 |    1013000 | t     | mirror / routed
+(1 row)
+
+\echo == round 5
+== round 5
+\! /home/user/pg_quicksilver/.claude/worktrees/agent-aad78140159c1c478/ext/pg_quicksilver/validate/real/hardening/e_round.sh
+e_round: committed at 0/F9053F8; mirror and standby replay at or past it: t
+EXECUTE q \gset m_
+SELECT side || ' / ' || reason AS d FROM quicksilver.last_decision() \gset
+SET quicksilver.route = heap;
+SET
+SELECT count(*) AS h FROM public.orders \gset
+RESET quicksilver.route;
+RESET
+SELECT :m_count::bigint AS kept_plan_count, :h::bigint AS heap_count, :m_count::bigint = :h::bigint AS equal, :'d' AS decision_for_execute;
+ kept_plan_count | heap_count | equal | decision_for_execute 
+-----------------+------------+-------+----------------------
+         1014000 |    1014000 | t     | mirror / routed
+(1 row)
+
+\echo == round 6
+== round 6
+\! /home/user/pg_quicksilver/.claude/worktrees/agent-aad78140159c1c478/ext/pg_quicksilver/validate/real/hardening/e_round.sh
+e_round: committed at 0/F94B358; mirror and standby replay at or past it: t
+EXECUTE q \gset m_
+SELECT side || ' / ' || reason AS d FROM quicksilver.last_decision() \gset
+SET quicksilver.route = heap;
+SET
+SELECT count(*) AS h FROM public.orders \gset
+RESET quicksilver.route;
+RESET
+SELECT :m_count::bigint AS kept_plan_count, :h::bigint AS heap_count, :m_count::bigint = :h::bigint AS equal, :'d' AS decision_for_execute;
+ kept_plan_count | heap_count | equal | decision_for_execute 
+-----------------+------------+-------+----------------------
+         1015000 |    1015000 | t     | mirror / routed
+(1 row)
+
+\echo == round 7
+== round 7
+\! /home/user/pg_quicksilver/.claude/worktrees/agent-aad78140159c1c478/ext/pg_quicksilver/validate/real/hardening/e_round.sh
+e_round: committed at 0/F996A28; mirror and standby replay at or past it: t
+EXECUTE q \gset m_
+SELECT side || ' / ' || reason AS d FROM quicksilver.last_decision() \gset
+SET quicksilver.route = heap;
+SET
+SELECT count(*) AS h FROM public.orders \gset
+RESET quicksilver.route;
+RESET
+SELECT :m_count::bigint AS kept_plan_count, :h::bigint AS heap_count, :m_count::bigint = :h::bigint AS equal, :'d' AS decision_for_execute;
+ kept_plan_count | heap_count | equal | decision_for_execute 
+-----------------+------------+-------+----------------------
+         1016000 |    1016000 | t     | mirror / routed
+(1 row)
+
+\echo == round 8
+== round 8
+\! /home/user/pg_quicksilver/.claude/worktrees/agent-aad78140159c1c478/ext/pg_quicksilver/validate/real/hardening/e_round.sh
+e_round: committed at 0/F9DC880; mirror and standby replay at or past it: t
+EXECUTE q \gset m_
+SELECT side || ' / ' || reason AS d FROM quicksilver.last_decision() \gset
+SET quicksilver.route = heap;
+SET
+SELECT count(*) AS h FROM public.orders \gset
+RESET quicksilver.route;
+RESET
+SELECT :m_count::bigint AS kept_plan_count, :h::bigint AS heap_count, :m_count::bigint = :h::bigint AS equal, :'d' AS decision_for_execute;
+ kept_plan_count | heap_count | equal | decision_for_execute 
+-----------------+------------+-------+----------------------
+         1017000 |    1017000 | t     | mirror / routed
+(1 row)
+
+\echo == round 9
+== round 9
+\! /home/user/pg_quicksilver/.claude/worktrees/agent-aad78140159c1c478/ext/pg_quicksilver/validate/real/hardening/e_round.sh
+e_round: committed at 0/FA22710; mirror and standby replay at or past it: t
+EXECUTE q \gset m_
+SELECT side || ' / ' || reason AS d FROM quicksilver.last_decision() \gset
+SET quicksilver.route = heap;
+SET
+SELECT count(*) AS h FROM public.orders \gset
+RESET quicksilver.route;
+RESET
+SELECT :m_count::bigint AS kept_plan_count, :h::bigint AS heap_count, :m_count::bigint = :h::bigint AS equal, :'d' AS decision_for_execute;
+ kept_plan_count | heap_count | equal | decision_for_execute 
+-----------------+------------+-------+----------------------
+         1018000 |    1018000 | t     | mirror / routed
+(1 row)
+
+\echo == round 10
+== round 10
+\! /home/user/pg_quicksilver/.claude/worktrees/agent-aad78140159c1c478/ext/pg_quicksilver/validate/real/hardening/e_round.sh
+e_round: committed at 0/FA68568; mirror and standby replay at or past it: t
+EXECUTE q \gset m_
+SELECT side || ' / ' || reason AS d FROM quicksilver.last_decision() \gset
+SET quicksilver.route = heap;
+SET
+SELECT count(*) AS h FROM public.orders \gset
+RESET quicksilver.route;
+RESET
+SELECT :m_count::bigint AS kept_plan_count, :h::bigint AS heap_count, :m_count::bigint = :h::bigint AS equal, :'d' AS decision_for_execute;
+ kept_plan_count | heap_count | equal | decision_for_execute 
+-----------------+------------+-------+----------------------
+         1019000 |    1019000 | t     | mirror / routed
+(1 row)
+
+\echo == round 11
+== round 11
+\! /home/user/pg_quicksilver/.claude/worktrees/agent-aad78140159c1c478/ext/pg_quicksilver/validate/real/hardening/e_round.sh
+e_round: committed at 0/FAAE0C8; mirror and standby replay at or past it: t
+EXECUTE q \gset m_
+SELECT side || ' / ' || reason AS d FROM quicksilver.last_decision() \gset
+SET quicksilver.route = heap;
+SET
+SELECT count(*) AS h FROM public.orders \gset
+RESET quicksilver.route;
+RESET
+SELECT :m_count::bigint AS kept_plan_count, :h::bigint AS heap_count, :m_count::bigint = :h::bigint AS equal, :'d' AS decision_for_execute;
+ kept_plan_count | heap_count | equal | decision_for_execute 
+-----------------+------------+-------+----------------------
+         1020000 |    1020000 | t     | mirror / routed
+(1 row)
+
+\echo == round 12
+== round 12
+\! /home/user/pg_quicksilver/.claude/worktrees/agent-aad78140159c1c478/ext/pg_quicksilver/validate/real/hardening/e_round.sh
+e_round: committed at 0/FAF3F08; mirror and standby replay at or past it: t
+EXECUTE q \gset m_
+SELECT side || ' / ' || reason AS d FROM quicksilver.last_decision() \gset
+SET quicksilver.route = heap;
+SET
+SELECT count(*) AS h FROM public.orders \gset
+RESET quicksilver.route;
+RESET
+SELECT :m_count::bigint AS kept_plan_count, :h::bigint AS heap_count, :m_count::bigint = :h::bigint AS equal, :'d' AS decision_for_execute;
+ kept_plan_count | heap_count | equal | decision_for_execute 
+-----------------+------------+-------+----------------------
+         1021000 |    1021000 | t     | mirror / routed
+(1 row)
+
+\echo == round 13
+== round 13
+\! /home/user/pg_quicksilver/.claude/worktrees/agent-aad78140159c1c478/ext/pg_quicksilver/validate/real/hardening/e_round.sh
+e_round: committed at 0/FB39D60; mirror and standby replay at or past it: t
+EXECUTE q \gset m_
+SELECT side || ' / ' || reason AS d FROM quicksilver.last_decision() \gset
+SET quicksilver.route = heap;
+SET
+SELECT count(*) AS h FROM public.orders \gset
+RESET quicksilver.route;
+RESET
+SELECT :m_count::bigint AS kept_plan_count, :h::bigint AS heap_count, :m_count::bigint = :h::bigint AS equal, :'d' AS decision_for_execute;
+ kept_plan_count | heap_count | equal | decision_for_execute 
+-----------------+------------+-------+----------------------
+         1022000 |    1022000 | t     | mirror / routed
+(1 row)
+
+\echo == round 14
+== round 14
+\! /home/user/pg_quicksilver/.claude/worktrees/agent-aad78140159c1c478/ext/pg_quicksilver/validate/real/hardening/e_round.sh
+e_round: committed at 0/FB7F8C0; mirror and standby replay at or past it: t
+EXECUTE q \gset m_
+SELECT side || ' / ' || reason AS d FROM quicksilver.last_decision() \gset
+SET quicksilver.route = heap;
+SET
+SELECT count(*) AS h FROM public.orders \gset
+RESET quicksilver.route;
+RESET
+SELECT :m_count::bigint AS kept_plan_count, :h::bigint AS heap_count, :m_count::bigint = :h::bigint AS equal, :'d' AS decision_for_execute;
+ kept_plan_count | heap_count | equal | decision_for_execute 
+-----------------+------------+-------+----------------------
+         1023000 |    1023000 | t     | mirror / routed
+(1 row)
+
+\echo == round 15
+== round 15
+\! /home/user/pg_quicksilver/.claude/worktrees/agent-aad78140159c1c478/ext/pg_quicksilver/validate/real/hardening/e_round.sh
+e_round: committed at 0/FBC5718; mirror and standby replay at or past it: t
+EXECUTE q \gset m_
+SELECT side || ' / ' || reason AS d FROM quicksilver.last_decision() \gset
+SET quicksilver.route = heap;
+SET
+SELECT count(*) AS h FROM public.orders \gset
+RESET quicksilver.route;
+RESET
+SELECT :m_count::bigint AS kept_plan_count, :h::bigint AS heap_count, :m_count::bigint = :h::bigint AS equal, :'d' AS decision_for_execute;
+ kept_plan_count | heap_count | equal | decision_for_execute 
+-----------------+------------+-------+----------------------
+         1024000 |    1024000 | t     | mirror / routed
+(1 row)
+
+\echo == round 16
+== round 16
+\! /home/user/pg_quicksilver/.claude/worktrees/agent-aad78140159c1c478/ext/pg_quicksilver/validate/real/hardening/e_round.sh
+e_round: committed at 0/FC0B570; mirror and standby replay at or past it: t
+EXECUTE q \gset m_
+SELECT side || ' / ' || reason AS d FROM quicksilver.last_decision() \gset
+SET quicksilver.route = heap;
+SET
+SELECT count(*) AS h FROM public.orders \gset
+RESET quicksilver.route;
+RESET
+SELECT :m_count::bigint AS kept_plan_count, :h::bigint AS heap_count, :m_count::bigint = :h::bigint AS equal, :'d' AS decision_for_execute;
+ kept_plan_count | heap_count | equal | decision_for_execute 
+-----------------+------------+-------+----------------------
+         1025000 |    1025000 | t     | mirror / routed
+(1 row)
+
+\echo == round 17
+== round 17
+\! /home/user/pg_quicksilver/.claude/worktrees/agent-aad78140159c1c478/ext/pg_quicksilver/validate/real/hardening/e_round.sh
+e_round: committed at 0/FC513C8; mirror and standby replay at or past it: t
+EXECUTE q \gset m_
+SELECT side || ' / ' || reason AS d FROM quicksilver.last_decision() \gset
+SET quicksilver.route = heap;
+SET
+SELECT count(*) AS h FROM public.orders \gset
+RESET quicksilver.route;
+RESET
+SELECT :m_count::bigint AS kept_plan_count, :h::bigint AS heap_count, :m_count::bigint = :h::bigint AS equal, :'d' AS decision_for_execute;
+ kept_plan_count | heap_count | equal | decision_for_execute 
+-----------------+------------+-------+----------------------
+         1026000 |    1026000 | t     | mirror / routed
+(1 row)
+
+\echo == round 18
+== round 18
+\! /home/user/pg_quicksilver/.claude/worktrees/agent-aad78140159c1c478/ext/pg_quicksilver/validate/real/hardening/e_round.sh
+e_round: committed at 0/FC96F28; mirror and standby replay at or past it: t
+EXECUTE q \gset m_
+SELECT side || ' / ' || reason AS d FROM quicksilver.last_decision() \gset
+SET quicksilver.route = heap;
+SET
+SELECT count(*) AS h FROM public.orders \gset
+RESET quicksilver.route;
+RESET
+SELECT :m_count::bigint AS kept_plan_count, :h::bigint AS heap_count, :m_count::bigint = :h::bigint AS equal, :'d' AS decision_for_execute;
+ kept_plan_count | heap_count | equal | decision_for_execute 
+-----------------+------------+-------+----------------------
+         1027000 |    1027000 | t     | mirror / routed
+(1 row)
+
+\echo == round 19
+== round 19
+\! /home/user/pg_quicksilver/.claude/worktrees/agent-aad78140159c1c478/ext/pg_quicksilver/validate/real/hardening/e_round.sh
+e_round: committed at 0/FCDE188; mirror and standby replay at or past it: t
+EXECUTE q \gset m_
+SELECT side || ' / ' || reason AS d FROM quicksilver.last_decision() \gset
+SET quicksilver.route = heap;
+SET
+SELECT count(*) AS h FROM public.orders \gset
+RESET quicksilver.route;
+RESET
+SELECT :m_count::bigint AS kept_plan_count, :h::bigint AS heap_count, :m_count::bigint = :h::bigint AS equal, :'d' AS decision_for_execute;
+ kept_plan_count | heap_count | equal | decision_for_execute 
+-----------------+------------+-------+----------------------
+         1028000 |    1028000 | t     | mirror / routed
+(1 row)
+
+\echo == round 20
+== round 20
+\! /home/user/pg_quicksilver/.claude/worktrees/agent-aad78140159c1c478/ext/pg_quicksilver/validate/real/hardening/e_round.sh
+e_round: committed at 0/FD23FC8; mirror and standby replay at or past it: t
+EXECUTE q \gset m_
+SELECT side || ' / ' || reason AS d FROM quicksilver.last_decision() \gset
+SET quicksilver.route = heap;
+SET
+SELECT count(*) AS h FROM public.orders \gset
+RESET quicksilver.route;
+RESET
+SELECT :m_count::bigint AS kept_plan_count, :h::bigint AS heap_count, :m_count::bigint = :h::bigint AS equal, :'d' AS decision_for_execute;
+ kept_plan_count | heap_count | equal | decision_for_execute 
+-----------------+------------+-------+----------------------
+         1029000 |    1029000 | t     | mirror / routed
+(1 row)
+

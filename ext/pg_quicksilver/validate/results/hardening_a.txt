@@ -1,0 +1,201 @@
+-- Experiment a: identity after failure. ONE session, as app, on the STANDBY (run.sh 5861 app).
+-- The mirror-side failure is made from inside this session with \! (a superuser psql on the
+-- primary, i.e. another session), as break_hx.sql does; the file is restored at the end.
+\set VERBOSITY terse
+\echo == 0. baseline in this session: the test mirror routes before it is broken (forced: the table is too cheap to route by itself)
+== 0. baseline in this session: the test mirror routes before it is broken (forced: the table is too cheap to route by itself)
+SET quicksilver.route = mirror;
+SET
+SELECT count(*), sum(amount) FROM public.hx;
+ count |    sum     
+-------+------------
+  2000 | 2001000.00
+(1 row)
+
+SELECT side, reason FROM quicksilver.last_decision();
+  side  | reason 
+--------+--------
+ mirror | routed
+(1 row)
+
+SELECT current_user, session_user, current_setting('role') AS role;
+ current_user | session_user | role 
+--------------+--------------+------
+ app          | app          | none
+(1 row)
+
+\echo == 1. a routed statement that fails on the mirror side, inside a DO block that swallows the error
+== 1. a routed statement that fails on the mirror side, inside a DO block that swallows the error
+\! /var/lib/postgresql/qsexp/pg17/usr/lib/postgresql/17/bin/psql -X -h /tmp -p 5860 -U postgres -d app -f /home/user/pg_quicksilver/.claude/worktrees/agent-aad78140159c1c478/ext/pg_quicksilver/validate/real/hardening/break_hx.sql
+ lo_export 
+-----------
+         1
+(1 row)
+
+ lo_unlink 
+-----------
+         1
+(1 row)
+
+DO $$ BEGIN PERFORM count(*), sum(amount) FROM public.hx; EXCEPTION WHEN OTHERS THEN RAISE NOTICE 'swallowed on mirror side: %', SQLERRM; END $$;
+DO
+SELECT current_user, session_user, current_setting('role') AS role;
+ current_user | session_user | role 
+--------------+--------------+------
+ app          | app          | none
+(1 row)
+
+SELECT side, reason FROM quicksilver.last_decision();
+  side  | reason 
+--------+--------
+ mirror | routed
+(1 row)
+
+SELECT count(*), sum(amount) FROM public.hx;
+ count |    sum     
+-------+------------
+  2000 | 2001000.00
+(1 row)
+
+SELECT side, reason, left(detail, 70) AS detail FROM quicksilver.last_decision();
+ side |            reason            |                                 detail                                 
+------+------------------------------+------------------------------------------------------------------------
+ heap | the mirror could not plan it | (PGDuckDB/CreatePlan) Prepared query returned an error: Invalid Input 
+(1 row)
+
+SELECT current_user, session_user, current_setting('role') AS role;
+ current_user | session_user | role 
+--------------+--------------+------
+ app          | app          | none
+(1 row)
+
+\echo == 2. cursor over a routed aggregate with GROUP BY (many rows), fetch 1, close, commit
+== 2. cursor over a routed aggregate with GROUP BY (many rows), fetch 1, close, commit
+BEGIN;
+BEGIN
+DECLARE c CURSOR FOR SELECT customer_id, count(*), sum(amount) FROM public.orders GROUP BY customer_id;
+DECLARE CURSOR
+FETCH 1 FROM c;
+ customer_id | count |   sum    
+-------------+-------+----------
+        3761 |    71 | 48965.73
+(1 row)
+
+CLOSE c;
+CLOSE CURSOR
+SELECT current_user, session_user, current_setting('role') AS role;
+ current_user | session_user | role 
+--------------+--------------+------
+ app          | app          | none
+(1 row)
+
+COMMIT;
+COMMIT
+SELECT current_user, session_user, current_setting('role') AS role;
+ current_user | session_user | role 
+--------------+--------------+------
+ app          | app          | none
+(1 row)
+
+\echo == 3. the same cursor, rolled back while open
+== 3. the same cursor, rolled back while open
+BEGIN;
+BEGIN
+DECLARE c CURSOR FOR SELECT customer_id, count(*), sum(amount) FROM public.orders GROUP BY customer_id;
+DECLARE CURSOR
+FETCH 1 FROM c;
+ customer_id | count |   sum    
+-------------+-------+----------
+        7328 |    70 | 39845.70
+(1 row)
+
+ROLLBACK;
+ROLLBACK
+SELECT current_user, session_user, current_setting('role') AS role;
+ current_user | session_user | role 
+--------------+--------------+------
+ app          | app          | none
+(1 row)
+
+\echo == 4. statement_timeout cancels a routed statement over a large table
+== 4. statement_timeout cancels a routed statement over a large table
+SET statement_timeout = '1ms';
+SET
+SELECT customer_id, count(*), sum(amount) FROM public.orders GROUP BY customer_id;
+psql:/home/user/pg_quicksilver/.claude/worktrees/agent-aad78140159c1c478/ext/pg_quicksilver/validate/real/hardening/a.sql:38: ERROR:  canceling statement due to statement timeout
+RESET statement_timeout;
+RESET
+SELECT current_user, session_user, current_setting('role') AS role;
+ current_user | session_user | role 
+--------------+--------------+------
+ app          | app          | none
+(1 row)
+
+SELECT side, reason FROM quicksilver.last_decision();
+  side  | reason 
+--------+--------
+ mirror | routed
+(1 row)
+
+SELECT current_user, session_user;
+ current_user | session_user 
+--------------+--------------
+ app          | app
+(1 row)
+
+\echo == 5. the file is put back (as superuser, from another session); the mirror is not asked again for quicksilver.negative_cache_ttl (60 s), so wait it out
+== 5. the file is put back (as superuser, from another session); the mirror is not asked again for quicksilver.negative_cache_ttl (60 s), so wait it out
+\! /var/lib/postgresql/qsexp/pg17/usr/lib/postgresql/17/bin/psql -X -h /tmp -p 5860 -U postgres -d app -f /home/user/pg_quicksilver/.claude/worktrees/agent-aad78140159c1c478/ext/pg_quicksilver/validate/real/hardening/restore_hx.sql
+psql:/home/user/pg_quicksilver/.claude/worktrees/agent-aad78140159c1c478/ext/pg_quicksilver/validate/real/hardening/restore_hx.sql:3: NOTICE:  result: Count	
+BIGINT	
+[ Rows: 1]
+2000
+
+
+ raw_query 
+-----------
+ 
+(1 row)
+
+SELECT count(*), sum(amount) FROM public.hx;
+ count |    sum     
+-------+------------
+  2000 | 2001000.00
+(1 row)
+
+SELECT side, reason FROM quicksilver.last_decision();
+ side |            reason            
+------+------------------------------
+ heap | the mirror could not plan it
+(1 row)
+
+SELECT pg_sleep(61);
+ pg_sleep 
+----------
+ 
+(1 row)
+
+SELECT count(*), sum(amount) FROM public.hx;
+ count |    sum     
+-------+------------
+  2000 | 2001000.00
+(1 row)
+
+SELECT side, reason FROM quicksilver.last_decision();
+  side  | reason 
+--------+--------
+ mirror | routed
+(1 row)
+
+SELECT side, reason FROM quicksilver.last_decision();
+  side  | reason 
+--------+--------
+ mirror | routed
+(1 row)
+
+SELECT current_user, session_user, current_setting('role') AS role;
+ current_user | session_user | role 
+--------------+--------------+------
+ app          | app          | none
+(1 row)
+

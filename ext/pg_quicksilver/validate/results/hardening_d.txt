@@ -1,0 +1,171 @@
+-- Experiment d: column privileges and the join rewrite. As app on the STANDBY (run.sh 5861 app d.sql).
+-- The join domain is cust (ex.jcust.id = ex.jord.cust, uuid; public.customers.id and orders.customer_id
+-- are integers, which the sidecar refuses as a join domain, so the join-domain pair is the uuid one
+-- that join_tables.sql loads). The public join is run too: it has no domain, and the statement
+-- from the brief is the one at the end.
+-- Privilege changes are made on the primary with \! (d_primary.sql), then wait_replay.sh.
+\set VERBOSITY terse
+\echo == 0. baseline: app may read both tables in full; the join is routed when forced
+== 0. baseline: app may read both tables in full; the join is routed when forced
+SELECT current_user, session_user, current_setting('role') AS role;
+ current_user | session_user | role 
+--------------+--------------+------
+ app          | app          | none
+(1 row)
+
+SET quicksilver.route = mirror;
+SET
+SELECT count(*) FROM ex.jord o JOIN ex.jcust c ON c.id = o.cust;
+ count 
+-------
+    24
+(1 row)
+
+SELECT side, reason, left(detail, 90) AS detail FROM quicksilver.last_decision();
+  side  | reason |           detail           
+--------+--------+----------------------------
+ mirror | routed | quicksilver.route = mirror
+(1 row)
+
+RESET quicksilver.route;
+RESET
+SELECT count(*) FROM ex.jord o JOIN ex.jcust c ON c.id = o.cust;
+ count 
+-------
+    24
+(1 row)
+
+\echo == 1. primary: app loses SELECT on the join key columns (ex.jord.cust, public.orders.customer_id)
+== 1. primary: app loses SELECT on the join key columns (ex.jord.cust, public.orders.customer_id)
+\! /var/lib/postgresql/qsexp/pg17/usr/lib/postgresql/17/bin/psql -X -h /tmp -p 5860 -U postgres -d app -v step=revoke -f /home/user/pg_quicksilver/.claude/worktrees/agent-aad78140159c1c478/ext/pg_quicksilver/validate/real/hardening/d_primary.sql
+REVOKE
+GRANT
+REVOKE
+GRANT
+ grantee | table_schema | table_name | privilege_type | column_name 
+---------+--------------+------------+----------------+-------------
+ app     | ex           | jcust      | SELECT         | id
+ app     | ex           | jcust      | SELECT         | region
+ app     | ex           | jcust      | SELECT         | tier
+ app     | ex           | jord       | SELECT         | amount
+ app     | ex           | jord       | SELECT         | id
+ app     | public       | customers  | SELECT         | id
+ app     | public       | customers  | SELECT         | name
+ app     | public       | customers  | SELECT         | region
+ app     | public       | hx         | SELECT         | amount
+ app     | public       | hx         | SELECT         | g
+ app     | public       | hx         | SELECT         | id
+ app     | public       | orders     | SELECT         | amount
+ app     | public       | orders     | SELECT         | id
+(13 rows)
+
+\! /home/user/pg_quicksilver/.claude/worktrees/agent-aad78140159c1c478/ext/pg_quicksilver/validate/real/hardening/wait_replay.sh
+replayed to 0/F367018; all mirrors fresh
+\echo == 2. the join with the key column not granted: EXPECTED permission denied, the same on the heap
+== 2. the join with the key column not granted: EXPECTED permission denied, the same on the heap
+SET quicksilver.route = mirror;
+SET
+SELECT count(*) FROM ex.jord o JOIN ex.jcust c ON c.id = o.cust;
+psql:/home/user/pg_quicksilver/.claude/worktrees/agent-aad78140159c1c478/ext/pg_quicksilver/validate/real/hardening/d.sql:22: ERROR:  permission denied for table jord
+SELECT side, reason, left(detail, 90) AS detail FROM quicksilver.last_decision();
+ side |             reason             | detail 
+------+--------------------------------+--------
+ heap | no privilege on the heap table | 
+(1 row)
+
+SET quicksilver.route = heap;
+SET
+SELECT count(*) FROM ex.jord o JOIN ex.jcust c ON c.id = o.cust;
+psql:/home/user/pg_quicksilver/.claude/worktrees/agent-aad78140159c1c478/ext/pg_quicksilver/validate/real/hardening/d.sql:25: ERROR:  permission denied for table jord
+RESET quicksilver.route;
+RESET
+SELECT count(*) FROM ex.jord o JOIN ex.jcust c ON c.id = o.cust;
+psql:/home/user/pg_quicksilver/.claude/worktrees/agent-aad78140159c1c478/ext/pg_quicksilver/validate/real/hardening/d.sql:27: ERROR:  permission denied for table jord
+SELECT side, reason, left(detail, 90) AS detail FROM quicksilver.last_decision();
+ side |      reason       |                            detail                            
+------+-------------------+--------------------------------------------------------------
+ heap | cheap on the heap | cost 3 under 10000, 42 rows from mirrored tables under 50000
+(1 row)
+
+\echo == 3. the statement from the brief: SELECT count(*) FROM public.orders o JOIN public.customers c ON c.id = o.customer_id
+== 3. the statement from the brief: SELECT count(*) FROM public.orders o JOIN public.customers c ON c.id = o.customer_id
+SET quicksilver.route = mirror;
+SET
+SELECT count(*) FROM public.orders o JOIN public.customers c ON c.id = o.customer_id;
+psql:/home/user/pg_quicksilver/.claude/worktrees/agent-aad78140159c1c478/ext/pg_quicksilver/validate/real/hardening/d.sql:32: ERROR:  permission denied for table orders
+SELECT side, reason, left(detail, 90) AS detail FROM quicksilver.last_decision();
+ side |             reason             | detail 
+------+--------------------------------+--------
+ heap | no privilege on the heap table | 
+(1 row)
+
+SET quicksilver.route = heap;
+SET
+SELECT count(*) FROM public.orders o JOIN public.customers c ON c.id = o.customer_id;
+psql:/home/user/pg_quicksilver/.claude/worktrees/agent-aad78140159c1c478/ext/pg_quicksilver/validate/real/hardening/d.sql:35: ERROR:  permission denied for table orders
+RESET quicksilver.route;
+RESET
+SELECT count(*) FROM public.orders o JOIN public.customers c ON c.id = o.customer_id;
+psql:/home/user/pg_quicksilver/.claude/worktrees/agent-aad78140159c1c478/ext/pg_quicksilver/validate/real/hardening/d.sql:37: ERROR:  permission denied for table orders
+SELECT side, reason, left(detail, 90) AS detail FROM quicksilver.last_decision();
+ side |             reason             | detail 
+------+--------------------------------+--------
+ heap | no privilege on the heap table | 
+(1 row)
+
+\echo == 4. the columns that were granted still route: the aggregate on orders(id, amount)
+== 4. the columns that were granted still route: the aggregate on orders(id, amount)
+SET quicksilver.route = mirror;
+SET
+SELECT count(*), sum(amount) FROM public.orders WHERE id > 0;
+  count  |     sum      
+---------+--------------
+ 1000000 | 499995000.00
+(1 row)
+
+SELECT side, reason FROM quicksilver.last_decision();
+  side  | reason 
+--------+--------
+ mirror | routed
+(1 row)
+
+RESET quicksilver.route;
+RESET
+\echo == 5. primary: the grants are put back
+== 5. primary: the grants are put back
+\! /var/lib/postgresql/qsexp/pg17/usr/lib/postgresql/17/bin/psql -X -h /tmp -p 5860 -U postgres -d app -v step=restore -f /home/user/pg_quicksilver/.claude/worktrees/agent-aad78140159c1c478/ext/pg_quicksilver/validate/real/hardening/d_primary.sql
+REVOKE
+REVOKE
+GRANT
+REVOKE
+REVOKE
+ grantee | table_schema | table_name | privilege_type | column_name 
+---------+--------------+------------+----------------+-------------
+ app     | public       | customers  | SELECT         | id
+ app     | public       | customers  | SELECT         | name
+ app     | public       | customers  | SELECT         | region
+ app     | public       | hx         | SELECT         | amount
+ app     | public       | hx         | SELECT         | g
+ app     | public       | hx         | SELECT         | id
+ app     | public       | orders     | SELECT         | amount
+ app     | public       | orders     | SELECT         | created_at
+ app     | public       | orders     | SELECT         | customer_id
+ app     | public       | orders     | SELECT         | id
+ app     | public       | orders     | SELECT         | note
+ app     | public       | orders     | SELECT         | status
+(12 rows)
+
+\! /home/user/pg_quicksilver/.claude/worktrees/agent-aad78140159c1c478/ext/pg_quicksilver/validate/real/hardening/wait_replay.sh
+replayed to 0/F36A228; all mirrors fresh
+SELECT count(*), sum(amount) FROM public.orders WHERE id > 0;
+  count  |     sum      
+---------+--------------
+ 1000000 | 499995000.00
+(1 row)
+
+SELECT side, reason FROM quicksilver.last_decision();
+  side  | reason 
+--------+--------
+ mirror | routed
+(1 row)
+

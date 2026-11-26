@@ -1,0 +1,147 @@
+-- Experiment b: shadowed built-ins. As app on the STANDBY (run.sh 5861 app b.sql), after setup_b.sql.
+-- NEVER acceptable: a NOTICE "evil ran as quicksilver_mirror_reader" (or as a superuser).
+\set VERBOSITY terse
+\echo == 1. the default search_path: the aggregate is routed
+== 1. the default search_path: the aggregate is routed
+SELECT sum(amount) FROM public.orders;
+     sum      
+--------------
+ 499995000.00
+(1 row)
+
+SELECT side, reason FROM quicksilver.last_decision();
+  side  | reason 
+--------+--------
+ mirror | routed
+(1 row)
+
+\echo == 2. search_path = evil, public, pg_catalog: sum(amount) and count(*) now resolve to evil.*
+== 2. search_path = evil, public, pg_catalog: sum(amount) and count(*) now resolve to evil.*
+SET search_path = evil, public, pg_catalog;
+SET
+SET evil.noted = '';
+SET
+SELECT current_user, session_user, current_setting('role') AS role;
+ current_user | session_user | role 
+--------------+--------------+------
+ app          | app          | none
+(1 row)
+
+SELECT sum(amount) FROM public.orders;
+psql:/home/user/pg_quicksilver/.claude/worktrees/agent-aad78140159c1c478/ext/pg_quicksilver/validate/real/hardening/b.sql:12: NOTICE:  evil ran as app
+     sum      
+--------------
+ 499995000.00
+(1 row)
+
+SELECT side, reason, left(detail, 90) AS detail FROM quicksilver.last_decision();
+ side |             reason             |           detail            
+------+--------------------------------+-----------------------------
+ heap | construct not on the allowlist | aggregate evil.sum(numeric)
+(1 row)
+
+\echo == 3. WHERE status = 'x' resolves to evil.= (and count(*) to evil.count)
+== 3. WHERE status = x resolves to evil.= (and count(*) to evil.count)
+SET evil.noted = '';
+SET
+SELECT count(*) FROM public.orders WHERE status = 'x';
+psql:/home/user/pg_quicksilver/.claude/worktrees/agent-aad78140159c1c478/ext/pg_quicksilver/validate/real/hardening/b.sql:17: NOTICE:  evil ran as app
+ count 
+-------
+     0
+(1 row)
+
+SELECT side, reason, left(detail, 90) AS detail FROM quicksilver.last_decision();
+ side |             reason             |              detail               
+------+--------------------------------+-----------------------------------
+ heap | construct not on the allowlist | aggregate evil.count() and 1 more
+(1 row)
+
+\echo == 4. the same two statements forced to the mirror (quicksilver.route = mirror)
+== 4. the same two statements forced to the mirror (quicksilver.route = mirror)
+SET quicksilver.route = mirror;
+SET
+SET evil.noted = '';
+SET
+SELECT sum(amount) FROM public.orders;
+psql:/home/user/pg_quicksilver/.claude/worktrees/agent-aad78140159c1c478/ext/pg_quicksilver/validate/real/hardening/b.sql:23: NOTICE:  evil ran as app
+     sum      
+--------------
+ 499995000.00
+(1 row)
+
+SELECT side, reason, left(detail, 90) AS detail FROM quicksilver.last_decision();
+ side |             reason             |           detail            
+------+--------------------------------+-----------------------------
+ heap | construct not on the allowlist | aggregate evil.sum(numeric)
+(1 row)
+
+SET evil.noted = '';
+SET
+SELECT count(*) FROM public.orders WHERE status = 'x';
+psql:/home/user/pg_quicksilver/.claude/worktrees/agent-aad78140159c1c478/ext/pg_quicksilver/validate/real/hardening/b.sql:26: NOTICE:  evil ran as app
+ count 
+-------
+     0
+(1 row)
+
+SELECT side, reason, left(detail, 90) AS detail FROM quicksilver.last_decision();
+ side |             reason             |              detail               
+------+--------------------------------+-----------------------------------
+ heap | construct not on the allowlist | aggregate evil.count() and 1 more
+(1 row)
+
+RESET quicksilver.route;
+RESET
+\echo == 4b. the operator alone, so that its own NOTICE is seen (the one per session above may have come from the aggregate)
+== 4b. the operator alone, so that its own NOTICE is seen (the one per session above may have come from the aggregate)
+SET evil.noted = '';
+SET
+SELECT 'a'::text OPERATOR(evil.=) 'a'::text AS evil_eq;
+psql:/home/user/pg_quicksilver/.claude/worktrees/agent-aad78140159c1c478/ext/pg_quicksilver/validate/real/hardening/b.sql:32: NOTICE:  evil ran as app
+ evil_eq 
+---------
+ t
+(1 row)
+
+SET evil.noted = '';
+SET
+SELECT count(*) FROM public.orders WHERE status = 'x';
+psql:/home/user/pg_quicksilver/.claude/worktrees/agent-aad78140159c1c478/ext/pg_quicksilver/validate/real/hardening/b.sql:34: NOTICE:  evil ran as app
+ count 
+-------
+     0
+(1 row)
+
+SELECT side, reason FROM quicksilver.last_decision();
+ side |             reason             
+------+--------------------------------
+ heap | construct not on the allowlist
+(1 row)
+
+\echo == 5. the answers on the heap (forced), and the session afterwards
+== 5. the answers on the heap (forced), and the session afterwards
+SET quicksilver.route = heap;
+SET
+SELECT sum(amount) FROM public.orders;
+     sum      
+--------------
+ 499995000.00
+(1 row)
+
+SELECT count(*) FROM public.orders WHERE status = 'x';
+ count 
+-------
+     0
+(1 row)
+
+RESET quicksilver.route;
+RESET
+RESET search_path;
+RESET
+SELECT current_user, session_user, current_setting('role') AS role, current_setting('search_path') AS search_path;
+ current_user | session_user | role |   search_path   
+--------------+--------------+------+-----------------
+ app          | app          | none | "$user", public
+(1 row)
+

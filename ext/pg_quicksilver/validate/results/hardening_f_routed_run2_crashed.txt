@@ -1,0 +1,191 @@
+route=auto queries=1500
+setup: SELECT current_user, session_user, current_setting('role'); -> app|app|none
+    0 ms=232 result=1029000 decision=mirror|routed
+    1 ms=36 result=1029000 decision=mirror|routed
+    2 ms=35 result=1029000 decision=mirror|routed
+    3 ms=35 result=1029000 decision=mirror|routed
+    4 ms=36 result=1029000 decision=mirror|routed
+    5 ms=35 result=1029000 decision=mirror|routed
+    6 ms=36 result=1029000 decision=mirror|routed
+    7 ms=35 result=1029000 decision=mirror|routed
+    8 ms=35 result=1029000 decision=mirror|routed
+    9 ms=34 result=1029000 decision=mirror|routed
+   10 ms=35 result=1029000 decision=mirror|routed
+   11 ms=35 result=1029000 decision=mirror|routed
+   12 ms=35 result=1029000 decision=mirror|routed
+   13 ms=35 result=1029000 decision=mirror|routed
+   14 ms=36 result=1029000 decision=mirror|routed
+   15 ms=36 result=1029000 decision=mirror|routed
+   16 ms=35 result=1029000 decision=mirror|routed
+   17 ms=35 result=1029000 decision=mirror|routed
+   18 ms=36 result=1029000 decision=mirror|routed
+   19 ms=35 result=1029000 decision=mirror|routed
+   20 ms=36 result=1029000 decision=mirror|routed
+   21 ms=34 result=1029000 decision=mirror|routed
+   22 ms=36 result=1029000 decision=mirror|routed
+   23 ms=36 result=1029000 decision=mirror|routed
+   24 ms=36 result=1029000 decision=mirror|routed
+   25 ms=34 result=1029000 decision=mirror|routed
+   26 ms=34 result=1029000 decision=mirror|routed
+   27 ms=34 result=1029000 decision=mirror|routed
+   28 ms=35 result=1029000 decision=mirror|routed
+   29 ms=34 result=1029000 decision=mirror|routed
+   30 ms=34 result=1029000 decision=mirror|routed
+   31 ms=34 result=1029000 decision=mirror|routed
+   32 ms=35 result=1029000 decision=mirror|routed
+   33 ms=35 result=1029000 decision=mirror|routed
+   34 ms=35 result=1029000 decision=mirror|routed
+   35 ms=36 result=1029000 decision=mirror|routed
+   36 ms=34 result=1029000 decision=mirror|routed
+   37 ms=36 result=1029000 decision=mirror|routed
+   38 ms=35 result=1029000 decision=mirror|routed
+   39 ms=35 result=1029000 decision=mirror|routed
+   40 ms=34 result=1029000 decision=mirror|routed
+   41 ms=35 result=1029000 decision=mirror|routed
+   42 ms=35 result=1029000 decision=mirror|routed
+   43 ms=34 result=1029000 decision=mirror|routed
+   44 ms=35 result=1029000 decision=mirror|routed
+   45 ms=34 result=1029000 decision=mirror|routed
+   46 ms=37 result=1029000 decision=mirror|routed
+   47 ms=41 result=1029000 decision=mirror|routed
+   48 ms=51 result=1029000 decision=mirror|routed
+   49 ms=39 result=1029000 decision=mirror|routed
+   50 ms=50 result=1029000 decision=heap|mirror is not fresh enough
+   51 ms=79 result=1029000 decision=mirror|routed
+   52 ms=32 result=1029000 decision=mirror|routed
+   53 ms=33 result=1029000 decision=mirror|routed
+   54 ms=33 result=1029000 decision=mirror|routed
+   55 ms=37 result=1029000 decision=heap|mirror is not fresh enough
+   56 ms=36 result=1029000 decision=heap|mirror is not fresh enough
+   57 ms=80 result=1029000 decision=mirror|routed
+   58 ms=42 result=1029000 decision=mirror|routed
+   59 ms=44 result=1029000 decision=mirror|routed
+   60 ms=37 result=1029000 decision=heap|mirror is not fresh enough
+   61 ms=37 result=1029000 decision=heap|mirror is not fresh enough
+   62 ms=74 result=1029000 decision=mirror|routed
+   63 ms=38 result=1029000 decision=mirror|routed
+   64 ms=37 result=1029000 decision=mirror|routed
+   65 ms=41 result=1029000 decision=heap|mirror is not fresh enough
+   66 ms=80 result=1029000 decision=mirror|routed
+   67 ms=35 result=1029000 decision=mirror|routed
+   68 ms=36 result=1029000 decision=mirror|routed
+   69 ms=37 result=1029000 decision=heap|mirror is not fresh enough
+   70 ms=32 result=1029000 decision=heap|mirror is not fresh enough
+   71 ms=75 result=1029000 decision=mirror|routed
+   72 ms=36 result=1029000 decision=mirror|routed
+   73 ms=36 result=1029000 decision=mirror|routed
+   74 ms=39 result=1029000 decision=heap|mirror is not fresh enough
+   75 ms=79 result=1029000 decision=mirror|routed
+   76 ms=35 result=1029000 decision=mirror|routed
+   77 ms=35 result=1029000 decision=mirror|routed
+   78 ms=34 result=1029000 decision=mirror|routed
+   79 ms=30 result=1029000 decision=heap|mirror is not fresh enough
+   80 ms=30 result=1029000 decision=heap|mirror is not fresh enough
+   81 ms=68 result=1029000 decision=mirror|routed
+   82 ms=35 result=1029000 decision=mirror|routed
+   83 ms=37 result=1029000 decision=mirror|routed
+   84 ms=36 result=1029000 decision=mirror|routed
+   85 ms=33 result=1029000 decision=heap|mirror is not fresh enough
+   86 ms=76 result=1029000 decision=mirror|routed
+   87 ms=35 result=1029000 decision=mirror|routed
+   88 ms=41 result=1029000 decision=mirror|routed
+   89 ms=31 result=1029000 decision=mirror|routed
+   90 ms=40 result=1029000 decision=heap|mirror is not fresh enough
+   91 ms=66 result=1029000 decision=mirror|routed
+   92 ms=30 result=1029000 decision=mirror|routed
+   93 ms=36 result=1029000 decision=mirror|routed
+   94 ms=31 result=1029000 decision=mirror|routed
+   95 ms=36 result=1029000 decision=heap|mirror is not fresh enough
+   96 ms=33 result=1029000 decision=heap|mirror is not fresh enough
+   97 ms=79 result=1029000 decision=mirror|routed
+   98 ms=41 result=1029000 decision=mirror|routed
+   99 ms=37 result=1029000 decision=mirror|routed
+  100 ms=36 result=1029000 decision=heap|mirror is not fresh enough
+  101 ms=79 result=1029000 decision=mirror|routed
+  102 ms=31 result=1029000 decision=mirror|routed
+  103 ms=36 result=1029000 decision=mirror|routed
+  104 ms=39 result=1029000 decision=mirror|routed
+  105 ms=36 result=1029000 decision=heap|mirror is not fresh enough
+  106 ms=33 result=1029000 decision=heap|mirror is not fresh enough
+  107 ms=77 result=1029000 decision=mirror|routed
+  108 ms=38 result=1029000 decision=mirror|routed
+  109 ms=37 result=1029000 decision=mirror|routed
+  110 ms=33 result=1029000 decision=heap|mirror is not fresh enough
+  111 ms=79 result=1029000 decision=mirror|routed
+  112 ms=37 result=1029000 decision=mirror|routed
+  113 ms=59 result=1029000 decision=mirror|routed
+  114 ms=33 result=1029000 decision=heap|mirror is not fresh enough
+  115 ms=31 result=1029000 decision=heap|mirror is not fresh enough
+  116 ms=71 result=1029000 decision=mirror|routed
+  117 ms=34 result=1029000 decision=mirror|routed
+  118 ms=35 result=1029000 decision=mirror|routed
+  119 ms=36 result=1029000 decision=mirror|routed
+  120 ms=36 result=1029000 decision=heap|mirror is not fresh enough
+  121 ms=76 result=1029000 decision=mirror|routed
+  122 ms=38 result=1029000 decision=mirror|routed
+  123 ms=36 result=1029000 decision=mirror|routed
+  124 ms=33 result=1029000 decision=heap|mirror is not fresh enough
+  125 ms=34 result=1029000 decision=heap|mirror is not fresh enough
+  126 ms=75 result=1029000 decision=mirror|routed
+  127 ms=38 result=1029000 decision=mirror|routed
+  128 ms=36 result=1029000 decision=mirror|routed
+  129 ms=32 result=1029000 decision=heap|mirror is not fresh enough
+  130 ms=83 result=1029000 decision=mirror|routed
+  131 ms=34 result=1029000 decision=mirror|routed
+  132 ms=33 result=1029000 decision=mirror|routed
+  133 ms=34 result=1029000 decision=mirror|routed
+  134 ms=38 result=1029000 decision=mirror|routed
+  135 ms=82 result=1029000 decision=mirror|routed
+  136 ms=37 result=1029000 decision=mirror|routed
+  137 ms=36 result=1029000 decision=mirror|routed
+  138 ms=39 result=1029000 decision=mirror|routed
+  139 ms=34 result=1029000 decision=heap|mirror is not fresh enough
+  140 ms=39 result=1029000 decision=heap|mirror is not fresh enough
+  141 ms=92 result=1029000 decision=mirror|routed
+  142 ms=60 result=1029000 decision=mirror|routed
+  143 ms=35 result=1029000 decision=heap|mirror is not fresh enough
+  144 ms=32 result=1029000 decision=heap|mirror is not fresh enough
+  145 ms=76 result=1029000 decision=mirror|routed
+  146 ms=37 result=1029000 decision=mirror|routed
+  147 ms=37 result=1029000 decision=mirror|routed
+  148 ms=32 result=1029000 decision=heap|mirror is not fresh enough
+  149 ms=31 result=1029000 decision=heap|mirror is not fresh enough
+  150 ms=78 result=1029000 decision=mirror|routed
+  151 ms=42 result=1029000 decision=mirror|routed
+  152 ms=39 result=1029000 decision=mirror|routed
+  153 ms=32 result=1029000 decision=heap|mirror is not fresh enough
+  154 ms=79 result=1029000 decision=mirror|routed
+  155 ms=41 result=1029000 decision=mirror|routed
+  156 ms=35 result=1029000 decision=mirror|routed
+  157 ms=35 result=1029000 decision=mirror|routed
+  158 ms=32 result=1029000 decision=heap|mirror is not fresh enough
+  159 ms=30 result=1029000 decision=heap|mirror is not fresh enough
+  160 ms=72 result=1029000 decision=mirror|routed
+  161 ms=40 result=1029000 decision=mirror|routed
+  162 ms=42 result=1029000 decision=mirror|routed
+  163 ms=33 result=1029000 decision=heap|mirror is not fresh enough
+  164 ms=76 result=1029000 decision=mirror|routed
+  165 ms=34 result=1029000 decision=mirror|routed
+  166 ms=36 result=1029000 decision=mirror|routed
+  167 ms=41 result=1029000 decision=mirror|routed
+  168 ms=31 result=1029000 decision=heap|mirror is not fresh enough
+  169 ms=77 result=1029000 decision=mirror|routed
+  170 ms=42 result=1029000 decision=mirror|routed
+  171 ms=42 result=1029000 decision=mirror|routed
+  172 ms=34 result=1029000 decision=heap|mirror is not fresh enough
+  173 ms=87 result=1029000 decision=mirror|routed
+  174 ms=41 result=1029000 decision=mirror|routed
+  175 ms=40 result=1029000 decision=mirror|routed
+  176 ms=40 result=1029000 decision=mirror|routed
+  177 ms=38 result=1029000 decision=heap|mirror is not fresh enough
+  178 ms=90 result=1029000 decision=mirror|routed
+  179 ms=34 result=1029000 decision=mirror|routed
+  180 ms=32 result=1029000 decision=mirror|routed
+  181 ms=40 result=1029000 decision=mirror|routed
+  182 ms=37 result=1029000 decision=heap|mirror is not fresh enough
+  183 ms=90 result=1029000 decision=mirror|routed
+  184 ms=41 result=1029000 decision=mirror|routed
+  185 ms=41 result=1029000 decision=mirror|routed
+  186 ms=31 result=1029000 decision=heap|mirror is not fresh enough
+  187 ms=108 result=1029000 decision=mirror|routed
+  188 ms=44 result=1029000 decision=mirror|routed

@@ -1,0 +1,233 @@
+-- Experiment c: privilege changes after PREPARE. ONE session, as app, on the STANDBY (run.sh 5861 app c.sql).
+-- The changes are made on the primary as the owner, from this session with \! (c_primary.sql), and
+-- wait_replay.sh waits for the standby and the mirrors.
+\set VERBOSITY terse
+\echo == 1. prepared, then executed six times (the plan may switch to a generic one)
+== 1. prepared, then executed six times (the plan may switch to a generic one)
+PREPARE p AS SELECT count(*), sum(amount) FROM public.orders;
+PREPARE
+EXECUTE p;
+  count  |     sum      
+---------+--------------
+ 1000000 | 499995000.00
+(1 row)
+
+SELECT side, reason FROM quicksilver.last_decision();
+  side  | reason 
+--------+--------
+ mirror | routed
+(1 row)
+
+EXECUTE p;
+  count  |     sum      
+---------+--------------
+ 1000000 | 499995000.00
+(1 row)
+
+SELECT side, reason FROM quicksilver.last_decision();
+  side  | reason 
+--------+--------
+ mirror | routed
+(1 row)
+
+EXECUTE p;
+  count  |     sum      
+---------+--------------
+ 1000000 | 499995000.00
+(1 row)
+
+SELECT side, reason FROM quicksilver.last_decision();
+  side  | reason 
+--------+--------
+ mirror | routed
+(1 row)
+
+EXECUTE p;
+  count  |     sum      
+---------+--------------
+ 1000000 | 499995000.00
+(1 row)
+
+SELECT side, reason FROM quicksilver.last_decision();
+  side  | reason 
+--------+--------
+ mirror | routed
+(1 row)
+
+EXECUTE p;
+  count  |     sum      
+---------+--------------
+ 1000000 | 499995000.00
+(1 row)
+
+SELECT side, reason FROM quicksilver.last_decision();
+  side  | reason 
+--------+--------
+ mirror | routed
+(1 row)
+
+EXECUTE p;
+  count  |     sum      
+---------+--------------
+ 1000000 | 499995000.00
+(1 row)
+
+SELECT side, reason FROM quicksilver.last_decision();
+  side  | reason 
+--------+--------
+ mirror | routed
+(1 row)
+
+SELECT name, generic_plans, custom_plans FROM pg_prepared_statements;
+ name | generic_plans | custom_plans 
+------+---------------+--------------
+ p    |             6 |            0
+(1 row)
+
+SELECT current_user, session_user, current_setting('role') AS role;
+ current_user | session_user | role 
+--------------+--------------+------
+ app          | app          | none
+(1 row)
+
+\echo == 2. primary (owner): ENABLE ROW LEVEL SECURITY and a policy that hides every row from app
+== 2. primary (owner): ENABLE ROW LEVEL SECURITY and a policy that hides every row from app
+\! /var/lib/postgresql/qsexp/pg17/usr/lib/postgresql/17/bin/psql -X -h /tmp -p 5860 -U postgres -d app -v step=policy_on -f /home/user/pg_quicksilver/.claude/worktrees/agent-aad78140159c1c478/ext/pg_quicksilver/validate/real/hardening/c_primary.sql
+ALTER TABLE
+CREATE POLICY
+ relrowsecurity 
+----------------
+ t
+(1 row)
+
+\! /home/user/pg_quicksilver/.claude/worktrees/agent-aad78140159c1c478/ext/pg_quicksilver/validate/real/hardening/wait_replay.sh
+replayed to 0/F2C0960; all mirrors fresh
+EXECUTE p;
+ count | sum 
+-------+-----
+     0 |    
+(1 row)
+
+SELECT side, reason, left(detail, 80) AS detail FROM quicksilver.last_decision();
+ side |      reason       |                           detail                            
+------+-------------------+-------------------------------------------------------------
+ heap | cheap on the heap | cost 0 under 10000, 0 rows from mirrored tables under 50000
+(1 row)
+
+-- forced to the mirror: the policy must still apply (the count must still be 0)
+SET quicksilver.route = mirror;
+SET
+EXECUTE p;
+ count | sum 
+-------+-----
+     0 |    
+(1 row)
+
+SELECT side, reason, left(detail, 80) AS detail FROM quicksilver.last_decision();
+ side |             reason             |                         detail                         
+------+--------------------------------+--------------------------------------------------------
+ heap | construct not on the allowlist | relation public.orders (row-level security is enabled)
+(1 row)
+
+RESET quicksilver.route;
+RESET
+\echo == 3. primary: the policy dropped, RLS disabled; EXECUTE is routed again with the full count
+== 3. primary: the policy dropped, RLS disabled; EXECUTE is routed again with the full count
+\! /var/lib/postgresql/qsexp/pg17/usr/lib/postgresql/17/bin/psql -X -h /tmp -p 5860 -U postgres -d app -v step=policy_off -f /home/user/pg_quicksilver/.claude/worktrees/agent-aad78140159c1c478/ext/pg_quicksilver/validate/real/hardening/c_primary.sql
+DROP POLICY
+ALTER TABLE
+ relrowsecurity 
+----------------
+ f
+(1 row)
+
+\! /home/user/pg_quicksilver/.claude/worktrees/agent-aad78140159c1c478/ext/pg_quicksilver/validate/real/hardening/wait_replay.sh
+replayed to 0/F2C0FC0; all mirrors fresh
+EXECUTE p;
+  count  |     sum      
+---------+--------------
+ 1000000 | 499995000.00
+(1 row)
+
+SELECT side, reason, left(detail, 80) AS detail FROM quicksilver.last_decision();
+  side  | reason |                    detail                    
+--------+--------+----------------------------------------------
+ mirror | routed | 416667 rows from mirrored tables, over 50000
+(1 row)
+
+\echo == 4. primary: REVOKE SELECT on orders from app, GRANT SELECT (id) only; EXPECTED permission denied for table orders
+== 4. primary: REVOKE SELECT on orders from app, GRANT SELECT (id) only; EXPECTED permission denied for table orders
+\! /var/lib/postgresql/qsexp/pg17/usr/lib/postgresql/17/bin/psql -X -h /tmp -p 5860 -U postgres -d app -v step=revoke -f /home/user/pg_quicksilver/.claude/worktrees/agent-aad78140159c1c478/ext/pg_quicksilver/validate/real/hardening/c_primary.sql
+REVOKE
+GRANT
+ relrowsecurity 
+----------------
+ f
+(1 row)
+
+\! /home/user/pg_quicksilver/.claude/worktrees/agent-aad78140159c1c478/ext/pg_quicksilver/validate/real/hardening/wait_replay.sh
+replayed to 0/F2C1768; all mirrors fresh
+EXECUTE p;
+psql:/home/user/pg_quicksilver/.claude/worktrees/agent-aad78140159c1c478/ext/pg_quicksilver/validate/real/hardening/c.sql:42: ERROR:  permission denied for table orders
+SELECT side, reason, left(detail, 80) AS detail FROM quicksilver.last_decision();
+ side |             reason             | detail 
+------+--------------------------------+--------
+ heap | no privilege on the heap table | 
+(1 row)
+
+-- forced to the mirror: still the heap's permission error
+SET quicksilver.route = mirror;
+SET
+EXECUTE p;
+psql:/home/user/pg_quicksilver/.claude/worktrees/agent-aad78140159c1c478/ext/pg_quicksilver/validate/real/hardening/c.sql:46: ERROR:  permission denied for table orders
+SELECT side, reason, left(detail, 80) AS detail FROM quicksilver.last_decision();
+ side |             reason             | detail 
+------+--------------------------------+--------
+ heap | no privilege on the heap table | 
+(1 row)
+
+RESET quicksilver.route;
+RESET
+-- count(*) names no column: PostgreSQL asks for SELECT on some column, which app has (id)
+SELECT count(*) FROM public.orders;
+  count  
+---------
+ 1000000
+(1 row)
+
+SELECT side, reason, left(detail, 80) AS detail FROM quicksilver.last_decision();
+  side  | reason |                    detail                    
+--------+--------+----------------------------------------------
+ mirror | routed | 416667 rows from mirrored tables, over 50000
+(1 row)
+
+\echo == 5. primary: privileges restored; EXECUTE is routed again
+== 5. primary: privileges restored; EXECUTE is routed again
+\! /var/lib/postgresql/qsexp/pg17/usr/lib/postgresql/17/bin/psql -X -h /tmp -p 5860 -U postgres -d app -v step=restore -f /home/user/pg_quicksilver/.claude/worktrees/agent-aad78140159c1c478/ext/pg_quicksilver/validate/real/hardening/c_primary.sql
+REVOKE
+GRANT
+ relrowsecurity 
+----------------
+ f
+(1 row)
+
+\! /home/user/pg_quicksilver/.claude/worktrees/agent-aad78140159c1c478/ext/pg_quicksilver/validate/real/hardening/wait_replay.sh
+replayed to 0/F2C1EF8; all mirrors fresh
+EXECUTE p;
+  count  |     sum      
+---------+--------------
+ 1000000 | 499995000.00
+(1 row)
+
+SELECT side, reason, left(detail, 80) AS detail FROM quicksilver.last_decision();
+  side  | reason |                    detail                    
+--------+--------+----------------------------------------------
+ mirror | routed | 416667 rows from mirrored tables, over 50000
+(1 row)
+
+SELECT current_user, session_user, current_setting('role') AS role;
+ current_user | session_user | role 
+--------------+--------------+------
+ app          | app          | none
+(1 row)
+
