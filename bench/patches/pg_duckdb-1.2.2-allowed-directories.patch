@@ -315,3 +315,26 @@ index b4c854d..5533f8b 100644
  }
  
  /*
+diff --git a/src/pgduckdb_guc.cpp b/src/pgduckdb_guc.cpp
+--- a/src/pgduckdb_guc.cpp
++++ b/src/pgduckdb_guc.cpp
+@@ -136,6 +136,8 @@
+ char *duckdb_motherduck_session_hint = strdup("");
+ char *duckdb_postgres_role = strdup("");
+ bool duckdb_force_motherduck_views = false;
++/* Confinement marker (bench/patches): always true in a build with the confined local file system. */
++bool duckdb_confined_file_access = true;
+ 
+ int duckdb_threads = -1;
+ int duckdb_maximum_memory = 4096; /* 4GB in MB */
+@@ -181,6 +183,10 @@
+ 	                     "Maximum number of PostgreSQL workers used for a single Postgres scan",
+ 	                     &duckdb_max_workers_per_postgres_scan, 0, MAX_PARALLEL_WORKER_LIMIT);
+ 
++	DefineCustomVariable("duckdb.confined_file_access",
++	                     "True when DuckDB local file access is confined to duckdb.allowed_directories (patched build only)",
++	                     &duckdb_confined_file_access, PGC_INTERNAL, GUC_NOT_IN_SAMPLE | GUC_DISALLOW_IN_FILE);
++
+ 	DefineCustomVariable("duckdb.postgres_role",
+ 	                     "Which postgres role should be allowed to use DuckDB execution, use the secrets and create "
+ 	                     "MotherDuck tables. Defaults to superusers only",
