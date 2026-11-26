@@ -25,6 +25,14 @@ the bottom, and it is now a short list.
 
 ---
 
+## Engine versions
+
+- The required DuckDB major is 2.0.
+- The pinned pg_duckdb is 1.2.2, which embeds DuckDB 2.0.1. `deploy/Dockerfile` and the `extension` job in `ci.yml` fetch that package. `deploy/duckdb-extensions.sh` takes its DuckDB version from the installed `libduckdb.so`, not from a pin.
+- The python `duckdb` used by the tests and benchmarks is 2.0.1 (`duckdb==2.0.1` in `ci.yml`).
+- The measurements in docs 38 to 40 were taken on pg_duckdb 1.2.0 (DuckDB 2.0.0). They are records, not pins. On 1.2.2, only the extension's regression tests and the equality harness were re-run; see docs/40's "pg_duckdb 1.2.2" section.
+- The package source drops old builds: the repository serves only the newest one, and 1.2.0 now returns HTTP 404. When the pin 404s, move it: take `Filename` and `SHA256` from the repository's `Packages` index, change the URL and checksum in `deploy/Dockerfile` and in the `extension` job's `env` in `ci.yml`, and re-run the `extension` job. That job proves the extension, the DuckLake extensions and the regression suite against the new build. Re-run `bench/scripts/serving_pg17.sh` too if the DuckDB major changes.
+
 ## The images
 
 | Image | What it is | Where it runs |
@@ -453,7 +461,7 @@ sidecar does its half by itself when it finds the extension installed.
 
 | | |
 |---|---|
-| pg_duckdb | 1.2.0 is what was verified. It reads the mirror. |
+| pg_duckdb | 1.2.2 (DuckDB 2.0.1), the pin. It reads the mirror. See Engine versions above. |
 | `pg_quicksilver.so`, `pg_quicksilver.control`, `pg_quicksilver--0.1.sql` | built from `ext/pg_quicksilver` against the same PostgreSQL major (PGXS, `postgresql-server-dev-17`, nothing else) |
 
 `deploy/Dockerfile` has a target for it, published as
@@ -468,9 +476,9 @@ What the target does, and what is pinned (the `ARG`s at the top of the file):
 | | pinned to | |
 |---|---|---|
 | base | `ghcr.io/cloudnative-pg/postgresql:17.12-standard-bookworm` | by PostgreSQL **minor**: the extension is compiled against that minor's headers, installed at exactly the server's package version (PGDG, falling back to its archive suite) |
-| pg_duckdb | 1.2.0, one `.deb` by URL and SHA-256 | pg_duckdb publishes container images, not packages, and PGDG does not carry it. The image takes the Debian 12 (bookworm) build; the `extension` job in CI takes the Ubuntu 24.04 (noble) build of the same version, with its own URL and checksum. Each is fetched as one checksummed file rather than by adding the repository. Neither URL was reachable from the development host (HTTP 404), so the checksums are unverified until CI runs |
+| pg_duckdb | 1.2.2, one `.deb` by URL and SHA-256 | pg_duckdb publishes container images, not packages, and PGDG does not carry it. The image takes the Debian 12 (bookworm) build; the `extension` job in CI takes the Ubuntu 24.04 (noble) build of the same version, with its own URL and checksum. Each is fetched as one checksummed file rather than by adding the repository. Both checksums match the `Packages` index of the repository for 1.2.2; the downloads themselves are unverified until CI runs |
 | `pg_quicksilver` | this checkout | PGXS in a build stage (`with_llvm=no`), three files copied out |
-| DuckDB's `ducklake` and `sqlite` | whatever DuckDB 2.0.0's repository serves on the day of the build | installed by pg_duckdb's own DuckDB into `/usr/lib/quicksilver/duckdb-extensions`. DuckDB writes them 0600, so `install` makes them readable by everyone, and the directory is then copied root-owned. DuckDB decides the `v2.0.0/linux_amd64/` layout, so this stays right when the package moves |
+| DuckDB's `ducklake` and `sqlite` | whatever DuckDB 2.0.1's repository serves on the day of the build | installed by pg_duckdb's own DuckDB into `/usr/lib/quicksilver/duckdb-extensions`. DuckDB writes them 0600, so `install` makes them readable by everyone, and the directory is then copied root-owned. DuckDB decides the `v2.0.0/linux_amd64/` layout, so this stays right when the package moves |
 
 Nothing about CloudNativePG's contract changes: same base, UID 26, same `PATH`,
 no `ENTRYPOINT`, and nothing added outside `/usr`.

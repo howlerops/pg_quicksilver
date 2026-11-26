@@ -883,7 +883,7 @@ regression files pass, and the run above.
 
 ### What an image needs, now
 
-1. pg_duckdb 1.2.0 and `pg_quicksilver` in the PostgreSQL image
+1. pg_duckdb 1.2.2 (the pin; the run above was 1.2.0) and `pg_quicksilver` in the PostgreSQL image
    (`deploy/Dockerfile`, target `postgres`), and
    `shared_preload_libraries = 'pg_duckdb,pg_quicksilver'`, in that order.
 2. `CREATE EXTENSION pg_duckdb; CREATE EXTENSION pg_quicksilver;` in the
@@ -934,3 +934,81 @@ DB_ROUTE=none validate/real/setup.sh && validate/real/primary_report.sh && make 
 CA=/path/to/cassert/prefix validate/real/cassert.sh
 validate/real/teardown.sh
 ```
+
+## pg_duckdb 1.2.2
+
+The pin moved from 1.2.0 (DuckDB 2.0.0) to 1.2.2 (DuckDB 2.0.1), because the
+apt repository no longer serves 1.2.0. This section is the first run of the
+extension against 1.2.2.
+
+**Server.** PostgreSQL 17.12, source build with `--enable-cassert`, in a private
+prefix. The 1.2.2 `pg_duckdb.so`, `libduckdb.so` and the extension's SQL and
+control files were copied into that prefix. The package's `pg_duckdb.so` has
+`RUNPATH=/usr/lib/postgresql/17/lib`, so the server must start with
+`LD_LIBRARY_PATH` pointing at the prefix's `lib`, or it loads the system's
+`libduckdb.so` (1.2.0) instead. `/proc/<pid>/maps` showed the prefix's copy.
+
+| check | output |
+|---|---|
+| `extversion` of `pg_duckdb` | `1.2.2` |
+| `SELECT version()` through `duckdb.query` | `v2.0.1` |
+
+`duckdb.*` settings in 1.2.2 (`SELECT name FROM pg_settings WHERE name LIKE 'duckdb.%'`):
+
+    duckdb.allow_community_extensions    duckdb.allow_unredacted_secrets
+    duckdb.allow_unsigned_extensions     duckdb.allowed_directories
+    duckdb.autoinstall_known_extensions  duckdb.autoload_known_extensions
+    duckdb.azure_transport_option_type   duckdb.convert_unsupported_numeric_to_double
+    duckdb.custom_user_agent             duckdb.default_collation
+    duckdb.disabled_filesystems          duckdb.enable_external_access
+    duckdb.extension_directory           duckdb.force_execution
+    duckdb.force_motherduck_views        duckdb.log_pg_explain
+    duckdb.max_memory                    duckdb.max_temp_directory_size
+    duckdb.max_workers_per_postgres_scan duckdb.memory_limit
+    duckdb.motherduck_session_hint       duckdb.postgres_role
+    duckdb.temporary_directory           duckdb.threads
+    duckdb.threads_for_postgres_scan     duckdb.unsafe_allow_execution_inside_functions
+    duckdb.unsafe_allow_mixed_transactions duckdb.worker_threads
+
+**The extension on 1.2.2.** `validate/real/setup.sh` with `DB_ROUTE=none` on
+ports 5650-5652, then `make installcheck PPORT=5650`:
+
+    ok 1 - routing   ok 2 - failclosed   ok 3 - permissions   ok 4 - prepared
+    ok 5 - transactions   ok 6 - invalidation   ok 7 - shadow   ok 8 - freshness
+    ok 9 - robustness   ok 10 - errors
+    # All 10 tests passed.
+
+`validate/equality.py --port 5650`: 1142 statements, 438 routed to the mirror,
+0 routed and different, 0 heap-different. The 1.2.0 cassert run above
+routed 361 of 1142; the count moved and nothing else did. The mirror and the
+DuckLake attachment were built by the sidecar on the standby, with
+`QS_DUCKLAKE=on`, and the DuckDB extensions were the 2.0.1 builds that
+`deploy/duckdb-extensions.sh install` writes into `v2.0.1/linux_amd64/`.
+
+**Offline, DuckDB extensions.** `deploy/duckdb-extensions.sh install` and then
+`verify` under `unshare -n`, as the postgres user, against the 1.2.2 server:
+`verified: ducklake sqlite load from ... with no network and no write access,
+and a ducklake:sqlite: lake reads back`. The script needed no change: it takes
+the DuckDB version and platform from the loaded `libduckdb.so`, not from a
+pin.
+
+**Serving path on 1.2.2 (`bench/scripts/serving_pg17.sh`).** The job cannot move
+to the stock package. The 1.2.2 binary does contain `duckdb.allowed_directories`,
+and it is documented as "always allowed for file access, even when
+enable_external_access is false". Its effect on an unprivileged role was
+measured on a scratch 1.2.2 server with `duckdb.allowed_directories` set to a
+directory holding a parquet file, and `duckdb.enable_external_access = off`:
+
+| role | `duckdb.query('... read_parquet(...)')` |
+|---|---|
+| superuser | 5 rows |
+| member of `duckdb_users` only | `Permission Error: File system LocalFileSystem has been disabled by configuration` |
+| plus `pg_read_server_files` | same error |
+| plus `pg_read_server_files` and `pg_write_server_files` | 5 rows |
+
+The last row is the stock gate (`AllowRawFileAccess`, both roles together), and
+it is the escalation the patch exists to avoid. So on 1.2.2 the setting does
+not give an unprivileged role read access to the mirror alone, and the serving
+job keeps the patched v1.1.1 build for now. The first property the script asserts
+does not hold on 1.2.2 as configured. The script's denial cases were not
+run on 1.2.2, because the mirror read failed first.

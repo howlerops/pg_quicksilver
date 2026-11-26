@@ -52,7 +52,9 @@ skip() { printf '\nINCOMPLETE — section skipped, which is NOT a pass: %s\n' "$
 psq()  { su postgres -c "$PG/psql -h /tmp -p $1 -U ${3:-postgres} -d ${4:-$DB} -Atc \"$2\"" 2>&1; }
 
 cleanup() {
-  pkill -x qs-mirror 2>/dev/null
+  # This run's sidecar only, matched by its own path. A name match would stop
+  # every qs-mirror on the machine, including one someone else is running.
+  pkill -f "^$BASE/qs-mirror\$" 2>/dev/null
   su postgres -c "$PG/pg_ctl -D $STANDBY -m immediate stop" >/dev/null 2>&1
   su postgres -c "$PG/pg_ctl -D $PRIMARY -m immediate stop" >/dev/null 2>&1
   return 0
