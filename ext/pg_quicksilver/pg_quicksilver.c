@@ -1133,10 +1133,162 @@ typedef struct QsElev
 	int			sec;
 } QsElev;
 
+/*
+ * Ordinary roles (docs/40, "Ordinary roles"). A role that is not a superuser
+ * is answered from the mirror only when all of these hold:
+ *
+ *   - the DuckDB build is the confined one: its marker GUC
+ *     duckdb.confined_file_access is on (the patch defines it; stock does not);
+ *   - duckdb.allowed_directories is set, and every registered lake's catalog
+ *     is inside one of its directories;
+ *   - the role is a member of duckdb.postgres_role, so that pg_duckdb runs
+ *     DuckDB for it, and of neither pg_read_server_files nor
+ *     pg_write_server_files (with either, the stock rules apply and nothing is
+ *     confined).
+ *
+ * For such a role the mirror's statements run as the role itself, not as the
+ * bootstrap superuser: its DuckDB is confined by the build to the allowed
+ * directories and cannot be widened from its session.
+ *
+ * The three settings are cached per backend. The cache is dropped when a
+ * membership in pg_auth_members changes, and it is compared with the current
+ * user and the two settings on each use, so a change of either is seen at
+ * the next statement. The lake check is made per statement.
+ */
+static bool qs_confine_valid = false;
+static Oid	qs_confine_user = InvalidOid;
+static char *qs_confine_role = NULL;	/* TopMemoryContext copies */
+static char *qs_confine_dirs = NULL;
+static bool qs_confine_result = false;
+static char qs_confine_why[QS_DETAIL_LEN];
+
+static void
+qs_authmem_cb(Datum arg, int cacheid, uint32 hashvalue)
+{
+	qs_confine_valid = false;
+}
+
+static bool
+qs_same_setting(const char *a, const char *b)
+{
+	if (a == NULL || b == NULL)
+		return a == b;
+	return strcmp(a, b) == 0;
+}
+
+static bool
+qs_confined_role_ok(char *why, size_t whylen)
+{
+	const char *marker = GetConfigOption("duckdb.confined_file_access", true, false);
+	const char *role = GetConfigOption("duckdb.postgres_role", true, false);
+	const char *dirs = GetConfigOption("duckdb.allowed_directories", true, false);
+	Oid			user = GetUserId();
+	Oid			roleoid = InvalidOid;
+	const char *reason = NULL;
+	MemoryContext old;
+
+	if (qs_confine_valid && qs_confine_user == user &&
+		qs_same_setting(qs_confine_role, role) && qs_same_setting(qs_confine_dirs, dirs))
+	{
+		strlcpy(why, qs_confine_why, whylen);
+		return qs_confine_result;
+	}
+
+	if (marker == NULL || strcmp(marker, "on") != 0)
+		reason = "only superusers are routed: stock pg_duckdb gives DuckDB's local file system to superusers only";
+	else if (dirs == NULL || dirs[0] == '\0')
+		reason = "duckdb.allowed_directories is not set";
+	else if (role == NULL || role[0] == '\0')
+		reason = "duckdb.postgres_role is not set";
+	else if (!OidIsValid(roleoid = get_role_oid(role, true)))
+		reason = "duckdb.postgres_role names no role";
+	else if (!is_member_of_role(user, roleoid))
+		reason = "the role is not a member of duckdb.postgres_role";
+	else if (is_member_of_role(user, ROLE_PG_READ_SERVER_FILES) ||
+			 is_member_of_role(user, ROLE_PG_WRITE_SERVER_FILES))
+		reason = "the role holds pg_read_server_files or pg_write_server_files, which gives unconfined file access";
+
+	old = MemoryContextSwitchTo(TopMemoryContext);
+	if (qs_confine_role != NULL)
+		pfree(qs_confine_role);
+	if (qs_confine_dirs != NULL)
+		pfree(qs_confine_dirs);
+	qs_confine_role = role != NULL ? pstrdup(role) : NULL;
+	qs_confine_dirs = dirs != NULL ? pstrdup(dirs) : NULL;
+	MemoryContextSwitchTo(old);
+	qs_confine_user = user;
+	qs_confine_result = reason == NULL;
+	strlcpy(qs_confine_why, reason != NULL ? reason : "", sizeof(qs_confine_why));
+	qs_confine_valid = true;
+
+	strlcpy(why, qs_confine_why, whylen);
+	return qs_confine_result;
+}
+
+/*
+ * Is every registered lake's catalog inside one of duckdb.allowed_directories?
+ * A catalog that is not on this node is not read, so it is skipped: the mirror
+ * on it cannot be attached and the statement is answered from the heap. The
+ * lake's data files are DuckDB's to confine, and it refuses any it may not read.
+ */
+static bool
+qs_lakes_confined(char *why, size_t whylen)
+{
+	const char *dirs = GetConfigOption("duckdb.allowed_directories", true, false);
+	ListCell   *lc;
+
+	if (qs_lakes == NIL)
+		return true;
+	if (dirs == NULL || dirs[0] == '\0')
+	{
+		strlcpy(why, "duckdb.allowed_directories is not set", whylen);
+		return false;
+	}
+	foreach(lc, qs_lakes)
+	{
+		QsLake	   *lake = (QsLake *) lfirst(lc);
+		char		lake_real[PATH_MAX];
+		char	   *copy;
+		char	   *tok;
+		char	   *save = NULL;
+		bool		inside = false;
+
+		if (realpath(lake->catalog, lake_real) == NULL)
+			continue;
+		copy = pstrdup(dirs);
+		for (tok = strtok_r(copy, ",", &save); tok != NULL && !inside; tok = strtok_r(NULL, ",", &save))
+		{
+			char		dir_real[PATH_MAX];
+			size_t		n;
+
+			while (*tok == ' ')
+				tok++;
+			n = strlen(tok);
+			while (n > 0 && tok[n - 1] == ' ')
+				tok[--n] = '\0';
+			if (n == 0 || realpath(tok, dir_real) == NULL)
+				continue;
+			n = strlen(dir_real);
+			if (strncmp(lake_real, dir_real, n) == 0 && (dir_real[n - 1] == '/' || lake_real[n] == '/'))
+				inside = true;
+		}
+		pfree(copy);
+		if (!inside)
+		{
+			strlcpy(why, "a lake's catalog is outside duckdb.allowed_directories", whylen);
+			return false;
+		}
+	}
+	return true;
+}
+
 static inline void
 qs_elev_begin(QsElev *e)
 {
-	e->on = !superuser();
+	char		why[QS_DETAIL_LEN];
+
+	/* a role the confined build serves runs its own DuckDB, as itself */
+	e->on = !superuser() && !qs_confined_role_ok(why, sizeof(why));
 	if (e->on)
 	{
 		GetUserIdAndSecContext(&e->uid, &e->sec);
@@ -1152,25 +1304,22 @@ qs_elev_end(QsElev *e)
 }
 
 /*
- * May a session that is not a superuser's be answered from the mirror?
- *
- * No. With stock pg_duckdb 1.2.0 a role that is not a superuser gets no local
- * file system from its DuckDB (measured: "File system LocalFileSystem has been
- * disabled by configuration", with duckdb.enable_external_access = off and
- * duckdb.allowed_directories set). Its DuckDB therefore cannot read the lake,
- * and pg_duckdb refuses a role that is not a member of duckdb.postgres_role
- * outright. Membership would open DuckDB to the role, which can then run any
- * statement it likes and would see every mirrored table, whatever it may read
- * from the heap. So the statement stays on the heap, which answers it exactly.
- * docs/40 says what an operator would need, and why that is not enough.
+ * May the mirror answer this session's statement? Superusers always, as
+ * before. Any other role only when qs_confined_role_ok and qs_lakes_confined
+ * both hold (see "Ordinary roles" above); on stock pg_duckdb the first is
+ * refused at once, and the statement stays on the heap, which answers it
+ * exactly. `why` says which condition failed.
  */
 static bool
 qs_mirror_allowed(char *why, size_t whylen)
 {
 	if (superuser())
 		return true;
-	strlcpy(why, "only superusers are routed: stock pg_duckdb gives DuckDB's local file system to superusers only", whylen);
-	return false;
+	if (!qs_confined_role_ok(why, whylen))
+		return false;
+	if (!qs_lakes_confined(why, whylen))
+		return false;
+	return true;
 }
 
 /*
@@ -5179,6 +5328,8 @@ _PG_init(void)
 	qs_exec_methods.ExplainCustomScan = qs_explain_scan;
 
 	CacheRegisterRelcacheCallback(qs_relcache_cb, (Datum) 0);
+	CacheRegisterSyscacheCallback(AUTHMEMROLEMEM, qs_authmem_cb, (Datum) 0);
+	CacheRegisterSyscacheCallback(AUTHMEMMEMROLE, qs_authmem_cb, (Datum) 0);
 	CacheRegisterSyscacheCallback(PROCOID, qs_syscache_cb, (Datum) 0);
 	CacheRegisterSyscacheCallback(OPEROID, qs_syscache_cb, (Datum) 0);
 	CacheRegisterSyscacheCallback(TYPEOID, qs_syscache_cb, (Datum) 0);

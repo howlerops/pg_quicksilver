@@ -1,11 +1,13 @@
 -- Roles that are not superusers, against the lake the sidecar built
 -- (public.orders, public.customers and their DuckLake tables).
 --
+-- This file runs on both builds and its expected output is the same on both.
 -- Stock pg_duckdb gives a role that is not a superuser no local file system
--- for its DuckDB, and refuses DuckDB to any role that is not a member of
--- duckdb.postgres_role. So nothing a role of this kind runs is routed: the
--- heap answers it, with the heap's rows or the heap's error, and the mirror is
--- never asked. What a role cannot read from the heap it must not be able to
+-- for its DuckDB, so nothing a role of this kind runs is routed. On the
+-- confined build (duckdb.confined_file_access) a member of duckdb.postgres_role
+-- may be routed; the decisions for each case are in unprivileged_confined.sql.
+-- What is asserted here is the rows and the errors, which the heap gives on
+-- either build. What a role cannot read from the heap it must not be able to
 -- read through the mirror, by any route. The superuser contrast is at the top.
 \set VERBOSITY terse
 SHOW duckdb.enable_external_access;
@@ -322,18 +324,12 @@ SET quicksilver.route = mirror;
  300000 | 149988000.00 |   1 | 1000000
 (1 row)
 
-SELECT side, reason FROM quicksilver.last_decision();
- side |                  reason                   
-------+-------------------------------------------
- heap | the role is not a superuser (see docs/40)
-(1 row)
-
--- stock pg_duckdb gives such a role DuckDB without the local file system
+-- the rows are the heap's on either build; the decision is the build's (unprivileged_confined.sql)
+-- DuckDB refuses the file outside the lake: SQLSTATE only, the message differs by build
+\set VERBOSITY sqlstate
 SELECT * FROM duckdb.query($$ SELECT count(*) FROM read_csv('/etc/passwd', header = false, sep = '|') $$);
-ERROR:  (PGDuckDB/CreatePlan) Prepared query returned an error: Permission Error: File system LocalFileSystem has been disabled by configuration
-
-LINE 1: SELECT query.* FROM system.main.query(' SELECT count(*) FROM read_csv(''/etc/passwd...
-                              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+ERROR:  XX000
+\set VERBOSITY terse
 -- ---------------------------------------------------------------- superuser, and a superuser who becomes the role
 \c - postgres
 \set VERBOSITY terse
