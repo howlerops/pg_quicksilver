@@ -67,6 +67,10 @@ So DuckDB enforces every read confinement the goal needs, but **not** write conf
   create, remove and move. Reads pass through unchanged.
 - `duckdb.allowed_directories` stays `PGC_SUSET`, which is what this needs: a role that
   is not a superuser cannot `SET` it, and nothing it can do changes it afterwards.
+- It defines the read-only GUC `duckdb.confined_file_access` (`PGC_INTERNAL`, always `on`).
+  The routing extension (`ext/pg_quicksilver`) reads it with `GetConfigOption()` to recognise
+  this build. Stock 1.2.2 does not define it, so the extension never routes an ordinary role
+  on the stock build. `docs/40-the-router-moves-inside.md`, "Ordinary roles", has the rest.
 
 Three consequences, all deliberate:
 
