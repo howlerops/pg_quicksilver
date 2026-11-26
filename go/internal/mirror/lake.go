@@ -133,6 +133,17 @@ func (t *Table) describe(st *State, refusal string) *LakeManifest {
 		}
 		m.Columns = append(m.Columns, col)
 	}
+	// A join domain's companion is declared only once every file that carries
+	// its column carries it too (joindomain.go). Until then the lake does not
+	// know the companion exists, and the files that have one are read by their
+	// logical columns alone.
+	for _, col := range t.joinColumns() {
+		if t.domainCompleteIn(st, col) {
+			m.Columns = append(m.Columns, LakeColumn{
+				Name: companionName(col), PGType: "bigint", Type: arrow.PrimitiveTypes.Int64,
+			})
+		}
+	}
 	live := map[string]bool{}
 	add := func(rel string) {
 		f := LakeFile{Rel: rel}

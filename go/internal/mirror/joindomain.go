@@ -370,6 +370,17 @@ func (t *Table) colsOfFile(rel string) (map[string]bool, error) {
 // column carries its companion, and the domain is enabled. It is derived from
 // the file schemas, so it survives a restart with nothing persisted for it.
 func (t *Table) DomainComplete(column string) bool {
+	return t.domainCompleteIn(&t.State, column)
+}
+
+// domainCompleteIn is DomainComplete against the manifest st, which is what
+// the lake describes when it is not the State the table holds yet.
+//
+// One more condition than the rule stated in the design: a file that does not
+// carry the column at all reads its rows back as the column's missing value.
+// When that value is not NULL the companion would read NULL for a non-NULL
+// value, so such a table is not complete.
+func (t *Table) domainCompleteIn(st *State, column string) bool {
 	b, ok := t.joins[column]
 	if !ok {
 		return false
@@ -378,12 +389,16 @@ func (t *Table) DomainComplete(column string) bool {
 		return false
 	}
 	comp := companionName(column)
+	missingNonNull := false
+	if _, has := st.MissingVals[column]; has {
+		missingNonNull = true
+	}
 	// The manifest names files by their bare names; the directory is the kind.
-	rels := make([]string, 0, len(t.State.BaseFiles)+len(t.State.DeltaFiles))
-	for _, f := range t.State.BaseFiles {
+	rels := make([]string, 0, len(st.BaseFiles)+len(st.DeltaFiles))
+	for _, f := range st.BaseFiles {
 		rels = append(rels, filepath.Join("base", f))
 	}
-	for _, f := range t.State.DeltaFiles {
+	for _, f := range st.DeltaFiles {
 		rels = append(rels, filepath.Join("delta", f))
 	}
 	for _, rel := range rels {
@@ -392,6 +407,9 @@ func (t *Table) DomainComplete(column string) bool {
 			return false
 		}
 		if cols[column] && !cols[comp] {
+			return false
+		}
+		if !cols[column] && missingNonNull {
 			return false
 		}
 	}
@@ -450,4 +468,14 @@ func (t *Table) forEachRowsDead(path string, dead map[int]bool, want []string, f
 		isDead = func(p int) bool { return dead[p] }
 	}
 	return t.forEachRowsWant(path, isDead, want, fill, 0, fn)
+}
+
+// joinColumns is this table's member columns, sorted.
+func (t *Table) joinColumns() []string {
+	out := make([]string, 0, len(t.joins))
+	for c := range t.joins {
+		out = append(out, c)
+	}
+	sort.Strings(out)
+	return out
 }
