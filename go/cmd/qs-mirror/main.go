@@ -176,6 +176,7 @@ func main() {
 	h.AddMetrics(ext.Metrics)
 	go ext.run(ctx)
 	h.AddMetrics(pumpWakes.Metrics)
+	h.AddMetrics(spool.Metrics)
 	jan := newJanitor(log, o)
 	h.AddMetrics(jan.Metrics)
 
@@ -552,6 +553,8 @@ func runMirror(ctx context.Context, log *slog.Logger, o options, h *health.Healt
 	}
 	defer func() { _ = st.Close(context.WithoutCancel(ctx)) }()
 	st.Failover = true
+	spool.attach(st)
+	defer spool.attach(nil)
 
 	consistent, created, err := st.CreateSlot(ctx)
 	if err != nil {
