@@ -100,6 +100,8 @@ PG_MODULE_MAGIC;
 #define QS_DUCKDB_SCAN_NAME	"DuckDBScan"
 #define QS_GENERIC_PENALTY	1.0e10
 #define QS_DETAIL_LEN		200
+/* The role the mirror side runs as; created by pg_quicksilver--0.1.sql (docs/40, "Ordinary roles") */
+#define QS_MIRROR_ROLE		"quicksilver_mirror_reader"
 
 /* ---------------------------------------------------------------- GUCs */
 
@@ -1112,21 +1114,27 @@ qs_load_lakes(Snapshot snap)
 static bool qs_mirror_error_ok(ErrorData *ed);
 
 /*
- * The mirror side runs as the bootstrap superuser, and only the mirror side.
+ * The mirror side runs as QS_MIRROR_ROLE, and only the mirror side.
  *
  * Stock pg_duckdb gives DuckDB to superusers and to members of
- * duckdb.postgres_role, and it gives the local file system to superusers
- * only. A member of that role can also run any DuckDB statement it likes
- * (duckdb.query, duckdb.raw_query), and DuckDB knows nothing of PostgreSQL's
- * privileges: with the lake attached it would read every mirrored table,
- * whatever it may read from the heap. So the application's role is given
- * nothing: no membership, no privilege on a mirror relation. The statement
- * DuckDB runs for it is one this extension wrote, after the executor's own
- * check of the heap table's privileges, out of constructs on the allowlist;
- * nothing of the user's is evaluated by PostgreSQL in between (the mirror
- * statement holds allowlisted pg_catalog objects only, and DuckDB evaluates
- * them). The identity is switched around each call into pg_duckdb and
- * switched back before a row is returned.
+ * duckdb.postgres_role, and the local file system to superusers only. The
+ * confined build (bench/patches) gives a member DuckDB confined to
+ * duckdb.allowed_directories, and that directory holds the files of every
+ * mirrored table. DuckDB knows nothing of PostgreSQL's privileges: a role that
+ * could run DuckDB statements itself would read every mirror, whatever its
+ * SELECT privileges are. So no application role is a member of the duckdb
+ * role. QS_MIRROR_ROLE is the one role that is: it owns the mirror relations,
+ * holds no privilege on a heap table, and is made a member by the operator
+ * (docs/40, "Ordinary roles"). The identity is switched to it around each call
+ * into pg_duckdb and switched back before a row is returned, and on every exit
+ * path, errors included (qs_elev_end, and the PG_CATCH blocks that call it).
+ *
+ * What runs as the switched identity is the mirror side only: the planning and
+ * execution of the allowlisted mirror statement, the attachment of the lake,
+ * and the conversion of the mirror's rows to the heap's types, which uses
+ * built-in functions only (the allowlist holds nothing else). Every check that
+ * concerns the application role is made before the switch: the heap plan's
+ * privileges, the row-level security test and the allowlist walk.
  */
 typedef struct QsElev
 {
@@ -1136,65 +1144,32 @@ typedef struct QsElev
 } QsElev;
 
 /*
- * Ordinary roles (docs/40, "Ordinary roles"). A role that is not a superuser
- * is answered from the mirror only when all of these hold:
+ * Ordinary roles (docs/40, "Ordinary roles"). A role that is not a superuser is
+ * answered from the mirror only when all of these hold:
  *
  *   - the DuckDB build is the confined one: its marker GUC
  *     duckdb.confined_file_access is on (the patch defines it; stock does not);
  *   - duckdb.allowed_directories is set, and every registered lake's catalog
- *     is inside one of its directories;
- *   - the role is a member of duckdb.postgres_role, so that pg_duckdb runs
- *     DuckDB for it, and of neither pg_read_server_files nor
- *     pg_write_server_files (with either, the stock rules apply and nothing is
- *     confined).
+ *     is inside one of its directories (qs_lakes_confined);
+ *   - QS_MIRROR_ROLE exists, is a member of duckdb.postgres_role, is not a
+ *     superuser, and holds none of pg_read_server_files,
+ *     pg_write_server_files and pg_execute_server_program.
  *
- * For such a role the mirror's statements run as the role itself, not as the
- * bootstrap superuser: its DuckDB is confined by the build to the allowed
- * directories and cannot be widened from its session.
- *
- * The three settings are cached per backend. The cache is dropped when a
- * membership in pg_auth_members changes, and it is compared with the current
- * user and the two settings on each use, so a change of either is seen at
- * the next statement. The lake check is made per statement.
+ * The calling role's own memberships are not part of the test: it does not run
+ * DuckDB, so a membership of duckdb.postgres_role that it has anyway gives it
+ * nothing the mirror side would not give it. Not cached: these are a few
+ * catalog lookups per statement, and a superuser flag or a membership changed
+ * since the last statement is seen by the next one.
  */
-static bool qs_confine_valid = false;
-static Oid	qs_confine_user = InvalidOid;
-static char *qs_confine_role = NULL;	/* TopMemoryContext copies */
-static char *qs_confine_dirs = NULL;
-static bool qs_confine_result = false;
-static char qs_confine_why[QS_DETAIL_LEN];
-
-static void
-qs_authmem_cb(Datum arg, int cacheid, uint32 hashvalue)
-{
-	qs_confine_valid = false;
-}
-
 static bool
-qs_same_setting(const char *a, const char *b)
-{
-	if (a == NULL || b == NULL)
-		return a == b;
-	return strcmp(a, b) == 0;
-}
-
-static bool
-qs_confined_role_ok(char *why, size_t whylen)
+qs_mirror_role_ok(char *why, size_t whylen)
 {
 	const char *marker = GetConfigOption("duckdb.confined_file_access", true, false);
 	const char *role = GetConfigOption("duckdb.postgres_role", true, false);
 	const char *dirs = GetConfigOption("duckdb.allowed_directories", true, false);
-	Oid			user = GetUserId();
 	Oid			roleoid = InvalidOid;
+	Oid			mirror = InvalidOid;
 	const char *reason = NULL;
-	MemoryContext old;
-
-	if (qs_confine_valid && qs_confine_user == user &&
-		qs_same_setting(qs_confine_role, role) && qs_same_setting(qs_confine_dirs, dirs))
-	{
-		strlcpy(why, qs_confine_why, whylen);
-		return qs_confine_result;
-	}
 
 	if (marker == NULL || strcmp(marker, "on") != 0)
 		reason = "only superusers are routed: stock pg_duckdb gives DuckDB's local file system to superusers only";
@@ -1204,27 +1179,19 @@ qs_confined_role_ok(char *why, size_t whylen)
 		reason = "duckdb.postgres_role is not set";
 	else if (!OidIsValid(roleoid = get_role_oid(role, true)))
 		reason = "duckdb.postgres_role names no role";
-	else if (!is_member_of_role(user, roleoid))
-		reason = "the role is not a member of duckdb.postgres_role";
-	else if (is_member_of_role(user, ROLE_PG_READ_SERVER_FILES) ||
-			 is_member_of_role(user, ROLE_PG_WRITE_SERVER_FILES))
-		reason = "the role holds pg_read_server_files or pg_write_server_files, which gives unconfined file access";
+	else if (!OidIsValid(mirror = get_role_oid(QS_MIRROR_ROLE, true)))
+		reason = "the mirror role " QS_MIRROR_ROLE " does not exist (CREATE EXTENSION pg_quicksilver creates it)";
+	else if (!is_member_of_role(mirror, roleoid))
+		reason = "the mirror role " QS_MIRROR_ROLE " is not a member of duckdb.postgres_role";
+	else if (superuser_arg(mirror))
+		reason = "the mirror role " QS_MIRROR_ROLE " is a superuser";
+	else if (is_member_of_role(mirror, ROLE_PG_READ_SERVER_FILES) ||
+			 is_member_of_role(mirror, ROLE_PG_WRITE_SERVER_FILES) ||
+			 is_member_of_role(mirror, ROLE_PG_EXECUTE_SERVER_PROGRAM))
+		reason = "the mirror role holds a server-file or program role, which gives unconfined access";
 
-	old = MemoryContextSwitchTo(TopMemoryContext);
-	if (qs_confine_role != NULL)
-		pfree(qs_confine_role);
-	if (qs_confine_dirs != NULL)
-		pfree(qs_confine_dirs);
-	qs_confine_role = role != NULL ? pstrdup(role) : NULL;
-	qs_confine_dirs = dirs != NULL ? pstrdup(dirs) : NULL;
-	MemoryContextSwitchTo(old);
-	qs_confine_user = user;
-	qs_confine_result = reason == NULL;
-	strlcpy(qs_confine_why, reason != NULL ? reason : "", sizeof(qs_confine_why));
-	qs_confine_valid = true;
-
-	strlcpy(why, qs_confine_why, whylen);
-	return qs_confine_result;
+	strlcpy(why, reason != NULL ? reason : "", whylen);
+	return reason == NULL;
 }
 
 /*
@@ -1284,17 +1251,42 @@ qs_lakes_confined(char *why, size_t whylen)
 	return true;
 }
 
+/*
+ * Switches still open in this backend, and the identity the outermost one
+ * saved. An abort (of the transaction or of a subtransaction) that comes while
+ * one is open restores that identity: the PG_CATCH blocks below restore on
+ * every error they catch, so this only matters for a switch whose caller has
+ * no handler (qs_mirror_finish), and it is the last word.
+ */
+static int	qs_elev_open = 0;
+static Oid	qs_elev_outer_uid = InvalidOid;
+static int	qs_elev_outer_sec = 0;
+
 static inline void
 qs_elev_begin(QsElev *e)
 {
-	char		why[QS_DETAIL_LEN];
+	Oid			mirror;
 
-	/* a role the confined build serves runs its own DuckDB, as itself */
-	e->on = !superuser() && !qs_confined_role_ok(why, sizeof(why));
+	/* a superuser's DuckDB is its own; every other role's runs as the mirror role */
+	e->on = !superuser();
 	if (e->on)
 	{
+		mirror = get_role_oid(QS_MIRROR_ROLE, true);
+		if (!OidIsValid(mirror))
+		{
+			e->on = false;
+			ereport(ERROR,
+					(errcode(ERRCODE_UNDEFINED_OBJECT),
+					 errmsg("pg_quicksilver's mirror role \"%s\" does not exist", QS_MIRROR_ROLE)));
+		}
 		GetUserIdAndSecContext(&e->uid, &e->sec);
-		SetUserIdAndSecContext(BOOTSTRAP_SUPERUSERID, e->sec | SECURITY_LOCAL_USERID_CHANGE);
+		if (qs_elev_open == 0)
+		{
+			qs_elev_outer_uid = e->uid;
+			qs_elev_outer_sec = e->sec;
+		}
+		qs_elev_open++;
+		SetUserIdAndSecContext(mirror, e->sec | SECURITY_LOCAL_USERID_CHANGE | SECURITY_RESTRICTED_OPERATION);
 	}
 }
 
@@ -1302,12 +1294,35 @@ static inline void
 qs_elev_end(QsElev *e)
 {
 	if (e->on)
+	{
+		e->on = false;
+		if (qs_elev_open > 0)
+			qs_elev_open--;
 		SetUserIdAndSecContext(e->uid, e->sec);
+	}
+}
+
+/* Transaction or subtransaction abort: put back the identity a switch left (see qs_elev_open). */
+static void
+qs_elev_abort(void)
+{
+	if (qs_elev_open > 0)
+	{
+		qs_elev_open = 0;
+		SetUserIdAndSecContext(qs_elev_outer_uid, qs_elev_outer_sec);
+	}
+}
+
+static void
+qs_subxact_cb(SubXactEvent event, SubTransactionId mySubid, SubTransactionId parentSubid, void *arg)
+{
+	if (event == SUBXACT_EVENT_ABORT_SUB)
+		qs_elev_abort();
 }
 
 /*
  * May the mirror answer this session's statement? Superusers always, as
- * before. Any other role only when qs_confined_role_ok and qs_lakes_confined
+ * before. Any other role only when qs_mirror_role_ok and qs_lakes_confined
  * both hold (see "Ordinary roles" above); on stock pg_duckdb the first is
  * refused at once, and the statement stays on the heap, which answers it
  * exactly. `why` says which condition failed.
@@ -1317,7 +1332,7 @@ qs_mirror_allowed(char *why, size_t whylen)
 {
 	if (superuser())
 		return true;
-	if (!qs_confined_role_ok(why, whylen))
+	if (!qs_mirror_role_ok(why, whylen))
 		return false;
 	if (!qs_lakes_confined(why, whylen))
 		return false;
@@ -1326,7 +1341,7 @@ qs_mirror_allowed(char *why, size_t whylen)
 
 /*
  * Run one statement in this backend's DuckDB (duckdb.raw_query), as the
- * bootstrap superuser. An error DuckDB raised is swallowed and reported as
+ * mirror role (qs_elev_begin). An error DuckDB raised is swallowed and reported as
  * false; anything else is rethrown.
  */
 static bool
@@ -2802,6 +2817,7 @@ qs_xact_cb(XactEvent event, void *arg)
 			qs_duck_foreign = false;
 			if (event == XACT_EVENT_ABORT)
 			{
+				qs_elev_abort();
 				/* DuckDB rolled back with us: an attachment made in this transaction is gone */
 				if (qs_attach_open)
 					qs_lakes_attached = false;
@@ -3155,8 +3171,15 @@ qs_subst_query(Query *q, QsSubst *s)
 		}
 		if (rte->perminfoindex > 0)
 		{
-			perminfos = lappend(perminfos, getRTEPermissionInfo(q->rteperminfos, rte));
-			rte->perminfoindex = list_length(perminfos);
+			/*
+			 * No permission entry is kept. The heap statement's privileges were
+			 * checked for the calling role before this (qs_decide, on the heap
+			 * plan); the mirror statement runs as the mirror role, and a check
+			 * here would be made as that role (a view's SELECT, say, is the
+			 * invoker's). PostgreSQL asserts that a kept entry requires something,
+			 * so the entry is dropped rather than emptied.
+			 */
+			rte->perminfoindex = 0;
 		}
 	}
 	q->rteperminfos = perminfos;
@@ -3636,8 +3659,8 @@ qs_convert(QsScanState *st, TupleTableSlot *child, TupleTableSlot *slot, bool fr
 }
 
 /*
- * Every call into pg_duckdb's node is made as the bootstrap superuser (see
- * QsElev) and, under EXPLAIN ANALYZE, with the portal's command tag turned
+ * Every call into pg_duckdb's node is made as the mirror role, unless the
+ * caller is a superuser (see QsElev), and, under EXPLAIN ANALYZE, with the portal's command tag turned
  * into SELECT: pg_duckdb looks at that tag to decide whether to run the
  * statement or DuckDB's own EXPLAIN ANALYZE of it, which returns no rows and
  * runs it a second time to be described. An explained statement is run the
@@ -5359,6 +5382,7 @@ _PG_init(void)
 
 	EnableQueryId();
 	RegisterXactCallback(qs_xact_cb, NULL);
+	RegisterSubXactCallback(qs_subxact_cb, NULL);
 
 	memset(&qs_scan_methods, 0, sizeof(qs_scan_methods));
 	qs_scan_methods.CustomName = QS_SCAN_NAME;
@@ -5373,8 +5397,6 @@ _PG_init(void)
 	qs_exec_methods.ExplainCustomScan = qs_explain_scan;
 
 	CacheRegisterRelcacheCallback(qs_relcache_cb, (Datum) 0);
-	CacheRegisterSyscacheCallback(AUTHMEMROLEMEM, qs_authmem_cb, (Datum) 0);
-	CacheRegisterSyscacheCallback(AUTHMEMMEMROLE, qs_authmem_cb, (Datum) 0);
 	CacheRegisterSyscacheCallback(PROCOID, qs_syscache_cb, (Datum) 0);
 	CacheRegisterSyscacheCallback(OPEROID, qs_syscache_cb, (Datum) 0);
 	CacheRegisterSyscacheCallback(TYPEOID, qs_syscache_cb, (Datum) 0);

@@ -36,6 +36,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -488,6 +489,11 @@ func extViewName(qualified string) string {
 
 func extQuote(s string) string { return `"` + strings.ReplaceAll(s, `"`, `""`) + `"` }
 
+// extMirrorRole owns the mirror schema and its views. It is created by
+// pg_quicksilver--0.1.sql, and it is the only role that may read them
+// (quicksilver_mirror_reader; pg_quicksilver's C code runs the mirror side as it).
+const extMirrorRole = "quicksilver_mirror_reader"
+
 // extViewSQL is the mirror relation: the heap's column names, in the heap's
 // order, cast to the heap's types, over the lake table by name.
 func extViewSQL(mirrorSchema, heapSchema, heapTable string, cols []extColumn) string {
@@ -609,6 +615,27 @@ func (e *extLink) sync(ctx context.Context, conn *pgx.Conn, desired map[string]b
 	if _, err := tx.Exec(ctx, "CREATE SCHEMA IF NOT EXISTS "+extQuote(e.schema)); err != nil {
 		return err
 	}
+	// The mirror relations belong to the role pg_quicksilver runs the mirror
+	// side as, and PUBLIC may not reach them: a role that could read a mirror
+	// directly would read a table it has no privilege on (docs/40, "Ordinary roles").
+	// Only when it is not so already: every DDL statement on the primary is
+	// logged by the DDL capture (quicksilver.ddl_log), and the sidecar takes
+	// each one as a barrier. A statement that changes nothing must not run.
+	var schemaWrong bool
+	if err := tx.QueryRow(ctx, `
+		SELECT pg_get_userbyid(n.nspowner) IS DISTINCT FROM $2
+		       OR EXISTS (SELECT 1 FROM aclexplode(n.nspacl) a WHERE a.grantee = 0)
+		  FROM pg_namespace n WHERE n.nspname = $1`, e.schema, extMirrorRole).Scan(&schemaWrong); err != nil {
+		return err
+	}
+	if schemaWrong {
+		if _, err := tx.Exec(ctx, "ALTER SCHEMA "+extQuote(e.schema)+" OWNER TO "+extQuote(extMirrorRole)); err != nil {
+			return fmt.Errorf("%s: owner: %w", e.schema, err)
+		}
+		if _, err := tx.Exec(ctx, "REVOKE ALL ON SCHEMA "+extQuote(e.schema)+" FROM PUBLIC"); err != nil {
+			return err
+		}
+	}
 
 	names := make([]string, 0, len(desired))
 	for q := range desired {
@@ -660,16 +687,36 @@ func (e *extLink) sync(ctx context.Context, conn *pgx.Conn, desired map[string]b
 				"this sidecar's; leaving it alone", "table", q)
 			continue
 		}
+		rel := extQuote(e.schema) + "." + extQuote(view)
+		// A view made before its owner was the mirror role is handed over, kept or not.
+		// Only when the owner is not the mirror role already (see the schema above:
+		// a DDL statement that changes nothing must not run).
+		var wrongOwner bool
+		if err := tx.QueryRow(ctx, `
+			SELECT pg_get_userbyid(c.relowner) IS DISTINCT FROM $2
+			  FROM pg_class c WHERE c.oid = to_regclass($1)`, rel, extMirrorRole).Scan(&wrongOwner); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return err
+		}
+		if wrongOwner {
+			if _, err := tx.Exec(ctx, "ALTER VIEW "+rel+" OWNER TO "+extQuote(extMirrorRole)); err != nil {
+				return fmt.Errorf("%s: owner: %w", q, err)
+			}
+		}
 		if haveSig != nil && *haveSig == sig && registered != nil && *registered {
 			kept = append(kept, q)
 			continue
 		}
-		rel := extQuote(e.schema) + "." + extQuote(view)
 		if _, err := tx.Exec(ctx, "DROP VIEW IF EXISTS "+rel); err != nil {
 			return fmt.Errorf("%s: %w", q, err)
 		}
+		// Created by the sidecar's role (a DDL event trigger on the primary runs
+		// as the role doing the DDL, so the mirror role cannot create it), then
+		// handed to the mirror role in the same transaction.
 		if _, err := tx.Exec(ctx, viewSQL); err != nil {
 			return fmt.Errorf("%s: create the mirror relation: %w", q, err)
+		}
+		if _, err := tx.Exec(ctx, "ALTER VIEW "+rel+" OWNER TO "+extQuote(extMirrorRole)); err != nil {
+			return fmt.Errorf("%s: owner: %w", q, err)
 		}
 		if _, err := tx.Exec(ctx, fmt.Sprintf("COMMENT ON VIEW %s IS '%s'", rel, strings.ReplaceAll(sig, "'", "''"))); err != nil {
 			return err
