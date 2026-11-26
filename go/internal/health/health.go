@@ -61,6 +61,7 @@ type Health struct {
 	diverged     bool
 	verifiedAt   time.Time
 	slotRetained int64
+	extra        []func() string
 
 	// bootstrapped is false until the mirror has a complete copy of the source
 	// to serve from. Without it a freshly-started node is READY: lag is
@@ -277,8 +278,23 @@ func (h *Health) readyApartFromHalts(s Snapshot) (bool, string) {
 	return true, fmt.Sprintf("lag %.1fs within SLO %.1fs", s.LagSeconds, h.slo.Seconds())
 }
 
+// AddMetrics appends another component's Prometheus text to /metrics. The
+// DuckLake publisher reports through it.
+func (h *Health) AddMetrics(fn func() string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.extra = append(h.extra, fn)
+}
+
 func (h *Health) Metrics() string {
 	s := h.Snapshot()
+	h.mu.Lock()
+	extra := append([]func() string(nil), h.extra...)
+	h.mu.Unlock()
+	var more strings.Builder
+	for _, fn := range extra {
+		more.WriteString(fn())
+	}
 	ok, _ := h.Ready()
 	ready := 0
 	if ok {
@@ -328,7 +344,7 @@ quicksilver_bootstrapped %d
 # HELP quicksilver_slot_retained_bytes WAL this mirror's slot pins on the PRIMARY
 # TYPE quicksilver_slot_retained_bytes gauge
 quicksilver_slot_retained_bytes %d
-`, s.LagSeconds, s.LagBytes, ready, s.CompactionBacklog, diverged, boot, s.SlotRetainedBytes) + hb.String()
+`, s.LagSeconds, s.LagBytes, ready, s.CompactionBacklog, diverged, boot, s.SlotRetainedBytes) + hb.String() + more.String()
 }
 
 // labelEscape escapes a Prometheus label value. A halt reason quotes column

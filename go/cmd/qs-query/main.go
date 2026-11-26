@@ -20,6 +20,12 @@
 //	qs-query -mirror ... -table ... -seq              # its sequence number, alone
 //	qs-query -mirror ... -table ... -published -lsn   # the LSN it stands at
 //
+// With QS_DUCKLAKE=on the sidecar also publishes the mirror as a DuckLake table,
+// and then there is nothing to regenerate at all (ducklake.go):
+//
+//	qs-query -mirror ... -table ... -ducklake         # ATTACH, the table name, freshness
+//	qs-query -mirror ... -table ... -ducklake -engine postgres -view v
+//
 // The sequence number goes up by one on every publish, so "has it changed" is
 // one integer compared with the one the reader holds. The files a published
 // snapshot names outlive it by the grace period in its descriptor
@@ -51,6 +57,8 @@ func main() {
 	lsn := flag.Bool("lsn", false, "print only the applied LSN, for freshness gating")
 	published := flag.Bool("published", false, "print the snapshot the writer published, instead of regenerating from the manifest")
 	seq := flag.Bool("seq", false, "print only the published snapshot's sequence number, to detect change")
+	lake := flag.Bool("ducklake", false, "print what a reader of the DuckLake table needs (QS_DUCKLAKE=on): the ATTACH and the table name, or with -engine postgres the pg_duckdb view over it")
+	attachOnLogin := flag.Bool("attach-on-login", false, "with -ducklake -engine postgres: also emit a login event trigger that attaches the lake in every session")
 	flag.Parse()
 	if *root == "" || *table == "" {
 		flag.Usage()
@@ -59,6 +67,11 @@ func main() {
 	schema, name, ok := strings.Cut(*table, ".")
 	if !ok {
 		fail("table must be schema.table")
+	}
+
+	if *lake {
+		emitDuckLake(*root, schema, name, *engine, *view, *dsn, *lsn, *attachOnLogin)
+		return
 	}
 
 	if *published || *seq {
