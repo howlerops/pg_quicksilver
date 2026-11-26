@@ -1,0 +1,16 @@
+{
+ "clients": 8,
+ "iterations_per_client": 200,
+ "transactions_ok": 1600,
+ "transactions_failed": 0,
+ "errors_sample": [],
+ "served_by_mirror": 642,
+ "served_by_heap": 958,
+ "served_by_other_or_none": 0,
+ "routed_equal_heap_routing_off_same_txn": 447,
+ "mirror_answers_equal_logged_heap_state_at_applied_lsn": 642,
+ "mirror_answers_NOT_matching_logged_state": 0,
+ "writer_commits": 359,
+ "elapsed_s": 37.13,
+ "mismatch_sample": []
+}
