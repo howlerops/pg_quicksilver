@@ -128,7 +128,28 @@ static int	qs_fresh_wait_ms = 0;
 static char *qs_min_applied_lsn_str = NULL;
 static XLogRecPtr qs_min_applied_lsn = InvalidXLogRecPtr;
 static bool qs_allow_unsafe = false;
-static bool qs_route_in_xact = true;
+/*
+ * quicksilver.route_in_transaction: off never routes inside a transaction
+ * block. safe (the default) and on route there when the statement's state
+ * allows it, which is one test: READ COMMITTED, no transaction id yet (nothing
+ * written), no subtransaction open (qs_state_blocks). on keeps its name and
+ * its meaning; it is not superuser-only.
+ */
+typedef enum
+{
+	QS_XACT_OFF,
+	QS_XACT_SAFE,
+	QS_XACT_ON,
+} QsRouteInXact;
+
+static const struct config_enum_entry qs_route_in_xact_options[] = {
+	{"off", QS_XACT_OFF, false},
+	{"safe", QS_XACT_SAFE, false},
+	{"on", QS_XACT_ON, false},
+	{NULL, 0, false}
+};
+
+static int	qs_route_in_xact = QS_XACT_SAFE;
 static int	qs_wait_max_ms = 500;
 static double qs_wait_fraction = 0.1;
 static double qs_ms_per_cost_unit = 0.005;
@@ -2745,7 +2766,7 @@ qs_recovery_blocked(void)
  * candidate at once and goes on to the heap, where it ends like any other.
  */
 static int
-qs_gate(List *heaps, XLogRecPtr now, bool reload, double cost, char *why, size_t whylen)
+qs_gate(List *heaps, XLogRecPtr now, bool reload, bool may_wait, double cost, char *why, size_t whylen)
 {
 	static uint32 wait_event = 0;
 	TimestampTz start = 0;
@@ -2791,14 +2812,15 @@ qs_gate(List *heaps, XLogRecPtr now, bool reload, double cost, char *why, size_t
 		{
 			budget = qs_wait_budget(cost);
 			/*
-			 * No wait while a snapshot is held. The planner and an executor's
-			 * start both run inside one, and PostgreSQL requires a portal's
-			 * snapshot to stay the active one (an assertion-enabled build
-			 * aborted when it was swapped during planning; docs/40, "What the
-			 * wait costs"), so the wait is not taken. Nor inside a
-			 * subtransaction.
+			 * The snapshot is held while we sleep, and is not released or
+			 * replaced: the planner and an executor's start hold the portal's
+			 * snapshot, and PostgreSQL requires that one to stay the active
+			 * one (docs/40, "What the wait costs"). The wait only delays the
+			 * statement; the snapshot it will read is the one it already has,
+			 * and R (the position it must reach) is fixed, so the mirror
+			 * catching up to R is enough. No wait inside a subtransaction.
 			 */
-			if (ActiveSnapshotSet() || IsSubTransaction() || GetCurrentTransactionNestLevel() != 1)
+			if (!may_wait || IsSubTransaction() || GetCurrentTransactionNestLevel() != 1)
 				budget = 0;
 			if (budget <= 0)
 				break;
@@ -2866,7 +2888,9 @@ qs_state_blocks(const char **detail)
 	/*
 	 * A transaction that has an xid has written, or is about to: the mirror
 	 * is built from committed changes and cannot show it its own. Whatever
-	 * quicksilver.route_in_transaction says.
+	 * quicksilver.route_in_transaction says. The three conditions of `safe`
+	 * (READ COMMITTED, no xid, no subtransaction) are the checks above and
+	 * apply to every setting but off.
 	 */
 	if (TransactionIdIsValid(GetTopTransactionIdIfAny()))
 	{
@@ -2875,7 +2899,7 @@ qs_state_blocks(const char **detail)
 	}
 	if (qs_in_block())
 	{
-		if (!qs_route_in_xact)
+		if (qs_route_in_xact == QS_XACT_OFF)
 		{
 			*detail = "quicksilver.route_in_transaction is off";
 			return QR_XACT_BLOCK;
@@ -3737,7 +3761,8 @@ qs_begin_scan(CustomScanState *node, EState *estate, int eflags)
 			qs_gated_plan = NULL;
 			if (!gated)
 			{
-				state = qs_gate((List *) list_nth(cs->custom_private, 4), qs_current_lsn(), true,
+				/* no wait here: the executor's start holds the portal's snapshot, as it always did */
+				state = qs_gate((List *) list_nth(cs->custom_private, 4), qs_current_lsn(), true, false,
 								cs->scan.plan.total_cost, stale, sizeof(stale));
 				if (state >= 0)
 					why = stale;
@@ -4070,6 +4095,19 @@ qs_decide(Query *orig, PlannedStmt *heap, const char *query_string, int cursorOp
 		QS_HEAP(state, state_detail, NIL);
 	if (cursorOptions & CURSOR_OPT_SCROLL)
 		QS_HEAP(QR_CURSOR, NULL, NIL);
+
+	/*
+	 * A DECLARE that says neither SCROLL nor NO SCROLL gets a scrollable cursor
+	 * when the plan it is given can scan backward (PerformCursorOpen decides
+	 * from the plan it receives, which is ours). A routed plan cannot, so the
+	 * cursor would refuse a FETCH BACKWARD the heap answers. DECLARE is the only
+	 * caller at the top level that passes neither this nor CURSOR_OPT_PARALLEL_OK
+	 * (plain statements, PREPARE, SPI and EXPLAIN pass PARALLEL_OK; COPY and
+	 * CREATE TABLE AS are heap already), so that is the test.
+	 */
+	if (!(cursorOptions & (CURSOR_OPT_NO_SCROLL | CURSOR_OPT_PARALLEL_OK)) &&
+		ExecSupportsBackwardScan(heap->planTree))
+		QS_HEAP(QR_CURSOR, "the heap plan can scan backward, so the cursor would be scrollable", NIL);
 	if (qs_is_duckdb_scan(heap->planTree))
 		QS_HEAP(QR_NOT_MIRRORED, "the statement is not a heap statement", NIL);
 
@@ -4201,7 +4239,7 @@ qs_decide(Query *orig, PlannedStmt *heap, const char *query_string, int cursorOp
 		/* the position this statement can see is taken once, however often it is decided */
 		if (qs_decide_now == InvalidXLogRecPtr)
 			qs_decide_now = qs_current_lsn();
-		stale = qs_gate(heaps, qs_decide_now, false, heap->planTree->total_cost, detail, sizeof(detail));
+		stale = qs_gate(heaps, qs_decide_now, false, true, heap->planTree->total_cost, detail, sizeof(detail));
 		if (stale >= 0)
 			QS_HEAP(stale, detail, NIL);
 		qs_gated_waited_ms = qs_waited_ms;
@@ -4569,7 +4607,13 @@ qs_ExplainOneQuery(Query *query, int cursorOptions, IntoClause *into, ExplainSta
 	}
 	PG_END_TRY();
 
-	if (qs_last.fresh && !qs_last.mirror)
+	/*
+	 * In text format these follow the plan. In JSON, XML or YAML the plan's
+	 * group has been closed by ExplainOnePlan already, so a property written
+	 * here would sit outside it and make the document invalid: there, the
+	 * decision is only in quicksilver.last_decision().
+	 */
+	if (qs_last.fresh && !qs_last.mirror && es->format == EXPLAIN_FORMAT_TEXT)
 	{
 		ExplainPropertyText("Quicksilver",
 							psprintf("heap (%s)", qs_reason_names[qs_last.reason]), es);
@@ -5091,11 +5135,12 @@ _PG_init(void)
 							 "With quicksilver.route = mirror, route statements the allowlist does not cover.",
 							 "For generating and testing the allowlist only: answers may differ from the heap's.",
 							 &qs_allow_unsafe, false, PGC_SUSET, 0, NULL, NULL, NULL);
-	DefineCustomBoolVariable("quicksilver.route_in_transaction",
+	DefineCustomEnumVariable("quicksilver.route_in_transaction",
 							 "Route inside a transaction block where that is safe.",
-							 "READ COMMITTED, no savepoint open, nothing written yet. The mirror's answer is taken whole when the statement starts "
-							 "and DuckDB's transaction is ended with it, so a later SAVEPOINT, write or EXPLAIN finds pg_duckdb idle.",
-							 &qs_route_in_xact, true, PGC_USERSET, 0, NULL, NULL, NULL);
+							 "off: never inside a transaction block. safe (default): inside one that is READ COMMITTED, has no transaction id "
+							 "(nothing written) and no savepoint open. on: the same test. The mirror's answer is taken whole when the statement "
+							 "starts and DuckDB's transaction is ended with it, so a later SAVEPOINT, write or EXPLAIN finds pg_duckdb idle.",
+							 &qs_route_in_xact, QS_XACT_SAFE, qs_route_in_xact_options, PGC_USERSET, 0, NULL, NULL, NULL);
 	DefineCustomBoolVariable("quicksilver.prefer_custom_plans",
 							 "Keep the plan cache planning routable prepared statements with their parameter values.", NULL,
 							 &qs_prefer_custom, true, PGC_USERSET, 0, NULL, NULL, NULL);

@@ -30,6 +30,15 @@ EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) :q;
 \pset format aligned
 \! grep -c -E '"Quicksilver": "mirror"|"Mirror Rows": 3|"Mirror Time": [0-9.]+|"Actual Total Time"' /tmp/qs_regress/explain.out | sed 's/[1-9][0-9]*/found/'
 SELECT pg_read_file('/tmp/qs_regress/explain.out')::jsonb -> 0 -> 'Plan' ->> 'Node Type' AS valid_json_top_node;
+-- a statement the heap answers (a lookup): the JSON parses too; the decision is text only there
+\pset format unaligned
+\t on
+\o /tmp/qs_regress/explain_heap.out
+EXPLAIN (FORMAT JSON) SELECT * FROM public.orders WHERE id = 4242;
+\o
+\t off
+\pset format aligned
+SELECT pg_read_file('/tmp/qs_regress/explain_heap.out')::jsonb -> 0 -> 'Plan' ->> 'Node Type' AS heap_json_top_node;
 \o /tmp/qs_regress/explain.out
 EXPLAIN (ANALYZE, VERBOSE, BUFFERS, WAL, SETTINGS, FORMAT YAML) :q;
 EXPLAIN (ANALYZE, FORMAT XML) :q;

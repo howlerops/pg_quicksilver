@@ -82,7 +82,9 @@ def pct(xs, p):
 
 primary = psycopg.connect(P, autocommit=True)
 ids = [r[0] for r in primary.execute("SELECT id FROM public.orders TABLESAMPLE SYSTEM (0.05) LIMIT 2000")]
-rd = psycopg.connect(S, autocommit=True)
+# prepare_threshold=None: psycopg would prepare a statement after its fifth run, and a prepared
+# statement is not planned again, so the router makes no new decision and last_decision() goes stale
+rd = psycopg.connect(S, autocommit=True, prepare_threshold=None)
 print("settings on the standby: " + ", ".join(
     f"{n.split('.')[1]}={rd.execute('SELECT current_setting(%s)', (n,)).fetchone()[0]}"
     for n in ("quicksilver.max_lag", "quicksilver.freshness_wait", "quicksilver.freshness_wait_fraction",
@@ -97,7 +99,7 @@ for name, sql, _, workers in CLASSES:
     print(f"  {name:8} heap plan cost {cost:>10.0f}: estimated {cost * unit:6.0f} ms on the heap; the new default waits at most "
           f"{min(cap, cost * unit * frac):.0f} ms")
 
-print(f"\n{'writes/s':>9} {'heap class':>10}  {'setting':32} {'routed':>10} {'median ms':>10} {'p95 ms':>9}")
+print(f"\n{'writes/s':>9} {'heap class':>10}  {'setting':32} {'routed':>10} {'median ms':>10} {'p95 ms':>9} {'routed med':>11} {'heap med':>9}")
 for rate in [int(x) for x in args.rates.split(",")]:
     w = Writer(rate, ids)
     w.start()
@@ -108,17 +110,19 @@ for rate in [int(x) for x in args.rates.split(",")]:
         for cfg, sets in CONFIGS:
             for s in sets:
                 rd.execute(s)
-            lat, routed, why = [], 0, {}
+            lat, lat_r, lat_h, routed, why = [], [], [], 0, {}
             for _ in range(n):
                 time.sleep(random.uniform(0.0, 0.15))
                 t = time.monotonic()
                 rd.execute(sql).fetchall()
                 lat.append((time.monotonic() - t) * 1000)
                 side, reason = rd.execute("SELECT side, reason FROM quicksilver.last_decision()").fetchone()
+                (lat_r if side == "mirror" else lat_h).append(lat[-1])
                 routed += side == "mirror"
                 if side != "mirror":
                     why[reason] = why.get(reason, 0) + 1
-            print(f"{rate:>9} {name:>10}  {cfg:32} {routed:>4} of {n:<3} {statistics.median(lat):>10.1f} {pct(lat, 0.95):>9.1f}"
+            med = lambda xs: f"{statistics.median(xs):>9.1f}" if xs else f"{'-':>9}"
+            print(f"{rate:>9} {name:>10}  {cfg:32} {routed:>4} of {n:<3} {statistics.median(lat):>10.1f} {pct(lat, 0.95):>9.1f} {med(lat_r):>11} {med(lat_h):>9}"
                   + ("" if cfg == "heap" or not why else "   heap because: " + ", ".join(f"{k} ({v})" for k, v in why.items())), flush=True)
     w.stop = True
     w.join()

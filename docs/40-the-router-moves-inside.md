@@ -30,6 +30,12 @@ the ICU `en-US` database and 467 in the C locale one, 0 different in either**
 default now, and three things in the sections below are no longer true; each
 says so where it stands.
 
+**Since 2026-11-26** ([Measured again](#measured-again-2026-11-26)): the
+freshness wait is taken, inside a bound; a READ COMMITTED transaction block that
+has written nothing is routed by default (`quicksilver.route_in_transaction =
+safe`); and the routed numbers under concurrent writes to the mirrored table are
+no longer the zeros that the sections below report as history.
+
 Getting there removed things from the list that the task's own sketch put on
 it. They are in [What the harness took off the list](#what-the-harness-took-off-the-list),
 and they are the most useful part of this document.
@@ -45,7 +51,7 @@ production sidecar on a hot standby. One host, 4 vCPU. The scripts are in
 |---|---|
 | No typed view of the statement. `7/2`, `avg(numeric)`, text ordering were refused by spelling, after somebody found them. | Walks the analysed, rewritten query tree. Every operator, function, aggregate, cast and type is a catalog object; it is routed only if that object is on the allowlist. |
 | Planned every candidate twice: its own `EXPLAIN`, then the real thing. | The heap plan it judges by is the plan PostgreSQL makes anyway. A cheap statement is planned once and costs nothing more. |
-| A transaction block was always the heap's: the proxy's own probe broke pg_duckdb's state. | Still the heap's by default, for one remaining reason (below), and a setting for clients it does not apply to. |
+| A transaction block was always the heap's: the proxy's own probe broke pg_duckdb's state. | Routed inside a block that is READ COMMITTED, has written nothing and has no savepoint open (`quicksilver.route_in_transaction = safe`, the default since 2026-11-26; `off` refuses every block). |
 | 40 to 90 µs added to a 15 to 30 µs lookup, warm. | Within this host's noise on a prepared lookup; about 3 µs on the simple protocol. |
 | TLS, authentication, pipelining, cancel, COPY re-implemented or refused. | PostgreSQL's own. There is no second listener. |
 | The mirror's types reached the client (`decimal(38,2)`, `hugeint`). | The client sees the heap's RowDescription or the statement is not routed. |
@@ -61,8 +67,10 @@ mirror`). For a `SELECT` that reads at least one registered table:
 1. **PostgreSQL plans it for the heap.** This always happens, and it is the
    plan that is executed unless everything below says otherwise.
 2. **The session.** Inside a function, a `DO` block, `CREATE TABLE AS` or
-   `COPY`; in a transaction block (see below), a savepoint, or anything but
-   READ COMMITTED; for a scrollable or holdable cursor: heap.
+   `COPY`; in a transaction block that has written, or has a savepoint open,
+   or is not READ COMMITTED (see below); a scrollable cursor, and a cursor
+   declared with neither option whose heap plan can scan backward (a sort, an
+   ordered index scan): heap.
 3. **The cost gate.** Heap unless the plan's total cost is at least
    `quicksilver.min_cost` (10,000) or it reads at least `quicksilver.min_rows`
    (50,000) rows from mirrored tables. A scan under a `Limit` counts for the
@@ -335,7 +343,8 @@ and that is not verification.
 A PostgreSQL 17.12 built with `--enable-cassert` (`./configure --enable-cassert
 --enable-debug --with-icu --with-openssl --with-lz4 --with-zstd`), the stock
 pg_duckdb package copied into it, the extension built against it.
-`validate/cassert.sh` runs all of it; `debug_assertions` is `on`.
+`validate/real/cassert.sh` runs all of it (the stand-in `validate/cassert.sh` was
+removed); `debug_assertions` is `on`.
 
 | on the cassert server | |
 |---|---|
@@ -425,15 +434,33 @@ constants.
 | pgx 5.11 (`go/cmd/qs-extcheck`, 4 tests) | All five exec modes, seven rounds each: the unselective parameter is answered by the mirror, the selective one, the lookup and the division by the heap, all equal to a heap-only connection. RowDescription identical field by field in every mode, table OID and attribute number included, text and binary. A transaction with a nested (savepoint) transaction. A batch. |
 | psycopg 3.3.9, libpq 18 (`validate/psycopg_check.py`, 16 checks) | Autocommit: simple and extended protocol routed; a named prepared statement alternating two values twelve times goes mirror, heap, mirror, heap; binary results; `cursor.description`; pipeline mode; `COPY`; cancel mid-statement. Not autocommit: see below. |
 
-**psycopg without autocommit is not routed by default**, and neither is any
-other statement in a transaction block. pg_duckdb aborts a transaction that
-takes a `SAVEPOINT` after it has run a query, and a nested transaction in every
-driver is a `SAVEPOINT`. The extension cannot know one is coming. So: heap,
-and correct. `quicksilver.route_in_transaction = on` routes inside a READ
-COMMITTED block with no savepoint open, for a client that takes none; the
-psycopg check then gets the mirror's answer, a server-side cursor's rows from
-the mirror, and, on purpose, the error a later savepoint gets. Such a
-transaction also does not see its own writes in the mirror.
+**Transaction blocks: routed by default, when they are safe (2026-11-26).**
+A client that does not autocommit (psycopg's default, most ORMs) is routed
+inside a block that is READ COMMITTED, has no transaction id (it has written
+nothing) and has no savepoint open: `quicksilver.route_in_transaction = safe`.
+The three conditions are checked for every setting except `off` (in
+`qs_state_blocks`); a block that writes is the heap's from its first write
+on, because the mirror cannot see its own uncommitted changes.
+
+The text of this section before 2026-11-26 said that a
+non-autocommit client was not routed by default, because pg_duckdb aborts a
+transaction that takes a `SAVEPOINT` after it has run a query. That is no
+longer the case for the block as a whole: a `SAVEPOINT`, `RELEASE`, `EXPLAIN`,
+`EXPLAIN ANALYZE` or `INSERT` after a routed read works (`sql/transactions.sql`
+and the psycopg check both do it). The mirror's answer is taken whole when the
+statement starts and DuckDB's transaction is ended with it. What a routed
+statement does not see is the transaction's own writes, which is why a
+transaction that has written is never routed.
+
+Three things the transaction fuzzer found on the way, all fixed:
+a cursor declared with neither `SCROLL` nor `NO SCROLL`, over a plan that can
+scan backward, is scrollable on the heap and was not on a routed plan, so
+`FETCH BACKWARD` was refused (fixed: the heap keeps it); a statement cancelled
+by `statement_timeout` while routed reaches the client as `XX000` "Query
+cancelled" from pg_duckdb, not `57014` (not changed here, noted in the check);
+and `EXPLAIN (FORMAT JSON)` of a heap decision wrote its `Quicksilver`
+property outside the plan's object, which made the document invalid (fixed:
+JSON, XML and YAML carry no decision; text does).
 
 The other two things [38](38-a-router-in-front.md) found pg_duckdb doing in a
 transaction are gone as problems. After an `EXPLAIN` in the same transaction it
@@ -509,8 +536,9 @@ heap, and the extension needs no further change for them.
 - **Integer `+ - *`** unless the session accepts a lost overflow error.
 - **Text order** under any collation but `C`.
 - **Date and timestamp columns** that nobody has asserted to be finite.
-- **Transaction blocks** by default; savepoints, REPEATABLE READ and
-  SERIALIZABLE always.
+- **Transaction blocks** that have written, or have a savepoint open;
+  REPEATABLE READ and SERIALIZABLE always. (A READ COMMITTED block that has not
+  written is routed by default; see [Transaction blocks](#what-it-does).)
 - **Anything inside a function**, a `DO` block, `CREATE TABLE AS`, `COPY
   (SELECT ...)`.
 - **Scrollable and holdable cursors.**
@@ -652,7 +680,7 @@ python3 validate/constructs.py          # what one more allowlist entry would bu
 python3 validate/psycopg_check.py && validate/standby_check.sh
 (cd ../../go && QS_EXT_DSN='host=/tmp port=5541 dbname=app user=postgres' go test ./cmd/qs-extcheck/)
 validate/latency.sh && python3 validate/routed_timing.py
-CA=/path/to/cassert/prefix validate/cassert.sh
+CA=/path/to/cassert/prefix validate/real/cassert.sh
 validate/teardown.sh
 ```
 
@@ -732,11 +760,37 @@ commit a snapshot can see). A mirror that has not is answered by the heap at onc
 wait for it, `quicksilver.freshness_wait_fraction` (10%) of the heap plan's
 estimated time (total cost times `quicksilver.ms_per_cost_unit`, 0.005 ms), capped at
 `quicksilver.freshness_wait_max` (500 ms), with `quicksilver.freshness_wait` as a
-floor under it (0 by default). The wait is **not taken** in this build: it would
-have to give up the statement's snapshot, the planner and an executor's start both
-run inside one, and the portal that holds it keeps a pointer to it (see [What the
-wait costs](#what-the-wait-costs)). The settings are there for a build that can
-wait without a snapshot; with this one they do nothing.
+floor under it (0 by default). **The wait is taken (2026-11-26)**, in the planner
+hook and nowhere else:
+
+1. The node's position R is read once, before the mirror side is planned: the
+   replay position on a standby, the insert position on a primary (the same
+   function the freshness comparison uses).
+2. The mirror's reported LSN is compared with R. At or past it, the statement
+   goes on to be routed. Behind it, and the bound has not run out, the planner
+   sleeps on the report condition variable (`ConditionVariableTimedSleep`, which
+   waits with `WL_EXIT_ON_PM_DEATH`) in steps of at most 5 ms, and checks
+   interrupts on each step, so a cancel or `statement_timeout` ends it. Each
+   report wakes it early.
+3. The bound is `max(quicksilver.freshness_wait, min(cost x ms_per_cost_unit x
+   freshness_wait_fraction, freshness_wait_max))`, where cost is the heap plan's
+   total cost. With the defaults a heap plan of cost 10,000 waits at most 5 ms,
+   one of 100,000 at most 50 ms, and one of 1,000,000 or more at most 500 ms.
+4. It ends at the first of: the mirror reaching R (the statement is routed); the
+   bound (the heap answers); a standby whose startup process is waiting on a
+   lock, a buffer pin or a snapshot conflict (the heap answers, so that replay
+   is not held up); a cancel. R is fixed, so the wait always ends once the
+   mirror has reached R or the bound has passed.
+
+The snapshot is **not** given up. The planner runs inside the portal's snapshot,
+and the portal keeps a pointer to it (the assertion that failed when the earlier
+build swapped it is `portal->portalSnapshot == GetActiveSnapshot()`, see [What the
+wait cost](#what-the-wait-costs)). The statement reads the snapshot it has, and
+the mirror catching up to R covers it, since R is no earlier than what the
+snapshot can see. The wait is not taken inside a subtransaction, nor when the
+transaction has already fixed its lake snapshot (qs_pin). The execution-time
+check on a kept plan does not wait, as before: a kept plan that is behind goes to
+the heap. If the wait gives up, the statement runs on the heap, as it always did.
 Bounded staleness is something a session asks for: `max_lag > 0` means "a
 routed read may be this much WAL behind the heap on this node". Separately, a
 transaction that has an xid is never routed, whatever
@@ -753,7 +807,10 @@ keepalive. Only while the lake stands at the newest manifest.
 
 `validate/real/strict.py`: `SELECT count(*), sum(amount) FROM public.orders`
 on the standby every 20 ms for 20 s per cell, 200 small transactions a second
-on the primary.
+on the primary. **History: measured before 2026-11-26, when the wait was not
+taken** (the "wait 20 ms" and "wait 200 ms" rows were then the planner's
+floor-only wait, which the snapshot check kept at zero). They are kept as
+measured; the current measurements are in [Measured again](#measured-again-2026-11-26).
 
 | load on the primary | setting | routed | median, routed | median, heap |
 |---|---|---|---|---|
@@ -769,7 +826,7 @@ on the primary.
 | | strict, wait 200 ms | 31 of 73 (42.5%) | 215.7 ms | 275.9 ms |
 | | `max_lag` 1MB | 290 of 290 | 39.2 ms | |
 
-Read plainly: with writes that do not touch the mirrored table, the strict
+Read plainly (history, as measured before the wait was taken): with writes that do not touch the mirrored table, the strict
 default routes 96% and the wait is not visible in the median (within this
 host's noise against the `max_lag` row). **With steady writes to the mirrored
 table itself, the strict default routes nothing.** The mirror applies on a
@@ -779,7 +836,7 @@ cost of 200 ms each. A workload like that either accepts a bound
 (`max_lag`) or is answered by the heap. The default was not loosened to hide
 this.
 
-### What the wait costs
+### What the wait cost (the earlier build, and why the snapshot stays)
 
 The wait was written first to give up the statement's snapshot while it slept,
 and to take a new one after it. It did wait (a 1 s floor waited about a second
@@ -788,11 +845,12 @@ failed Assert("portal->portalSnapshot == GetActiveSnapshot()"), File: pquery.c,
 Line: 1180`, because the portal of the statement keeps a pointer to the
 snapshot it was given, and a replaced snapshot is not that pointer. Keeping the
 pointer keeps the snapshot's xmin, which is the thing a wait must not hold. So
-the wait is not taken in this build: the router waits only where no snapshot is
-held, and the planner and an executor's start always hold one. The cap, the
-fraction and the cost unit are implemented, and do nothing until a build can
-wait without a snapshot.
+that build did not take the wait: it held no wait while a snapshot was held,
+which is always, and the settings did nothing. What fixed it (2026-11-26) was
+not to release the snapshot at all: the planner sleeps holding it, and the
+executor's start, which runs a kept plan's check, does not sleep (see above).
 
+**History (before 2026-11-26; the wait was not taken then).**
 `validate/real/waitcost.py` on the 10M-row bench cluster (ICU `en-US`,
 standby), the shipped build, while another session commits single-row `UPDATE`s
 of `public.orders`: 10 and 100 commits a second. The "new default" row is the
@@ -1064,6 +1122,105 @@ DB_ROUTE=none validate/real/setup.sh && validate/real/primary_report.sh && make 
 CA=/path/to/cassert/prefix validate/real/cassert.sh
 validate/real/teardown.sh
 ```
+
+## Measured again (2026-11-26)
+
+Four things in the extension changed on this date, and the two builds it is
+tested on were run again: PostgreSQL 17.12 from source, once with
+`--enable-cassert` and once without, pg_duckdb 1.2.2 copied into each, one
+host with 4 vCPU.
+
+- **The freshness wait is taken**, in the planner, within a bound
+  ([Freshness is strict by default](#freshness-is-strict-by-default)).
+- **`quicksilver.route_in_transaction` is `off | safe | on`, and `safe` is the
+  default.** A non-autocommit client is routed inside a block that is READ
+  COMMITTED, has written nothing and has no savepoint open. The three
+  conditions were already checked for every setting but `off`. At the commit
+  this section starts from, the source's boot value was `on` while the text
+  said `off`.
+- **A `DECLARE` whose heap plan can scan backward goes to the heap.** A routed
+  cursor cannot be scrolled, and the heap's can. The transaction fuzzer found
+  it with the default settings: 5 of 2,000 scripts differed (seed 11), and none
+  did after the fix (seeds 11 and 12).
+- **`EXPLAIN (FORMAT JSON)` of a heap decision is valid JSON.** The decision's
+  property had been written after the plan's object closed.
+
+### Validation
+
+| check | result |
+|---|---|
+| regression, assertion build, `validate/real/cassert.sh 300` | 12 of 12 pass; `debug_assertions = on` on both servers; 0 `TRAP`, `PANIC`, signal or leak lines in either log |
+| known-LSN checksums during 300 s of concurrent writes | 6 of 6 routed and equal; 0 wrong answers, 0 errors |
+| regression, normal build (`validate/real/setup.sh`, `make installcheck`) | 12 of 12 pass; `debug_assertions = off` |
+| `validate/real/txfuzz.py`, default settings, seed 11, 2,000 scripts | 27,603 statements, 7,272 answered by the mirror, 0 scripts differed, 0 connections lost |
+| `validate/real/txfuzz.py`, default settings, seed 12, 2,000 scripts | 27,241 statements, 7,025 answered by the mirror, 0 scripts differed, 0 connections lost |
+| `validate/equality.py --port <standby> --set quicksilver.freshness_wait=5s` | 1,142 statements: 438 routed, 438 identical, **routed_different 0**, heap_different 0 |
+| `validate/psycopg_check.py` | 16 of 16 |
+
+In one 300 s run before the last one, a checksum went to the heap with a
+reason that began "no": the text the wait appends when the standby's startup
+process is waiting on a lock, a buffer pin or a snapshot conflict starts that
+way. The harness cut the reason at 160 characters, so the whole text was not
+kept, and the cause is not confirmed. The run kept here has six of six.
+
+### The wait in the router's own terms
+
+`validate/real/waitcost.py` (3,000,000-row `public.orders`, bench dataset,
+normal build, the sidecar built from this worktree, default settings: database
+`quicksilver.route = auto`), while another session commits single-row `UPDATE`s
+of `public.orders` with `synchronous_commit = off`. Rates are the writer's
+achieved rates. Each row is one statement, issued 60, 30 or 10 times:
+
+| writes/s | class (heap, routing off, median) | routed / issued (default) | median, routed | median, heap (routing off) |
+|---|---|---|---|---|
+| 10 | "~50 ms" (15.9 ms) | 57 / 60 | 23.6 ms | 15.9 ms |
+| 10 | "~500 ms" (89.8 ms) | 29 / 30 | 17.8 ms | 89.8 ms |
+| 10 | "seconds" (878.5 ms) | 10 / 10 | 37.9 ms | 878.5 ms |
+| 100 | "~50 ms" (15.1 ms) | 54 / 60 | 27.8 ms | 15.1 ms |
+| 100 | "~500 ms" (87.7 ms) | 30 / 30 | 17.2 ms | 87.7 ms |
+| 100 | "seconds" (889.7 ms) | 10 / 10 | 36.9 ms | 889.7 ms |
+| 1,000 | "~50 ms" (15.0 ms) | 37 / 60 | 28.9 ms | 15.0 ms |
+| 1,000 | "~500 ms" (94.4 ms) | 26 / 30 | 18.7 ms | 94.4 ms |
+| 1,000 | "seconds" (912.1 ms) | 10 / 10 | 50.0 ms | 912.1 ms |
+
+The writer reached 10, 100 and 1,000 commits a second (437, 4,446 and 50,008
+rows over 44, 44 and 50 s). The three classes are labels from the script; the
+heap times measured here are 15 ms, 90 ms and 0.9 s, not the 50 ms and 500 ms
+the labels name. The statements not routed gave "mirror is not fresh enough":
+3 of 60, 1 of 30, 6 of 60, 23 of 60 and 4 of 30 in the rows above, and none in
+the others. The default wait could last at most 2 ms (the "~50 ms" class), 32 ms
+("~500 ms") or 93 ms ("seconds"). Whether the mirror reached the position in
+that time decided each statement, and the mirror's publish cycle is longer than
+the bound. Nothing here compares results: the correctness under writes is
+`concurrency.py`'s, in the run above.
+
+**The earlier 0% figures are history.** The table above replaces the "0 of 60
+at 10 and 100 commits a second" rows of [the section on the wait](#freshness-is-strict-by-default)
+and the strict-freshness table, which were measured before this date and kept
+as measured. A first run of this script on this date reported 0 routed in every
+row, while its median latencies for the same statements were far below the
+heap's. The script's connection let psycopg prepare each statement after its
+fifth run; a prepared statement is not planned again, so the router made no new
+decision and `quicksilver.last_decision()` reported an older one. With
+`prepare_threshold=None` each execution is planned, and the table is that run.
+The script now prints the routed and the heap medians separately.
+
+### Running it, now
+
+```
+cd ext/pg_quicksilver
+CA=/path/to/cassert/prefix BASE=/var/lib/postgresql/<dir> PPORT=5680 SPORT=5681 HPORT=5682 validate/real/cassert.sh 300
+DB_ROUTE=none BASE=... validate/real/setup.sh            # the regression cluster; make installcheck PPORT=...
+python3 validate/real/txfuzz.py --port <primary> --scripts 2000 --seed 11   # after primary_report.sh
+python3 validate/equality.py --port <standby> --set quicksilver.freshness_wait=5s
+python3 validate/psycopg_check.py --port <primary>
+DATASET=bench ROWS=3000000 DB_ROUTE=auto validate/real/setup.sh
+python3 validate/real/waitcost.py --pport <primary> --sport <standby> --rates 10,100,1000
+```
+
+`validate/real/cassert.sh` now builds its copy of the extension beside its
+cluster (`$BASE-cabuild`), not in a fixed path, and `validate/cassert.sh`, the
+stand-in path, is gone.
 
 ## pg_duckdb 1.2.2
 

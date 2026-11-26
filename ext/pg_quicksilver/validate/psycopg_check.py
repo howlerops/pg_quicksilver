@@ -105,8 +105,9 @@ def main():
     got = t.execute(BIG, (1,)).fetchall()
     s = side(t)
     t.commit()
-    check("not autocommit, default settings: heap, correct", s[0] == "heap" and "transaction block" in s[1] and got == heap.execute(BIG, (1,)).fetchall(), str(s))
-    # a nested transaction (SAVEPOINT) works because nothing was routed
+    # the default is safe (route_in_transaction): READ COMMITTED, nothing written, no savepoint open
+    check("not autocommit, default settings: routed, correct", s[0] == "mirror" and got == heap.execute(BIG, (1,)).fetchall(), str(s))
+    # a nested transaction (SAVEPOINT) after a routed read works (pg_duckdb is idle by then)
     with t.transaction():
         t.execute(BIG, (1,)).fetchall()
         with t.transaction():
@@ -132,7 +133,7 @@ def main():
     except psycopg.Error as e:
         hazard = (e.diag.message_primary or str(e))[:80]
     t.rollback()
-    check("... and a SAVEPOINT after it fails (why the default is off)", "SAVEPOINT" in hazard, hazard)
+    check("... and a SAVEPOINT after it works", hazard == "no error", hazard)
     # a server-side cursor
     forget(t)
     t.commit()
@@ -143,15 +144,18 @@ def main():
     s = side(t)
     t.commit()
     want = heap.execute("SELECT id, amount FROM public.orders WHERE amount > 999.5 ORDER BY id").fetchall()
-    check("server-side cursor (DECLARE/FETCH), opted in: routed, same rows", s[0] == "mirror" and first + rest == want, f"{s} {len(want)} rows")
+    # a cursor declared with neither SCROLL nor NO SCROLL, over a plan that can scan backward, is the heap's
+    check("server-side cursor (DECLARE/FETCH): heap, scrollable cursor, same rows", s[0] == "heap" and s[1] == "scrollable cursor" and first + rest == want, f"{s} {len(want)} rows")
 
     # cancel during a routed statement, then the connection is usable
     c.execute("SET statement_timeout = '30ms'")
     try:
         c.execute("SELECT count(*) FROM public.orders o JOIN public.orders p ON p.customer_id = o.customer_id WHERE o.customer_id = 1")
         cancelled = "finished"
-    except psycopg.errors.QueryCanceled:
-        cancelled = "cancelled"
+    except psycopg.Error as e:
+        # a routed statement's timeout comes back from pg_duckdb as XX000 "Query cancelled",
+        # not as 57014 (query_canceled): the error is the client's, the cancel is not lost
+        cancelled = "cancelled" if "cancel" in str(e).lower() else str(e)[:120]
     c.execute("RESET statement_timeout")
     forget(c)
     got = c.execute(BIG, (1,)).fetchall()

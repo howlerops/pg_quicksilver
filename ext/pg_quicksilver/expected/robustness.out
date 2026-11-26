@@ -457,30 +457,29 @@ SELECT b FROM qt.h WHERE id = $1 AND $2::int IS NOT NULL \bind 1 2 \g
 (1 row)
 
 EXPLAIN (COSTS OFF, FORMAT JSON) SELECT b FROM qt.h WHERE id = 1 FOR UPDATE;
-                  QUERY PLAN                  
-----------------------------------------------
- [                                           +
-   {                                         +
-     "Plan": {                               +
-       "Node Type": "LockRows",              +
-       "Parallel Aware": false,              +
-       "Async Capable": false,               +
-       "Plans": [                            +
-         {                                   +
-           "Node Type": "Index Scan",        +
-           "Parent Relationship": "Outer",   +
-           "Parallel Aware": false,          +
-           "Async Capable": false,           +
-           "Scan Direction": "Forward",      +
-           "Index Name": "h_pkey",           +
-           "Relation Name": "h",             +
-           "Alias": "h",                     +
-           "Index Cond": "(id = 1)"          +
-         }                                   +
-       ]                                     +
-     }                                       +
-   },                                        +
-   "Quicksilver": "heap (not a plain SELECT)"+
+                QUERY PLAN                 
+-------------------------------------------
+ [                                        +
+   {                                      +
+     "Plan": {                            +
+       "Node Type": "LockRows",           +
+       "Parallel Aware": false,           +
+       "Async Capable": false,            +
+       "Plans": [                         +
+         {                                +
+           "Node Type": "Index Scan",     +
+           "Parent Relationship": "Outer",+
+           "Parallel Aware": false,       +
+           "Async Capable": false,        +
+           "Scan Direction": "Forward",   +
+           "Index Name": "h_pkey",        +
+           "Relation Name": "h",          +
+           "Alias": "h",                  +
+           "Index Cond": "(id = 1)"       +
+         }                                +
+       ]                                  +
+     }                                    +
+   }                                      +
  ]
 (1 row)
 
