@@ -138,6 +138,10 @@ type Table struct {
 	// entry by entry and one it never looks inside.
 	numericKey bool
 
+	// notNull is the columns the caller says the source declares NOT NULL
+	// now, which a file written now holds as REQUIRED. See nullability.go.
+	notNull map[string]bool
+
 	// partialCols is State.PartialCols keyed by file id, so that the per-key
 	// question "is the file this patch lives in a partial one?" does not have
 	// to render a file name.
@@ -713,7 +717,7 @@ func (t *Table) arrowSchemaFor(cols []string) *arrow.Schema {
 	fields := make([]arrow.Field, 0, len(cols))
 	for _, name := range cols {
 		fields = append(fields, arrow.Field{
-			Name: name, Type: arrowType(t.typeOf(name)), Nullable: true,
+			Name: name, Type: arrowType(t.typeOf(name)), Nullable: !t.required(name),
 		})
 	}
 	return arrow.NewSchema(fields, nil)
@@ -1541,6 +1545,11 @@ func (t *Table) Compact() (int, error) {
 	}
 	rows, err := t.Live()
 	if err != nil {
+		return 0, err
+	}
+	// The one refusal that is not a halt (nullability.go) is made before the
+	// files these rows came from are removed: after it, they are all there is.
+	if err := t.checkNotNull(rows); err != nil {
 		return 0, err
 	}
 	// Not truncate(): that persists an empty manifest, and these rows are only

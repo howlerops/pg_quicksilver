@@ -243,6 +243,11 @@ func (p *Publisher) apply(ctx context.Context, tx *sql.Tx, snap *head, work *lak
 			return nil, err
 		}
 	}
+	// The table's column statistics, restated from the files now live: a
+	// publish that changed nothing about them writes the same rows again.
+	if err := setTableColumnStats(ctx, tx, work); err != nil {
+		return nil, err
+	}
 	if inserted {
 		changes = append(changes, fmt.Sprintf("inserted_into_table:%d", work.id))
 	}

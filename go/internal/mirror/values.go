@@ -503,6 +503,16 @@ func (t *Table) storableValues(schema *arrow.Schema, cols []string, vals []any) 
 			break
 		}
 		if vals[i] == nil {
+			// The one thing a REQUIRED column cannot hold. Refused here, where
+			// every write is checked before it is written, and NOT a halt:
+			// see nullability.go.
+			if !schema.Field(i).Nullable {
+				q := "the mirror"
+				if t != nil {
+					q = t.Qualified
+				}
+				return &NotNullViolation{Table: q, Column: cols[i]}
+			}
 			continue
 		}
 		c, ok := storable(schema.Field(i).Type, vals[i])

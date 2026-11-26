@@ -357,6 +357,7 @@ func (t *Table) rewriteSnapshot() *Table {
 		Columns:    maps.Clone(t.Columns),
 		Order:      slices.Clone(t.Order),
 		numericKey: t.numericKey,
+		notNull:    maps.Clone(t.notNull),
 		detached:   true,
 	}
 	s.State.MissingVals = maps.Clone(t.State.MissingVals)
