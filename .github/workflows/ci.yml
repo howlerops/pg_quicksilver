@@ -475,7 +475,7 @@ jobs:
       # For every user: the suite and bench/exactness run their python under
       # sudo, which does not see a module installed for the runner's user.
       - name: python deps
-        run: sudo -H python3 -m pip install --quiet --break-system-packages duckdb==2.0.1 "psycopg[binary]"
+        run: sudo -H python3 -m pip install --quiet --break-system-packages duckdb==2.0.1 "psycopg[binary]" pyarrow==26.0.1
 
       # Correctness only. The performance sections are opt-in (FULL=1) because
       # a shared CI runner cannot produce a number worth publishing — and a
