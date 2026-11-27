@@ -804,8 +804,11 @@ mirrored database (it looks, says once if not, and looks again every minute):
   It names the lake table, no file and no path, so it is the same text on
   every instance and is never generated again when the mirror compacts. It is
   made again only when the heap's columns change at a DDL barrier (the view's
-  comment carries a hash of its definition), and it is dropped and
-  unregistered when the table leaves `QS_TABLES` or halts. A type pg_duckdb
+  comment carries a hash of its definition). It is dropped and unregistered
+  only when the table's heap relation is gone. A halt, a rebuild, or a table
+  that leaves one sidecar's `QS_TABLES` does not touch it: the registry is one
+  for every sidecar, and whether a node reads a table is that node's report
+  (see *The registry is configuration; a node's state is its report* below). A type pg_duckdb
   cannot cast a row field to (an enum, `inet`, `jsonb`, an array) is published
   as text, and the extension then keeps statements that read that column on
   the heap. `max_lag_bytes` and `enabled` are the operator's and survive.
@@ -824,6 +827,51 @@ mirrored database (it looks, says once if not, and looks again every minute):
   this node" and overrules the registry's own `applied_lsn` column, which is
   the same on every node and which the sidecar leaves NULL.
 - **Nothing about infinity.** See below.
+
+### The registry is configuration; a node's state is its report
+
+`quicksilver.mirrors`, its mirror relations, `quicksilver.lakes` and
+`quicksilver.join_domains` are ONE copy for every sidecar of the cluster,
+replicated to every standby. They describe what is mirrored, not what a node
+can serve. So:
+
+- **A sidecar writes the rows of the tables it is configured for**, halted or
+  not. A halt, a rebuild, a re-snapshot or a lagging table changes no row and
+  no view (`registryWanted`, `joinsWanted`; the sync's decision for a halt is
+  the same as for a healthy table).
+- **A row is removed only when its heap relation is gone** (`registryUnregistrations`,
+  decided over the sidecar's own configured tables). A sidecar never removes
+  another sidecar's row, nor a row of a table it is not configured for. A
+  statement that changes nothing is not run: the registry's trigger fires for
+  it and every backend re-reads the registry.
+- **What a node reads is its report** (`quicksilver.report_applied_lsn`, this
+  node's shared memory). A halted or rebuilding table is reported `0/0`: the
+  extension answers it from this node's heap, with the reason *its mirror on
+  this node is reported unreadable (halted, rebuilding or not published)*, and
+  that holds whatever `quicksilver.max_lag` says, because `0/0` is refused before
+  the lag is compared (`qs_applied_lsn`, `qs_fresh`). Other nodes read the same
+  row from their own reports.
+- **Two sidecars whose table lists differ** share the registry and never fight
+  over it: each writes its own tables, and removes nothing it does not own.
+
+The one removal that is an operator's: a table that **leaves every sidecar's
+`QS_TABLES`** keeps its row, because the sidecars cannot tell it from a table
+another one still needs. Until its row goes, a node that still has a report for
+it may answer from that report, which is why the cleanup is not optional with a
+relaxed `max_lag`. Once no sidecar mirrors the table, on the primary:
+
+```sql
+DELETE FROM quicksilver.mirrors WHERE mirror = 'quicksilver_mirror."public.orders"'::regclass;
+DROP VIEW quicksilver_mirror."public.orders";
+DELETE FROM quicksilver.join_domains WHERE heap = 'public.orders'::regclass;  -- if it had join domain columns
+```
+
+The sidecar runs the first two itself, and only when a configured table's heap
+relation is gone; the join rows of such a table stay, for the same reason as the
+others, and are removed by the third statement.
+
+(under the default strict freshness a table whose lake stops advancing is refused
+as the WAL moves on, so the statement is needed for a relaxed `max_lag` only.)
 
 `QS_EXTENSION=off` turns all of it off. It needs `QS_DUCKLAKE=on`; without it
 the sidecar says so once and registers nothing.
@@ -1125,7 +1173,7 @@ primary-key lookup says `Quicksilver: heap (cheap on the heap)`.
 | idle base rewrite (seen in the sidecar's log) | 0.1 s | the same |
 | `TRUNCATE` + reload of 300,000 rows | 3.6 s, the heap answering until then | the same |
 | `ADD COLUMN` (a DDL barrier) | 1.4 s; the new column is routed | re-created, as it should be |
-| a date the mirror cannot hold: `qs_types` halts | that table: the heap, at once; the others routed | dropped and unregistered within 0.2 s |
+| a date the mirror cannot hold: `qs_types` halts | that table: the heap, at once; the others routed | kept, registered; that node's report is 0/0 |
 | `REBUILD` of that table | 0.3 s after the sidecar was ready | registered again |
 | sidecar `kill -9`, a write, restart | the heap while it is down; 0.2 s after | the same |
 | standby restart | 0.7 s (the reports in its shared memory are sent again) | the same |

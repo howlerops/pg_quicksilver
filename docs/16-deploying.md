@@ -996,8 +996,19 @@ What the sidecar does:
 
 - The halted table is out of service. Its changes are **discarded** while it is
   halted (it comes back by snapshot, never by replay), and it is skipped by
-  apply, compaction and index build. `qs-query` and anything else that asks for
-  its view is refused: `mirror is halted and must not be served: …`.
+  apply, compaction and index build. A read that the router could send to the
+  mirror is answered from the heap **on this node**, with the reason in
+  `quicksilver.mirror_status()` (*reported unreadable (halted, rebuilding or not
+  published)*), and a read that names the mirror relation directly fails rather
+  than answering from stale files.
+- **The registry is not touched by a halt.** `quicksilver.mirrors`, the mirror
+  relation and the join rows are configuration, shared by every sidecar of the
+  cluster: the halted table keeps them, and another node whose sidecar is healthy
+  keeps routing that table from its own report. Only this node's report changes,
+  to `0/0`, and it takes effect within a heartbeat (docs/40, *The registry is
+  configuration; a node's state is its report*). A `REBUILD` on one node is the
+  same kind of change: that node re-snapshots and reports the table again; the
+  registry is not written for it.
 - Every other table keeps mirroring from the same slot. The stream is still
   confirmed, so the slot advances past the halted table's changes and pins no
   WAL on its account.
