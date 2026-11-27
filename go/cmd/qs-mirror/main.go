@@ -572,8 +572,10 @@ func runMirror(ctx context.Context, log *slog.Logger, o options, h *health.Healt
 	for _, q := range append(append([]string{}, hplan.Stay...), hplan.Rebuild...) {
 		h.SetHalted(q, tables[q].Halted())
 	}
-	// A halted table leaves pg_quicksilver's registry now, not after the
-	// snapshots below; one being rebuilt returns to it before the pump starts.
+	// The registry is configuration and a halt is not in it: a halted table keeps
+	// its row, and this node stops reading it through its report (observe), at
+	// once and before the pump starts.
+	ext.observe(tables)
 	ext.markDirty()
 	ext.reconcile(ctx, conn, tables)
 	if len(hplan.Stay) == len(tables) {

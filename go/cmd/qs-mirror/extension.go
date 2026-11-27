@@ -6,7 +6,14 @@ package main
 //
 //  1. On the PRIMARY, because the registry is a table: every mirrored table
 //     has a mirror relation, registered in quicksilver.mirrors, and the lake
-//     it reads is in quicksilver.lakes. The mirror relation is a pg_duckdb
+//     it reads is in quicksilver.lakes. THE REGISTRY IS CONFIGURATION, shared
+//     by every sidecar of the cluster: a sidecar creates and updates the rows
+//     of the tables it is configured for, and removes one only when its heap
+//     relation is gone (registryUnregistrations). It never removes or disables
+//     a row because of its own local state: not a halt, not a rebuild, not a
+//     re-snapshot, not a table that another sidecar mirrors and this one does
+//     not. Whether THIS node reads a table is its report (point 2). The mirror
+//     relation is a pg_duckdb
 //     view over the table's DuckLake table. It names the lake table and no
 //     file and no path, so its text is the same on every instance and is not
 //     generated again when the mirror compacts; the catalog's path is in
@@ -102,7 +109,6 @@ type extLink struct {
 	checkedAt time.Time
 	present   bool
 	saidWhy   string
-	lastHalt  string
 	// lastJoins is the join domain configuration the last observe saw, and
 	// haveJoins says the primary has quicksilver.join_domains (an extension
 	// older than it has none, and the mirror then carries no companions).
@@ -232,29 +238,21 @@ func (e *extLink) say(why, msg string, args ...any) {
 
 // ---- which tables must not be read here ---------------------------------------
 
-// observe records which tables are halted. Called by the pump every tick and
-// wherever a table halts, so the next report (at most one extTick away) says
-// 0/0 for it; the lake refuses it too, but only once the publisher has got to
+// observe records which tables are halted on THIS node. Called by the pump every
+// tick and wherever a table halts, so the next report (at most one extTick
+// away) says 0/0 for it. A halt is local state: it does not touch the registry
+// (see registryWanted), and the report alone decides whether this node reads
+// the table. The lake refuses it too, but only once the publisher has got to
 // the manifest that says so.
 func (e *extLink) observe(tables map[string]*mirror.Table) {
 	if e == nil || e.off {
 		return
 	}
-	halted := make([]string, 0)
 	e.mu.Lock()
 	for q, t := range tables {
-		h := t.Halted() != ""
-		if h {
-			halted = append(halted, q)
-		}
-		e.blocked[q] = h
+		e.blocked[q] = t.Halted() != ""
 	}
 	e.mu.Unlock()
-	sort.Strings(halted)
-	if s := strings.Join(halted, ","); s != e.lastHalt {
-		// a halted table leaves the registry, a rebuilt one returns: at the next tick, not the next retry
-		e.lastHalt, e.dirty, e.checkedAt = s, true, time.Time{}
-	}
 	// The join domain configuration changes the registry: its companion is
 	// exposed, or it is not, at the next tick. Completeness does not (joinSig).
 	if s := joinSig(joinsWanted(tables)); s != e.lastJoins {
@@ -284,19 +282,49 @@ type extJoin struct {
 	Column, Domain, Companion string
 }
 
-// joinsWanted is the configured join domain columns of every table that is not
-// halted, by qualified name, in column order. It depends on the configuration
-// only: a column does not leave the registry because its files are incomplete.
+// joinsWanted is the configured join domain columns of every configured table,
+// halted or not, by qualified name, in column order. It depends on the
+// configuration only: a column does not leave the registry because its files
+// are incomplete, and not because this node halted its table. The mirror
+// relation is shared, so a halted table's companion must stay in it: another
+// node that reads the table still rewrites its joins through that column.
 func joinsWanted(tables map[string]*mirror.Table) map[string][]extJoin {
 	out := map[string][]extJoin{}
 	for q, t := range tables {
-		if t.Halted() != "" {
-			continue
-		}
 		for _, m := range t.JoinMemberships() {
 			out[q] = append(out[q], extJoin{Column: m.Column, Domain: m.Domain, Companion: m.Companion})
 		}
 	}
+	return out
+}
+
+// registryWanted is the tables whose registry rows (quicksilver.mirrors and the
+// mirror relation) this sidecar keeps up to date: every table it is configured
+// for, halted or not. A halted table keeps its row. What this node does with
+// it is the node's report, which says 0/0 (observe, lsns): the row is shared by
+// every sidecar, and another node's healthy sidecar relies on it.
+func registryWanted(tables map[string]*mirror.Table) map[string]bool {
+	out := make(map[string]bool, len(tables))
+	for q := range tables {
+		out[q] = true
+	}
+	return out
+}
+
+// registryUnregistrations is which of this sidecar's configured tables must
+// leave the registry: those whose heap relation is gone (present false). It is
+// the only reason a row is removed, and it is decided over the configured
+// tables only. A row for a table this sidecar is not configured for, or whose
+// table another sidecar mirrors, is never in the answer: the registry is one
+// for every sidecar that shares the database (docs/40, "What the sidecar does").
+func registryUnregistrations(configured map[string]bool, present map[string]bool) []string {
+	var out []string
+	for q := range configured {
+		if !present[q] {
+			out = append(out, q)
+		}
+	}
+	sort.Strings(out)
 	return out
 }
 
@@ -341,8 +369,8 @@ func filterJoins(joins []extJoin, cols []extColumn) []extJoin {
 // domain's table on its own node must not remove the row another sidecar
 // relies on. Completeness is per node (shared memory, not this table), so a
 // row this node no longer wants is harmless configuration and stays. Removing
-// it is an operator's decision, made once for every sidecar: see docs/16, the
-// join domain cleanup statement.
+// it is an operator's decision, made once for every sidecar: see docs/40, "The
+// registry is configuration", which has the statement.
 func joinRowsChange(have map[string]extJoin, want []extJoin) (put []extJoin) {
 	for _, j := range want {
 		if h, ok := have[j.Column]; !ok || h != j {
@@ -946,10 +974,11 @@ func extSignature(viewSQL string) string {
 	return extViewComment + "sha256:" + hex.EncodeToString(sum[:])
 }
 
-// reconcile makes the primary's registry match the tables this sidecar
-// mirrors, when something that decides it has changed: at start, after a DDL
-// barrier, when a table halts or is rebuilt. It never fails the pump; what it
-// could not do it tries again.
+// reconcile makes the primary's registry match the tables this sidecar is
+// configured for, when something that decides it has changed: at start, and
+// after a DDL barrier. A halt or a rebuild does not change it (registryWanted):
+// those are this node's report. It never fails the pump; what it could not do
+// it tries again.
 func (e *extLink) reconcile(ctx context.Context, conn *pgx.Conn, tables map[string]*mirror.Table) {
 	if e == nil || e.off {
 		return
@@ -987,12 +1016,7 @@ func (e *extLink) reconcile(ctx context.Context, conn *pgx.Conn, tables map[stri
 		e.present = false
 		return
 	}
-	desired := map[string]bool{}
-	for q, t := range tables {
-		if t.Halted() == "" {
-			desired[q] = true
-		}
-	}
+	desired := registryWanted(tables)
 	joins := joinsWanted(tables)
 	if len(joins) > 0 && !e.haveJoins {
 		e.say("nojoins", "pg_quicksilver has no quicksilver.join_domains (an older extension): the join domain "+
@@ -1094,12 +1118,12 @@ func (e *extLink) sync(ctx context.Context, conn *pgx.Conn, desired map[string]b
 		names = append(names, q)
 	}
 	sort.Strings(names)
-	keep := make([]string, 0, len(names))
-	var made, kept []string
+	// The heap's columns of every configured table, read first: what is
+	// registered is decided over this, not as the loop goes.
+	colsOf := make(map[string][]extColumn, len(names))
+	present := make(map[string]bool, len(names))
 	for _, q := range names {
 		schema, table, _ := strings.Cut(q, ".")
-		view := extViewName(q)
-		keep = append(keep, view)
 		rows, err := tx.Query(ctx, `
 			SELECT a.attname, format_type(a.atttypid, a.atttypmod), a.atttypid::oid
 			  FROM pg_attribute a
@@ -1116,12 +1140,21 @@ func (e *extLink) sync(ctx context.Context, conn *pgx.Conn, desired map[string]b
 		if err != nil {
 			return err
 		}
-		if len(cols) == 0 {
-			// The table is gone on the source; the pump will say so. Its join
-			// rows are left alone: the registry is shared, and a row whose heap
-			// is gone names an OID nothing else resolves to (see joinRowsChange).
+		colsOf[q] = cols
+		present[q] = len(cols) > 0
+	}
+	gone := registryUnregistrations(desired, present)
+	var made, kept []string
+	for _, q := range names {
+		if !present[q] {
+			// The heap is gone; unregistered below. Nothing is written for it here,
+			// and its join rows are left alone: the registry is shared, and a row
+			// whose heap is gone names an OID nothing else resolves to (joinRowsChange).
 			continue
 		}
+		schema, table, _ := strings.Cut(q, ".")
+		view := extViewName(q)
+		cols := colsOf[q]
 		want := filterJoins(joins[q], cols)
 		if !e.haveJoins {
 			want = nil
@@ -1206,38 +1239,45 @@ func (e *extLink) sync(ctx context.Context, conn *pgx.Conn, desired map[string]b
 		made = append(made, q)
 	}
 
-	// Ours, and no longer wanted: the table left QS_TABLES, or is halted.
-	rows, err := tx.Query(ctx, `
-		SELECT c.oid, c.relname
-		  FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
-		 WHERE n.nspname = $1 AND c.relkind = 'v' AND c.relname <> ALL($2::text[])
-		   AND obj_description(c.oid, 'pg_class') LIKE $3`, e.schema, keep, extViewComment+"%")
-	if err != nil {
-		return err
-	}
-	type gone struct {
-		oid  uint32
-		name string
-	}
-	drop, err := pgx.CollectRows(rows, func(r pgx.CollectableRow) (gone, error) {
-		var g gone
-		return g, r.Scan(&g.oid, &g.name)
-	})
-	if err != nil {
-		return err
-	}
+	// Unregistered: a configured table whose heap relation is gone (registryUnregistrations). Nothing
+	// else removes a row. A table that leaves this sidecar's configuration, that
+	// halts or that is rebuilt keeps its row and its mirror relation: the registry
+	// is shared by every sidecar, and what this node reads is its report.
+	//
+	// Each statement runs only when it has something to change. The registry's
+	// trigger fires for a statement that changes no row, and that invalidates the
+	// registry in every backend of the cluster; and a DROP is DDL, which the
+	// sidecar takes as a barrier and syncs again.
 	var dropped []string
-	for _, g := range drop {
-		// The view that exposes the companions goes; the join rows stay. They
-		// are the registry every sidecar shares, and the heap may well still
-		// be mirrored by another (joinRowsChange; docs/16 has the cleanup).
-		if _, err := tx.Exec(ctx, `DELETE FROM quicksilver.mirrors WHERE mirror = $1::oid`, g.oid); err != nil {
+	for _, q := range gone {
+		view := extViewName(q)
+		var oid uint32
+		var ours bool
+		switch err := tx.QueryRow(ctx, `
+			SELECT c.oid, COALESCE(obj_description(c.oid, 'pg_class') LIKE $3, false)
+			  FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+			 WHERE n.nspname = $1 AND c.relname = $2 AND c.relkind = 'v'`,
+			e.schema, view, extViewComment+"%").Scan(&oid, &ours); {
+		case errors.Is(err, pgx.ErrNoRows):
+			continue // no mirror relation was made for it: nothing to remove
+		case err != nil:
+			return err
+		case !ours:
+			continue // not the sidecar's: never dropped by it
+		}
+		var registered bool
+		if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM quicksilver.mirrors WHERE mirror = $1::oid)`, oid).Scan(&registered); err != nil {
 			return err
 		}
-		if _, err := tx.Exec(ctx, "DROP VIEW IF EXISTS "+extQuote(e.schema)+"."+extQuote(g.name)); err != nil {
+		if registered {
+			if _, err := tx.Exec(ctx, `DELETE FROM quicksilver.mirrors WHERE mirror = $1::oid`, oid); err != nil {
+				return err
+			}
+		}
+		if _, err := tx.Exec(ctx, "DROP VIEW IF EXISTS "+extQuote(e.schema)+"."+extQuote(view)); err != nil {
 			return err
 		}
-		dropped = append(dropped, g.name)
+		dropped = append(dropped, q)
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return err
