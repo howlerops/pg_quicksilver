@@ -79,6 +79,7 @@ def main():
     ap.add_argument("--out", default=os.path.join(HERE, "results", "equality.json"))
     ap.add_argument("--extra", action="append", default=[], help="another corpus file")
     ap.add_argument("--set", action="append", default=[], metavar="NAME=VALUE", help="a setting for the routing session")
+    ap.add_argument("--zone", default="", help="the session TimeZone for both sessions (default America/New_York)")
     args = ap.parse_args()
 
     corpus = []
@@ -91,8 +92,9 @@ def main():
     for f in args.extra:
         corpus += [(i, s, os.path.basename(f)) for i, s in load(f)]
 
-    heap = connect(args.port, ["SET quicksilver.route = heap"], args.user)
-    auto = connect(args.port, ["SET quicksilver.route = auto"] + ["SET %s = '%s'" % tuple(x.split("=", 1)) for x in args.set], args.user)
+    zone = ["SET TimeZone = '%s'" % args.zone] if args.zone else []
+    heap = connect(args.port, zone + ["SET quicksilver.route = heap"], args.user)
+    auto = connect(args.port, zone + ["SET quicksilver.route = auto"] + ["SET %s = '%s'" % tuple(x.split("=", 1)) for x in args.set], args.user)
     results, reasons, bad = [], collections.Counter(), []
     n = collections.Counter()
     for sid, sql, src in corpus:
@@ -148,6 +150,7 @@ def main():
         "heap_reasons": reasons.most_common(),
         "server": heap.execute("SELECT version()").fetchone()[0],
         "settings": args.set,
+        "zone": args.zone or "America/New_York",
     }
     json.dump({"summary": summary, "statements": results}, open(args.out, "w"), indent=1, ensure_ascii=False)
     print(json.dumps(summary, indent=1))

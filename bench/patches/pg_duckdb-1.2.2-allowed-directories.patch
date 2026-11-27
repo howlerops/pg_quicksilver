@@ -1,6 +1,173 @@
+diff --git a/include/pgduckdb/pgduckdb_duckdb.hpp b/include/pgduckdb/pgduckdb_duckdb.hpp
+--- a/include/pgduckdb/pgduckdb_duckdb.hpp
++++ b/include/pgduckdb/pgduckdb_duckdb.hpp
+@@ -56,7 +56,7 @@
+ private:
+ 	DuckDBManager()
+ 	    : extensions_table_current_seq(0), database(nullptr), connection(nullptr), default_dbname("<!UNSET!>"),
+-	      secrets_valid(false) {
++	      secrets_valid(false), filesystem_confined(false) {
+ 	}
+ 
+ 	DuckDBManager(const DuckDBManager &) = delete;
+@@ -101,6 +101,12 @@
+ 	duckdb::unique_ptr<duckdb::Connection> connection;
+ 	std::string default_dbname;
+ 	bool secrets_valid;
++	/*
++	 * Set once the configuration is locked for a role that may read only the
++	 * duckdb.allowed_directories. A locked configuration rejects every SET, so
++	 * a confined instance is never refreshed again.
++	 */
++	bool filesystem_confined;
+ };
+ 
+ } // namespace pgduckdb
+diff --git a/src/pgduckdb_duckdb.cpp b/src/pgduckdb_duckdb.cpp
+--- a/src/pgduckdb_duckdb.cpp
++++ b/src/pgduckdb_duckdb.cpp
+@@ -17,6 +17,7 @@
+ #include "pgduckdb/pg/transactions.hpp"
+ #include "pgduckdb/pgduckdb_background_worker.hpp"
+ #include "pgduckdb/pgduckdb_ca_certificate_fs.hpp"
++#include "pgduckdb/pgduckdb_confined_fs.hpp"
+ #include "pgduckdb/pgduckdb_fdw.hpp"
+ #include "pgduckdb/pgduckdb_guc.hpp"
+ #include "pgduckdb/pgduckdb_metadata_cache.hpp"
+@@ -187,6 +188,8 @@
+ 
+ 	database = new duckdb::DuckDB(connection_string, &config);
+ 
++	/* Before the CA certificate file system, which must still win for the bundle paths it handles. */
++	RegisterConfinedLocalFileSystem(*database->instance);
+ 	RegisterCACertificateFileSystem(*database->instance);
+ 
+ 	auto &dbconfig = duckdb::DBConfig::GetConfig(*database->instance);
+@@ -268,6 +271,8 @@
+ 	manager_instance.connection = nullptr;
+ 	delete manager_instance.database;
+ 	manager_instance.database = nullptr;
++	manager_instance.filesystem_confined = false;
++	AllowLocalFileWrites();
+ 	UnclaimBgwSessionHint();
+ }
+ 
+@@ -318,9 +323,18 @@
+ 	}
+ }
+ 
++/*
++ * A role that may not read local files directly, but has duckdb.allowed_directories
++ * set, keeps LocalFileSystem and is confined to those directories instead.
++ */
++static bool
++UseAllowedDirectories() {
++	return !pgduckdb::pg::AllowRawFileAccess() && !IsEmptyString(duckdb_allowed_directories);
++}
++
+ static std::string
+ DisabledFileSystems() {
+-	if (pgduckdb::pg::AllowRawFileAccess()) {
++	if (pgduckdb::pg::AllowRawFileAccess() || UseAllowedDirectories()) {
+ 		return duckdb_disabled_filesystems;
+ 	}
+ 
+@@ -340,8 +354,29 @@
+ 	return "LocalFileSystem," + std::string(duckdb_disabled_filesystems);
+ }
+ 
++/*
++ * Confines the DuckDB instance to duckdb.allowed_directories. The allowlist was
++ * set when the instance was created. DuckDB enforces it on every path (symlinks
++ * and ".." are resolved first), but only while external access is off, so that
++ * is switched off here. The allowlist does not distinguish reads from writes,
++ * so writes are refused by the local file system (pgduckdb_confined_fs.cpp).
++ * The configuration is locked last: a locked configuration rejects every SET,
++ * so nothing can widen the allowlist, turn external access back on, or unlock.
++ */
++static void
++ConfineToAllowedDirectories(duckdb::ClientContext &context) {
++	pgduckdb::DuckDBQueryOrThrow(context, "SET enable_external_access=false");
++	pgduckdb::DuckDBQueryOrThrow(context, "SET lock_configuration=true");
++	pgduckdb::DenyLocalFileWrites();
++}
++
+ void
+ DuckDBManager::RefreshConnectionState(duckdb::ClientContext &context) {
++	/* Locked: every SET below would be rejected, and there is nothing left to refresh. */
++	if (filesystem_confined) {
++		return;
++	}
++
+ 	std::string disabled_filesystems = DisabledFileSystems();
+ 	if (disabled_filesystems != "") {
+ 		/*
+@@ -375,6 +410,12 @@
+ 		LoadSecrets(context);
+ 		secrets_valid = true;
+ 	}
++
++	/* Last: after this, the configuration is locked and no refresh can SET anything. */
++	if (UseAllowedDirectories()) {
++		ConfineToAllowedDirectories(context);
++		filesystem_confined = true;
++	}
+ }
+ 
+ /*
+diff --git a/src/pgduckdb_guc.cpp b/src/pgduckdb_guc.cpp
+--- a/src/pgduckdb_guc.cpp
++++ b/src/pgduckdb_guc.cpp
+@@ -136,6 +136,8 @@
+ char *duckdb_motherduck_session_hint = strdup("");
+ char *duckdb_postgres_role = strdup("");
+ bool duckdb_force_motherduck_views = false;
++/* Confinement marker (bench/patches): always true in a build with the confined local file system. */
++bool duckdb_confined_file_access = true;
+ 
+ int duckdb_threads = -1;
+ int duckdb_maximum_memory = 4096; /* 4GB in MB */
+@@ -181,6 +183,10 @@
+ 	                     "Maximum number of PostgreSQL workers used for a single Postgres scan",
+ 	                     &duckdb_max_workers_per_postgres_scan, 0, MAX_PARALLEL_WORKER_LIMIT);
+ 
++	DefineCustomVariable("duckdb.confined_file_access",
++	                     "True when DuckDB local file access is confined to duckdb.allowed_directories (patched build only)",
++	                     &duckdb_confined_file_access, PGC_INTERNAL, GUC_NOT_IN_SAMPLE | GUC_DISALLOW_IN_FILE);
++
+ 	DefineCustomVariable("duckdb.postgres_role",
+ 	                     "Which postgres role should be allowed to use DuckDB execution, use the secrets and create "
+ 	                     "MotherDuck tables. Defaults to superusers only",
+@@ -305,6 +311,27 @@
+ 	// RefreshConnectionState, and GUCs can be changed outside of transaction
+ 	// blocks (for instance by being reverted due to SET LOCAL or by SIGHUP)
+ 	auto connection = pgduckdb::DuckDBManager::GetConnectionUnsafe();
++
++	/*
++	 * A confined instance (bench/patches) locks its configuration for an ordinary
++	 * role, so this SET would be refused there. TimeZone is the one setting this
++	 * hook exists to carry over, so it is the one exemption, and only for this
++	 * statement: the name is in DuckDB's allowed_configs while the SET runs and
++	 * is removed again on return or on an error. DuckDB SQL cannot reach it.
++	 */
++	struct TimeZoneExemption {
++		duckdb::identifier_set_t &allowed;
++		bool added;
++		~TimeZoneExemption() {
++			if (added) {
++				allowed.erase(duckdb::Identifier("TimeZone"));
++			}
++		}
++	};
++	auto &dbconfig = duckdb::DBConfig::GetConfig(*connection->context->db);
++	TimeZoneExemption exemption {dbconfig.options.allowed_configs,
++	                             dbconfig.options.allowed_configs.insert(duckdb::Identifier("TimeZone")).second};
++
+ 	pgduckdb::DuckDBQueryOrThrow(*connection,
+ 	                             "SET TimeZone =" + duckdb::KeywordHelper::WriteQuotedAndEscaped(tz, '\''));
+ 	elog(DEBUG2, "[PGDuckDB] Set DuckDB option: 'TimeZone'=%s", tz);
 diff --git a/include/pgduckdb/pgduckdb_confined_fs.hpp b/include/pgduckdb/pgduckdb_confined_fs.hpp
 new file mode 100644
-index 0000000..857181a
 --- /dev/null
 +++ b/include/pgduckdb/pgduckdb_confined_fs.hpp
 @@ -0,0 +1,27 @@
@@ -31,35 +198,8 @@ index 0000000..857181a
 +void AllowLocalFileWrites();
 +
 +} // namespace pgduckdb
-diff --git a/include/pgduckdb/pgduckdb_duckdb.hpp b/include/pgduckdb/pgduckdb_duckdb.hpp
-index 74318fa..e5ad905 100644
---- a/include/pgduckdb/pgduckdb_duckdb.hpp
-+++ b/include/pgduckdb/pgduckdb_duckdb.hpp
-@@ -56,7 +56,7 @@ public:
- private:
- 	DuckDBManager()
- 	    : extensions_table_current_seq(0), database(nullptr), connection(nullptr), default_dbname("<!UNSET!>"),
--	      secrets_valid(false) {
-+	      secrets_valid(false), filesystem_confined(false) {
- 	}
- 
- 	DuckDBManager(const DuckDBManager &) = delete;
-@@ -101,6 +101,12 @@ private:
- 	duckdb::unique_ptr<duckdb::Connection> connection;
- 	std::string default_dbname;
- 	bool secrets_valid;
-+	/*
-+	 * Set once the configuration is locked for a role that may read only the
-+	 * duckdb.allowed_directories. A locked configuration rejects every SET, so
-+	 * a confined instance is never refreshed again.
-+	 */
-+	bool filesystem_confined;
- };
- 
- } // namespace pgduckdb
 diff --git a/src/pgduckdb_confined_fs.cpp b/src/pgduckdb_confined_fs.cpp
 new file mode 100644
-index 0000000..e742ddf
 --- /dev/null
 +++ b/src/pgduckdb_confined_fs.cpp
 @@ -0,0 +1,159 @@
@@ -222,119 +362,3 @@ index 0000000..e742ddf
 +}
 +
 +} // namespace pgduckdb
-diff --git a/src/pgduckdb_duckdb.cpp b/src/pgduckdb_duckdb.cpp
-index b4c854d..5533f8b 100644
---- a/src/pgduckdb_duckdb.cpp
-+++ b/src/pgduckdb_duckdb.cpp
-@@ -17,6 +17,7 @@
- #include "pgduckdb/pg/transactions.hpp"
- #include "pgduckdb/pgduckdb_background_worker.hpp"
- #include "pgduckdb/pgduckdb_ca_certificate_fs.hpp"
-+#include "pgduckdb/pgduckdb_confined_fs.hpp"
- #include "pgduckdb/pgduckdb_fdw.hpp"
- #include "pgduckdb/pgduckdb_guc.hpp"
- #include "pgduckdb/pgduckdb_metadata_cache.hpp"
-@@ -187,6 +188,8 @@ DuckDBManager::Initialize() {
- 
- 	database = new duckdb::DuckDB(connection_string, &config);
- 
-+	/* Before the CA certificate file system, which must still win for the bundle paths it handles. */
-+	RegisterConfinedLocalFileSystem(*database->instance);
- 	RegisterCACertificateFileSystem(*database->instance);
- 
- 	auto &dbconfig = duckdb::DBConfig::GetConfig(*database->instance);
-@@ -268,6 +271,8 @@ DuckDBManager::Reset() {
- 	manager_instance.connection = nullptr;
- 	delete manager_instance.database;
- 	manager_instance.database = nullptr;
-+	manager_instance.filesystem_confined = false;
-+	AllowLocalFileWrites();
- 	UnclaimBgwSessionHint();
- }
- 
-@@ -318,9 +323,18 @@ DuckDBManager::InstallExtensions(duckdb::ClientContext &context) {
- 	}
- }
- 
-+/*
-+ * A role that may not read local files directly, but has duckdb.allowed_directories
-+ * set, keeps LocalFileSystem and is confined to those directories instead.
-+ */
-+static bool
-+UseAllowedDirectories() {
-+	return !pgduckdb::pg::AllowRawFileAccess() && !IsEmptyString(duckdb_allowed_directories);
-+}
-+
- static std::string
- DisabledFileSystems() {
--	if (pgduckdb::pg::AllowRawFileAccess()) {
-+	if (pgduckdb::pg::AllowRawFileAccess() || UseAllowedDirectories()) {
- 		return duckdb_disabled_filesystems;
- 	}
- 
-@@ -340,8 +354,29 @@ DisabledFileSystems() {
- 	return "LocalFileSystem," + std::string(duckdb_disabled_filesystems);
- }
- 
-+/*
-+ * Confines the DuckDB instance to duckdb.allowed_directories. The allowlist was
-+ * set when the instance was created. DuckDB enforces it on every path (symlinks
-+ * and ".." are resolved first), but only while external access is off, so that
-+ * is switched off here. The allowlist does not distinguish reads from writes,
-+ * so writes are refused by the local file system (pgduckdb_confined_fs.cpp).
-+ * The configuration is locked last: a locked configuration rejects every SET,
-+ * so nothing can widen the allowlist, turn external access back on, or unlock.
-+ */
-+static void
-+ConfineToAllowedDirectories(duckdb::ClientContext &context) {
-+	pgduckdb::DuckDBQueryOrThrow(context, "SET enable_external_access=false");
-+	pgduckdb::DuckDBQueryOrThrow(context, "SET lock_configuration=true");
-+	pgduckdb::DenyLocalFileWrites();
-+}
-+
- void
- DuckDBManager::RefreshConnectionState(duckdb::ClientContext &context) {
-+	/* Locked: every SET below would be rejected, and there is nothing left to refresh. */
-+	if (filesystem_confined) {
-+		return;
-+	}
-+
- 	std::string disabled_filesystems = DisabledFileSystems();
- 	if (disabled_filesystems != "") {
- 		/*
-@@ -375,6 +410,12 @@ DuckDBManager::RefreshConnectionState(duckdb::ClientContext &context) {
- 		LoadSecrets(context);
- 		secrets_valid = true;
- 	}
-+
-+	/* Last: after this, the configuration is locked and no refresh can SET anything. */
-+	if (UseAllowedDirectories()) {
-+		ConfineToAllowedDirectories(context);
-+		filesystem_confined = true;
-+	}
- }
- 
- /*
-diff --git a/src/pgduckdb_guc.cpp b/src/pgduckdb_guc.cpp
---- a/src/pgduckdb_guc.cpp
-+++ b/src/pgduckdb_guc.cpp
-@@ -136,6 +136,8 @@
- char *duckdb_motherduck_session_hint = strdup("");
- char *duckdb_postgres_role = strdup("");
- bool duckdb_force_motherduck_views = false;
-+/* Confinement marker (bench/patches): always true in a build with the confined local file system. */
-+bool duckdb_confined_file_access = true;
- 
- int duckdb_threads = -1;
- int duckdb_maximum_memory = 4096; /* 4GB in MB */
-@@ -181,6 +183,10 @@
- 	                     "Maximum number of PostgreSQL workers used for a single Postgres scan",
- 	                     &duckdb_max_workers_per_postgres_scan, 0, MAX_PARALLEL_WORKER_LIMIT);
- 
-+	DefineCustomVariable("duckdb.confined_file_access",
-+	                     "True when DuckDB local file access is confined to duckdb.allowed_directories (patched build only)",
-+	                     &duckdb_confined_file_access, PGC_INTERNAL, GUC_NOT_IN_SAMPLE | GUC_DISALLOW_IN_FILE);
-+
- 	DefineCustomVariable("duckdb.postgres_role",
- 	                     "Which postgres role should be allowed to use DuckDB execution, use the secrets and create "
- 	                     "MotherDuck tables. Defaults to superusers only",

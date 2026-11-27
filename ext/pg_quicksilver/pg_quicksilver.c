@@ -100,6 +100,10 @@ PG_MODULE_MAGIC;
 #define QS_DUCKDB_SCAN_NAME	"DuckDBScan"
 #define QS_GENERIC_PENALTY	1.0e10
 #define QS_DETAIL_LEN		200
+
+/* what a decision depends on in the session TimeZone (custom_private: the eighth element) */
+#define QS_ZONE_USED	1
+#define QS_ZONE_HOUR	2
 /* The role the mirror side runs as; created by pg_quicksilver--0.1.sql (docs/40, "Ordinary roles") */
 #define QS_MIRROR_ROLE		"quicksilver_mirror_reader"
 
@@ -188,6 +192,7 @@ typedef enum
 	QR_UNCONFINED,
 	QR_LAKE_NOT_ATTACHED,
 	QR_JOIN_INCOMPLETE,
+	QR_TIMEZONE,
 	QR_NREASONS
 } QsReason;
 
@@ -213,6 +218,7 @@ static const char *const qs_reason_names[QR_NREASONS] = {
 	"the role is not a superuser (see docs/40)",
 	"lake is not attached on this node (see the detail)",
 	"a join domain column is not complete on this node",
+	"the session time zone is not proven for this statement",
 };
 
 /* ---------------------------------------------------------------- shared memory */
@@ -331,6 +337,7 @@ typedef struct QsAllowEntry
 	bool		cmp;			/* operator: a comparison; its result does not depend on its operands' scale */
 	bool		cmp_only;		/* function: only as the direct operand of a comparison */
 	bool		errors;			/* PostgreSQL can raise an error from it that the mirror may never evaluate */
+	bool		zone;			/* function: its result depends on the session TimeZone; see qs_check_zone */
 } QsAllowEntry;
 
 typedef struct QsNameEntry
@@ -428,6 +435,7 @@ static List *qs_join_rows = NIL;	/* QsJoinRow, in qs_cache_cxt */
 static bool qs_join_domains = true;	/* quicksilver.join_domains */
 static int	qs_join_keys_now = 0;	/* rewritten by the decision being made: EXPLAIN */
 static List *qs_join_used_now = NIL;	/* the join domain columns those rewrites compare: (heap oid, column) */
+static int	qs_zone_flags_now = 0;	/* the decision being made: QS_ZONE_* of the time zone it depends on */
 
 /*
  * The one operator the rewrite compares companions with: =(bigint,bigint), and
@@ -593,6 +601,8 @@ typedef struct QsWalk
 	int			n_unmirrored;
 	bool		has_extern_param;
 	Bitmapset  *params;
+	bool		zone_used;		/* a time-zone dependent function is in the statement */
+	bool		zone_hour;	/* ... and one of them truncates to the hour */
 } QsWalk;
 
 static void
@@ -760,6 +770,31 @@ qs_load_allowlist(Snapshot snap)
 			continue;
 		}
 		memset(&key, 0, sizeof(key));
+		if (strcmp(kind, "timezone") == 0)
+		{
+			/*
+			 * A time zone whose date_trunc agrees with the mirror's: named
+			 * "timezone:<zone>", and "timezone_hour:<zone>" when its entry says hour
+			 * too. Read by qs_zone_ok; nothing else is ever looked up under these names.
+			 */
+			char		name[64];
+
+			if (strlen(ident) > 40)
+			{
+				qs_problem("%s %s: cannot be allowlisted", kind, ident);
+				continue;
+			}
+			memset(name, 0, sizeof(name));
+			snprintf(name, sizeof(name), "timezone:%s", ident);
+			hash_search(qs_name_hash, name, HASH_ENTER, NULL);
+			if (qs_array_has(slot, 5, "hour"))
+			{
+				memset(name, 0, sizeof(name));
+				snprintf(name, sizeof(name), "timezone_hour:%s", ident);
+				hash_search(qs_name_hash, name, HASH_ENTER, NULL);
+			}
+			continue;
+		}
 		if (strcmp(kind, "node") == 0 || strcmp(kind, "feature") == 0)
 		{
 			char		name[64];
@@ -862,6 +897,7 @@ qs_load_allowlist(Snapshot snap)
 		e->cmp = qs_array_has(slot, 5, "cmp");
 		e->cmp_only = qs_array_has(slot, 5, "cmp_only");
 		e->errors = qs_array_has(slot, 5, "errors");
+		e->zone = qs_array_has(slot, 5, "zone");
 	}
 done:
 	ExecDropSingleTupleTableSlot(slot);
@@ -2313,7 +2349,111 @@ qs_check_func(QsWalk *w, QsAllowKind kind, Oid funcid, Oid collid)
 		qs_check_coll(w, e, collid, name);
 }
 
-/* ORDER BY / GROUP BY / DISTINCT / PARTITION BY items */
+/*
+ * date_trunc(text, timestamptz) reads the session TimeZone, so it is admitted
+ * only for a unit proven for every zone in the table, and only while the
+ * session's zone is one of them. The unit must be a string constant
+ * in the proven set, compared case-insensitively: anything else (a column, a
+ * parameter, a unit PostgreSQL spells differently) stays on the heap.
+ * Returns 0 if not proven, 1 for a unit proven in every admitted zone, 2 for
+ * hour, which is proven only in the zones whose entry says so.
+ */
+static int
+qs_unit_proven(const char *unit)
+{
+	static const char *const proven[] = {"microseconds", "milliseconds", "second", "minute", "day",
+		"week", "month", "quarter", "year", "decade"};
+	char		low[16];
+	size_t		i;
+
+	if (strlen(unit) >= sizeof(low))
+		return 0;
+	for (i = 0; i <= strlen(unit); i++)
+	{
+		char		c = unit[i];
+
+		low[i] = (c >= 'A' && c <= 'Z') ? c + ('a' - 'A') : c;
+	}
+	for (i = 0; i < lengthof(proven); i++)
+		if (strcmp(low, proven[i]) == 0)
+			return 1;
+	return strcmp(low, "hour") == 0 ? 2 : 0;
+}
+
+/* Is the session's TimeZone one the table admits (for hour, too, when asked)? */
+static bool
+qs_zone_ok(bool hour, char *why, size_t whylen)
+{
+	const char *zone = GetConfigOption("TimeZone", true, false);
+
+	if (zone == NULL || strlen(zone) > 40 || !qs_name_allowed("timezone", zone))
+	{
+		snprintf(why, whylen, "time zone \"%s\" is not in the proven table", zone ? zone : "?");
+		return false;
+	}
+	if (hour && !qs_name_allowed("timezone_hour", zone))
+	{
+		snprintf(why, whylen, "hour is not proven in time zone \"%s\"", zone);
+		return false;
+	}
+	return true;
+}
+
+static void
+qs_check_zone(QsWalk *w, FuncExpr *f, const char *name)
+{
+	Node	   *arg = f->args ? (Node *) linitial(f->args) : NULL;
+	char	   *unit = NULL;
+	int			kind = 0;
+	char		why[QS_DETAIL_LEN];
+
+	if (arg && IsA(arg, Const) && !((Const *) arg)->constisnull &&
+		((Const *) arg)->consttype == TEXTOID)
+		unit = text_to_cstring(DatumGetTextPP(((Const *) arg)->constvalue));
+	if (unit)
+		kind = qs_unit_proven(unit);
+	if (kind == 0)
+	{
+		qs_add(w, "function", name, "the unit must be a string constant in the proven set");
+		return;
+	}
+	w->zone_used = true;
+	if (kind == 2)
+		w->zone_hour = true;
+	if (!qs_zone_ok(kind == 2, why, sizeof(why)))
+		qs_add(w, "time zone", GetConfigOption("TimeZone", true, false), why);
+}
+
+/*
+ * May a routed statement with these flags run in this session? The session's
+ * zone must be admitted (qs_zone_ok), and DuckDB's TimeZone must be that zone:
+ * pg_duckdb sets it whenever the session's changes (its GUC hook), and the
+ * statement reads it back, failing (so: heap) if it is not. Nothing is set
+ * here and nothing is restored: the statement leaves no zone behind.
+ */
+static bool
+qs_zone_check(int flags, char *why, size_t whylen)
+{
+	const char *zone;
+	char		sql[320];
+
+	if (!qs_zone_ok((flags & QS_ZONE_HOUR) != 0, why, whylen))
+		return false;
+	zone = GetConfigOption("TimeZone", true, false);
+	snprintf(sql, sizeof(sql),
+			 "SELECT CASE WHEN current_setting('TimeZone') = '%s' THEN 1 "
+			 "ELSE error('DuckDB TimeZone is not the session TimeZone') END", zone);
+	if (!qs_duck_raw(sql))
+	{
+		snprintf(why, whylen, "DuckDB's TimeZone is not the session's: %s", qs_duck_error);
+		(void) qs_duck_end(true);
+		return false;
+	}
+	return true;
+}
+
+/*
+ * ORDER BY / GROUP BY / DISTINCT / PARTITION BY items */
 static void
 qs_check_sortgroup(QsWalk *w, List *clauses, List *tlist, bool ordering, bool equality)
 {
@@ -2581,6 +2721,8 @@ qs_expr_walker(Node *node, void *context)
 				QsAllowEntry *e = qs_allow_lookup(QA_FUNC, f->funcid, InvalidOid);
 
 				qs_check_func(w, QA_FUNC, f->funcid, f->inputcollid);
+				if (e && e->zone)
+					qs_check_zone(w, f, format_procedure_extended(f->funcid, FORMAT_PROC_FORCE_QUALIFY));
 				if (e && e->cmp_only)
 					qs_add(w, "function", format_procedure_extended(f->funcid, FORMAT_PROC_FORCE_QUALIFY),
 						   "exact only as the operand of a comparison");
@@ -3854,6 +3996,7 @@ typedef struct QsScanState
 {
 	CustomScanState css;
 	int			join_keys;		/* join keys rewritten to companions in the mirror statement */
+	int			zone_flags;		/* QS_ZONE_*: the statement depends on the session TimeZone */
 	PlanState  *mirror_ps;
 	PlanState  *heap_ps;
 	Plan	   *mirror_plan;
@@ -4112,6 +4255,8 @@ qs_combine(PlannedStmt *heap, PlannedStmt *mirror, uint64 queryid, const char *r
 	cs->custom_private = lappend(cs->custom_private, makeInteger(qs_join_keys_now));
 	/* seventh: each join column the rewrites compare, as (heap oid, column name) */
 	cs->custom_private = lappend(cs->custom_private, qs_join_used_now);
+	/* eighth: what the statement depends on in the session TimeZone (QS_ZONE_*) */
+	cs->custom_private = lappend(cs->custom_private, makeInteger(qs_zone_flags_now));
 	cs->methods = &qs_scan_methods;
 
 	heap->planTree = (Plan *) cs;
@@ -4554,6 +4699,7 @@ qs_begin_scan(CustomScanState *node, EState *estate, int eflags)
 	}
 	st->reason = strVal(lthird(cs->custom_private));
 	st->join_keys = list_length(cs->custom_private) > 5 ? intVal(list_nth(cs->custom_private, 5)) : 0;
+	st->zone_flags = list_length(cs->custom_private) > 7 ? intVal(list_nth(cs->custom_private, 7)) : 0;
 	st->queryid = strtou64(strVal(lfourth(cs->custom_private)), NULL, 10);
 	st->side = 0;
 
@@ -4671,6 +4817,26 @@ qs_begin_scan(CustomScanState *node, EState *estate, int eflags)
 					 errdetail("%s", qs_attach_problem)));
 		qs_to_heap(st, QR_LAKE_NOT_ATTACHED, qs_attach_problem);
 		return;
+	}
+	if (st->zone_flags != 0)
+	{
+		char		zwhy[QS_DETAIL_LEN];
+
+		/*
+		 * Decided at plan time, and the plan may be older than this session's
+		 * TimeZone (a prepared statement planned under another zone): the zone
+		 * is checked again now, and DuckDB's own setting is read back.
+		 */
+		if (!qs_zone_check(st->zone_flags, zwhy, sizeof(zwhy)))
+		{
+			if (!st->can_fallback)
+				ereport(ERROR,
+						(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+						 errmsg("a plan made with quicksilver.allow_unsafe cannot be answered from the heap"),
+						 errdetail("%s", zwhy)));
+			qs_to_heap(st, QR_TIMEZONE, zwhy);
+			return;
+		}
 	}
 	st->eager = !st->explain_only && qs_in_block();
 	if (!qs_mirror_start(st, estate))
@@ -5382,6 +5548,7 @@ qs_decide(Query *orig, PlannedStmt *heap, const char *query_string, int cursorOp
 	qs_relids_walker((Node *) mq, &mirror_relids);
 	qs_join_keys_now = join_rewrites;
 	qs_join_used_now = join_used;
+	qs_zone_flags_now = (w.zone_used ? QS_ZONE_USED : 0) | (w.zone_hour ? QS_ZONE_HOUR : 0);
 	foreach(lc, w.mirrors)
 		heap_relids = lappend_oid(heap_relids, ((QsMirror *) lfirst(lc))->heap);
 

@@ -1,0 +1,500 @@
+zone	admitted	hour	transitions	decreases	instants	diffs	wall_diffs	reason
+Africa/Abidjan	no	no	1	0	2023	hour:5 decade:19 century:2020 millennium:2020	0	differs for decade
+Africa/Accra	no	no	61	30	3103	minute:154 hour:980 day:855 week:863 month:871 quarter:941 year:1561 decade:1382 century:3100 millennium:3100	12740	differs for microseconds, milliseconds, second, minute, day, week, month, quarter, year, decade
+Africa/Addis_Ababa	no	no	1	0	2023	minute:353 hour:444 day:444 week:444 month:446 quarter:447 year:455 decade:518 century:2020 millennium:2020	5772	differs for microseconds, milliseconds, second, minute, day, week, month, quarter, year, decade
+Africa/Algiers	no	no	32	16	2581	hour:75 quarter:14 century:2578 millennium:2578	0	differs for quarter
+Africa/Asmara	no	no	1	0	2023	minute:353 hour:444 day:444 week:444 month:446 quarter:447 year:455 decade:518 century:2020 millennium:2020	5772	differs for microseconds, milliseconds, second, minute, day, week, month, quarter, year, decade
+Africa/Bamako	no	no	3	1	2059	minute:117 hour:122 day:442 week:442 month:438 quarter:440 year:444 decade:506 century:2056 millennium:2056	5408	differs for microseconds, milliseconds, second, minute, day, week, month, quarter, year, decade
+Africa/Bangui	no	no	1	1	2023	minute:149 hour:190 day:190 week:190 month:190 quarter:190 year:193 decade:193 century:2020 millennium:2020	2470	differs for microseconds, milliseconds, second, minute, day, week, month, quarter, year, decade
+Africa/Banjul	no	no	2	0	2041	minute:327 hour:327 day:461 week:461 month:461 quarter:461 year:473 decade:536 century:2038 millennium:2038	5811	differs for microseconds, milliseconds, second, minute, day, week, month, quarter, year, decade
+Africa/Bissau	no	no	2	0	2041	decade:26 century:2038 millennium:2038	0	differs for decade
+Africa/Blantyre	no	no	3	2	2059	minute:133 hour:295 day:295 week:302 month:295 quarter:295 year:308 decade:347 century:2056 millennium:2056	3835	differs for microseconds, milliseconds, second, minute, day, week, month, quarter, year, decade
+Africa/Brazzaville	no	no	1	1	2023	minute:149 hour:190 day:190 week:190 month:190 quarter:190 year:193 decade:193 century:2020 millennium:2020	2470	differs for microseconds, milliseconds, second, minute, day, week, month, quarter, year, decade
+Africa/Bujumbura	no	no	0	0	2005	minute:89 hour:89 day:89 week:89 month:89 quarter:89 year:89 decade:97 century:2002 millennium:2002	1157	differs for microseconds, milliseconds, second, minute, day, week, month, quarter, year, decade
+Africa/Cairo	no	no	281	141	7063	hour:700 quarter:30 century:7060 millennium:7060	0	differs for quarter
+Africa/Casablanca	no	no	71	35	3283	hour:180 quarter:73 century:3280 millennium:3280	0	differs for quarter
+Africa/Ceuta	no	no	250	124	6505	hour:496 quarter:44 century:6502 millennium:6502	0	differs for quarter
+Africa/Conakry	no	no	3	1	2059	minute:117 hour:119 day:435 week:435 month:433 quarter:435 year:444 decade:506 century:2056 millennium:2056	5304	differs for microseconds, milliseconds, second, minute, day, week, month, quarter, year, decade
+Africa/Dakar	no	no	2	0	2041	minute:120 hour:120 day:454 week:454 month:454 quarter:454 year:461 decade:536 century:2038 millennium:2038	5720	differs for microseconds, milliseconds, second, minute, day, week, month, quarter, year, decade
+Africa/Dar_es_Salaam	no	no	3	1	2059	minute:310 hour:596 day:607 week:599 month:610 quarter:612 year:624 decade:747 century:2056 millennium:2056	7748	differs for microseconds, milliseconds, second, minute, day, week, month, quarter, year, decade
+Africa/Djibouti	no	no	1	0	2023	minute:116 hour:427 day:427 week:427 month:427 quarter:427 year:434 decade:427 century:2020 millennium:2020	5551	differs for microseconds, milliseconds, second, minute, day, week, month, quarter, year, decade
+Africa/Douala	no	no	1	0	2023	minute:149 hour:190 day:190 week:190 month:190 quarter:190 year:193 decade:193 century:2020 millennium:2020	2470	differs for microseconds, milliseconds, second, minute, day, week, month, quarter, year, decade
+Africa/El_Aaiun	no	no	60	30	3085	hour:145 quarter:73 century:3082 millennium:3082	0	differs for quarter
+Africa/Freetown	no	no	18	9	2329	minute:112 hour:355 day:749 week:749 month:749 quarter:749 year:749 decade:824 century:2326 millennium:2326	9555	differs for microseconds, milliseconds, second, minute, day, week, month, quarter, year, decade
+Africa/Gaborone	no	no	3	1	2059	minute:107 hour:107 day:132 week:132 month:132 quarter:132 year:138 decade:115 century:2056 millennium:2056	1833	differs for microseconds, milliseconds, second, minute, day, week, month, quarter, year, decade
+Africa/Harare	no	no	1	1	2023	minute:107 hour:107 day:107 week:107 month:107 quarter:107 year:107 decade:115 century:2020 millennium:2020	1391	differs for microseconds, milliseconds, second, minute, day, week, month, quarter, year, decade
+Africa/Johannesburg	no	no	5	2	2095	hour:13 quarter:13 century:2092 millennium:2092	0	differs for quarter
+Africa/Juba	no	no	35	18	2635	hour:85 quarter:14 century:2632 millennium:2632	0	differs for quarter
+Africa/Kampala	no	no	4	1	2077	minute:281 hour:523 day:544 week:538 month:546 quarter:549 year:562 decade:680 century:2074 millennium:2074	6760	differs for microseconds, milliseconds, second, minute, day, week, month, quarter, year, decade
+Africa/Khartoum	no	no	35	18	2635	hour:85 quarter:14 century:2632 millennium:2632	0	differs for quarter
+Africa/Kigali	no	no	1	1	2023	minute:344 hour:344 day:344 week:354 month:344 quarter:355 year:360 decade:416 century:2020 millennium:2020	4472	differs for microseconds, milliseconds, second, minute, day, week, month, quarter, year, decade
+Africa/Kinshasa	no	no	0	0	2005	minute:104 hour:145 day:172 week:172 month:172 quarter:172 year:175 decade:175 century:2002 millennium:2002	2236	differs for microseconds, milliseconds, second, minute, day, week, month, quarter, year, decade
+Africa/Lagos	no	no	4	1	2077	hour:15 quarter:12 decade:19 century:2074 millennium:2074	0	differs for quarter, decade
+Africa/Libreville	no	no	1	0	2023	minute:149 hour:190 day:190 week:190 month:190 quarter:190 year:193 decade:193 century:2020 millennium:2020	2470	differs for microseconds, milliseconds, second, minute, day, week, month, quarter, year, decade
+Africa/Lome	no	no	0	0	2005	minute:112 hour:112 day:112 week:112 month:113 quarter:115 year:120 decade:175 century:2002 millennium:2002	1456	differs for microseconds, milliseconds, second, minute, day, week, month, quarter, year, decade
+Africa/Luanda	no	no	1	0	2023	minute:149 hour:190 day:190 week:190 month:190 quarter:190 year:193 decade:193 century:2020 millennium:2020	2470	differs for microseconds, milliseconds, second, minute, day, week, month, quarter, year, decade
+Africa/Lubumbashi	no	no	1	0	2023	minute:89 hour:89 day:196 week:196 month:197 quarter:198 year:201 decade:311 century:2020 millennium:2020	2366	differs for microseconds, milliseconds, second, minute, day, week, month, quarter, year, decade
+Africa/Lusaka	no	no	1	0	2023	minute:107 hour:107 day:107 week:107 month:107 quarter:107 year:107 decade:115 century:2020 millennium:2020	1391	differs for microseconds, milliseconds, second, minute, day, week, month, quarter, year, decade
+Africa/Malabo	no	no	2	1	2041	minute:149 hour:190 day:681 week:681 month:683 quarter:683 year:683 decade:729 century:2038 millennium:2038	8671	differs for microseconds, milliseconds, second, minute, day, week, month, quarter, year, decade
+Africa/Maputo	yes	no	1	1	2023	century:2020 millennium:2020	0	offset decreases 1 times 1900-2100
+Africa/Maseru	no	no	3	1	2059	hour:47 day:58 week:58 month:58 quarter:58 year:92 decade:115 century:2056 millennium:2056	663	differs for microseconds, milliseconds, second, minute, day, week, month, quarter, year, decade
+Africa/Mbabane	no	no	1	1	2023	minute:40 hour:44 day:65 week:65 month:65 quarter:65 year:87 decade:115 century:2020 millennium:2020	767	differs for microseconds, milliseconds, second, minute, day, week, month, quarter, year, decade
+Africa/Mogadishu	no	no	2	1	2041	minute:83 hour:510 day:522 week:530 month:520 quarter:517 year:509 decade:535 century:2038 millennium:2038	6630	differs for microseconds, milliseconds, second, minute, day, week, month, quarter, year, decade
+Africa/Monrovia	yes	no	2	1	2041	hour:4 century:2038 millennium:2038	0	hour differs
+Africa/Nairobi	no	no	5	1	2095	hour:20 quarter:23 decade:25 century:2092 millennium:2092	0	differs for quarter, decade
+Africa/Ndjamena	yes	no	3	2	2059	hour:5 century:2056 millennium:2056	0	hour differs
+Africa/Niamey	no	no	3	1	2059	minute:149 hour:190 day:662 week:662 month:664 quarter:664 year:674 decade:747 century:2056 millennium:2056	8424	differs for microseconds, milliseconds, second, minute, day, week, month, quarter, year, decade
+Africa/Nouakchott	no	no	3	1	2059	minute:116 hour:116 day:446 week:446 month:442 quarter:445 year:444 decade:506 century:2056 millennium:2056	5434	differs for microseconds, milliseconds, second, minute, day, week, month, quarter, year, decade
+Africa/Ouagadougou	no	no	1	0	2023	minute:122 hour:125 day:130 week:130 month:131 quarter:133 year:138 decade:193 century:2020 millennium:2020	1586	differs for microseconds, milliseconds, second, minute, day, week, month, quarter, year, decade
+Africa/Porto-Novo	no	no	2	1	2041	minute:149 hour:190 day:362 week:362 month:362 quarter:362 year:368 decade:434 century:2038 millennium:2038	4524	differs for microseconds, milliseconds, second, minute, day, week, month, quarter, year, decade
+Africa/Sao_Tome	yes	no	3	1	2059	hour:4 century:2056 millennium:2056	0	hour differs
+Africa/Timbuktu	no	no	3	1	2059	minute:117 hour:122 day:442 week:442 month:438 quarter:440 year:444 decade:506 century:2056 millennium:2056	5408	differs for microseconds, milliseconds, second, minute, day, week, month, quarter, year, decade
+Africa/Tripoli	no	no	30	14	2545	hour:75 decade:31 century:2542 millennium:2542	0	differs for decade
+Africa/Tunis	no	no	33	16	2599	hour:67 quarter:58 century:2596 millennium:2596	0	differs for quarter
+Africa/Windhoek	no	no	51	25	2923	hour:105 quarter:13 century:2920 millennium:2920	0	differs for quarter
+America/Adak	yes	no	264	131	6757	hour:527 century:6754 millennium:6754	0	hour differs
+America/Anchorage	yes	no	264	132	6757	hour:655 century:6754 millennium:6754	0	hour differs
+America/Anguilla	no	no	1	0	2023	minute:122 hour:122 day:174 week:174 month:174 quarter:174 year:168 decade:193 century:2020 millennium:2020	2132	differs for microseconds, milliseconds, second, minute, day, week, month, quarter, year, decade
+America/Antigua	no	no	2	1	2041	minute:127 hour:127 day:543 week:543 month:544 quarter:546 year:550 decade:644 century:2038 millennium:2038	6877	differs for microseconds, milliseconds, second, minute, day, week, month, quarter, year, decade
+America/Araguaina	no	no	51	25	2923	hour:120 day:5 quarter:101 decade:18 century:2920 millennium:2920	65	differs for microseconds, milliseconds, second, minute, day, week, month, quarter, year, decade
+America/Argentina/Buenos_Aires	no	no	58	28	3049	hour:145 quarter:165 century:3046 millennium:3046	0	differs for quarter
+America/Argentina/Catamarca	no	no	58	28	3049	hour:149 quarter:165 century:3046 millennium:3046	0	differs for quarter
+America/Argentina/Cordoba	no	no	58	28	3049	hour:149 quarter:165 century:3046 millennium:3046	0	differs for quarter
+America/Argentina/Jujuy	no	no	56	27	3013	hour:144 quarter:165 century:3010 millennium:3010	0	differs for quarter
+America/Argentina/La_Rioja	no	no	59	28	3067	hour:149 quarter:165 century:3064 millennium:3064	0	differs for quarter
+America/Argentina/Mendoza	no	no	58	28	3049	hour:149 quarter:165 century:3046 millennium:3046	0	differs for quarter
+America/Argentina/Rio_Gallegos	no	no	58	28	3049	hour:145 quarter:165 century:3046 millennium:3046	0	differs for quarter
+America/Argentina/Salta	no	no	56	27	3013	hour:144 quarter:165 century:3010 millennium:3010	0	differs for quarter
+America/Argentina/San_Juan	no	no	59	28	3067	hour:149 quarter:165 century:3064 millennium:3064	0	differs for quarter
+America/Argentina/San_Luis	no	no	59	28	3067	hour:149 quarter:180 century:3064 millennium:3064	0	differs for quarter
+America/Argentina/Tucuman	no	no	60	29	3085	hour:154 quarter:165 century:3082 millennium:3082	0	differs for quarter
+America/Argentina/Ushuaia	no	no	58	28	3049	hour:145 quarter:165 century:3046 millennium:3046	0	differs for quarter
+America/Aruba	no	no	2	0	2041	minute:122 hour:680 day:692 week:692 month:692 quarter:692 year:695 decade:730 century:2038 millennium:2038	8840	differs for microseconds, milliseconds, second, minute, day, week, month, quarter, year, decade
+America/Asuncion	no	no	102	51	3841	hour:250 quarter:15 century:3838 millennium:3838	0	differs for quarter
+America/Atikokan	no	no	3	1	2059	minute:81 hour:81 day:443 week:443 month:443 quarter:441 year:469 decade:554 century:2056 millennium:2056	5460	differs for microseconds, milliseconds, second, minute, day, week, month, quarter, year, decade
+America/Atka	yes	no	264	131	6757	hour:527 century:6754 millennium:6754	0	hour differs
+America/Bahia	no	no	61	31	3103	hour:140 day:5 quarter:101 century:3100 millennium:3100	65	differs for microseconds, milliseconds, second, minute, day, week, month, quarter, year, decade
+America/Bahia_Banderas	yes	no	61	30	3103	hour:120 century:3100 millennium:3100	0	hour differs
+America/Barbados	yes	no	15	8	2275	hour:38 century:2272 millennium:2272	0	hour differs
+America/Belem	no	no	29	14	2527	hour:65 day:5 quarter:101 decade:18 century:2524 millennium:2524	65	differs for microseconds, milliseconds, second, minute, day, week, month, quarter, year, decade
+America/Belize	yes	no	97	49	3751	hour:240 century:3748 millennium:3748	0	hour differs
+America/Blanc-Sablon	no	no	4	2	2077	hour:4 day:19 week:19 month:20 quarter:22 century:2074 millennium:2074	546	differs for microseconds, milliseconds, second, minute, day, week, month, quarter, year, decade
+America/Boa_Vista	no	no	33	16	2599	hour:75 day:5 quarter:101 decade:18 century:2596 millennium:2596	65	differs for microseconds, milliseconds, second, minute, day, week, month, quarter, year, decade
+America/Bogota	yes	no	3	2	2059	hour:5 century:2056 millennium:2056	0	hour differs
+America/Boise	yes	no	273	136	6919	hour:544 century:6916 millennium:6916	0	hour differs
+America/Cambridge_Bay	yes	no	257	129	6631	hour:521 century:6628 millennium:6628	0	hour differs
+America/Campo_Grande	no	no	91	46	3643	hour:215 day:5 quarter:101 century:3640 millennium:3640	65	differs for microseconds, milliseconds, second, minute, day, week, month, quarter, year, decade
+America/Cancun	yes	no	42	21	2761	hour:102 century:2758 millennium:2758	0	hour differs
+America/Caracas	no	no	4	2	2077	hour:5 decade:15 century:2074 millennium:2074	0	differs for decade
+America/Cayenne	yes	no	2	1	2041	century:2038 millennium:2038	0	offset decreases 1 times 1900-2100
+America/Cayman	no	no	1	0	2023	minute:121 hour:121 day:131 week:131 month:132 quarter:133 year:138 decade:193 century:2020 millennium:2020	1573	differs for microseconds, milliseconds, second, minute, day, week, month, quarter, year, decade
+America/Chicago	yes	no	358	179	8449	hour:716 century:8446 millennium:8446	0	hour differs
+America/Chihuahua	yes	no	58	28	3049	hour:140 century:3046 millennium:3046	0	hour differs
+America/Ciudad_Juarez	yes	no	213	106	5839	hour:530 century:5836 millennium:5836	0	hour differs
+America/Coral_Harbour	no	no	3	1	2059	minute:81 hour:81 day:443 week:443 month:443 quarter:441 year:469 decade:554 century:2056 millennium:2056	5460	differs for microseconds, milliseconds, second, minute, day, week, month, quarter, year, decade
+America/Costa_Rica	yes	no	9	5	2167	hour:20 century:2164 millennium:2164	0	hour differs
+America/Coyhaique	no	no	130	64	4345	hour:323 quarter:103 century:4342 millennium:4342	0	differs for quarter
+America/Creston	no	no	2	1	2041	day:72 week:67 month:71 quarter:72 year:40 century:2038 millennium:2038	936	differs for microseconds, milliseconds, second, minute, day, week, month, quarter, year, decade
+America/Cuiaba	no	no	89	45	3607	hour:210 day:5 quarter:101 century:3604 millennium:3604	65	differs for microseconds, milliseconds, second, minute, day, week, month, quarter, year, decade
+America/Curacao	no	no	2	0	2041	minute:122 hour:680 day:692 week:692 month:692 quarter:692 year:695 decade:730 century:2038 millennium:2038	8840	differs for microseconds, milliseconds, second, minute, day, week, month, quarter, year, decade
+America/Danmarkshavn	no	no	34	17	2617	hour:84 decade:29 century:2614 millennium:2614	0	differs for decade
+America/Dawson	yes	no	91	44	3643	hour:229 century:3640 millennium:3640	0	hour differs
+America/Dawson_Creek	yes	no	55	27	2995	hour:108 century:2992 millennium:2992	0	hour differs
+America/Denver	yes	no	280	140	7045	hour:560 century:7042 millennium:7042	0	hour differs
+America/Detroit	yes	no	264	132	6757	hour:664 century:6754 millennium:6754	0	hour differs
+America/Dominica	no	no	1	0	2023	minute:116 hour:116 day:168 week:168 month:168 quarter:168 year:160 decade:193 century:2020 millennium:2020	2054	differs for microseconds, milliseconds, second, minute, day, week, month, quarter, year, decade
+America/Edmonton	no	no	126	62	4273	hour:315 quarter:14 century:4270 millennium:4270	0	differs for quarter
+America/Eirunepe	no	no	33	17	2599	hour:70 day:5 quarter:101 century:2596 millennium:2596	65	differs for microseconds, milliseconds, second, minute, day, week, month, quarter, year, decade
+America/El_Salvador	no	no	5	3	2095	hour:10 quarter:17 century:2092 millennium:2092	0	differs for quarter
+America/Ensenada	no	no	310	155	7585	hour:775 quarter:15 century:7582 millennium:7582	0	differs for quarter
+America/Fort_Nelson	yes	no	141	70	4543	hour:280 century:4540 millennium:4540	0	hour differs
+America/Fortaleza	no	no	39	20	2707	hour:68 day:5 quarter:101 century:2704 millennium:2704	65	differs for microseconds, milliseconds, second, minute, day, week, month, quarter, year, decade
+America/Glace_Bay	yes	no	263	132	6739	hour:655 century:6736 millennium:6736	0	hour differs
+America/Goose_Bay	yes	no	326	163	7873	hour:924 century:7870 millennium:7870	0	hour differs
+America/Grand_Turk	no	no	237	118	6271	hour:595 quarter:11 century:6268 millennium:6268	0	differs for quarter
+America/Grenada	no	no	1	0	2023	hour:116 day:168 week:168 month:168 quarter:168 year:160 decade:193 century:2020 millennium:2020	2054	differs for microseconds, milliseconds, second, minute, day, week, month, quarter, year, decade
+America/Guadeloupe	no	no	1	0	2023	minute:115 hour:115 day:167 week:167 month:167 quarter:167 year:160 decade:193 century:2020 millennium:2020	2041	differs for microseconds, milliseconds, second, minute, day, week, month, quarter, year, decade
+America/Guatemala	yes	no	9	4	2167	hour:25 century:2164 millennium:2164	0	hour differs
+America/Guayaquil	no	no	3	1	2059	hour:9 decade:15 century:2056 millennium:2056	0	differs for decade
+America/Guyana	no	no	4	2	2077	hour:13 quarter:26 century:2074 millennium:2074	0	differs for quarter
+America/Halifax	no	no	351	175	8323	hour:880 quarter:59 century:8320 millennium:8320	0	differs for quarter
+America/Havana	no	no	279	139	7027	hour:695 day:33 week:23 month:33 quarter:48 year:45 century:7024 millennium:7024	182	differs for microseconds, milliseconds, second, minute, day, week, month, quarter, year, decade
+America/Hermosillo	yes	no	13	6	2239	hour:30 century:2236 millennium:2236	0	hour differs
+America/Indiana/Indianapolis	yes	no	221	110	5983	hour:440 century:5980 millennium:5980	0	hour differs
+America/Indiana/Knox	yes	no	274	137	6937	hour:548 century:6934 millennium:6934	0	hour differs
+America/Indiana/Marengo	yes	no	223	111	6019	hour:444 century:6016 millennium:6016	0	hour differs
+America/Indiana/Petersburg	no	no	235	117	6235	hour:468 quarter:15 century:6232 millennium:6232	0	differs for quarter
+America/Indiana/Tell_City	no	no	219	110	5947	hour:440 quarter:15 century:5944 millennium:5944	0	differs for quarter
+America/Indiana/Vevay	yes	no	203	101	5659	hour:404 century:5656 millennium:5656	0	hour differs
+America/Indiana/Vincennes	no	no	221	110	5983	hour:440 quarter:15 century:5980 millennium:5980	0	differs for quarter
+America/Indiana/Winamac	yes	no	228	114	6109	hour:456 century:6106 millennium:6106	0	hour differs
+America/Inuvik	yes	no	110	55	3985	hour:225 century:3982 millennium:3982	0	hour differs
+America/Iqaluit	yes	no	257	129	6631	hour:525 century:6628 millennium:6628	0	hour differs
+America/Jamaica	no	no	21	10	2383	hour:55 quarter:11 century:2380 millennium:2380	0	differs for quarter
+America/Juneau	yes	no	263	131	6739	hour:661 century:6736 millennium:6736	0	hour differs
+America/Kentucky/Louisville	yes	no	297	148	7351	hour:600 century:7348 millennium:7348	0	hour differs
+America/Kentucky/Monticello	yes	no	269	134	6847	hour:536 century:6844 millennium:6844	0	hour differs
+America/Kralendijk	no	no	2	0	2041	minute:122 hour:680 day:692 week:692 month:692 quarter:692 year:695 decade:730 century:2038 millennium:2038	8840	differs for microseconds, milliseconds, second, minute, day, week, month, quarter, year, decade
+America/La_Paz	yes	no	2	1	2041	century:2038 millennium:2038	0	offset decreases 1 times 1900-2100
+America/Lima	no	no	15	7	2275	hour:40 decade:156 century:2272 millennium:2272	0	differs for decade
+America/Los_Angeles	yes	no	308	154	7549	hour:624 century:7546 millennium:7546	0	hour differs
+America/Lower_Princes	no	no	2	0	2041	minute:122 hour:680 day:692 week:692 month:692 quarter:692 year:695 decade:730 century:2038 millennium:2038	8840	differs for microseconds, milliseconds, second, minute, day, week, month, quarter, year, decade
+America/Maceio	no	no	41	21	2743	hour:90 day:5 quarter:101 century:2740 millennium:2740	65	differs for microseconds, milliseconds, second, minute, day, week, month, quarter, year, decade
+America/Managua	no	no	15	8	2275	hour:35 quarter:17 decade:25 century:2272 millennium:2272	0	differs for quarter, decade
+America/Manaus	no	no	31	15	2563	hour:70 day:5 quarter:101 decade:18 century:2560 millennium:2560	65	differs for microseconds, milliseconds, second, minute, day, week, month, quarter, year, decade
+America/Marigot	no	no	1	0	2023	minute:122 hour:122 day:174 week:174 month:174 quarter:174 year:168 decade:193 century:2020 millennium:2020	2132	differs for microseconds, milliseconds, second, minute, day, week, month, quarter, year, decade
+America/Martinique	no	no	3	1	2059	hour:10 quarter:11 century:2056 millennium:2056	0	differs for quarter
+America/Matamoros	yes	no	211	105	5803	hour:420 century:5800 millennium:5800	0	hour differs
+America/Mazatlan	yes	no	61	30	3103	hour:150 century:3100 millennium:3100	0	hour differs
+America/Menominee	yes	no	264	132	6757	hour:528 century:6754 millennium:6754	0	hour differs
+America/Merida	yes	no	57	29	3031	hour:142 century:3028 millennium:3028	0	hour differs
+America/Metlakatla	yes	no	202	101	5641	hour:508 century:5638 millennium:5638	0	hour differs
+America/Mexico_City	yes	no	68	34	3229	hour:168 century:3226 millennium:3226	0	hour differs
+America/Miquelon	no	no	228	114	6109	hour:565 quarter:15 century:6106 millennium:6106	0	differs for quarter
+America/Moncton	yes	no	329	164	7927	hour:712 century:7924 millennium:7924	0	hour differs
+America/Monterrey	yes	no	62	31	3121	hour:153 century:3118 millennium:3118	0	hour differs
+America/Montevideo	no	no	85	43	3535	hour:210 quarter:13 century:3532 millennium:3532	0	differs for quarter
+America/Montreal	yes	no	354	177	8377	hour:712 century:8374 millennium:8374	0	hour differs
+America/Montserrat	no	no	1	0	2023	minute:116 hour:116 day:168 week:168 month:168 quarter:168 year:160 decade:193 century:2020 millennium:2020	2054	differs for microseconds, milliseconds, second, minute, day, week, month, quarter, year, decade
+America/Nassau	no	no	277	138	6991	minute:122 hour:802 day:382 week:386 month:382 quarter:351 year:223 decade:193 century:6988 millennium:6988	4459	differs for microseconds, milliseconds, second, minute, day, week, month, quarter, year, decade
+America/New_York	yes	no	358	179	8449	hour:716 century:8446 millennium:8446	0	hour differs
+America/Nipigon	yes	no	354	177	8377	hour:712 century:8374 millennium:8374	0	hour differs
+America/Nome	yes	no	265	131	6775	hour:660 century:6772 millennium:6772	0	hour differs
+America/Noronha	no	no	39	19	2707	hour:90 day:5 quarter:101 decade:18 century:2704 millennium:2704	65	differs for microseconds, milliseconds, second, minute, day, week, month, quarter, year, decade
+America/North_Dakota/Beulah	yes	no	271	135	6883	hour:540 century:6880 millennium:6880	0	hour differs
+America/North_Dakota/Center	yes	no	271	135	6883	hour:540 century:6880 millennium:6880	0	hour differs
+America/North_Dakota/New_Salem	yes	no	271	135	6883	hour:540 century:6880 millennium:6880	0	hour differs
+America/Nuuk	yes	no	240	119	6325	hour:600 century:6322 millennium:6322	0	hour differs
+America/Ojinaga	yes	no	212	106	5821	hour:527 century:5818 millennium:5818	0	hour differs
+America/Panama	yes	no	1	0	2023	hour:5 century:2020 millennium:2020	0	hour differs
+America/Pangnirtung	yes	no	257	129	6631	hour:525 century:6628 millennium:6628	0	hour differs
+America/Paramaribo	no	no	4	1	2077	hour:15 decade:20 century:2074 millennium:2074	0	differs for decade
+America/Phoenix	yes	no	10	5	2185	hour:20 century:2182 millennium:2182	0	hour differs
+America/Port_of_Spain	no	no	1	0	2023	minute:122 hour:122 day:174 week:174 month:174 quarter:174 year:168 decade:193 century:2020 millennium:2020	2132	differs for microseconds, milliseconds, second, minute, day, week, month, quarter, year, decade
+America/Port-au-Prince	yes	no	209	105	5767	hour:416 century:5764 millennium:5764	0	hour differs
+America/Porto_Acre	no	no	31	16	2563	hour:65 day:5 quarter:101 century:2560 millennium:2560	65	differs for microseconds, milliseconds, second, minute, day, week, month, quarter, year, decade
+America/Porto_Velho	no	no	29	14	2527	hour:65 day:5 quarter:101 decade:19 century:2524 millennium:2524	65	differs for microseconds, milliseconds, second, minute, day, week, month, quarter, year, decade
+America/Puerto_Rico	yes	no	2	1	2041	hour:4 century:2038 millennium:2038	0	hour differs
+America/Punta_Arenas	no	no	114	56	4057	hour:283 quarter:103 century:4054 millennium:4054	0	differs for quarter
+America/Rainy_River	yes	no	161	80	4903	hour:320 century:4900 millennium:4900	0	hour differs
+America/Rankin_Inlet	yes	no	255	128	6595	hour:517 century:6592 millennium:6592	0	hour differs
+America/Recife	no	no	39	20	2707	hour:85 day:5 quarter:101 century:2704 millennium:2704	65	differs for microseconds, milliseconds, second, minute, day, week, month, quarter, year, decade
+America/Regina	no	no	52	26	2941	hour:125 quarter:14 century:2938 millennium:2938	0	differs for quarter
+America/Resolute	yes	no	253	127	6559	hour:513 century:6556 millennium:6556	0	hour differs
+America/Rio_Branco	no	no	31	16	2563	hour:65 day:5 quarter:101 century:2560 millennium:2560	65	differs for microseconds, milliseconds, second, minute, day, week, month, quarter, year, decade
+America/Santa_Isabel	no	no	310	155	7585	hour:775 quarter:15 century:7582 millennium:7582	0	differs for quarter
+America/Santarem	no	no	30	15	2545	hour:60 day:5 quarter:101 century:2542 millennium:2542	65	differs for microseconds, milliseconds, second, minute, day, week, month, quarter, year, decade
+America/Santiago	no	no	282	140	7081	hour:703 quarter:103 century:7078 millennium:7078	0	differs for quarter
+America/Santo_Domingo	yes	no	16	8	2293	hour:33 century:2290 millennium:2290	0	hour differs
+America/Sao_Paulo	no	no	91	45	3643	hour:220 day:5 quarter:101 decade:18 century:3640 millennium:3640	65	differs for microseconds, milliseconds, second, minute, day, week, month, quarter, year, decade
+America/Scoresbysund	yes	no	240	121	6325	hour:600 century:6322 millennium:6322	0	hour differs
+America/Shiprock	yes	no	280	140	7045	hour:560 century:7042 millennium:7042	0	hour differs
+America/Sitka	yes	no	265	132	6775	hour:673 century:6772 millennium:6772	0	hour differs
+America/St_Barthelemy	no	no	1	0	2023	minute:122 hour:122 day:174 week:174 month:174 quarter:174 year:168 decade:193 century:2020 millennium:2020	2132	differs for microseconds, milliseconds, second, minute, day, week, month, quarter, year, decade
+America/St_Johns	yes	no	361	180	8503	hour:1014 century:8500 millennium:8500	0	hour differs
+America/St_Kitts	no	no	1	0	2023	minute:122 hour:122 day:174 week:174 month:174 quarter:174 year:168 decade:193 century:2020 millennium:2020	2132	differs for microseconds, milliseconds, second, minute, day, week, month, quarter, year, decade
+America/St_Lucia	no	no	1	0	2023	hour:120 day:172 week:172 month:172 quarter:174 year:168 decade:193 century:2020 millennium:2020	2106	differs for microseconds, milliseconds, second, minute, day, week, month, quarter, year, decade
+America/St_Thomas	no	no	1	0	2023	minute:115 hour:115 day:168 week:168 month:168 quarter:168 year:160 decade:193 century:2020 millennium:2020	2041	differs for microseconds, milliseconds, second, minute, day, week, month, quarter, year, decade
+America/St_Vincent	no	no	1	0	2023	minute:120 hour:120 day:172 week:172 month:172 quarter:174 year:168 decade:193 century:2020 millennium:2020	2106	differs for microseconds, milliseconds, second, minute, day, week, month, quarter, year, decade
+America/Swift_Current	no	no	22	10	2401	hour:55 quarter:12 century:2398 millennium:2398	0	differs for quarter
+America/Tegucigalpa	no	no	7	4	2131	hour:15 quarter:17 century:2128 millennium:2128	0	differs for quarter
+America/Thule	yes	no	219	109	5947	hour:550 century:5944 millennium:5944	0	hour differs
+America/Thunder_Bay	yes	no	354	177	8377	hour:712 century:8374 millennium:8374	0	hour differs
+America/Tijuana	no	no	310	155	7585	hour:775 quarter:15 century:7582 millennium:7582	0	differs for quarter
+America/Toronto	yes	no	354	177	8377	hour:712 century:8374 millennium:8374	0	hour differs
+America/Tortola	no	no	1	0	2023	minute:115 hour:115 day:168 week:168 month:168 quarter:168 year:160 decade:193 century:2020 millennium:2020	2041	differs for microseconds, milliseconds, second, minute, day, week, month, quarter, year, decade
+America/Vancouver	yes	no	165	82	4975	hour:328 century:4972 millennium:4972	0	hour differs
+America/Virgin	no	no	1	0	2023	minute:115 hour:115 day:168 week:168 month:168 quarter:168 year:160 decade:193 century:2020 millennium:2020	2041	differs for microseconds, milliseconds, second, minute, day, week, month, quarter, year, decade
+America/Whitehorse	yes	no	91	44	3643	hour:229 century:3640 millennium:3640	0	hour differs
+America/Winnipeg	yes	no	161	80	4903	hour:320 century:4900 millennium:4900	0	hour differs
+America/Yakutat	yes	no	265	132	6775	hour:665 century:6772 millennium:6772	0	hour differs
+America/Yellowknife	no	no	126	62	4273	hour:315 quarter:14 century:4270 millennium:4270	0	differs for quarter
+Antarctica/Casey	no	no	17	8	2311	hour:84 decade:31 century:2308 millennium:2308	0	differs for decade
+Antarctica/Davis	no	no	7	3	2131	hour:25 quarter:20 century:2128 millennium:2128	0	differs for quarter
+Antarctica/DumontDUrville	no	no	3	1	2059	day:559 week:560 month:560 quarter:562 year:558 decade:518 century:2056 millennium:2056	6799	differs for microseconds, milliseconds, second, minute, day, week, month, quarter, year, decade
+Antarctica/Macquarie	yes	no	267	133	6811	hour:537 century:6808 millennium:6808	0	hour differs
+Antarctica/Mawson	yes	no	2	1	2041	hour:4 century:2038 millennium:2038	0	hour differs
+Antarctica/McMurdo	no	no	252	125	6541	hour:833 day:573 week:573 month:574 quarter:577 year:581 decade:626 century:6538 millennium:6538	7215	differs for microseconds, milliseconds, second, minute, day, week, month, quarter, year, decade
+Antarctica/Palmer	yes	no	81	41	3463	hour:169 century:3460 millennium:3460	0	hour differs
+Antarctica/Rothera	yes	no	1	1	2023	hour:9 century:2020 millennium:2020	0	hour differs
+Antarctica/Syowa	no	no	1	0	2023	minute:477 hour:477 day:583 week:583 month:583 quarter:583 year:597 decade:626 century:2020 millennium:2020	7345	differs for microseconds, milliseconds, second, minute, day, week, month, quarter, year, decade
+Antarctica/Troll	yes	no	190	95	5425	hour:760 century:5422 millennium:5422	0	hour differs
+Antarctica/Vostok	no	no	4	2	2077	hour:17 quarter:19 century:2074 millennium:2074	0	differs for quarter
+Arctic/Longyearbyen	no	no	264	132	6757	hour:492 day:209 week:218 month:216 quarter:193 century:6754 millennium:6754	3419	differs for microseconds, milliseconds, second, minute, day, week, month, quarter, year, decade
+Asia/Aden	no	no	1	0	2023	minute:508 hour:508 day:518 week:518 month:518 quarter:519 year:525 decade:626 century:2020 millennium:2020	6604	differs for microseconds, milliseconds, second, minute, day, week, month, quarter, year, decade
+Asia/Almaty	yes	no	51	26	2923	hour:125 century:2920 millennium:2920	0	hour differs
+Asia/Amman	no	no	86	43	3553	hour:210 quarter:57 century:3550 millennium:3550	0	differs for quarter
+Asia/Anadyr	yes	no	61	30	3103	hour:155 century:3100 millennium:3100	0	hour differs
+Asia/Aqtau	yes	no	47	22	2851	hour:118 century:2848 millennium:2848	0	hour differs
+Asia/Aqtobe	yes	no	48	23	2869	hour:121 century:2866 millennium:2866	0	hour differs
+Asia/Ashgabat	yes	no	24	11	2437	hour:60 century:2434 millennium:2434	0	hour differs
+Asia/Atyrau	yes	no	46	23	2833	hour:110 century:2830 millennium:2830	0	hour differs
+Asia/Baghdad	no	no	53	26	2959	hour:135 quarter:16 decade:15 century:2956 millennium:2956	0	differs for quarter, decade
+Asia/Bahrain	no	no	3	1	2059	minute:427 hour:479 day:486 week:486 month:489 quarter:490 year:499 decade:536 century:2056 millennium:2056	6162	differs for microseconds, milliseconds, second, minute, day, week, month, quarter, year, decade
+Asia/Baku	no	no	64	32	3157	hour:155 quarter:14 century:3154 millennium:3154	0	differs for quarter
+Asia/Bangkok	yes	no	1	0	2023	hour:5 century:2020 millennium:2020	0	hour differs
+Asia/Barnaul	yes	no	66	32	3193	hour:133 century:3190 millennium:3190	0	hour differs
+Asia/Beirut	no	no	264	132	6757	hour:529 quarter:264 century:6754 millennium:6754	0	differs for quarter
+Asia/Bishkek	yes	no	50	24	2905	hour:147 century:2902 millennium:2902	0	hour differs
+Asia/Brunei	no	no	2	1	2041	minute:266 hour:301 day:340 week:344 month:346 quarter:346 year:310 decade:328 century:2038 millennium:2038	4342	differs for microseconds, milliseconds, second, minute, day, week, month, quarter, year, decade
+Asia/Chita	yes	no	65	31	3175	hour:164 century:3172 millennium:3172	0	hour differs
+Asia/Choibalsan	no	no	50	25	2905	hour:120 decade:18 century:2902 millennium:2902	0	differs for decade
+Asia/Chongqing	no	no	29	15	2527	hour:70 quarter:63 century:2524 millennium:2524	0	differs for quarter
+Asia/Colombo	no	no	7	3	2131	hour:26 quarter:13 decade:19 century:2128 millennium:2128	0	differs for quarter, decade
+Asia/Damascus	yes	no	120	60	4165	hour:295 century:4162 millennium:4162	0	hour differs
+Asia/Dhaka	no	no	6	3	2113	hour:15 quarter:15 century:2110 millennium:2110	0	differs for quarter
+Asia/Dili	yes	no	4	2	2077	hour:8 century:2074 millennium:2074	0	hour differs
+Asia/Dubai	yes	no	1	0	2023	hour:5 century:2020 millennium:2020	0	hour differs
+Asia/Dushanbe	yes	no	23	11	2419	hour:60 century:2416 millennium:2416	0	hour differs
+Asia/Famagusta	yes	no	249	125	6487	hour:620 century:6484 millennium:6484	0	hour differs
+Asia/Gaza	no	no	333	167	7999	hour:849 quarter:14 century:7996 millennium:7996	0	differs for quarter
+Asia/Harbin	no	no	29	15	2527	hour:70 quarter:63 century:2524 millennium:2524	0	differs for quarter
+Asia/Hebron	no	no	335	168	8035	hour:845 quarter:14 century:8032 millennium:8032	0	differs for quarter
+Asia/Ho_Chi_Minh	yes	no	8	4	2149	hour:19 century:2146 millennium:2146	0	hour differs
+Asia/Hong_Kong	yes	no	69	34	3247	hour:229 century:3244 millennium:3244	0	hour differs
+Asia/Hovd	no	no	50	25	2905	hour:120 decade:18 century:2902 millennium:2902	0	differs for decade
+Asia/Irkutsk	yes	no	64	31	3157	hour:160 century:3154 millennium:3154	0	hour differs
+Asia/Istanbul	no	no	112	55	4021	hour:280 quarter:57 century:4018 millennium:4018	0	differs for quarter
+Asia/Jakarta	no	no	7	3	2131	hour:19 quarter:25 century:2128 millennium:2128	0	differs for quarter
+Asia/Jayapura	no	no	3	2	2059	hour:5 quarter:12 century:2056 millennium:2056	0	differs for quarter
+Asia/Jerusalem	yes	no	272	137	6901	hour:680 century:6898 millennium:6898	0	hour differs
+Asia/Kabul	no	no	1	0	2023	hour:5 decade:16 century:2020 millennium:2020	0	differs for decade
+Asia/Kamchatka	yes	no	62	30	3121	hour:155 century:3118 millennium:3118	0	hour differs
+Asia/Karachi	no	no	10	5	2185	hour:29 quarter:30 decade:21 century:2182 millennium:2182	0	differs for quarter, decade
+Asia/Kashgar	no	no	1	0	2023	hour:5 decade:20 century:2020 millennium:2020	0	differs for decade
+Asia/Kathmandu	no	no	2	1	2041	hour:5 decade:22 century:2038 millennium:2038	0	differs for decade
+Asia/Khandyga	no	no	66	33	3193	hour:164 decade:57 century:3190 millennium:3190	0	differs for decade
+Asia/Kolkata	no	no	5	2	2095	hour:15 quarter:15 decade:19 century:2092 millennium:2092	0	differs for quarter, decade
+Asia/Krasnoyarsk	yes	no	64	32	3157	hour:155 century:3154 millennium:3154	0	hour differs
+Asia/Kuala_Lumpur	no	no	7	1	2131	minute:17 hour:41 day:27 week:28 month:29 quarter:50 year:37 decade:149 century:2128 millennium:2128	221	differs for microseconds, milliseconds, second, minute, day, week, month, quarter, year, decade
+Asia/Kuching	no	no	18	8	2329	hour:50 quarter:11 decade:17 century:2326 millennium:2326	0	differs for quarter, decade
+Asia/Kuwait	no	no	1	1	2023	minute:510 hour:510 day:510 week:518 month:510 quarter:510 year:510 decade:510 century:2020 millennium:2020	6630	differs for microseconds, milliseconds, second, minute, day, week, month, quarter, year, decade
+Asia/Macau	yes	no	71	35	3283	hour:219 century:3280 millennium:3280	0	hour differs
+Asia/Magadan	yes	no	65	32	3175	hour:159 century:3172 millennium:3172	0	hour differs
+Asia/Makassar	no	no	3	1	2059	hour:10 quarter:12 century:2056 millennium:2056	0	differs for quarter
+Asia/Manila	no	no	10	5	2185	hour:20 quarter:15 century:2182 millennium:2182	0	differs for quarter
+Asia/Muscat	no	no	1	0	2023	minute:185 hour:188 day:193 week:193 month:193 quarter:195 year:201 decade:311 century:2020 millennium:2020	2405	differs for microseconds, milliseconds, second, minute, day, week, month, quarter, year, decade
+Asia/Nicosia	yes	no	251	126	6523	hour:625 century:6520 millennium:6520	0	hour differs
+Asia/Novokuznetsk	no	no	62	30	3121	hour:155 quarter:12 century:3118 millennium:3118	0	differs for quarter
+Asia/Novosibirsk	yes	no	66	32	3193	hour:165 century:3190 millennium:3190	0	hour differs
+Asia/Omsk	yes	no	64	31	3157	hour:160 century:3154 millennium:3154	0	hour differs
+Asia/Oral	yes	no	46	23	2833	hour:110 century:2830 millennium:2830	0	hour differs
+Asia/Phnom_Penh	no	no	5	2	2095	minute:213 hour:213 day:291 week:279 month:295 quarter:296 year:299 decade:329 century:2092 millennium:2092	3783	differs for microseconds, milliseconds, second, minute, day, week, month, quarter, year, decade
+Asia/Pontianak	no	no	7	3	2131	hour:29 quarter:25 decade:21 century:2128 millennium:2128	0	differs for quarter, decade
+Asia/Pyongyang	no	no	4	1	2077	hour:10 decade:20 century:2074 millennium:2074	0	differs for decade
+Asia/Qatar	yes	no	2	1	2041	hour:10 century:2038 millennium:2038	0	hour differs
+Asia/Qostanay	yes	no	48	24	2869	hour:116 century:2866 millennium:2866	0	hour differs
+Asia/Qyzylorda	yes	no	46	23	2833	hour:111 century:2830 millennium:2830	0	hour differs
+Asia/Riyadh	yes	no	1	1	2023	century:2020 millennium:2020	0	offset decreases 1 times 1900-2100
+Asia/Sakhalin	yes	no	64	32	3157	hour:155 century:3154 millennium:3154	0	hour differs
+Asia/Samarkand	yes	no	22	11	2401	hour:50 century:2398 millennium:2398	0	hour differs
+Asia/Seoul	no	no	28	13	2509	hour:75 quarter:32 decade:20 century:2506 millennium:2506	0	differs for quarter, decade
+Asia/Shanghai	no	no	29	15	2527	hour:70 quarter:63 century:2524 millennium:2524	0	differs for quarter
+Asia/Singapore	no	no	6	1	2113	hour:24 quarter:21 decade:16 century:2110 millennium:2110	0	differs for quarter, decade
+Asia/Srednekolymsk	yes	no	64	32	3157	hour:155 century:3154 millennium:3154	0	hour differs
+Asia/Taipei	no	no	40	20	2725	hour:80 quarter:103 century:2722 millennium:2722	0	differs for quarter
+Asia/Tashkent	yes	no	23	11	2419	hour:60 century:2416 millennium:2416	0	hour differs
+Asia/Tbilisi	no	no	48	23	2869	hour:120 quarter:14 century:2866 millennium:2866	0	differs for quarter
+Asia/Tehran	yes	no	70	35	3265	hour:170 century:3262 millennium:3262	0	hour differs
+Asia/Tel_Aviv	yes	no	272	137	6901	hour:680 century:6898 millennium:6898	0	hour differs
+Asia/Thimphu	yes	no	2	1	2041	hour:5 century:2038 millennium:2038	0	hour differs
+Asia/Tokyo	yes	no	8	4	2149	hour:16 century:2146 millennium:2146	0	hour differs
+Asia/Tomsk	yes	no	66	32	3193	hour:165 century:3190 millennium:3190	0	hour differs
+Asia/Ulaanbaatar	no	no	50	25	2905	hour:120 decade:18 century:2902 millennium:2902	0	differs for decade
+Asia/Urumqi	no	no	1	0	2023	hour:5 decade:20 century:2020 millennium:2020	0	differs for decade
+Asia/Ust-Nera	yes	no	65	33	3175	hour:164 century:3172 millennium:3172	0	hour differs
+Asia/Vientiane	no	no	7	3	2131	minute:213 hour:213 day:371 week:364 month:378 quarter:380 year:389 decade:455 century:2128 millennium:2128	5005	differs for microseconds, milliseconds, second, minute, day, week, month, quarter, year, decade
+Asia/Vladivostok	yes	no	64	31	3157	hour:160 century:3154 millennium:3154	0	hour differs
+Asia/Yakutsk	yes	no	64	32	3157	hour:155 century:3154 millennium:3154	0	hour differs
+Asia/Yangon	no	no	3	1	2059	hour:15 quarter:19 century:2056 millennium:2056	0	differs for quarter
+Asia/Yekaterinburg	yes	no	65	32	3175	hour:161 century:3172 millennium:3172	0	hour differs
+Asia/Yerevan	no	no	60	29	3085	hour:122 quarter:14 century:3082 millennium:3082	0	differs for quarter
+Atlantic/Azores	no	no	338	169	8089	hour:842 quarter:75 century:8086 millennium:8086	0	differs for quarter
+Atlantic/Bermuda	yes	no	279	139	7027	hour:700 century:7024 millennium:7024	0	hour differs
+Atlantic/Canary	no	no	242	120	6361	hour:605 quarter:12 century:6358 millennium:6358	0	differs for quarter
+Atlantic/Cape_Verde	no	no	4	2	2077	hour:8 quarter:15 century:2074 millennium:2074	0	differs for quarter
+Atlantic/Faroe	yes	no	239	119	6307	hour:600 century:6304 millennium:6304	0	hour differs
+Atlantic/Jan_Mayen	no	no	264	132	6757	hour:492 day:209 week:218 month:216 quarter:193 century:6754 millennium:6754	3419	differs for microseconds, milliseconds, second, minute, day, week, month, quarter, year, decade
+Atlantic/Madeira	no	no	336	167	8053	hour:835 quarter:75 century:8050 millennium:8050	0	differs for quarter
+Atlantic/Reykjavik	no	no	68	33	3229	minute:130 hour:130 day:1098 week:1131 month:1139 quarter:1120 year:1904 decade:1917 century:3226 millennium:3226	10647	differs for microseconds, milliseconds, second, minute, day, week, month, quarter, year, decade
+Atlantic/South_Georgia	yes	yes	0	0	2005	century:2002 millennium:2002	0	
+Atlantic/St_Helena	no	no	1	0	2023	minute:514 hour:514 day:525 week:525 month:526 quarter:528 year:532 decade:626 century:2020 millennium:2020	6682	differs for microseconds, milliseconds, second, minute, day, week, month, quarter, year, decade
+Atlantic/Stanley	no	no	68	34	3229	hour:165 quarter:14 century:3226 millennium:3226	0	differs for quarter
+Australia/Adelaide	yes	no	265	132	6775	hour:528 century:6772 millennium:6772	0	hour differs
+Australia/Brisbane	yes	no	16	8	2293	hour:32 century:2290 millennium:2290	0	hour differs
+Australia/Broken_Hill	yes	no	265	132	6775	hour:528 century:6772 millennium:6772	0	hour differs
+Australia/Canberra	yes	no	265	132	6775	hour:528 century:6772 millennium:6772	0	hour differs
+Australia/Currie	yes	no	277	138	6991	hour:552 century:6988 millennium:6988	0	hour differs
+Australia/Darwin	yes	no	8	4	2149	hour:16 century:2146 millennium:2146	0	hour differs
+Australia/Eucla	yes	no	18	9	2329	hour:36 century:2326 millennium:2326	0	hour differs
+Australia/Hobart	yes	no	277	138	6991	hour:552 century:6988 millennium:6988	0	hour differs
+Australia/Lindeman	yes	no	20	10	2365	hour:40 century:2362 millennium:2362	0	hour differs
+Australia/Lord_Howe	no	no	238	118	6289	hour:596 quarter:16 century:6286 millennium:6286	0	differs for quarter
+Australia/Melbourne	yes	no	265	132	6775	hour:528 century:6772 millennium:6772	0	hour differs
+Australia/Perth	yes	no	18	9	2329	hour:36 century:2326 millennium:2326	0	hour differs
+Australia/Sydney	yes	no	265	132	6775	hour:528 century:6772 millennium:6772	0	hour differs
+Australia/Yancowinna	yes	no	265	132	6775	hour:528 century:6772 millennium:6772	0	hour differs
+CET	no	no	260	130	6685	hour:516 day:291 week:293 month:291 quarter:260 year:407 decade:752 century:6682 millennium:6682	3835	differs for microseconds, milliseconds, second, minute, day, week, month, quarter, year, decade
+CST6CDT	yes	no	272	136	6901	hour:544 century:6898 millennium:6898	0	hour differs
+EET	no	no	246	123	6433	minute:154 hour:630 day:253 week:201 month:198 quarter:201 year:182 decade:175 century:6430 millennium:6430	3263	differs for microseconds, milliseconds, second, minute, day, week, month, quarter, year, decade
+EST	no	no	0	0	2005	minute:81 hour:81 day:82 week:82 month:83 quarter:84 year:89 decade:97 century:2002 millennium:2002	1053	differs for microseconds, milliseconds, second, minute, day, week, month, quarter, year, decade
+EST5EDT	yes	no	272	136	6901	hour:544 century:6898 millennium:6898	0	hour differs
+Etc/GMT	yes	yes	0	0	2005	century:2002 millennium:2002	0	
+Etc/GMT-0	yes	yes	0	0	2005	century:2002 millennium:2002	0	
+Etc/GMT-1	yes	yes	0	0	2005	century:2002 millennium:2002	0	
+Etc/GMT-10	yes	yes	0	0	2005	century:2002 millennium:2002	0	
+Etc/GMT-11	yes	yes	0	0	2005	century:2002 millennium:2002	0	
+Etc/GMT-12	yes	yes	0	0	2005	century:2002 millennium:2002	0	
+Etc/GMT-13	yes	yes	0	0	2005	century:2002 millennium:2002	0	
+Etc/GMT-14	yes	yes	0	0	2005	century:2002 millennium:2002	0	
+Etc/GMT-2	yes	yes	0	0	2005	century:2002 millennium:2002	0	
+Etc/GMT-3	yes	yes	0	0	2005	century:2002 millennium:2002	0	
+Etc/GMT-4	yes	yes	0	0	2005	century:2002 millennium:2002	0	
+Etc/GMT-5	yes	yes	0	0	2005	century:2002 millennium:2002	0	
+Etc/GMT-6	yes	yes	0	0	2005	century:2002 millennium:2002	0	
+Etc/GMT-7	yes	yes	0	0	2005	century:2002 millennium:2002	0	
+Etc/GMT-8	yes	yes	0	0	2005	century:2002 millennium:2002	0	
+Etc/GMT-9	yes	yes	0	0	2005	century:2002 millennium:2002	0	
+Etc/GMT+0	yes	yes	0	0	2005	century:2002 millennium:2002	0	
+Etc/GMT+1	yes	yes	0	0	2005	century:2002 millennium:2002	0	
+Etc/GMT+10	yes	yes	0	0	2005	century:2002 millennium:2002	0	
+Etc/GMT+11	yes	yes	0	0	2005	century:2002 millennium:2002	0	
+Etc/GMT+12	yes	yes	0	0	2005	century:2002 millennium:2002	0	
+Etc/GMT+2	yes	yes	0	0	2005	century:2002 millennium:2002	0	
+Etc/GMT+3	yes	yes	0	0	2005	century:2002 millennium:2002	0	
+Etc/GMT+4	yes	yes	0	0	2005	century:2002 millennium:2002	0	
+Etc/GMT+5	yes	yes	0	0	2005	century:2002 millennium:2002	0	
+Etc/GMT+6	yes	yes	0	0	2005	century:2002 millennium:2002	0	
+Etc/GMT+7	yes	yes	0	0	2005	century:2002 millennium:2002	0	
+Etc/GMT+8	yes	yes	0	0	2005	century:2002 millennium:2002	0	
+Etc/GMT+9	yes	yes	0	0	2005	century:2002 millennium:2002	0	
+Etc/GMT0	yes	yes	0	0	2005	century:2002 millennium:2002	0	
+Etc/Greenwich	yes	yes	0	0	2005	century:2002 millennium:2002	0	
+Etc/UCT	yes	yes	0	0	2005	century:2002 millennium:2002	0	
+Etc/Universal	yes	yes	0	0	2005	century:2002 millennium:2002	0	
+Etc/UTC	yes	yes	0	0	2005	century:2002 millennium:2002	0	
+Etc/Zulu	yes	yes	0	0	2005	century:2002 millennium:2002	0	
+Europe/Amsterdam	no	no	303	151	7459	minute:1144 hour:1918 day:1323 week:1324 month:1326 quarter:1329 year:1315 decade:1526 century:7456 millennium:7456	17134	differs for microseconds, milliseconds, second, minute, day, week, month, quarter, year, decade
+Europe/Andorra	yes	no	232	116	6181	hour:575 century:6178 millennium:6178	0	hour differs
+Europe/Astrakhan	yes	no	62	31	3121	hour:150 century:3118 millennium:3118	0	hour differs
+Europe/Athens	yes	no	261	130	6703	hour:655 century:6700 millennium:6700	0	hour differs
+Europe/Belfast	yes	no	364	182	8557	hour:728 century:8554 millennium:8554	0	hour differs
+Europe/Belgrade	yes	no	242	121	6361	hour:484 century:6358 millennium:6358	0	hour differs
+Europe/Berlin	yes	no	266	133	6793	hour:532 century:6790 millennium:6790	0	hour differs
+Europe/Bratislava	yes	no	266	133	6793	hour:532 century:6790 millennium:6790	0	hour differs
+Europe/Brussels	no	no	307	153	7531	hour:612 quarter:14 century:7528 millennium:7528	0	differs for quarter
+Europe/Bucharest	yes	no	259	129	6667	hour:650 century:6664 millennium:6664	0	hour differs
+Europe/Budapest	yes	no	274	137	6937	hour:548 century:6934 millennium:6934	0	hour differs
+Europe/Busingen	yes	no	242	121	6361	hour:484 century:6358 millennium:6358	0	hour differs
+Europe/Chisinau	yes	no	264	132	6757	hour:529 century:6754 millennium:6754	0	hour differs
+Europe/Copenhagen	no	no	256	128	6613	hour:496 day:114 week:110 month:127 quarter:33 century:6610 millennium:6610	949	differs for microseconds, milliseconds, second, minute, day, week, month, quarter, year, decade
+Europe/Dublin	yes	no	350	175	8305	hour:870 century:8302 millennium:8302	0	hour differs
+Europe/Gibraltar	yes	no	321	160	7783	hour:640 century:7780 millennium:7780	0	hour differs
+Europe/Guernsey	no	no	363	181	8539	minute:130 hour:1020 day:238 week:241 month:224 quarter:230 year:189 decade:337 century:8536 millennium:8536	2951	differs for microseconds, milliseconds, second, minute, day, week, month, quarter, year, decade
+Europe/Helsinki	no	no	241	120	6343	hour:605 quarter:11 century:6340 millennium:6340	0	differs for quarter
+Europe/Isle_of_Man	yes	no	364	182	8557	hour:728 century:8554 millennium:8554	0	hour differs
+Europe/Istanbul	no	no	112	55	4021	hour:280 quarter:57 century:4018 millennium:4018	0	differs for quarter
+Europe/Jersey	no	no	362	181	8521	hour:712 day:98 week:100 month:82 quarter:88 year:40 century:8518 millennium:8518	1261	differs for microseconds, milliseconds, second, minute, day, week, month, quarter, year, decade
+Europe/Kaliningrad	yes	no	77	38	3391	hour:152 century:3388 millennium:3388	0	hour differs
+Europe/Kirov	yes	no	61	31	3103	hour:153 century:3100 millennium:3100	0	hour differs
+Europe/Kyiv	yes	no	244	123	6397	hour:610 century:6394 millennium:6394	0	hour differs
+Europe/Lisbon	no	no	345	172	8215	hour:688 quarter:75 century:8212 millennium:8212	0	differs for quarter
+Europe/Ljubljana	no	no	242	121	6361	hour:484 month:1 century:6358 millennium:6358	182	differs for microseconds, milliseconds, second, minute, day, week, month, quarter, year, decade
+Europe/London	yes	no	364	182	8557	hour:728 century:8554 millennium:8554	0	hour differs
+Europe/Luxembourg	no	no	307	153	7531	minute:56 hour:661 day:310 week:217 month:157 quarter:175 year:157 decade:355 century:7528 millennium:7528	3757	differs for microseconds, milliseconds, second, minute, day, week, month, quarter, year, decade
+Europe/Madrid	yes	no	286	142	7153	hour:568 century:7150 millennium:7150	0	hour differs
+Europe/Malta	no	no	292	146	7261	hour:584 quarter:14 century:7258 millennium:7258	0	differs for quarter
+Europe/Mariehamn	no	no	241	120	6343	hour:605 quarter:11 century:6340 millennium:6340	0	differs for quarter
+Europe/Minsk	yes	no	66	32	3193	hour:133 century:3190 millennium:3190	0	hour differs
+Europe/Monaco	no	no	308	154	7549	minute:10 hour:770 day:67 week:75 month:50 quarter:49 year:94 century:7546 millennium:7546	507	differs for microseconds, milliseconds, second, minute, day, week, month, quarter, year, decade
+Europe/Moscow	yes	no	76	38	3373	hour:194 century:3370 millennium:3370	0	hour differs
+Europe/Nicosia	yes	no	251	126	6523	hour:625 century:6520 millennium:6520	0	hour differs
+Europe/Oslo	no	no	264	132	6757	hour:492 day:209 week:218 month:216 quarter:193 century:6754 millennium:6754	3419	differs for microseconds, milliseconds, second, minute, day, week, month, quarter, year, decade
+Europe/Paris	yes	no	306	153	7513	hour:760 century:7510 millennium:7510	0	hour differs
+Europe/Podgorica	yes	no	242	121	6361	hour:484 century:6358 millennium:6358	0	hour differs
+Europe/Prague	yes	no	266	133	6793	hour:532 century:6790 millennium:6790	0	hour differs
+Europe/Riga	yes	no	248	124	6469	hour:625 century:6466 millennium:6466	0	hour differs
+Europe/Rome	no	no	292	146	7261	hour:584 quarter:28 century:7258 millennium:7258	0	differs for quarter
+Europe/Samara	yes	no	60	30	3085	hour:149 century:3082 millennium:3082	0	hour differs
+Europe/San_Marino	no	no	292	146	7261	hour:584 quarter:28 century:7258 millennium:7258	0	differs for quarter
+Europe/Sarajevo	no	no	242	121	6361	hour:484 month:1 century:6358 millennium:6358	182	differs for microseconds, milliseconds, second, minute, day, week, month, quarter, year, decade
+Europe/Saratov	yes	no	62	31	3121	hour:152 century:3118 millennium:3118	0	hour differs
+Europe/Simferopol	no	no	73	37	3319	hour:144 quarter:16 century:3316 millennium:3316	0	differs for quarter
+Europe/Skopje	no	no	242	121	6361	hour:484 month:1 century:6358 millennium:6358	182	differs for microseconds, milliseconds, second, minute, day, week, month, quarter, year, decade
+Europe/Sofia	yes	no	248	124	6469	hour:496 century:6466 millennium:6466	0	hour differs
+Europe/Stockholm	no	no	243	122	6379	minute:8 hour:613 day:80 week:80 month:97 quarter:74 year:30 decade:8 century:6376 millennium:6376	1040	differs for microseconds, milliseconds, second, minute, day, week, month, quarter, year, decade
+Europe/Tallinn	no	no	245	122	6415	hour:492 quarter:11 century:6412 millennium:6412	0	differs for quarter
+Europe/Tirane	no	no	257	129	6631	hour:640 quarter:14 century:6628 millennium:6628	0	differs for quarter
+Europe/Tiraspol	yes	no	264	132	6757	hour:529 century:6754 millennium:6754	0	hour differs
+Europe/Ulyanovsk	yes	no	64	32	3157	hour:157 century:3154 millennium:3154	0	hour differs
+Europe/Vaduz	yes	no	242	121	6361	hour:484 century:6358 millennium:6358	0	hour differs
+Europe/Vatican	no	no	292	146	7261	hour:584 quarter:28 century:7258 millennium:7258	0	differs for quarter
+Europe/Vienna	yes	no	262	131	6721	hour:524 century:6718 millennium:6718	0	hour differs
+Europe/Vilnius	no	no	240	120	6325	hour:481 quarter:14 decade:14 century:6322 millennium:6322	0	differs for quarter, decade
+Europe/Volgograd	yes	no	63	31	3139	hour:160 century:3136 millennium:3136	0	hour differs
+Europe/Warsaw	yes	no	287	144	7171	hour:572 century:7168 millennium:7168	0	hour differs
+Europe/Zagreb	no	no	242	121	6361	hour:484 month:1 century:6358 millennium:6358	182	differs for microseconds, milliseconds, second, minute, day, week, month, quarter, year, decade
+Europe/Zurich	yes	no	242	121	6361	hour:484 century:6358 millennium:6358	0	hour differs
+Factory	yes	yes	0	0	2005	century:2002 millennium:2002	0	
+GMT	yes	yes	0	0	2005	century:2002 millennium:2002	0	
+HST	no	no	0	0	2005	hour:481 day:481 week:481 month:481 quarter:481 year:483 decade:500 century:2002 millennium:2002	6253	differs for microseconds, milliseconds, second, minute, day, week, month, quarter, year, decade
+Indian/Antananarivo	no	no	3	2	2059	minute:118 hour:427 day:455 week:446 month:446 quarter:447 year:434 decade:427 century:2056 millennium:2056	5915	differs for microseconds, milliseconds, second, minute, day, week, month, quarter, year, decade
+Indian/Chagos	no	no	2	0	2041	hour:5 decade:42 century:2038 millennium:2038	0	differs for decade
+Indian/Christmas	no	no	0	0	2005	minute:177 hour:177 day:177 week:178 month:179 quarter:180 year:183 decade:293 century:2002 millennium:2002	2301	differs for microseconds, milliseconds, second, minute, day, week, month, quarter, year, decade
+Indian/Cocos	no	no	1	0	2023	minute:193 hour:232 day:232 week:232 month:232 quarter:236 year:231 decade:311 century:2020 millennium:2020	3016	differs for microseconds, milliseconds, second, minute, day, week, month, quarter, year, decade
+Indian/Comoro	no	no	1	0	2023	minute:116 hour:427 day:427 week:427 month:427 quarter:427 year:434 decade:427 century:2020 millennium:2020	5551	differs for microseconds, milliseconds, second, minute, day, week, month, quarter, year, decade
+Indian/Kerguelen	no	no	1	0	2023	hour:626 day:626 week:626 month:628 quarter:628 year:638 decade:711 century:2020 millennium:2020	8138	differs for microseconds, milliseconds, second, minute, day, week, month, quarter, year, decade
+Indian/Mahe	no	no	1	0	2023	minute:193 hour:193 day:193 week:193 month:193 quarter:195 year:201 decade:311 century:2020 millennium:2020	2509	differs for microseconds, milliseconds, second, minute, day, week, month, quarter, year, decade
+Indian/Maldives	yes	no	1	0	2023	hour:5 century:2020 millennium:2020	0	hour differs
+Indian/Mauritius	no	no	5	2	2095	hour:13 decade:17 century:2092 millennium:2092	0	differs for decade
+Indian/Mayotte	no	no	1	1	2023	minute:118 hour:427 day:427 week:427 month:427 quarter:427 year:434 decade:427 century:2020 millennium:2020	5551	differs for microseconds, milliseconds, second, minute, day, week, month, quarter, year, decade
+Indian/Reunion	no	no	1	0	2023	minute:193 hour:193 day:193 week:193 month:193 quarter:195 year:201 decade:311 century:2020 millennium:2020	2509	differs for microseconds, milliseconds, second, minute, day, week, month, quarter, year, decade
+localtime	no	no						PostgreSQL rejects the zone: (PGDuckDB/DuckAssignTimezone_Cpp) Not implemented Error: Unknown TimeZone 'localtime'!
+MET	no	no	260	130	6685	hour:516 day:291 week:293 month:291 quarter:260 year:407 decade:752 century:6682 millennium:6682	3835	differs for microseconds, milliseconds, second, minute, day, week, month, quarter, year, decade
+MST	no	no	0	0	2005	day:43 week:43 month:42 quarter:43 year:13 century:2002 millennium:2002	559	differs for microseconds, milliseconds, second, minute, day, week, month, quarter, year, decade
+MST7MDT	yes	no	272	136	6901	hour:544 century:6898 millennium:6898	0	hour differs
+Pacific/Apia	yes	no	25	12	2455	hour:60 century:2452 millennium:2452	0	hour differs
+Pacific/Auckland	yes	no	278	138	7009	hour:569 century:7006 millennium:7006	0	hour differs
+Pacific/Bougainville	yes	no	3	1	2059	hour:4 century:2056 millennium:2056	0	hour differs
+Pacific/Chatham	no	no	252	125	6541	hour:632 decade:19 century:6538 millennium:6538	0	differs for decade
+Pacific/Chuuk	no	no	5	3	2095	minute:19 hour:19 day:144 week:143 month:145 quarter:146 year:133 decade:115 century:2092 millennium:2092	1508	differs for microseconds, milliseconds, second, minute, day, week, month, quarter, year, decade
+Pacific/Easter	no	no	261	129	6703	hour:650 quarter:12 century:6700 millennium:6700	0	differs for quarter
+Pacific/Efate	yes	no	23	12	2419	hour:55 century:2416 millennium:2416	0	hour differs
+Pacific/Fakaofo	no	no	2	0	2041	hour:5 decade:21 century:2038 millennium:2038	0	differs for decade
+Pacific/Fiji	yes	no	29	14	2527	hour:75 century:2524 millennium:2524	0	hour differs
+Pacific/Funafuti	no	no	1	0	2023	minute:20 hour:22 day:27 week:28 month:29 quarter:29 year:37 decade:115 century:2020 millennium:2020	260	differs for microseconds, milliseconds, second, minute, day, week, month, quarter, year, decade
+Pacific/Galapagos	no	no	4	2	2077	hour:12 decade:18 century:2074 millennium:2074	0	differs for decade
+Pacific/Gambier	yes	no	1	1	2023	century:2020 millennium:2020	0	offset decreases 1 times 1900-2100
+Pacific/Guadalcanal	yes	no	1	0	2023	hour:5 century:2020 millennium:2020	0	hour differs
+Pacific/Guam	no	no	19	9	2347	hour:33 decade:21 century:2344 millennium:2344	0	differs for decade
+Pacific/Honolulu	yes	no	5	2	2095	hour:13 century:2092 millennium:2092	0	hour differs
+Pacific/Johnston	yes	no	5	2	2095	hour:13 century:2092 millennium:2092	0	hour differs
+Pacific/Kanton	yes	no	3	1	2059	hour:9 century:2056 millennium:2056	0	hour differs
+Pacific/Kiritimati	yes	no	3	1	2059	hour:4 century:2056 millennium:2056	0	hour differs
+Pacific/Kosrae	no	no	8	4	2149	hour:29 quarter:37 decade:20 century:2146 millennium:2146	0	differs for quarter, decade
+Pacific/Kwajalein	yes	no	6	4	2113	hour:20 century:2110 millennium:2110	0	hour differs
+Pacific/Majuro	no	no	7	4	2131	minute:20 hour:20 day:817 week:817 month:817 quarter:819 year:819 decade:819 century:2128 millennium:2128	10439	differs for microseconds, milliseconds, second, minute, day, week, month, quarter, year, decade
+Pacific/Marquesas	yes	no	1	1	2023	century:2020 millennium:2020	0	offset decreases 1 times 1900-2100
+Pacific/Midway	no	no	3	1	2059	minute:120 hour:120 day:136 week:141 month:140 quarter:141 year:130 decade:193 century:2056 millennium:2056	1950	differs for microseconds, milliseconds, second, minute, day, week, month, quarter, year, decade
+Pacific/Nauru	yes	no	4	1	2077	hour:20 century:2074 millennium:2074	0	hour differs
+Pacific/Niue	yes	no	2	1	2041	hour:5 century:2038 millennium:2038	0	hour differs
+Pacific/Norfolk	no	no	166	82	4993	hour:415 decade:38 century:4990 millennium:4990	0	differs for decade
+Pacific/Noumea	yes	no	7	4	2131	hour:15 century:2128 millennium:2128	0	hour differs
+Pacific/Pago_Pago	no	no	1	0	2023	hour:5 decade:21 century:2020 millennium:2020	0	differs for decade
+Pacific/Palau	no	no	1	0	2023	hour:5 decade:20 century:2020 millennium:2020	0	differs for decade
+Pacific/Pitcairn	no	no	2	0	2041	hour:10 decade:20 century:2038 millennium:2038	0	differs for decade
+Pacific/Pohnpei	no	no	6	3	2113	minute:134 hour:134 day:334 week:328 month:337 quarter:340 year:344 decade:367 century:2110 millennium:2110	3874	differs for microseconds, milliseconds, second, minute, day, week, month, quarter, year, decade
+Pacific/Port_Moresby	yes	yes	0	0	2005	century:2002 millennium:2002	0	
+Pacific/Rarotonga	yes	no	27	13	2491	hour:65 century:2488 millennium:2488	0	hour differs
+Pacific/Saipan	no	no	18	9	2329	hour:45 day:445 week:445 month:443 quarter:443 year:443 decade:536 century:2326 millennium:2326	5967	differs for microseconds, milliseconds, second, minute, day, week, month, quarter, year, decade
+Pacific/Samoa	no	no	1	0	2023	hour:5 decade:21 century:2020 millennium:2020	0	differs for decade
+Pacific/Tahiti	yes	no	1	1	2023	century:2020 millennium:2020	0	offset decreases 1 times 1900-2100
+Pacific/Tarawa	no	no	1	0	2023	hour:5 decade:21 century:2020 millennium:2020	0	differs for decade
+Pacific/Tongatapu	no	no	10	4	2185	hour:29 decade:18 century:2182 millennium:2182	0	differs for decade
+Pacific/Wake	no	no	1	0	2023	minute:14 hour:16 day:27 week:28 month:29 quarter:29 year:37 decade:115 century:2020 millennium:2020	182	differs for microseconds, milliseconds, second, minute, day, week, month, quarter, year, decade
+Pacific/Wallis	no	no	1	1	2023	minute:21 hour:23 day:27 week:28 month:29 quarter:29 year:37 decade:115 century:2020 millennium:2020	273	differs for microseconds, milliseconds, second, minute, day, week, month, quarter, year, decade
+Pacific/Yap	no	no	5	3	2095	minute:19 hour:19 day:144 week:143 month:145 quarter:146 year:133 decade:115 century:2092 millennium:2092	1508	differs for microseconds, milliseconds, second, minute, day, week, month, quarter, year, decade
+posixrules	no	no						PostgreSQL rejects the zone: (PGDuckDB/DuckAssignTimezone_Cpp) Not implemented Error: Unknown TimeZone 'posixrules'!
+PST8PDT	yes	no	272	136	6901	hour:544 century:6898 millennium:6898	0	hour differs
+UTC	yes	yes	0	0	2005	century:2002 millennium:2002	0	
+WET	no	no	246	123	6433	minute:112 hour:606 day:735 week:650 month:650 quarter:692 year:424 decade:392 century:6430 millennium:6430	8762	differs for microseconds, milliseconds, second, minute, day, week, month, quarter, year, decade

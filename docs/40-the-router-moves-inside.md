@@ -1392,6 +1392,65 @@ both properties hold: the mirror reads through PostgreSQL for an ordinary role,
 and its denial cases are refused (`bench/results/pg_duckdb_1.2.2_confinement.txt`,
 `bench/scripts/serving_pg17.sh`). The serving job builds that patched 1.2.2.
 
+## Time zones in date_trunc
+
+`date_trunc(text, timestamptz)` reads the session `TimeZone`, so it is routed only
+under three conditions, each checked when the statement is planned and again when
+the mirror runs:
+
+- the unit is a string constant in the proven set (`microseconds` ... `decade`,
+  compared case-insensitively; `hour` only where the zone's entry says so);
+- the session zone is in the zone table, which `validate/tz_check.py` generates;
+- DuckDB's `TimeZone` is that zone when the mirror runs. pg_duckdb's GUC hook keeps
+  it equal to the session's (the confined build lets the hook through the lock, see
+  `bench/patches`); the extension reads it back and sends the statement to the heap if
+  it differs.
+
+**The rule.** `tz_check.py` runs every zone in `pg_timezone_names` against the
+primary: PostgreSQL's and DuckDB's `date_trunc` and wall clock, for 13 units, at
+the transitions of the zone (1900-2100, to the minute), at 15-minute steps around
+each, and at 2000 seeded random instants, plus infinity, -infinity and NULL. A zone
+is admitted for the proven units only if every row agrees on the truncated value
+and on the wall clock. `hour` is admitted too only if the zone has no offset
+decrease in 1900-2100 (a repeated wall-clock hour needs one) and every hour row
+agrees. `century` and `millennium` disagree in every zone and are never admitted.
+Results: `validate/results/tz_check.tsv` (one row per zone, with the reason),
+`validate/results/tz_check.txt`.
+
+| zones | count |
+|---|---|
+| in `pg_timezone_names` | 499 |
+| admitted for the proven units | 240 (of which 40 also for `hour`) |
+| denied: the proven units differ | 257 (130 of them with wall-clock drift against ICU) |
+| denied: a side refuses the zone | 2 (`localtime`, `posixrules`) |
+
+No admitted zone shows wall-clock drift. POSIX-style zones (`+03`) are not in
+`pg_timezone_names`, so they are not admitted.
+
+**Measured** (one primary, 1,000,000 orders, 10,000 customers):
+equality, superuser and ordinary role under UTC and New York, 1,166 statements
+(the exactness corpus, the own and seed corpora, and `validate/corpus_tz.sql`):
+routed 467 (UTC) and 464 (New York) of 1,166, all identical, 0 different. The existing
+corpus alone routes 449 under UTC, 3 of them date_trunc. Fuzz, 2,000 scripts:
+5,122 statements sent, 22 answered by the mirror, 4 of those compared, 0 different,
+0 lost, 0 crash lines (not a cassert build). Headline (revenue by month over the join,
+client-side median of five runs): UTC heap 400 ms, routed 66 ms; New York heap 397 ms,
+routed 62 ms; the answers are identical under each zone, and the two zones differ from
+each other as they should.
+
+**A known pg_duckdb limitation, not introduced here.** A POSIX-style zone such as
+`+03` cannot be used once DuckDB is up in the backend:
+
+    SET TimeZone = '+03';                      -- fine while DuckDB is not yet initialised
+    SELECT * FROM duckdb.query('SELECT 1');    -- ERROR: (PGDuckDB/CreatePlan) Not implemented Error: Unknown TimeZone '+03'!
+    SET TimeZone = '+03';                      -- ERROR: (PGDuckDB/DuckAssignTimezone_Cpp) Not implemented Error: Unknown TimeZone '<+03>-03'!
+
+The same sequence fails in the same way on the stock 1.2.2 package (extracted, with
+the system PostgreSQL 17.12) and on the patched build. The hook that sends the zone to
+DuckDB is the stock one. The extension never routes such a zone: `+03` is not in the
+table, so a statement that depends on the zone stays on the heap with the reason
+`time zone +03 is not in the proven table`.
+
 ## Join keys
 
 A join on two uuid columns is compared on the mirror as the sidecar's integer

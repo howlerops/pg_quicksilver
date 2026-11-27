@@ -67,6 +67,12 @@ So DuckDB enforces every read confinement the goal needs, but **not** write conf
   create, remove and move. Reads pass through unchanged.
 - `duckdb.allowed_directories` stays `PGC_SUSET`, which is what this needs: a role that
   is not a superuser cannot `SET` it, and nothing it can do changes it afterwards.
+- The session's `TimeZone` still reaches DuckDB on a confined instance. pg_duckdb's GUC
+  hook (`DuckAssignTimezone_Cpp`, `src/pgduckdb_guc.cpp`) runs `SET TimeZone` on each
+  change, and the lock would refuse it. The hook adds `TimeZone` to DuckDB's
+  `allowed_configs` for that one statement and removes it on return or error. Nothing
+  else is exempted, and DuckDB SQL (`duckdb.query`, `duckdb.raw_query`) cannot reach the
+  exemption: `SET TimeZone` through them is still refused for an ordinary role.
 - It defines the read-only GUC `duckdb.confined_file_access` (`PGC_INTERNAL`, always `on`).
   The routing extension (`ext/pg_quicksilver`) reads it with `GetConfigOption()` to recognise
   this build. Stock 1.2.2 does not define it, so the extension never routes an ordinary role
