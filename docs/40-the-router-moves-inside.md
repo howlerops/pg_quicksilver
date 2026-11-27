@@ -194,9 +194,10 @@ own:
   every execution, as it would have. The mirror subquery runs with the mirror
   owner's rights, like a view: users need, and should have, **no** privilege on
   the mirror relation or its schema.
-- *Invalidation.* The plan depends on the heap table, on the mirror relation,
-  and on the two tables above. Change any of them and PostgreSQL's own plan
-  cache discards it, on the primary and on every standby.
+- *Invalidation.* The plan depends on the heap table, on each mirror view
+  (`relationOids`, added by `qs_decide`), and on the registry tables. Change any
+  of them and PostgreSQL's own plan cache discards it, on the primary and on
+  every standby.
 - *Fallback.* The heap plan is already there when the mirror fails.
 
 **"The sidecar will update the registry's applied LSN."** Not on a standby, it
@@ -292,9 +293,14 @@ and stays home.
 Dropping the mirror view and executing it again killed the backend: a
 segmentation fault inside pg_duckdb, which walks its statement's range table
 again at execution and met a relation that was gone. Nothing had told the plan
-cache that the plan depended on the view. It does now (above), and the plan
-holds a lock on the mirror relation whenever it runs. The regression test that
-found it is `invalidation.sql`.
+cache that the plan depended on the view. It does now: the view is a dependency
+of the plan (`relationOids`, see [Lock order](#lock-order)), and the statement
+carries no view OID, so the plan cache takes no lock on the view when it reuses
+the plan. The regression test that found it is `invalidation.sql`. The check of
+the replacement, as it is now, is `invalidation.sql` and `prepared.sql`; the
+parameterless case (a generic plan run ten times, its mirror view replaced with
+`CREATE OR REPLACE VIEW`, then run again) answered with the new definition
+(validated by hand on the cluster of `validate/real/setup.sh`).
 
 ## The measurement
 
@@ -1574,10 +1580,44 @@ The lifetime rule now in force:
 1. A load builds the registry in a new memory context and retires the old one. A retired context is deleted only when no hook or SQL-callable function of the extension is on the stack (`qs_in_ext`, counted on every entry and decremented on every exit, error exits included), no load runs and no decision is in progress (`qs_busy`). The sweep runs at the start of a top-level planning and at the end of a transaction.
 2. A load is not re-entered (`qs_loading`). Planning passes through while it runs, as if the extension were not installed; a read of the registry raises an ERROR.
 3. Nothing that outlives a statement points into a registry context: the last-decision record holds a fixed buffer and top-context strings, plans carry OIDs and copied strings, and executor state looks a mirror up again by OID, answering from the heap if it is gone.
-4. A decision takes the registry generation before anything that can process invalidations, and makes its decision again if the generation moved.
+4. A decision takes the registry digest before anything that can process invalidations, and makes its decision again only if what it depends on moved (see "The registry digest" below). A decision is made at most `QS_DECIDE_ATTEMPTS` (4) times.
 5. A mirror's catalog facts are read once, while the entry is held. A lookup that can find the relation gone marks the mirror unusable with a reason, and the statement goes to the heap.
 
 The regression test `sql/reload.sql` runs a routed statement, changes the registry in the same session, and asks `EXPLAIN` and a prepared routed statement again across the changes. Its output does not depend on which side answered, since the sidecar may write the registry while it runs.
+
+### The registry digest, and kept mirror entries
+
+A cache invalidation says that the registry may have changed, not that it did.
+The registry is loaded again on every invalidation of a registry table or a
+watched relation (`qs_relcache_cb`), but a decision is moved only when what it
+depends on is different:
+
+- `qs_registry_digest` is a sum of per-row hashes over the mirror key (the
+  allowlist with what its names resolve to, the features and time zones, the
+  join domains, the registry tables' OIDs) and the attached lakes. The applied
+  LSN is not in it, so the trigger on `quicksilver.mirrors` does not move a
+  decision. `qs_mirrors_digest` is the same over the mirror entries a decision
+  read. The sums do not depend on the order the rows come in.
+- A decision takes both digests before its walk and compares them after the
+  calls that can process invalidations (the lakes' attachment, the substitution).
+  A moved digest is made again, from the registry as it is now, at most
+  `QS_DECIDE_ATTEMPTS` (4) times; an unmoved one is not made again, and its
+  mirror entries are looked up in the generation in force.
+- A mirror entry of the generation being replaced is kept when nothing it was
+  built from changed (`qs_reuse_mirror`): it was built under the same
+  `qs_mirror_key_cur`, the relcache of its heap and mirror relations has not
+  changed since (`qs_relcache_epoch`, bumped for every watched relation and for
+  a full reset), and the mirror relation, the lag bound and the finite columns
+  are the same. A kept entry is copied into the new generation (`qs_copy_mirror`,
+  deep, with `copyObject` for the subquery), so nothing used after the load
+  points into a retired context. An entry that is not usable, or whose epoch
+  moved, is built again: that is the only place the catalogs are read for it.
+- A registry load that could not lock its tables (above) is not kept: the
+  registry is "not installed" for that statement, and the next one loads again.
+
+The validation of the digest is the DDL storm (`validate/real/hardening/storm_ddl.py`,
+routed readers on the standby: no 40P01, no wrong answer) and the churn of
+unrelated DDL (`validate/real/hardening/churn_reads.py`), on the same build.
 
 ## Promotion
 
@@ -1656,10 +1696,47 @@ side of a cycle. The other side is the startup process, and the cycle is
 reported to the reader as "deadlock detected" (validate/real/hardening/cycle.py
 reproduces it deterministically; before this change the routed reader got it).
 
-The rule now: the registry build and the mirror's parse take their relations
-with ConditionalLockRelationOid. A relation that cannot be locked now makes the
-entry transient, with the reason "locked by another session (not waited for)",
-and it is built again the next time it is asked for, when both relations can be
-locked. A failure that is a deadlock, a serialization failure or a cancel is
-transient too, so it is not kept as a fact about the mirror. A heap-only reader
-takes no lock on the view and makes no cycle.
+The rule now, in the code as it is (qs_lock_query, qs_build_mirror,
+qs_registry_lockable, qs_decide):
+
+- **Registry tables.** The four tables of the registry (mirrors, allowlist,
+  lakes, join domains) are locked with ConditionalLockRelationOid before any
+  of them is read. A load that cannot lock them leaves the registry not
+  installed (`qs_registry_blocked`) and the statement goes to the heap; the
+  next statement loads again.
+- **Building a mirror entry.** The build runs in a subtransaction with
+  `lock_timeout` = 50 ms (`QS_BUILD_LOCK_TIMEOUT`, set with a GUC nest level
+  of its own and ended with `AtEOXact_GUC`). A lock that was not available,
+  a deadlock and a serialization failure roll the subtransaction back and make
+  the entry transient ("mirror relation is locked by another session (not
+  waited for)"); it is built again the next time it is asked for. A query
+  cancel or a backend shutdown is rethrown, not classified. Any other error is
+  about the mirror, as before. No subtransaction is opened inside a parallel
+  operation, or while DuckDB may hold a transaction of this session's
+  (`qs_duck_used`, cleared where the router ends DuckDB's transaction): pg_duckdb
+  refuses a subtransaction then, and the entry is transient until a later call.
+- **The mirror views in a plan.** A mirror subquery is stored with no view OID
+  (`qs_build_mirror_body` clears `relid` of its RTE_SUBQUERY entries), so the
+  plan-cache's range-table locks, which wait, are never taken on a view while
+  the heap is held. The views are still dependencies of the plan: `qs_decide`
+  adds each usable entry's view to `relationOids`, which the walk over the
+  rewritten statement no longer finds.
+- **Locking the view at planning.** Before the statement is substituted,
+  `qs_decide` takes `ConditionalLockRelationOid(view, AccessShareLock)` on each
+  usable mirror view the statement uses. The lock is held to the end of the
+  transaction, so a DROP or a replacement of the view waits for a statement
+  that reads it, as it did when the statement named the view. A view that
+  another session holds makes the statement the heap's, with the reason
+  "mirror relation is locked by another session (not waited for)"; nothing is
+  remembered about the mirror.
+- **Not locked at executor start, and not at a cached plan's reuse.** The
+  executor takes no lock on a view when it starts: a fallback to the heap is
+  not possible from there. A running routed statement does not need the view
+  for its answer: the mirror's DuckDB text is built from the expanded view, so
+  a replacement of the view in the middle of the statement does not change
+  what it returns. A cached plan reused in a later transaction is not locked
+  again: the plan is invalidated by `relationOids` (and by the invalidation
+  items of the mirror's subquery) when a view changes, and planned again. The
+  validation of this is in the section on the registry digest below.
+
+A heap-only reader takes no lock on the view and makes no cycle.

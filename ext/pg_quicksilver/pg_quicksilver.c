@@ -370,6 +370,8 @@ typedef struct QsMirror
 	char	  **col_why;
 	List	   *joins;			/* QsJoinExp: the companions the subquery carries */
 	Query	   *subquery;		/* SELECT <heap columns> [, companions] FROM mirror, rewritten */
+	uint64		key;			/* qs_mirror_key of the registry it was built under */
+	uint64		epoch;			/* qs_relcache_epoch when it was built began: a watched relation changed since, it is built again */
 } QsMirror;
 
 /* One row of quicksilver.join_domains (all of them are kept, in qs_cache_cxt). */
@@ -425,6 +427,8 @@ static bool qs_loading = false;		/* qs_load_registry runs: nothing may use the r
 static int	qs_in_ext = 0;			/* hooks and SQL functions of this extension on the stack */
 static List *qs_retired = NIL;		/* earlier generations of qs_cache_cxt: deleted by qs_retire_sweep */
 static bool qs_installed = false;	/* the extension exists in this database */
+static uint64 qs_registry_fp = 0;	/* digest of the registry as loaded (qs_registry_digest); 0 when not installed */
+static bool qs_registry_blocked = false;	/* the last load could not lock the registry tables without waiting */
 static Oid	qs_mirrors_relid = InvalidOid;
 static Oid	qs_allowlist_relid = InvalidOid;
 static Oid	qs_lakes_relid = InvalidOid;
@@ -468,6 +472,7 @@ typedef struct QsLake
 } QsLake;
 static List *qs_lakes = NIL;	/* QsLake, in qs_cache_cxt */
 static bool qs_lakes_attached = false;	/* in this backend, for this load of the registry */
+static uint64 qs_lakes_fp_attached = 0;	/* qs_lakes_digest of the lakes that were attached */
 static TimestampTz qs_attach_retry_at = 0;
 /*
  * Why the last attachment failed, in words (docs/40, "Promotion"): the lake
@@ -500,6 +505,13 @@ static char qs_duck_error[QS_DETAIL_LEN] = "";
  * instance to be recycled before the mirror is asked again.
  */
 static bool qs_duck_foreign = false;
+/*
+ * DuckDB may hold a transaction of this session's: a DuckDB statement ran since the last point where the
+ * router ended its transaction (qs_duck_end), or this transaction began one. pg_duckdb refuses a
+ * subtransaction while it does (its callback raises a FATAL error), so the mirror is not built then
+ * (qs_build_mirror). Cleared where the transaction ends, and where qs_duck_end has ended it.
+ */
+static bool qs_duck_used = false;
 static bool qs_attach_open = false;
 static int	qs_mirror_live = 0;
 static bool qs_duck_dirty = false;
@@ -508,6 +520,15 @@ static HTAB *qs_allow_hash = NULL;
 static HTAB *qs_name_hash = NULL;
 static HTAB *qs_watch_hash = NULL;	/* lives in TopMemoryContext: read by callbacks */
 static HTAB *qs_decision_hash = NULL;
+/*
+ * An entry of the mirror hash is kept from one registry generation to the next when nothing it was built
+ * from changed: the registry rows it names, the allowlist and join domains (qs_mirror_key), and the
+ * relcache of its heap and mirror relations (qs_relcache_epoch). qs_prev_mirror_hash is the hash of the
+ * generation being replaced, while a load runs; its entries are copied, never shared.
+ */
+static uint64 qs_relcache_epoch = 1;
+static uint64 qs_mirror_key_cur = 0;
+static HTAB *qs_prev_mirror_hash = NULL;
 static uint64 qs_generation = 1;
 static uint64 qs_load_count = 0;	/* times this backend has loaded the registry */
 static uint64 qs_lsn_swept = 0;	/* qs_load_count when it last swept the applied-LSN table */
@@ -520,7 +541,8 @@ static bool qs_busy = false;
 static bool qs_explain_into = false;
 static bool qs_registry_moved = false;
 static XLogRecPtr qs_decide_now = InvalidXLogRecPtr;	/* what the statement being planned can see */
-static bool qs_decide_again = false;	/* this is the second and last attempt */
+static bool qs_decide_again = false;	/* this is the last of QS_DECIDE_ATTEMPTS attempts */
+#define QS_DECIDE_ATTEMPTS 4	/* a decision moved by a real change is made again at most this many times */
 
 /*
  * The lake snapshot a transaction reads.
@@ -660,12 +682,18 @@ qs_constructs_json(StringInfo buf, List *constructs)
 	appendStringInfoChar(buf, ']');
 }
 
+static uint64 qs_mirror_key_now(void);
+static bool qs_reuse_mirror(QsMirror *m);
+static uint64 qs_lakes_digest(void);
+
 /* ================================================================ cache loading */
 
 static void
 qs_relcache_cb(Datum arg, Oid relid)
 {
 	qs_generation++;
+	if (relid == InvalidOid || (qs_watch_hash && hash_search(qs_watch_hash, &relid, HASH_FIND, NULL)))
+		qs_relcache_epoch++;
 	if (!qs_cache_valid)
 		return;
 	if (relid == InvalidOid || relid == qs_mirrors_relid || relid == qs_allowlist_relid ||
@@ -1014,8 +1042,91 @@ qs_mirror_att(Oid rel, AttrNumber attno, Oid *type, int32 *typmod, Oid *coll)
 	return true;
 }
 
+static void qs_build_mirror_body(QsMirror *m);
+
+/*
+ * The lock wait that a build of a mirror entry may take on a catalog (a standby's replay holding one:
+ * the mirror view's rules are read when its relcache entry is built, from pg_rewrite). Short, so that
+ * the statement goes to the heap well before a deadlock would be looked for (deadlock_timeout).
+ */
+#define QS_BUILD_LOCK_TIMEOUT "50"
+
+/*
+ * Builds the entry (qs_build_mirror_body) where a wait is an error and not a stall. The build runs in a
+ * subtransaction with a short lock_timeout, so that an error (a lock it could not get, a deadlock, a
+ * cancel, a failure to parse the view) rolls back what it acquired and changed in the catalog caches,
+ * and nothing it did is kept. A lock that was not available, a deadlock or a serialization failure is
+ * a fact about the moment: the entry is transient and is built again when asked for. A cancel is
+ * not an answer, so it goes on up. Any other error is about the mirror, as it always was.
+ */
 static void
 qs_build_mirror(QsMirror *m)
+{
+	MemoryContext old = CurrentMemoryContext;
+	ResourceOwner oldowner = CurrentResourceOwner;
+	int			save_nest;
+
+	/*
+	 * No subtransaction in a parallel operation, and none while DuckDB may hold a transaction of this
+	 * session's (qs_duck_used): the entry is built by a caller that can have one, and is tried again
+	 * the next time it is asked for.
+	 */
+	if (IsInParallelMode() || !IsTransactionState() || qs_duck_used || qs_duck_foreign)
+	{
+		m->usable = false;
+		m->transient = true;
+		m->reason = IsInParallelMode() ? "mirror relation is not built inside a parallel operation (not waited for)"
+			: "mirror relation is not built while DuckDB works in this transaction (not waited for)";
+		return;
+	}
+	save_nest = NewGUCNestLevel();
+	(void) set_config_option("lock_timeout", QS_BUILD_LOCK_TIMEOUT, PGC_USERSET, PGC_S_SESSION,
+							 GUC_ACTION_SAVE, true, 0, false);
+	BeginInternalSubTransaction(NULL);
+	PG_TRY();
+	{
+		qs_build_mirror_body(m);
+		ReleaseCurrentSubTransaction();
+		MemoryContextSwitchTo(old);
+		CurrentResourceOwner = oldowner;
+	}
+	PG_CATCH();
+	{
+		ErrorData  *ed;
+
+		MemoryContextSwitchTo(old);
+		ed = CopyErrorData();
+		FlushErrorState();
+		RollbackAndReleaseCurrentSubTransaction();
+		MemoryContextSwitchTo(old);
+		/* the owner a subtransaction returns to is the transaction's, not the one it began under */
+		CurrentResourceOwner = oldowner;
+		if (ed->sqlerrcode == ERRCODE_QUERY_CANCELED || ProcDiePending || QueryCancelPending ||
+			ERRCODE_TO_CATEGORY(ed->sqlerrcode) == ERRCODE_OPERATOR_INTERVENTION)
+			ThrowErrorData(ed);
+		m->usable = false;
+		if (ed->sqlerrcode == ERRCODE_LOCK_NOT_AVAILABLE)
+		{
+			m->reason = "mirror relation is locked by another session (not waited for)";
+			m->transient = true;
+		}
+		else if (ERRCODE_TO_CATEGORY(ed->sqlerrcode) == ERRCODE_TRANSACTION_ROLLBACK)
+		{
+			m->reason = "mirror relation could not be read: a deadlock or serialization failure (not waited for)";
+			m->transient = true;
+		}
+		else
+		{
+			m->reason = MemoryContextStrdup(qs_cache_cxt, psprintf("mirror relation cannot be read: %s", ed->message));
+			m->transient = false;
+		}
+	}
+	PG_END_TRY();
+	AtEOXact_GUC(true, save_nest);
+}
+
+static void
+qs_build_mirror_body(QsMirror *m)
 {
 	Relation	heap;
 	TupleDesc	desc;
@@ -1037,6 +1148,8 @@ qs_build_mirror(QsMirror *m)
 
 	m->usable = false;
 	m->transient = false;
+	m->key = qs_mirror_key_cur;
+	m->epoch = qs_relcache_epoch;	/* before anything is read: a change during the build is seen next time */
 	/*
 	 * Not waited for either: the registry is read for every mirror, not only
 	 * the ones the statement names, so a heap relation that the statement does
@@ -1258,37 +1371,34 @@ qs_build_mirror(QsMirror *m)
 		m->transient = true;
 		goto out;
 	}
-	old = CurrentMemoryContext;
-	PG_TRY();
+	/*
+	 * Parsed and rewritten under the subtransaction qs_build_mirror opened: an
+	 * error here rolls back what it did, and comes back to qs_build_mirror to
+	 * be classified.
+	 */
+	raw = pg_parse_query(sql.data);
+	rewritten = pg_analyze_and_rewrite_fixedparams(linitial_node(RawStmt, raw), sql.data, NULL, 0, NULL);
+	if (list_length(rewritten) != 1)
+		elog(ERROR, "mirror view rewrites to %d statements", list_length(rewritten));
+	q = linitial_node(Query, rewritten);
+	if (q->commandType != CMD_SELECT || list_length(q->targetList) != Max(desc->natts, 1) + ncomp)
+		elog(ERROR, "mirror view does not rewrite to a plain SELECT");
+	/*
+	 * The view the statement came through is an RTE_SUBQUERY with its OID. The statement is kept with no
+	 * OID: the plan cache locks a relation named in a range table before it reuses a plan, and a view
+	 * locked there while the heap is held is a cycle (docs/40). The view's OID stays a dependency of the plan
+	 * (relationOids, through the mirror relation the registry names).
+	 */
+	foreach(lc, q->rtable)
 	{
-		raw = pg_parse_query(sql.data);
-		rewritten = pg_analyze_and_rewrite_fixedparams(linitial_node(RawStmt, raw), sql.data, NULL, 0, NULL);
-		if (list_length(rewritten) != 1)
-			elog(ERROR, "mirror view rewrites to %d statements", list_length(rewritten));
-		q = linitial_node(Query, rewritten);
-		if (q->commandType != CMD_SELECT || list_length(q->targetList) != Max(desc->natts, 1) + ncomp)
-			elog(ERROR, "mirror view does not rewrite to a plain SELECT");
-	}
-	PG_CATCH();
-	{
-		ErrorData  *ed;
+		RangeTblEntry *vrte = lfirst_node(RangeTblEntry, lc);
 
-		MemoryContextSwitchTo(old);
-		ed = CopyErrorData();
-		FlushErrorState();
-		/*
-		 * A lock that was waited for and lost (a deadlock, a serialization
-		 * failure) or a cancel is no fact about the mirror: the entry is tried
-		 * again, not kept unusable until the registry is loaded again.
-		 */
-		m->transient = ERRCODE_TO_CATEGORY(ed->sqlerrcode) == ERRCODE_TRANSACTION_ROLLBACK ||
-			ed->sqlerrcode == ERRCODE_QUERY_CANCELED;
-		m->reason = MemoryContextStrdup(qs_cache_cxt, psprintf("mirror relation cannot be read: %s", ed->message));
-		q = NULL;
+		if (vrte->rtekind == RTE_SUBQUERY && OidIsValid(vrte->relid))
+		{
+			vrte->relid = InvalidOid;
+			vrte->relkind = 0;
+		}
 	}
-	PG_END_TRY();
-	if (q == NULL)
-		goto out;
 
 	i = 0;
 	foreach(lc, q->targetList)
@@ -1466,7 +1576,7 @@ qs_load_mirrors(Snapshot snap)
 			qs_watch(mirror);
 			if (n5 || !enabled)
 				m->reason = "disabled in quicksilver.mirrors";
-			else
+			else if (!qs_reuse_mirror(m))
 				todo = lappend(todo, m);
 		}
 	}
@@ -1780,6 +1890,7 @@ qs_duck_raw(const char *sql)
 	QsElev		elev;
 
 	qs_duck_error[0] = '\0';
+	qs_duck_used = true;
 	qs_elev_begin(&elev);
 	fn = LookupFuncName(list_make2(makeString("duckdb"), makeString("raw_query")), 1, argtypes, true);
 	if (!OidIsValid(fn))
@@ -1885,6 +1996,7 @@ qs_duck_end(bool failed)
 	/* what the next statement reads is decided by its own freshness check */
 	qs_xact_pinned = false;
 	qs_npins = 0;
+	qs_duck_used = false;	/* COMMIT or ROLLBACK went through, or DuckDB has none to end */
 	return ok;
 }
 
@@ -1990,6 +2102,8 @@ qs_attach_lakes(bool force)
 		}
 	}
 	qs_lakes_attached = !failed;
+	if (!failed)
+		qs_lakes_fp_attached = qs_lakes_digest();
 	if (n > 0)
 		qs_attach_open = true;
 	if (failed)
@@ -2039,6 +2153,304 @@ qs_own_table(Oid nsp, Oid ext, const char *name)
  * the flag, the memory is replaced here.
  */
 static void qs_load_registry(void);
+
+/* ---------------------------------------------------------------- what a decision depends on */
+
+/*
+ * A cache invalidation says that the registry may have changed; it does not say that it did. The
+ * registry is then loaded again, and a decision is moved only when what it depends on is different
+ * (qs_decision_moved). What a decision depends on is a digest of its mirror entries (the heap and the
+ * mirror OIDs, whether the entry is usable and why not, the columns, the mirror's statement with the
+ * view it came through, the lag bound, the companions of the join domains) and a digest of the rest of
+ * the registry (the allowlist, the features and timezones, the join domains, the lakes, the registry
+ * tables). The applied LSN is left out: the trigger on quicksilver.mirrors does not treat its update as
+ * a change, and freshness reads it where it is needed.
+ *
+ * The digests are sums of per-entry hashes, so the order the rows come in does not matter.
+ */
+#define QS_FP_INIT UINT64CONST(14695981039346656037)
+
+static uint64
+qs_fp_bytes(uint64 h, const void *p, size_t n)
+{
+	const unsigned char *c = (const unsigned char *) p;
+
+	while (n-- > 0)
+	{
+		h ^= *c++;
+		h *= UINT64CONST(1099511628211);
+	}
+	return h;
+}
+
+static uint64
+qs_fp_str(uint64 h, const char *s)
+{
+	unsigned char present = (s != NULL);
+
+	h = qs_fp_bytes(h, &present, 1);
+	if (s != NULL)
+		h = qs_fp_bytes(h, s, strlen(s) + 1);
+	return h;
+}
+
+static uint64
+qs_fp_mirror(QsMirror *m)
+{
+	uint64		h = QS_FP_INIT;
+	ListCell   *lc;
+	int			i;
+
+	h = qs_fp_bytes(h, &m->heap, sizeof(Oid));
+	h = qs_fp_bytes(h, &m->mirror, sizeof(Oid));
+	h = qs_fp_bytes(h, &m->usable, sizeof(bool));
+	h = qs_fp_bytes(h, &m->rls, sizeof(bool));
+	h = qs_fp_bytes(h, &m->natts, sizeof(int));
+	h = qs_fp_bytes(h, &m->max_lag, sizeof(int64));
+	h = qs_fp_str(h, m->reason);
+	for (i = 0; m->col_ok != NULL && i < m->natts; i++)
+	{
+		h = qs_fp_bytes(h, &m->col_ok[i], sizeof(bool));
+		h = qs_fp_str(h, m->col_why[i]);
+	}
+	foreach(lc, m->finite_cols)
+		h = qs_fp_str(h, (const char *) lfirst(lc));
+	foreach(lc, m->joins)
+	{
+		QsJoinExp  *je = (QsJoinExp *) lfirst(lc);
+
+		h = qs_fp_bytes(h, &je->attno, sizeof(AttrNumber));
+		h = qs_fp_bytes(h, &je->resno, sizeof(AttrNumber));
+		h = qs_fp_str(h, je->column);
+		h = qs_fp_str(h, je->domain);
+		h = qs_fp_str(h, je->companion);
+	}
+	if (m->subquery != NULL)
+	{
+		char	   *s = nodeToString(m->subquery);
+
+		h = qs_fp_str(h, s);
+		pfree(s);
+	}
+	else
+		h = qs_fp_str(h, NULL);
+	return h;
+}
+
+/* the digest of the mirror entries a decision read */
+static uint64
+qs_mirrors_digest(List *mirrors)
+{
+	uint64		sum = (uint64) list_length(mirrors);
+	ListCell   *lc;
+
+	foreach(lc, mirrors)
+		sum += qs_fp_mirror((QsMirror *) lfirst(lc));
+	return sum;
+}
+
+/*
+ * The digest of what every mirror entry is built from besides its own registry row: the registry
+ * tables, the allowlist (with what its names resolve to), the features, and the join domains. Lakes
+ * are not in it: they do not change a mirror's statement.
+ */
+static uint64
+qs_mirror_key_now(void)
+{
+	uint64		sum = 0;
+	HASH_SEQ_STATUS seq;
+	ListCell   *lc;
+
+	if (!qs_installed)
+		return 0;
+	{
+		uint64		h = QS_FP_INIT;
+
+		h = qs_fp_bytes(h, &qs_mirrors_relid, sizeof(Oid));
+		h = qs_fp_bytes(h, &qs_allowlist_relid, sizeof(Oid));
+		h = qs_fp_bytes(h, &qs_lakes_relid, sizeof(Oid));
+		h = qs_fp_bytes(h, &qs_joins_relid, sizeof(Oid));
+		sum += h;
+	}
+	if (qs_allow_hash != NULL)
+	{
+		QsAllowEntry *e;
+
+		hash_seq_init(&seq, qs_allow_hash);
+		while ((e = hash_seq_search(&seq)) != NULL)
+		{
+			uint64		h = QS_FP_INIT;
+
+			h = qs_fp_bytes(h, &e->key.kind, sizeof(int32));
+			h = qs_fp_bytes(h, &e->key.oid, sizeof(Oid));
+			h = qs_fp_bytes(h, &e->key.oid2, sizeof(Oid));
+			h = qs_fp_bytes(h, &e->coll, sizeof(int32));
+			h = qs_fp_bytes(h, &e->need_typmod, sizeof(bool));
+			h = qs_fp_bytes(h, &e->finite, sizeof(bool));
+			h = qs_fp_bytes(h, &e->io, sizeof(bool));
+			h = qs_fp_bytes(h, &e->cmp, sizeof(bool));
+			h = qs_fp_bytes(h, &e->cmp_only, sizeof(bool));
+			h = qs_fp_bytes(h, &e->errors, sizeof(bool));
+			h = qs_fp_bytes(h, &e->zone, sizeof(bool));
+			sum += h;
+		}
+	}
+	if (qs_name_hash != NULL)
+	{
+		QsNameEntry *n;
+
+		hash_seq_init(&seq, qs_name_hash);
+		while ((n = hash_seq_search(&seq)) != NULL)
+			sum += qs_fp_str(QS_FP_INIT, n->name);
+	}
+	foreach(lc, qs_join_rows)
+	{
+		QsJoinRow  *jr = (QsJoinRow *) lfirst(lc);
+		uint64		h = QS_FP_INIT;
+
+		h = qs_fp_bytes(h, &jr->heap, sizeof(Oid));
+		h = qs_fp_str(h, jr->column);
+		h = qs_fp_str(h, jr->domain);
+		h = qs_fp_str(h, jr->companion);
+		sum += h;
+	}
+	return sum;
+}
+
+/* the digest of the lakes: which catalogs DuckDB has attached for this session */
+static uint64
+qs_lakes_digest(void)
+{
+	uint64		sum = 0;
+	ListCell   *lc;
+
+	foreach(lc, qs_lakes)
+	{
+		QsLake	   *lk = (QsLake *) lfirst(lc);
+		uint64		h = QS_FP_INIT;
+
+		h = qs_fp_str(h, lk->alias);
+		h = qs_fp_str(h, lk->catalog);
+		sum += h;
+	}
+	return sum;
+}
+
+/* the digest of the whole registry, the lakes included: what a decision depends on (qs_decision_moved) */
+static uint64
+qs_registry_digest(void)
+{
+	uint64		sum = qs_mirror_key_now();
+	ListCell   *lc;
+
+	foreach(lc, qs_lakes)
+	{
+		QsLake	   *lk = (QsLake *) lfirst(lc);
+		uint64		h = QS_FP_INIT;
+
+		h = qs_fp_str(h, lk->alias);
+		h = qs_fp_str(h, lk->catalog);
+		sum += h;
+	}
+	return sum;
+}
+
+/* a deep copy of a built mirror entry into the generation being loaded: nothing is shared with the old one */
+static void
+qs_copy_mirror(QsMirror *dst, QsMirror *src)
+{
+	MemoryContext old = MemoryContextSwitchTo(qs_cache_cxt);
+	ListCell   *lc;
+	int			i;
+
+	dst->usable = src->usable;
+	dst->transient = src->transient;
+	dst->rls = src->rls;
+	dst->reason = src->reason ? pstrdup(src->reason) : NULL;
+	dst->heapname = src->heapname ? pstrdup(src->heapname) : NULL;
+	dst->natts = src->natts;
+	dst->col_ok = palloc0(sizeof(bool) * Max(src->natts, 1));
+	dst->col_why = palloc0(sizeof(char *) * Max(src->natts, 1));
+	for (i = 0; i < src->natts; i++)
+	{
+		dst->col_ok[i] = src->col_ok[i];
+		dst->col_why[i] = src->col_why[i] ? pstrdup(src->col_why[i]) : NULL;
+	}
+	dst->finite_cols = NIL;
+	foreach(lc, src->finite_cols)
+		dst->finite_cols = lappend(dst->finite_cols, pstrdup((char *) lfirst(lc)));
+	dst->joins = NIL;
+	foreach(lc, src->joins)
+	{
+		QsJoinExp  *je = (QsJoinExp *) lfirst(lc);
+		QsJoinExp  *c = palloc0(sizeof(QsJoinExp));
+
+		c->attno = je->attno;
+		c->resno = je->resno;
+		c->column = pstrdup(je->column);
+		c->domain = pstrdup(je->domain);
+		c->companion = pstrdup(je->companion);
+		dst->joins = lappend(dst->joins, c);
+	}
+	dst->subquery = src->subquery ? copyObject(src->subquery) : NULL;
+	dst->key = src->key;
+	dst->epoch = src->epoch;
+	MemoryContextSwitchTo(old);
+}
+
+static bool
+qs_same_names(List *a, List *b)
+{
+	ListCell   *la,
+			   *lb;
+
+	if (list_length(a) != list_length(b))
+		return false;
+	forboth(la, a, lb, b)
+		if (strcmp((char *) lfirst(la), (char *) lfirst(lb)) != 0)
+			return false;
+	return true;
+}
+
+/*
+ * Keeps the entry of the generation being replaced for this mirror row, if it is still what the row
+ * and the registry say: built under the same key, no watched relation changed since, the same mirror
+ * relation, lag bound and finite columns. Nothing is read from the catalogs for it then, so an
+ * invalidation that changed none of this costs no build (and no subtransaction, which DuckDB
+ * forbids while it holds a transaction of this session's).
+ */
+static bool
+qs_reuse_mirror(QsMirror *m)
+{
+	QsMirror   *o;
+
+	if (qs_prev_mirror_hash == NULL)
+		return false;
+	o = hash_search(qs_prev_mirror_hash, &m->heap, HASH_FIND, NULL);
+	if (o == NULL || !o->usable || o->mirror != m->mirror || o->key != qs_mirror_key_cur ||
+		o->epoch != qs_relcache_epoch || o->max_lag != m->max_lag ||
+		!qs_same_names(o->finite_cols, m->finite_cols))
+		return false;
+	qs_copy_mirror(m, o);
+	return true;
+}
+
+/*
+ * The registry tables are read without waiting for them: a replay on a standby can hold one (a DDL
+ * that changed the registry), and a reader that waits for it while holding its heap relation is one
+ * side of a cycle. Locked here once, for the transaction, so the reads that follow find them held.
+ */
+static bool
+qs_registry_lockable(void)
+{
+	Oid			rels[4] = {qs_mirrors_relid, qs_allowlist_relid, qs_lakes_relid, qs_joins_relid};
+	int			i;
+
+	for (i = 0; i < 4; i++)
+		if (OidIsValid(rels[i]) && !ConditionalLockRelationOid(rels[i], AccessShareLock))
+			return false;
+	return true;
+}
 
 /*
  * Deletes the retired generations of the registry when nothing of this extension is on the
@@ -2096,6 +2508,8 @@ qs_load_registry(void)
 	bool		save_busy = qs_busy;
 	Oid			save_userid;
 	int			save_sec_context;
+	bool		keep_attached;
+	uint64		keep_lakes_fp;
 
 
 	if (qs_watch_hash == NULL)
@@ -2121,13 +2535,18 @@ qs_load_registry(void)
 			hash_search(qs_watch_hash, &w->relid, HASH_REMOVE, NULL);
 	}
 
+	qs_prev_mirror_hash = qs_mirror_hash;	/* read by qs_reuse_mirror, while this load runs */
 	qs_mirror_hash = qs_allow_hash = qs_name_hash = NULL;
 	qs_load_problems = NIL;
 	qs_installed = false;
+	qs_registry_fp = 0;
+	qs_registry_blocked = false;
 	qs_mirrors_relid = qs_allowlist_relid = qs_lakes_relid = InvalidOid;
 	qs_joins_relid = InvalidOid;
 	qs_join_rows = NIL;
 	qs_lakes = NIL;
+	keep_attached = qs_lakes_attached;
+	keep_lakes_fp = qs_lakes_fp_attached;
 	qs_lakes_attached = false;
 	/*
 	 * A new generation of the registry, in a new context. The previous one is retired, not reset:
@@ -2176,6 +2595,17 @@ qs_load_registry(void)
 	qs_lakes_relid = qs_own_table(nsp, ext, "lakes");
 	/* optional: an extension without it simply has no join rewrites */
 	qs_joins_relid = qs_own_table(nsp, ext, "join_domains");
+	/*
+	 * Not waited for (qs_registry_lockable). A load that cannot have the tables leaves the registry
+	 * not installed and the cache invalid: the statement is the heap's, and the next one loads again.
+	 */
+	if (!qs_registry_lockable())
+	{
+		qs_registry_blocked = true;
+		qs_installed = false;
+		qs_cache_valid = false;
+		return;
+	}
 
 	/*
 	 * Names in the allowlist are resolved with pg_catalog alone on the path,
@@ -2201,12 +2631,17 @@ qs_load_registry(void)
 		snap = RegisterSnapshot(GetLatestSnapshot());
 		qs_load_allowlist(snap);
 		qs_load_join_domains(snap);		/* before the mirrors: qs_build_mirror exposes their companions */
+		qs_mirror_key_cur = qs_mirror_key_now();
 		qs_load_mirrors(snap);
 		qs_load_lakes(snap);
 		UnregisterSnapshot(snap);
+		qs_registry_fp = qs_registry_digest();
+		/* the same lakes, attached: still attached (a load says nothing about DuckDB's session) */
+		qs_lakes_attached = keep_attached && qs_lakes != NIL && qs_lakes_digest() == keep_lakes_fp;
 	}
 	PG_FINALLY();
 	{
+		qs_prev_mirror_hash = NULL;
 		AtEOXact_GUC(true, save_nestlevel);
 		SetUserIdAndSecContext(save_userid, save_sec_context);
 		qs_busy = save_busy;
@@ -2235,6 +2670,34 @@ qs_mirror_lookup(Oid relid)
 		qs_build_mirror(m);
 	}
 	return m;
+}
+
+/*
+ * A decision looks at the registry again where something may have invalidated it: after a call that
+ * processes invalidations, and after the lakes were attached. An invalidation is a reason to look, so
+ * the registry is loaded again if it was invalidated, and the decision is made again only when what it
+ * depends on differs (qs_registry_digest, qs_mirrors_digest over the entries it read). Otherwise its
+ * mirror entries are looked up again in the generation now in force: nothing used after this points
+ * into a retired one. Returns true when the decision has to be made again.
+ */
+static bool
+qs_decision_moved(uint64 reg0, uint64 mir0, List *mirrors)
+{
+	ListCell   *lc;
+
+	if (!qs_cache_valid)
+		qs_ensure_loaded();
+	if (!qs_installed || qs_registry_fp != reg0)
+		return true;
+	foreach(lc, mirrors)
+	{
+		QsMirror   *n = qs_mirror_lookup(((QsMirror *) lfirst(lc))->heap);
+
+		if (n == NULL || !n->usable)
+			return true;
+		lfirst(lc) = n;
+	}
+	return qs_mirrors_digest(mirrors) != mir0;
 }
 
 static QsAllowEntry *
@@ -3575,6 +4038,7 @@ qs_xact_cb(XactEvent event, void *arg)
 			qs_gated_plan = NULL;
 			qs_gated_lxid = InvalidLocalTransactionId;
 			qs_duck_foreign = false;
+			qs_duck_used = false;
 			if (event == XACT_EVENT_ABORT)
 			{
 				qs_elev_abort();
@@ -3853,10 +4317,18 @@ typedef struct QsSubst
 {
 	ParamListInfo params;
 	bool		failed;
+	Oid			blocked;		/* a relation the mirror's statement needs that could not be locked without waiting */
 	bool		companions;		/* keep the join domain companions in the subqueries (qs_join_candidates) */
 } QsSubst;
 
-static void
+/*
+ * Locks every relation the substituted subquery names, the mirror view it came through included,
+ * without waiting. Returns the first one that could not be locked (InvalidOid when all could). The
+ * statement's own heap relation is locked by the parser already. A mirror view is locked by whoever
+ * replays its DROP (AccessExclusiveLock) while it waits for the heap, so a wait here is a cycle
+ * (docs/40, "Lock order"): the statement is answered by the heap instead.
+ */
+static Oid
 qs_lock_query(Query *q)
 {
 	ListCell   *lc;
@@ -3864,19 +4336,31 @@ qs_lock_query(Query *q)
 	foreach(lc, q->rtable)
 	{
 		RangeTblEntry *rte = lfirst_node(RangeTblEntry, lc);
+		Oid			blocked = InvalidOid;
 
 		if (rte->rtekind == RTE_RELATION)
-			LockRelationOid(rte->relid, rte->rellockmode ? rte->rellockmode : AccessShareLock);
+		{
+			if (!ConditionalLockRelationOid(rte->relid, rte->rellockmode ? rte->rellockmode : AccessShareLock))
+				blocked = rte->relid;
+		}
 		else if (rte->rtekind == RTE_SUBQUERY)
 		{
-			if (OidIsValid(rte->relid))
-				LockRelationOid(rte->relid, AccessShareLock);
-			if (rte->subquery)
-				qs_lock_query(rte->subquery);
+			if (OidIsValid(rte->relid) && !ConditionalLockRelationOid(rte->relid, AccessShareLock))
+				blocked = rte->relid;
+			else if (rte->subquery)
+				blocked = qs_lock_query(rte->subquery);
 		}
+		if (OidIsValid(blocked))
+			return blocked;
 	}
 	foreach(lc, q->cteList)
-		qs_lock_query(castNode(Query, lfirst_node(CommonTableExpr, lc)->ctequery));
+	{
+		Oid			blocked = qs_lock_query(castNode(Query, lfirst_node(CommonTableExpr, lc)->ctequery));
+
+		if (OidIsValid(blocked))
+			return blocked;
+	}
+	return InvalidOid;
 }
 
 /* every relation a (rewritten) statement names, views it came through included */
@@ -3958,7 +4442,16 @@ qs_subst_query(Query *q, QsSubst *s)
 			rte->inh = false;
 			rte->tablesample = NULL;
 			rte->lateral = false;
-			qs_lock_query(rte->subquery);
+			{
+				Oid			blocked = qs_lock_query(rte->subquery);
+
+				if (OidIsValid(blocked))
+				{
+					/* not waited for: the statement is the heap's, and nothing is remembered about the mirror */
+					s->blocked = blocked;
+					return;
+				}
+			}
 			continue;
 		}
 		if (rte->perminfoindex > 0)
@@ -4265,30 +4758,12 @@ qs_combine(PlannedStmt *heap, PlannedStmt *mirror, uint64 queryid, const char *r
 	heap->relationOids = list_concat_unique_oid(heap->relationOids, mirror_relids);
 	heap->relationOids = list_append_unique_oid(heap->relationOids, qs_mirrors_relid);
 	heap->relationOids = list_append_unique_oid(heap->relationOids, qs_allowlist_relid);
-	foreach(lm, mirror_relids)
-	{
-		Oid			relid = lfirst_oid(lm);
-		bool		present = false;
-
-		foreach(lh, heap->rtable)
-		{
-			RangeTblEntry *rte = lfirst_node(RangeTblEntry, lh);
-
-			if (rte->relid == relid && (rte->rtekind == RTE_RELATION || rte->rtekind == RTE_SUBQUERY))
-				present = true;
-		}
-		if (!present)
-		{
-			RangeTblEntry *lockrte = makeNode(RangeTblEntry);
-
-			lockrte->rtekind = RTE_SUBQUERY;	/* what a flattened view leaves behind */
-			lockrte->relid = relid;
-			lockrte->relkind = get_rel_relkind(relid);
-			lockrte->rellockmode = AccessShareLock;
-			lockrte->eref = makeAlias("quicksilver_mirror", NIL);
-			heap->rtable = lappend(heap->rtable, lockrte);
-		}
-	}
+	/*
+	 * No range table entry is added for a mirror relation: the plan cache locks every range table entry
+	 * that names a relation before it reuses a plan, and a lock it waits for while the heap is held is one
+	 * side of a cycle with a standby's replay (docs/40, "Lock order"). The mirror views are dependencies for
+	 * invalidation (relationOids, above); their statements carry no view OID (qs_build_mirror_body).
+	 */
 	heap->invalItems = list_concat(heap->invalItems, mirror->invalItems);
 	heap->dependsOnRole = heap->dependsOnRole || mirror->dependsOnRole;
 
@@ -4602,6 +5077,7 @@ qs_mirror_start(QsScanState *st, EState *estate)
 
 	INSTR_TIME_SET_CURRENT(t0);
 
+	qs_duck_used = true;
 	qs_duck_explicit();
 	qs_call_begin(st, &call);
 	PG_TRY();
@@ -5365,7 +5841,8 @@ qs_decide(Query *orig, PlannedStmt *heap, const char *query_string, int cursorOp
 	QsSubst		subst;
 	PlannedStmt *mplan = NULL;
 	PlannedStmt *result;
-	uint64		generation;
+	uint64		reg0 = 0;		/* the registry digest when the walk made its decision */
+	uint64		mir0 = 0;		/* and the digest of the mirror entries it read */
 	MemoryContext old;
 	int			state;
 	const char *state_detail;
@@ -5378,7 +5855,6 @@ qs_decide(Query *orig, PlannedStmt *heap, const char *query_string, int cursorOp
 
 	detail[0] = '\0';
 	qs_cost(heap, &cost);
-	generation = qs_load_count;
 
 #define QS_HEAP(reason, det, constructs) \
 	do { qs_record(queryid, false, (reason), (det), (constructs), heap->planTree->total_cost, cost.rows); return NULL; } while (0)
@@ -5450,6 +5926,9 @@ qs_decide(Query *orig, PlannedStmt *heap, const char *query_string, int cursorOp
 	qs_analyse(orig, &w);
 	if (w.mirrors == NIL && w.n_unmirrored == 0)
 		return NULL;			/* reads no table: nobody's business */
+	/* what the rest of the decision depends on, as it is now (see qs_decision_moved) */
+	reg0 = qs_registry_fp;
+	mir0 = qs_mirrors_digest(w.mirrors);
 	if (w.n_unmirrored > 0)
 	{
 		QsConstruct *c = NULL;
@@ -5556,7 +6035,7 @@ qs_decide(Query *orig, PlannedStmt *heap, const char *query_string, int cursorOp
 		(qs_attach_retry_at == 0 || GetCurrentTimestamp() >= qs_attach_retry_at))
 	{
 		(void) qs_attach_lakes(false);
-		if (!qs_cache_valid || generation != qs_load_count)
+		if (qs_decision_moved(reg0, mir0, w.mirrors))
 		{
 			qs_registry_moved = true;
 			if (!qs_decide_again)
@@ -5590,12 +6069,51 @@ qs_decide(Query *orig, PlannedStmt *heap, const char *query_string, int cursorOp
 	if (qs_join_domains && OidIsValid(qs_joins_relid) && qs_join_rows != NIL && mq->jointree != NULL)
 		qs_join_query(mq, &join_cands);
 	subst.companions = join_cands != NIL;
-	qs_subst_query(mq, &subst);
+	/*
+	 * The mirror views the statement comes through are locked here, without waiting, and the lock is
+	 * held to the end of the transaction: a DROP or a replacement of a view waits for the statements
+	 * that read it, as it did when the statement named the views (qs_build_mirror_body takes the
+	 * names out of the statement, so qs_lock_query no longer sees them). A view another session holds
+	 * is the heap's answer, below.
+	 */
+	foreach(lc, w.mirrors)
+	{
+		QsMirror   *vm = (QsMirror *) lfirst(lc);
+
+		if (vm->usable && OidIsValid(vm->mirror) &&
+			!ConditionalLockRelationOid(vm->mirror, AccessShareLock))
+		{
+			subst.blocked = vm->mirror;
+			break;
+		}
+	}
+	if (!OidIsValid(subst.blocked))
+		qs_subst_query(mq, &subst);
+	if (OidIsValid(subst.blocked))
+	{
+		/*
+		 * A mirror relation another session holds (a replay in progress): the heap answers, and
+		 * the next statement looks again. Not remembered, so it is not a fact about the mirror.
+		 */
+		QsMirror   *bm = NULL;
+		const char *bname = NULL;
+
+		foreach(lc, w.mirrors)
+			if (((QsMirror *) lfirst(lc))->mirror == subst.blocked)
+				bm = (QsMirror *) lfirst(lc);
+		if (bm != NULL)
+			bname = bm->heapname;
+		if (bname == NULL)
+			bname = get_rel_name(subst.blocked);
+		snprintf(detail, sizeof(detail), "%s: mirror relation is locked by another session (not waited for)",
+				 bname ? bname : "?");
+		QS_HEAP(QR_NOT_MIRRORED, detail, NIL);
+	}
 	if (!subst.failed && join_cands != NIL)
 		join_rewrites = qs_join_apply(join_cands, &join_used);
 	if (!subst.failed && w.has_extern_param)
 		mq = (Query *) qs_param_mutator((Node *) mq, &subst);
-	if (subst.failed || generation != qs_load_count || !qs_cache_valid)
+	if (subst.failed || qs_decision_moved(reg0, mir0, w.mirrors))
 	{
 		qs_registry_moved = true;	/* the caller decides again, once, from the registry as it is now */
 		if (!qs_decide_again)
@@ -5603,6 +6121,17 @@ qs_decide(Query *orig, PlannedStmt *heap, const char *query_string, int cursorOp
 		QS_HEAP(QR_REGISTRY_CHANGED, NULL, NIL);
 	}
 	qs_relids_walker((Node *) mq, &mirror_relids);
+	/*
+	 * The views are dependencies of the plan too: the walk above does not see them any more
+	 * (qs_build_mirror_body), and a replaced or dropped view must plan the statement again.
+	 */
+	foreach(lc, w.mirrors)
+	{
+		QsMirror   *vm = (QsMirror *) lfirst(lc);
+
+		if (vm->usable && OidIsValid(vm->mirror))
+			mirror_relids = list_append_unique_oid(mirror_relids, vm->mirror);
+	}
 	qs_join_keys_now = join_rewrites;
 	qs_join_used_now = join_used;
 	qs_zone_flags_now = (w.zone_used ? QS_ZONE_USED : 0) | (w.zone_hour ? QS_ZONE_HOUR : 0);
@@ -5617,6 +6146,7 @@ qs_decide(Query *orig, PlannedStmt *heap, const char *query_string, int cursorOp
 	 */
 	old = CurrentMemoryContext;
 	qs_busy = true;
+	qs_duck_used = true;
 	qs_elev_begin(&elev);
 	PG_TRY();
 	{
@@ -5759,6 +6289,7 @@ qs_planner_impl(Query *parse, const char *query_string, int cursorOptions, Param
 	PlannedStmt *heap;
 	PlannedStmt *routed;
 	Query	   *orig = NULL;
+	int			attempt;
 	bool		any_other = false;
 	bool		installed = false;
 	List	   *deps = NIL;
@@ -5825,24 +6356,26 @@ qs_planner_impl(Query *parse, const char *query_string, int cursorOptions, Param
 	}
 	if (orig == NULL)
 		return heap;
-	qs_registry_moved = false;
-	qs_decide_again = false;
+	/*
+	 * A decision that finds the registry really changed under it (qs_decision_moved) is made again,
+	 * from the registry as it is now. An invalidation that changed nothing it depends on never gets
+	 * here. The last attempt says so in the record, and the statement is the heap's.
+	 */
 	qs_decide_now = InvalidXLogRecPtr;
-	routed = qs_decide(orig, heap, query_string, cursorOptions, boundParams, any_other);
-	if (routed == NULL && qs_registry_moved)
+	routed = NULL;
+	for (attempt = 1; attempt <= QS_DECIDE_ATTEMPTS; attempt++)
 	{
-		/*
-		 * An invalidation of the registry (or of a table it names: an
-		 * ANALYZE is enough) arrived while the mirror's statement was being
-		 * built. Nothing was wrong with the statement: decide once more.
-		 */
 		qs_registry_moved = false;
-		qs_decide_again = true;
+		qs_decide_again = (attempt == QS_DECIDE_ATTEMPTS);
+		routed = qs_decide(orig, heap, query_string, cursorOptions, boundParams, any_other);
+		if (routed != NULL || !qs_registry_moved)
+			break;
 		qs_ensure_loaded();
-		if (qs_installed)
-			routed = qs_decide(orig, heap, query_string, cursorOptions, boundParams, any_other);
-		qs_decide_again = false;
+		if (!qs_installed)
+			break;
 	}
+	qs_decide_again = false;
+	qs_registry_moved = false;
 	return routed ? routed : heap;
 }
 
