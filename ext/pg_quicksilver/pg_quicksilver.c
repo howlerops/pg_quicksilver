@@ -186,6 +186,7 @@ typedef enum
 	QR_REGISTRY_CHANGED,
 	QR_FALLBACK,
 	QR_UNCONFINED,
+	QR_LAKE_NOT_ATTACHED,
 	QR_NREASONS
 } QsReason;
 
@@ -209,6 +210,7 @@ static const char *const qs_reason_names[QR_NREASONS] = {
 	"registry changed while planning",
 	"mirror failed at execution; answered from the heap",
 	"the role is not a superuser (see docs/40)",
+	"lake is not attached on this node (see the detail)",
 };
 
 /* ---------------------------------------------------------------- shared memory */
@@ -413,6 +415,18 @@ typedef struct QsLake
 static List *qs_lakes = NIL;	/* QsLake, in qs_cache_cxt */
 static bool qs_lakes_attached = false;	/* in this backend, for this load of the registry */
 static TimestampTz qs_attach_retry_at = 0;
+/*
+ * Why the last attachment failed, in words (docs/40, "Promotion"): the lake
+ * whose catalog is not on this node, is outside duckdb.allowed_directories, or
+ * that DuckDB refused. Read by the decision that falls back to the heap for
+ * it, and warned about once per backend when the catalog is there and the
+ * attachment still fails: that is a configuration, not a standby that has no
+ * mirror yet. qs_duck_error is DuckDB's own message from the last raw
+ * statement that failed.
+ */
+static char qs_attach_problem[QS_DETAIL_LEN] = "";
+static bool qs_attach_warned = false;
+static char qs_duck_error[QS_DETAIL_LEN] = "";
 
 /*
  * pg_duckdb's own state, as far as this extension has to know it.
@@ -858,6 +872,49 @@ qs_storage_cast_ok(Oid htype, int32 hmod, Oid mtype, int32 mmod, bool *need_cast
  * sidecar's DROP VIEW while a backend loads the registry); nothing may then look it up again
  * through an error path (get_atttypetypmodcoll raises one).
  */
+/*
+ * Names DuckDB does not take bare in the text pg_duckdb writes for a mirror
+ * subquery (the SELECT list, the CAST and alias forms, the FROM alias), measured
+ * against DuckDB 2.0.1 in those three shapes: the 105 words that fail in one of
+ * them, plus COLUMNS, EXCLUDE and REPLACE, which DuckDB reads as star modifiers.
+ * PostgreSQL's quote_identifier leaves most of these bare, so pg_duckdb writes
+ * them that way, and DuckDB then either fails (AT, PIVOT, QUALIFY, ...) or may
+ * read the name as something else. A column or table named so is not mirrored:
+ * the statement is answered by the heap, with the name in its reason. (The
+ * extension cannot quote them itself: the mirror subquery is deparsed by
+ * pg_duckdb, and the mirror's own column names are the sidecar's.)
+ * Sorted, for bsearch; lower case, compared without regard to case.
+ */
+static const char *const qs_duck_keywords[] = {
+	"all", "analyse", "analyze", "and", "anti", "any", "array", "as", "asc", "asof", "asymmetric",
+	"at", "authorization", "binary", "both", "by", "case", "cast", "check", "collate",
+	"collation", "column", "columns", "concurrently", "constraint", "create", "cross", "default",
+	"deferrable", "desc", "describe", "distinct", "do", "else", "end", "except", "exclude",
+	"false", "fetch", "for", "foreign", "freeze", "from", "full", "glob", "group", "having",
+	"ilike", "in", "initially", "inner", "intersect", "into", "is", "isnull", "join", "lambda",
+	"lateral", "leading", "left", "like", "limit", "natural", "not", "notnull", "null", "offset",
+	"on", "only", "or", "order", "outer", "overlaps", "pivot", "pivot_longer", "pivot_wider",
+	"placing", "positional", "primary", "qualify", "references", "replace", "returning", "right",
+	"select", "semi", "show", "similar", "some", "summarize", "symmetric", "table", "tablesample",
+	"then", "to", "trailing", "true", "union", "unique", "unpack", "unpivot", "using", "variadic",
+	"verbose", "when", "where", "window", "with",
+};
+
+static int
+qs_duck_keyword_cmp(const void *a, const void *b)
+{
+	return pg_strcasecmp(*(const char *const *) a, *(const char *const *) b);
+}
+
+static bool
+qs_duck_keyword(const char *name)
+{
+	const char *key = name;
+
+	return bsearch(&key, qs_duck_keywords, lengthof(qs_duck_keywords), sizeof(char *),
+				   qs_duck_keyword_cmp) != NULL;
+}
+
 static bool
 qs_mirror_att(Oid rel, AttrNumber attno, Oid *type, int32 *typmod, Oid *coll)
 {
@@ -915,10 +972,31 @@ qs_build_mirror(QsMirror *m)
 		m->reason = "heap relation is not a plain table (partitioned, view or foreign)";
 	else if (heap->rd_rel->relpersistence != RELPERSISTENCE_PERMANENT)
 		m->reason = "heap relation is temporary or unlogged";
+	else if (qs_duck_keyword(RelationGetRelationName(heap)))
+		m->reason = "heap relation is named like a DuckDB keyword: the mirror cannot write it in DuckDB's SQL";
 	else if (IsCatalogRelation(heap))
 		m->reason = "heap relation is a system catalog";
 	else if (GetDatabaseEncoding() != PG_UTF8)
+	{
 		m->reason = "database encoding is not UTF8";
+	}
+
+		/*
+		 * The mirror relation is a view of the whole table, and pg_duckdb writes
+		 * its definition in DuckDB's SQL when it plans a statement over it. One
+		 * column named like a DuckDB keyword and that text does not parse, or
+		 * means something else: so the table is not mirrored at all (docs/40,
+		 * "Keyword names").
+		 */
+		for (i = 0; m->reason == NULL && i < desc->natts; i++)
+		{
+			Form_pg_attribute att = TupleDescAttr(desc, i);
+
+			if (!att->attisdropped && qs_duck_keyword(NameStr(att->attname)))
+				m->reason = MemoryContextStrdup(qs_cache_cxt,
+												psprintf("column \"%s\" is named like a DuckDB keyword: the mirror's SQL cannot write it",
+														 NameStr(att->attname)));
+		}
 	if (m->reason)
 		goto out;
 
@@ -1419,6 +1497,39 @@ qs_mirror_role_ok(char *why, size_t whylen)
  * lake's data files are DuckDB's to confine, and it refuses any it may not read.
  */
 static bool
+qs_catalog_confined(const char *catalog, const char *dirs, bool *exists)
+{
+	char		lake_real[PATH_MAX];
+	char	   *copy;
+	char	   *tok;
+	char	   *save = NULL;
+	bool		inside = false;
+
+	*exists = realpath(catalog, lake_real) != NULL;
+	if (!*exists)
+		return false;
+	copy = pstrdup(dirs);
+	for (tok = strtok_r(copy, ",", &save); tok != NULL && !inside; tok = strtok_r(NULL, ",", &save))
+	{
+		char		dir_real[PATH_MAX];
+		size_t		n;
+
+		while (*tok == ' ')
+			tok++;
+		n = strlen(tok);
+		while (n > 0 && tok[n - 1] == ' ')
+			tok[--n] = '\0';
+		if (n == 0 || realpath(tok, dir_real) == NULL)
+			continue;
+		n = strlen(dir_real);
+		if (strncmp(lake_real, dir_real, n) == 0 && (dir_real[n - 1] == '/' || lake_real[n] == '/'))
+			inside = true;
+	}
+	pfree(copy);
+	return inside;
+}
+
+static bool
 qs_lakes_confined(char *why, size_t whylen)
 {
 	const char *dirs = GetConfigOption("duckdb.allowed_directories", true, false);
@@ -1434,33 +1545,10 @@ qs_lakes_confined(char *why, size_t whylen)
 	foreach(lc, qs_lakes)
 	{
 		QsLake	   *lake = (QsLake *) lfirst(lc);
-		char		lake_real[PATH_MAX];
-		char	   *copy;
-		char	   *tok;
-		char	   *save = NULL;
-		bool		inside = false;
+		bool		exists;
 
-		if (realpath(lake->catalog, lake_real) == NULL)
-			continue;
-		copy = pstrdup(dirs);
-		for (tok = strtok_r(copy, ",", &save); tok != NULL && !inside; tok = strtok_r(NULL, ",", &save))
-		{
-			char		dir_real[PATH_MAX];
-			size_t		n;
-
-			while (*tok == ' ')
-				tok++;
-			n = strlen(tok);
-			while (n > 0 && tok[n - 1] == ' ')
-				tok[--n] = '\0';
-			if (n == 0 || realpath(tok, dir_real) == NULL)
-				continue;
-			n = strlen(dir_real);
-			if (strncmp(lake_real, dir_real, n) == 0 && (dir_real[n - 1] == '/' || lake_real[n] == '/'))
-				inside = true;
-		}
-		pfree(copy);
-		if (!inside)
+		/* a catalog that is not on this node is not read (see qs_catalog_confined) */
+		if (!qs_catalog_confined(lake->catalog, dirs, &exists) && exists)
 		{
 			strlcpy(why, "a lake's catalog is outside duckdb.allowed_directories", whylen);
 			return false;
@@ -1573,6 +1661,7 @@ qs_duck_raw(const char *sql)
 	bool		ok = true;
 	QsElev		elev;
 
+	qs_duck_error[0] = '\0';
 	qs_elev_begin(&elev);
 	fn = LookupFuncName(list_make2(makeString("duckdb"), makeString("raw_query")), 1, argtypes, true);
 	if (!OidIsValid(fn))
@@ -1604,6 +1693,7 @@ qs_duck_raw(const char *sql)
 			qs_elev_end(&elev);
 			qs_rethrow(ed);
 		}
+		strlcpy(qs_duck_error, ed->message ? ed->message : "", sizeof(qs_duck_error));
 		FlushErrorState();
 		FreeErrorData(ed);
 		ok = false;
@@ -1728,6 +1818,9 @@ qs_attach_lakes(bool force)
 	int			n = 0;
 	bool		failed = false;
 	bool		refused = false;
+	bool		present = false;	/* a catalog this node has, that did not attach */
+	StringInfoData why;
+	const char *dirs = GetConfigOption("duckdb.allowed_directories", true, false);
 
 	if (qs_lakes == NIL)
 		return 0;
@@ -1735,15 +1828,33 @@ qs_attach_lakes(bool force)
 		return list_length(qs_lakes);
 	if (!force && qs_attach_retry_at != 0 && GetCurrentTimestamp() < qs_attach_retry_at)
 		return -1;
+	initStringInfo(&why);
 	foreach(lc, qs_lakes)
 	{
 		QsLake	   *lake = (QsLake *) lfirst(lc);
 		struct stat sb;
 		StringInfoData sql;
+		bool		exists;
 
 		if (stat(lake->catalog, &sb) != 0)
 		{
-			failed = true;		/* no mirror on this node (the primary), or not yet */
+			/* no mirror on this node (the primary), or not yet: asked about again, not every time */
+			failed = true;
+			if (why.len == 0)
+				appendStringInfo(&why, "lake \"%s\": catalog %s is not on this node", lake->alias, lake->catalog);
+			continue;
+		}
+		if (dirs != NULL && dirs[0] != '\0' && !qs_catalog_confined(lake->catalog, dirs, &exists))
+		{
+			/*
+			 * The copied configuration of a promoted or re-based node names the
+			 * directory of the node it came from. The catalog is on this node,
+			 * but DuckDB may not read it.
+			 */
+			failed = present = true;
+			resetStringInfo(&why);
+			appendStringInfo(&why, "lake \"%s\": catalog %s is outside duckdb.allowed_directories (%s) on this node",
+							 lake->alias, lake->catalog, dirs);
 			continue;
 		}
 		initStringInfo(&sql);
@@ -1753,17 +1864,43 @@ qs_attach_lakes(bool force)
 		if (qs_duck_raw(sql.data))
 			n++;
 		else
-			failed = refused = true;
+		{
+			failed = refused = present = true;
+			resetStringInfo(&why);
+			appendStringInfo(&why, "lake \"%s\": DuckDB refused to attach %s: %s", lake->alias, lake->catalog,
+							 qs_duck_error[0] ? qs_duck_error : "no message");
+		}
 	}
 	qs_lakes_attached = !failed;
 	if (n > 0)
 		qs_attach_open = true;
+	if (failed)
+		strlcpy(qs_attach_problem, why.data, sizeof(qs_attach_problem));
+	else
+	{
+		qs_attach_problem[0] = '\0';
+		qs_attach_warned = false;
+	}
+	/*
+	 * Once per backend, and only for a catalog that is here: a standby without
+	 * a lake yet, or a primary, is what "not on this node" means, and says
+	 * nothing about a mistake.
+	 */
+	if (present && !qs_attach_warned)
+	{
+		qs_attach_warned = true;
+		ereport(WARNING,
+				(errmsg("pg_quicksilver: routing to the mirror is off in this session: %s", qs_attach_problem),
+				 errhint("Set duckdb.allowed_directories on this node to the directory that holds the lake's catalog, "
+						 "or see quicksilver.last_decision().")));
+	}
 	/* a lake that is not there is asked about again, but not by every statement */
 	/*
 	 * ... and one DuckDB refused is not going to be accepted a few seconds
 	 * later, and the refusal itself can take seconds.
 	 */
 	qs_attach_retry_at = failed ? TimestampTzPlusMilliseconds(GetCurrentTimestamp(), refused ? 300000 : 5000) : 0;
+	pfree(why.data);
 	return failed ? -1 : n;
 }
 
@@ -2631,8 +2768,14 @@ qs_walk_query(Query *q, QsWalk *w)
 	foreach(lc, q->rtable)
 		qs_walk_rte(q, lfirst_node(RangeTblEntry, lc), w);
 
-	/* every expression, every sublink, every subquery and CTE below this level */
-	query_tree_walker(q, qs_expr_walker, w, 0);
+	/*
+	 * every expression, every sublink, every subquery and CTE below this level.
+	 * Not the join alias lists: they name every column of a join, referenced or
+	 * not, so a jsonb column that no expression reads would fail the walk. A
+	 * column that is read still is: its Var is in the target list, the quals or
+	 * the sort (docs/40, "Join aliases").
+	 */
+	query_tree_walker(q, qs_expr_walker, w, QTW_IGNORE_JOINALIASES);
 }
 
 /* The whole statement. Returns the walk; safe iff constructs == NIL. */
@@ -4335,7 +4478,17 @@ qs_begin_scan(CustomScanState *node, EState *estate, int eflags)
 	}
 	qs_pin();
 	qs_duck_recycle();
-	(void) qs_attach_lakes(false);
+	if (qs_attach_lakes(false) < 0)
+	{
+		/* the lake is not readable here now: the heap answers, and the detail says why */
+		if (!st->can_fallback)
+			ereport(ERROR,
+					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+					 errmsg("a plan made with quicksilver.allow_unsafe cannot be answered from the heap"),
+					 errdetail("%s", qs_attach_problem)));
+		qs_to_heap(st, QR_LAKE_NOT_ATTACHED, qs_attach_problem);
+		return;
+	}
 	st->eager = !st->explain_only && qs_in_block();
 	if (!qs_mirror_start(st, estate))
 		return;
@@ -4980,6 +5133,13 @@ qs_decide(Query *orig, PlannedStmt *heap, const char *query_string, int cursorOp
 			QS_HEAP(QR_REGISTRY_CHANGED, NULL, NIL);
 		}
 	}
+	/*
+	 * A lake this node cannot attach is the heap's, and says why: the mirror
+	 * relations over it would not plan, and the planner's answer would be
+	 * the less useful "could not plan it" (docs/40, "Promotion").
+	 */
+	if (!qs_lakes_attached && qs_lakes != NIL)
+		QS_HEAP(QR_LAKE_NOT_ATTACHED, qs_attach_problem, NIL);
 
 	/*
 	 * Not qs_generation: that moves with every relcache invalidation in the

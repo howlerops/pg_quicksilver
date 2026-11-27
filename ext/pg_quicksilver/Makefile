@@ -12,7 +12,7 @@ EXTENSION = pg_quicksilver
 DATA = pg_quicksilver--0.1.sql
 PGFILEDESC = "pg_quicksilver - fail-closed heap/mirror read routing"
 
-REGRESS = routing failclosed permissions unprivileged unprivileged_confined prepared transactions explain invalidation reload shadow freshness robustness errors join_domains duckmem
+REGRESS = routing failclosed permissions unprivileged unprivileged_confined prepared transactions explain invalidation reload shadow freshness robustness errors join_domains duckmem keywords joinalias lakeattach
 REGRESS_OPTS = --use-existing --host=/tmp --port=$(or $(PPORT),5541) --user=postgres
 
 PG_CONFIG ?= /usr/lib/postgresql/17/bin/pg_config
