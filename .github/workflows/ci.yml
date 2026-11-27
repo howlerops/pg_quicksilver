@@ -801,6 +801,8 @@ jobs:
           sudo -H python3 -m pip install --quiet --break-system-packages duckdb==2.0.1
           rm -rf "$work"
           mkdir -p "$work/lake" "$work/outside"
+          # postgres writes its log and its socket here; the runner made the directory
+          chmod 1777 "$work"
           sudo install -d -o postgres -g postgres -m 700 "$work/data"
           sudo -u postgres "$bin/initdb" -D "$work/data" -U postgres -A trust -E UTF8 >/dev/null
           sudo -u postgres tee -a "$work/data/postgresql.conf" >/dev/null <<CONF
