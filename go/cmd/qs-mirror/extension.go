@@ -1042,10 +1042,27 @@ func (e *extLink) sync(ctx context.Context, conn *pgx.Conn, desired map[string]b
 	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext('quicksilver.mirrors'))`); err != nil {
 		return err
 	}
-	if _, err := tx.Exec(ctx, `INSERT INTO quicksilver.lakes AS l (alias, catalog) VALUES ($1, $2)
-		ON CONFLICT (alias) DO UPDATE SET catalog = EXCLUDED.catalog WHERE l.catalog IS DISTINCT FROM EXCLUDED.catalog`,
-		extLakeAlias, lakeCatalogPath(e.o)); err != nil {
+	// Written only when it differs. quicksilver.lakes has a statement-level trigger
+	// (lakes_changed) that fires for a write that changes no row, and that trigger
+	// invalidates the registry in every backend of the cluster. This runs after every
+	// DDL statement, so an unconditional upsert here made each DDL in the database
+	// send every planner a registry reload, and a statement planned in that window
+	// was decided twice ("registry changed while planning") and could fall back to
+	// the heap. The advisory lock above serializes the sidecars, so the check holds.
+	var have string
+	found := true
+	switch err := tx.QueryRow(ctx, `SELECT catalog FROM quicksilver.lakes WHERE alias = $1`, extLakeAlias).Scan(&have); {
+	case errors.Is(err, pgx.ErrNoRows):
+		found = false
+	case err != nil:
 		return fmt.Errorf("quicksilver.lakes: %w", err)
+	}
+	if !found || have != lakeCatalogPath(e.o) {
+		if _, err := tx.Exec(ctx, `INSERT INTO quicksilver.lakes AS l (alias, catalog) VALUES ($1, $2)
+			ON CONFLICT (alias) DO UPDATE SET catalog = EXCLUDED.catalog`,
+			extLakeAlias, lakeCatalogPath(e.o)); err != nil {
+			return fmt.Errorf("quicksilver.lakes: %w", err)
+		}
 	}
 	if _, err := tx.Exec(ctx, "CREATE SCHEMA IF NOT EXISTS "+extQuote(e.schema)); err != nil {
 		return err
