@@ -41,8 +41,8 @@ spec:
   postgresql:
     parameters:
       # Do NOT pin wal_level here. Quicksilver sets it to logical through
-      # EnrichConfiguration, and a conflicting value is rejected at admission
-      # rather than silently overridden.
+      # EnrichConfiguration, and a conflicting value is reported as an invalid
+      # configuration in .status.pluginStatus rather than silently overridden.
       shared_buffers: 512MB
 
       # THIS ONE IS NOT OPTIONAL, and it protects the database from the mirror.

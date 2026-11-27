@@ -3,6 +3,11 @@ CloudNativePG as {{ include "quicksilver.pluginName" . }}.
 
 Nothing changes until a Cluster names it. CloudNativePG 1.26 or newer is required.
 
+The operator does not ask a plugin at admission, so a Cluster with a bad parameter is
+created anyway. The plugin says so in the Cluster's status:
+
+  kubectl get cluster <name> -o jsonpath='{.status.pluginStatus[?(@.name=="{{ include "quicksilver.pluginName" . }}")].status}'
+
 1. Mirror only (the stock PostgreSQL image stays):
 
      spec:

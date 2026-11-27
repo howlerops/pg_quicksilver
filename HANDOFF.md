@@ -424,7 +424,7 @@ the copy to root), fixed in `deploy/duckdb-extensions.sh`.
 - any `docker build`: the three targets as images, the PGDG header pin inside
   the CloudNativePG base, the Debian 12 build of the pg_duckdb package,
   `ADD --checksum` and `RUN --network=none` under the runner's BuildKit;
-- anything on Kubernetes: admission refusals by the plugin, three instances on
+- anything on Kubernetes: the plugin reporting an invalid configuration in status, three instances on
   the operand image, two sidecars against one primary, routing through the
   `-ro` Service, the halt and REBUILD by Pod deletion, the switchover, the
   scale-down, and whether sections 10 and 11 still pass on three-then-two

@@ -30,7 +30,7 @@ spec:
 | Service | Key RPCs | What Quicksilver uses it for |
 |---|---|---|
 | **Identity** | `GetPluginMetadata`, `GetPluginCapabilities`, `Probe` | Boilerplate. Declare which services we implement. |
-| **Operator** | `ValidateClusterCreate`, `ValidateClusterChange`, `MutateCluster`, `SetStatusInCluster`, `Deregister` | Validate our `parameters` block and **reject bad config at admission** rather than at runtime. `SetStatusInCluster` publishes mirror freshness/health into `Cluster.status` — the single best UX win available, since `kubectl get cluster` then shows mirror lag. |
+| **Operator** | `ValidateClusterCreate`, `ValidateClusterChange`, `MutateCluster`, `SetStatusInCluster`, `Deregister` | Validate our `parameters` block. **The operator never calls `ValidateClusterCreate` or `ValidateClusterChange`** (checked in CloudNativePG 1.26.0 and 1.30.0), so bad config is reported through `SetStatusInCluster` and the lifecycle hook instead (see [docs/16](16-deploying.md#what-the-plugin-refuses-and-what-it-does-instead)). `SetStatusInCluster` publishes mirror freshness/health into `Cluster.status` — the single best UX win available, since `kubectl get cluster` then shows mirror lag. |
 | **OperatorLifecycle** | `LifecycleHook` (Create/Patch/Update/Delete/Evaluate on k8s objects) | **The workhorse.** Intercept the instance `Pod` to inject our sidecar, volumes and env; intercept the `-ro` `Service` to retarget it. |
 | **Postgres** | `EnrichConfiguration` | Set `wal_level`, `max_replication_slots`, `shared_preload_libraries`, `archive_timeout` etc. at init/restore/reconcile/upgrade — declaratively, without the user hand-editing `postgresql.parameters`. |
 | **WAL** | `Archive`, `Restore`, `Status`, `SetFirstRequired` | The archive tee (Path 1 in [03](03-wal-ingestion.md)). Note the design tension below. |
@@ -165,7 +165,7 @@ spec:
         verifyInterval: "15m"       # continuous checksum verification (G7)
 ```
 
-`ValidateClusterCreate` should reject, at admission: `ingest: physical` on an unsupported
+`Validate` checks these. Nothing rejects them at admission, because the operator does not call the plugin's validation; the lifecycle hook builds no mirror from them and `SetStatusInCluster` reports them: `ingest: physical` on an unsupported
 major version; `serviceMode: takeover` without at least one non-Quicksilver standby left for
 the row-store fallback; table patterns matching nothing; a `freshnessSLO` below what the
 chosen ingest path can physically deliver.

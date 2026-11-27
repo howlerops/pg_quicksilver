@@ -5,9 +5,9 @@ package plugin
 // Each of these was documented in docs/16-deploying.md as an environment
 // variable on the sidecar, and an operator who needed one had to patch the
 // container by hand, which a reconcile undoes. Each now has a parameter, the
-// same name in camelCase, validated at admission in the way the sidecar would
+// same name in camelCase, checked by Validate in the way the sidecar would
 // otherwise have read it silently: a value it does not recognise is off, so a
-// typo is refused here rather than run.
+// typo is reported as an invalid configuration rather than run.
 //
 // The sidecar reads these at start, so changing one takes effect on the next
 // Pod, like every other container setting.

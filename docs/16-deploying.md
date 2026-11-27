@@ -69,8 +69,8 @@ docker build --target postgres -t ghcr.io/howlerops/pg_quicksilver-postgres:17-0
 **The operand image's tag starts with the PostgreSQL major, and has to.**
 CloudNativePG reads a Cluster's PostgreSQL version from the front of the image
 tag (`version.FromTag`, the regular expression `^(\d\.?)+`): `0.0.4` is read as
-PostgreSQL 0, and `dev` or `latest` is refused at admission with `invalid
-version tag`. So it is `17-<version>` everywhere, and
+PostgreSQL 0, and `dev` or `latest` is refused at admission by CloudNativePG's
+own webhook, with `invalid version tag`. So it is `17-<version>` everywhere, and
 `bench/scripts/validate_manifests.sh` fails a chart whose `image.postgres` does
 not parse as 17.
 
@@ -172,9 +172,10 @@ Defaults are written back into the Cluster by `MutateCluster`, so
 `kubectl get cluster -o yaml` shows what the mirror is actually doing rather
 than what this binary's defaults happened to be.
 
-### What the plugin refuses, and why
+### What the plugin refuses, and what it does instead
 
-Validation is where two measured findings are enforced rather than documented:
+Validation (`Validate` in `go/internal/plugin/config.go`) is where two measured
+findings are enforced rather than documented:
 
 - **`mode: takeover` without `acknowledgeOLTPRegression: "true"`.** Takeover
   serves `-ro` reads from the columnar mirror, which measured a **median 935×
@@ -187,10 +188,35 @@ Validation is where two measured findings are enforced rather than documented:
   survive a failover and recovery is a full re-snapshot of every mirrored table
   ([docs/15](15-pg17-slot-failover.md)).
 
-Also refused: unknown parameters (a misspelled `tabels:` otherwise yields a
-mirror that mirrors nothing, silently), single-instance clusters, a pinned
+Also rejected by `Validate`: unknown parameters (a misspelled `tabels:` otherwise
+yields a mirror that mirrors nothing, silently), single-instance clusters, a pinned
 `wal_level` that conflicts with `logical`, changes to `ingest`, `mirrorPath` or
 `database` on a running cluster, and tables without a single-column primary key.
+
+**None of this is refused at admission.** CloudNativePG's webhook never calls a
+plugin's `ValidateClusterCreate` or `ValidateClusterChange`: there is no caller
+for either in CloudNativePG 1.26.0 or 1.30.0 (the plugin client defines them and
+nothing invokes them). A Cluster with a misspelled parameter is created. What
+happens then is what the operator does ask the plugin about:
+
+- **Status.** `SetStatusInCluster` runs on every successful reconcile and writes
+  `state: invalid configuration` and one `configErrors` entry per problem into
+  `.status.pluginStatus`. To see it:
+
+  ```sh
+  kubectl get cluster <name> -o jsonpath='{.status.pluginStatus[?(@.name=="quicksilver.howlerops.io")].status}'
+  ```
+
+  A valid configuration writes `state: valid` and no `configErrors`.
+- **A Cluster with no instances yet.** The instance Pod is built **without** the
+  mirror. PostgreSQL starts, and nothing is in takeover, so no readiness gate
+  takes a replica out of `-ro`.
+- **A Cluster that already has instances.** No new instance Pod is built for it
+  and no rollout is planned from the invalid configuration. Running Pods keep the
+  mirror they have. An instance Pod that is deleted is not rebuilt until the
+  parameters are fixed; the operator logs the reason on each pass.
+- **Pod patches and updates** (role labels on failover and switchover) are never
+  blocked by a configuration error, and never add the mirror.
 
 ---
 
@@ -562,8 +588,10 @@ this; moving `mirrorPath` to one would.
 | `clusterBy` | the sidecar's default | `QS_CLUSTER_BY` | the clustering column per table, `schema.table=column,…`, or `none` for a table that should not be clustered |
 | `numericScale` | unset | `QS_NUMERIC_SCALE` | the opt-in decimal scale for `numeric` columns (see *`numeric` without a precision*) |
 
-A value that is not a boolean, a duration or a quantity is refused at
-admission; the sidecar itself would have read it as off.
+A value that is not a boolean, a duration or a quantity is an invalid
+configuration: it is reported in `.status.pluginStatus` and no mirror is built
+from it (see *What the plugin refuses, and what it does instead*). The sidecar
+itself would have read it as off.
 
 **What the sidecar then does**, with no further configuration: creates the
 schema `quicksilver_mirror` and one view per table over `lake."schema"."table"`,

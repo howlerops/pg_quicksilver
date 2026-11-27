@@ -7,9 +7,10 @@
 # So this script assumes a cluster and asserts, on it, every claim the
 # repository makes about one:
 #
-#    2  the plugin loads and VALIDATES: a Cluster with a misspelled parameter,
-#       and one asking for takeover without the acknowledgement, are refused
-#       at admission by the plugin's own message.
+#    2  the plugin loads and the operator ASKS it: a Cluster with a misspelled
+#       parameter, and one asking for takeover without the acknowledgement, are
+#       ADMITTED (the operator never asks a plugin at admission), and the plugin
+#       reports the error in .status.pluginStatus and builds no mirror.
 #    3  a three-instance Cluster comes up with the sidecar in EVERY instance
 #       Pod, each image pulled, and in shadow mode no readiness probe on it.
 #    4  each replica has a replication slot of its OWN, active, and the primary
@@ -809,7 +810,7 @@ else
 fi
 
 # ---------------------------------------------------------------- the plugin
-say "2. install the plugin, and see it REFUSE what it should"
+say "2. install the plugin, and see it REPORT what it should"
 echo "  chart: $CHART${CHART_VERSION_ARGS[*]:+ ${CHART_VERSION_ARGS[*]}}"
 helm upgrade --install quicksilver "$CHART" "${CHART_VERSION_ARGS[@]}" \
   --namespace "$CNPG_NS" \
@@ -833,47 +834,114 @@ kubectl -n "$CNPG_NS" rollout status deploy/quicksilver --timeout=300s >/dev/nul
 ok "plugin running — the -plugin image was PULLED and STARTED"
 
 # Running is not loaded. The operator finds a plugin by a Service label and
-# dials it over mTLS, and a plugin it never reached admits everything, because
-# nobody asked it. So the proof that it loaded is a refusal only it can make:
-# these two Clusters are valid CloudNativePG and are refused by words that
-# exist nowhere but in go/internal/plugin/config.go. --dry-run=server goes
-# through the real admission webhooks and creates nothing.
+# dials it over mTLS, and a plugin it never reached never sees a Cluster. So
+# the proof that it is asked is something only the plugin can write: these
+# Clusters carry parameters it rejects, and SetStatusInCluster
+# (go/internal/plugin/operator.go) puts the reason in .status.pluginStatus.
 #
-# The operator learns of a plugin Service on its own schedule, so the first
-# refusal is waited for; an admission that keeps succeeding is the failure.
-refused_with() { # <label> <expected text> <parameters, as YAML lines>
-  local label=$1 want=$2 params=$3 out="" deadline=$(( $(now) + 180 ))
-  while [ "$(now)" -lt "$deadline" ]; do
-    out=$(cat <<YAML | kc apply --dry-run=server -f - 2>&1
+# The operator does NOT ask a plugin to validate at admission. Its webhook
+# never calls ValidateClusterCreate or ValidateClusterChange (CloudNativePG
+# 1.26.0 and 1.30.0: no caller outside the plugin client package), so both
+# Clusters are ADMITTED. What is under test is what the plugin then does:
+#
+#   - its status reports the error, and says state: invalid configuration;
+#   - the instance Pod is built WITHOUT the mirror, so no instance Pod of that
+#     Cluster has a quicksilver-mirror container. mode: takeover without the
+#     acknowledgement therefore never gets its readiness gate either.
+#
+# One instance each, deliberately. The operator writes .status.pluginStatus only
+# when its reconcile completes, and while the configuration is invalid the
+# plugin does not let a Cluster that already has an instance build another, so
+# a two-instance Cluster would never reach that write.
+INVALID_CLUSTERS=(misspelled-params takeover-no-ack)
+
+invalid_cluster() { # <name> <parameters, as YAML lines>
+  cat <<YAML | kc apply -f - >/dev/null || bad "the Cluster $1 was not admitted, which is not what the operator does with a plugin's parameters"
 apiVersion: postgresql.cnpg.io/v1
 kind: Cluster
 metadata:
-  name: refused
+  name: $1
 spec:
-  instances: 2
+  instances: 1
   imageName: $STOCK_PG_IMAGE
   storage:
     size: 1Gi
   plugins:
     - name: quicksilver.howlerops.io
       parameters:
-$params
+$2
 YAML
-)
-    if printf '%s' "$out" | grep -q "$want"; then
-      ok "refused at admission: $label"
-      return 0
-    fi
-    sleep 10
+}
+
+plugin_status() { # <cluster>
+  kc get cluster "$1" -o jsonpath='{.status.pluginStatus[?(@.name=="quicksilver.howlerops.io")].status}' 2>/dev/null
+}
+
+# The operator learns of a plugin Service on its own schedule, and the first
+# reconcile of a new Cluster takes a while, so each wait is bounded and a
+# failure names what it was waiting for.
+await_plugin_status() { # <cluster> <expected text> <seconds>
+  local name=$1 want=$2 deadline=$(( $(now) + $3 )) st=""
+  while [ "$(now)" -lt "$deadline" ]; do
+    st=$(plugin_status "$name")
+    case "$st" in *"$want"*) return 0 ;; esac
+    sleep 5
   done
-  printf '%s\n' "$out" | tail -5 | sed 's/^/    /'
-  bad "a Cluster with $label was not refused with \"$want\": the plugin is running but the operator is not asking it"
+  printf '%s\n' "$st" | cut -c1-400 | sed 's/^/    last status: /'
   return 1
 }
-refused_with "a misspelled parameter (tabels:)" "unknown Quicksilver parameter" \
-$'        tables: public.events\n        tabels: public.events'
-refused_with "mode: takeover without the acknowledgement" "acknowledgeOLTPRegression" \
-$'        tables: public.events\n        mode: takeover'
+
+await_instance_pod() { # <cluster> <seconds>
+  local name=$1 deadline=$(( $(now) + $2 )) pods=""
+  while [ "$(now)" -lt "$deadline" ]; do
+    pods=$(kc get pods -l "cnpg.io/podRole=instance,cnpg.io/cluster=$name" -o name 2>/dev/null)
+    if [ -n "$pods" ]; then return 0; fi
+    sleep 5
+  done
+  return 1
+}
+
+# Whether any instance Pod of <cluster> carries the mirror, as a container or as
+# a native sidecar (an init container). Exit 0 yes, 1 no, 2 the Pods could not
+# be read, which must not be taken for "no mirror".
+mirror_in_any_instance() { # <cluster>
+  local names=""
+  names=$(kc get pods -l "cnpg.io/podRole=instance,cnpg.io/cluster=$1" \
+    -o jsonpath='{range .items[*]}{range .spec.initContainers[*]}{.name}{"\n"}{end}{range .spec.containers[*]}{.name}{"\n"}{end}{end}' \
+    2>/dev/null) || return 2
+  grep -qx quicksilver-mirror <<<"$names"
+}
+
+check_invalid() { # <cluster> <expected text>
+  local name=$1 want=$2
+  if await_plugin_status "$name" "$want" 300; then
+    ok "$name: the plugin's status reports \"$want\""
+  else
+    bad "$name: the plugin never reported \"$want\" in its status, so the operator did not ask the plugin about this Cluster"
+  fi
+  if await_plugin_status "$name" "invalid configuration" 60; then
+    ok "$name: the status says state: invalid configuration"
+  else
+    bad "$name: the status does not say state: invalid configuration"
+  fi
+  if ! await_instance_pod "$name" 300; then
+    bad "$name: no instance Pod was created, so the invalid configuration stopped the Cluster from starting"
+  else
+    mirror_in_any_instance "$name"
+    case $? in
+      0) bad "$name: an instance Pod carries the mirror although its configuration is invalid" ;;
+      1) ok "$name: its instance Pod was built without the mirror" ;;
+      *) bad "$name: the instance Pods could not be read, so whether a mirror was built is unknown" ;;
+    esac
+  fi
+}
+
+invalid_cluster misspelled-params $'        tables: public.events\n        tabels: public.events'
+invalid_cluster takeover-no-ack $'        tables: public.events\n        mode: takeover'
+check_invalid misspelled-params "unknown Quicksilver parameter"
+check_invalid takeover-no-ack "acknowledgeOLTPRegression"
+kc delete cluster "${INVALID_CLUSTERS[@]}" --wait=true --timeout=300s >/dev/null 2>&1 \
+  || bad "the invalid test Clusters were not deleted within five minutes"
 
 # ---------------------------------------------------------------- the Cluster
 say "3. a $WANT_INSTANCES-instance Cluster that names the plugin"
@@ -1195,7 +1263,8 @@ if [ ${#NOTRUN[@]} -gt 0 ]; then
 fi
 if [ $FAIL -eq 0 ]; then
   if [ "$SCOPE" = full ]; then
-    echo "PASS — the plugin refused what it should; three instances ran with a sidecar"
+    echo "PASS — the operator asked the plugin about invalid Clusters, and it reported"
+    echo "the error and built no mirror; three instances ran with a sidecar"
     echo "each; each replica had its own slot; both mirrors matched their source; -ro"
     echo "routed an aggregate to the mirror and kept a key lookup on the heap; a halted"
     echo "table left routing alone and REBUILD brought it back; a switchover and a"
