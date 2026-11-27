@@ -464,16 +464,19 @@ section_routing() {
   sql "$p" "ANALYZE public.events" >/dev/null; sql "$p" "ANALYZE public.accounts" >/dev/null
 
   # The sidecar's half: one mirror relation per table, registered on the
-  # primary. Both sidecars reconcile the same registry.
+  # primary. Both sidecars reconcile the same registry. Only these two tables
+  # are counted: the registry is configuration, and a sidecar never removes
+  # the row of a table it is not configured for (docs/40), so a database an
+  # earlier sidecar served other tables in still carries their rows.
   local deadline=$(( $(now) + 240 )) n=0
   while [ "$(now)" -lt "$deadline" ]; do
-    n=$(sql "$p" "SELECT count(*) FROM quicksilver.mirrors WHERE enabled")
+    n=$(sql "$p" "SELECT count(*) FROM quicksilver.mirrors WHERE enabled AND heap IN ('public.events'::regclass, 'public.accounts'::regclass)")
     [ "$n" = 2 ] && break
     sleep 5
   done
   if [ "$n" = 2 ]; then ok "the sidecars registered both tables in quicksilver.mirrors"
   else sql "$p" "SELECT * FROM quicksilver.mirrors" | sed 's/^/    /'
-       bad "quicksilver.mirrors has $n enabled rows, not 2: the sidecars did not register the mirror relations"; return; fi
+       bad "quicksilver.mirrors has $n enabled rows for events and accounts, not 2: the sidecars did not register the mirror relations"; return; fi
 
   # Each replica by its own address first: -ro picks one of them per
   # connection, so a run that only asked the Service could pass on one replica
