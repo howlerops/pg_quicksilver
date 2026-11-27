@@ -340,22 +340,35 @@ type roleWatch struct {
 }
 
 func (r *roleWatch) isPrimary(ctx context.Context) (bool, error) {
+	inRecovery, _, err := r.state(ctx)
+	return !inRecovery, err
+}
+
+// state is isPrimary and the standby's replay position in one query: the
+// replay gate needs both once per tick, and asking twice would double the
+// round trips. replay is 0 when the node has replayed nothing (NULL), and is
+// meaningful only in recovery.
+func (r *roleWatch) state(ctx context.Context) (inRecovery bool, replay uint64, err error) {
 	if r.conn == nil || r.conn.IsClosed() {
 		c, err := pgx.Connect(ctx, r.o.localDSN())
 		if err != nil {
-			return false, err
+			return false, 0, err
 		}
 		r.conn = c
 	}
-	var inRecovery bool
-	if err := r.conn.QueryRow(ctx, "SELECT pg_is_in_recovery()").Scan(&inRecovery); err != nil {
+	var rep *string
+	if err := r.conn.QueryRow(ctx,
+		"SELECT pg_is_in_recovery(), pg_last_wal_replay_lsn()::text").Scan(&inRecovery, &rep); err != nil {
 		// A broken connection must not read as "not promoted". Drop it so the
 		// next tick reconnects, and report the error rather than a guess.
 		_ = r.conn.Close(ctx)
 		r.conn = nil
-		return false, err
+		return false, 0, err
 	}
-	return !inRecovery, nil
+	if rep != nil {
+		replay = changestream.ParseLSN(*rep)
+	}
+	return inRecovery, replay, nil
 }
 
 func (r *roleWatch) close(ctx context.Context) {
@@ -815,12 +828,29 @@ func pump(
 	// behind without that position having moved.
 	measuredAt, stalled := confirmedLSN, 0
 
+	// replayLSN is the standby's replay position as of this tick (replay.go).
+	// held says the last tick had transactions and none could be applied
+	// because the standby had not replayed their commits yet.
+	var replayLSN uint64
+	held := false
+
 	for {
 		// A backlog (what a DDL or size barrier cut off) is applied at once;
 		// otherwise wait to be told there is something, or for the fallback.
-		why, werr := waitForWork(ctx, ready, ticker.C, len(pending) > 0, wakeCoalesce)
-		if werr != nil {
-			return werr
+		// A held backlog is different: nothing can be applied until the
+		// standby replays, so poll that on a short timer rather than spin.
+		var why wakeReason
+		if held {
+			why = wakeBacklog
+			if err := pollReplay(ctx, ready); err != nil {
+				return err
+			}
+		} else {
+			var werr error
+			why, werr = waitForWork(ctx, ready, ticker.C, len(pending) > 0, wakeCoalesce)
+			if werr != nil {
+				return werr
+			}
 		}
 		pumpWakes.note(why)
 		if why == wakeStream {
@@ -853,8 +883,16 @@ func pump(
 		// Checking here rather than only in the supervisor keeps the window
 		// small: a mirror that keeps streaming after its node is promoted is
 		// reading its own writes.
-		if primary, err := role.isPrimary(ctx); err == nil && primary {
-			return fmt.Errorf("this node was promoted; handing back to the supervisor")
+		// The same query gives the replay position the gate below needs. A
+		// failed read keeps the last one: replay only moves forward, so an
+		// older value is conservative, and a node that cannot be asked gets no
+		// new commit past what it last showed.
+		if inRecovery, replayNow, err := role.state(ctx); err == nil {
+			if !inRecovery {
+				return fmt.Errorf("this node was promoted; handing back to the supervisor")
+			}
+			replayLSN = replayNow
+			ext.setReplay(replayLSN, gateOnReplay)
 		}
 		tt.done("is_primary")
 
@@ -895,6 +933,39 @@ func pump(
 			pending = append(pending, fresh...)
 		}
 		tt.done("read_stream")
+
+		// THE REPLAY GATE (replaygate.go). Only the prefix whose commits the
+		// standby has replayed may be applied. Everything else stays in pending,
+		// unconfirmed, and the stream keeps being read up to the same bounds
+		// as before, so a held backlog costs what a backlog always cost.
+		applyable := len(pending)
+		if gateOnReplay {
+			applyable = gatedPrefix(pending, replayLSN)
+		}
+		if applyable == 0 && len(pending) > 0 {
+			// Held. Say what we are waiting for, and do not look like a stall:
+			// no caught-up report (the lag must keep showing), no confirm, no
+			// idle advance. Maintenance still runs, so a rewrite that finished
+			// is still swapped in while replay is paused.
+			need := changestream.ParseLSN(pending[0].NextLSN)
+			h.RecordReplayHold(lsnString(replayLSN), lsnString(need), len(pending))
+			if !held {
+				log.Info("holding back commits until the local standby replays them",
+					"replay_lsn", lsnString(replayLSN), "commit_end_lsn", lsnString(need),
+					"held_transactions", len(pending))
+			}
+			held = true
+			maintain(log, tables, tt)
+			lakeRewrites(log, tables)
+			tt.report(log)
+			continue
+		}
+		if held {
+			held = false
+			h.ClearReplayHold()
+			log.Info("local standby replayed the held commits; applying them",
+				"replay_lsn", lsnString(replayLSN), "held_transactions", len(pending))
+		}
 		if len(pending) == 0 {
 			// Idle is not stale. An unchanging source is perfectly fresh, and
 			// conflating the two reports a quiet database as broken.
@@ -956,7 +1027,8 @@ func pump(
 			//
 			// Rate-limited because each advance is a state.json fsync per
 			// table, and a keepalive can arrive for every few bytes of WAL.
-			if p := st.IdleLSN(); p > confirmedLSN && time.Since(lastIdleConfirm) >= idleConfirmInterval {
+			p := idleTarget(st.IdleLSN(), replayLSN, gateOnReplay)
+			if p > confirmedLSN && time.Since(lastIdleConfirm) >= idleConfirmInterval {
 				marker := changestream.Transaction{
 					CommitLSN: pglogrepl.LSN(p - 1).String(),
 					NextLSN:   pglogrepl.LSN(p).String(),
@@ -1046,7 +1118,9 @@ func pump(
 			tt.report(log)
 			continue
 		}
-		txns := pending
+		// txns is what the replay gate lets through; the rest of pending stays
+		// queued behind it, in order, and is cut below only when it is applied.
+		txns := pending[:applyable]
 
 		// A DDL transaction is a barrier: apply up to and including it, then
 		// re-read the catalog before anything after it is applied. Noticing the
@@ -1082,7 +1156,9 @@ func pump(
 		// millisecond whenever `pending` is non-empty, so the same work is done
 		// in more, smaller ticks — which is the entire point.
 		head = capBatch(head)
-		pending = append([]changestream.Transaction(nil), txns[len(head):]...)
+		// head is a prefix of txns, which is a prefix of pending: everything
+		// after it, held ones included, stays queued in order.
+		pending = append([]changestream.Transaction(nil), pending[len(head):]...)
 
 		for q, t := range tables {
 			if t.Halted() != "" {

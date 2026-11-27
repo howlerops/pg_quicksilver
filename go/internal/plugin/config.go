@@ -150,6 +150,10 @@ type Config struct {
 	// AutoRebuildLegacy rebuilds a table holding data from an older writer
 	// (QS_AUTO_REBUILD_LEGACY). Off by default.
 	AutoRebuildLegacy bool
+	// GateOnReplay holds a commit back in the mirror until the local standby
+	// has replayed it (QS_GATE_ON_REPLAY). On by default: off is for a mirror
+	// with no local Postgres to replay.
+	GateOnReplay bool
 	// BloomColumns, ClusterBy and NumericScale are the sidecar's own
 	// per-column overrides, in the spelling the sidecar reads
 	// (QS_BLOOM_COLUMNS, QS_CLUSTER_BY, QS_NUMERIC_SCALE).
@@ -264,6 +268,10 @@ func ParseConfig(clusterName string, params map[string]string) Config {
 	if b, err := strconv.ParseBool(get("autoRebuildLegacy", "false")); err == nil {
 		cfg.AutoRebuildLegacy = b
 	}
+	cfg.GateOnReplay = true
+	if b, err := strconv.ParseBool(get("gateOnReplay", "true")); err == nil {
+		cfg.GateOnReplay = b
+	}
 	cfg.BloomColumns = get("bloomColumns", "")
 	cfg.ClusterBy = get("clusterBy", "")
 	cfg.NumericScale = get("numericScale", "")
@@ -312,6 +320,7 @@ func Validate(cluster *apiv1.Cluster, params map[string]string) []*operator.Vali
 		"ducklake": true, "ducklakeRetention": true,
 		"serveWithHaltedTables": true, "extension": true,
 		"slotJanitor": true, "slotJanitorAfter": true, "autoRebuildLegacy": true,
+		"gateOnReplay": true,
 		"bloomColumns": true, "clusterBy": true, "numericScale": true,
 	}
 	for k := range params {

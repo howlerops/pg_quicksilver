@@ -47,6 +47,15 @@ type Snapshot struct {
 	// HaltedTables maps each table that is out of service to the reason its
 	// manifest records. The other tables on this Pod are still mirrored.
 	HaltedTables map[string]string `json:"halted_tables,omitempty"`
+
+	// ReplayHeld says the sidecar holds committed changes back until the local
+	// standby replays them (QS_GATE_ON_REPLAY). ReplayLSN is the standby's
+	// replay position and NeedLSN the commit end the oldest held change waits
+	// for; HeldTransactions counts them.
+	ReplayHeld       bool   `json:"replay_held,omitempty"`
+	ReplayLSN        string `json:"replay_lsn,omitempty"`
+	NeedLSN          string `json:"need_lsn,omitempty"`
+	HeldTransactions int    `json:"held_transactions,omitempty"`
 }
 
 type Health struct {
@@ -83,6 +92,13 @@ type Health struct {
 	// tables is how many tables this Pod is configured to mirror, so that
 	// "some are halted" can be told from "all are". 0 means not told.
 	tables int
+
+	// The hold on committed changes the local standby has not replayed yet
+	// (see RecordReplayHold). Held is false when nothing is held.
+	replayHeld bool
+	replayLSN  string
+	needLSN    string
+	heldTxns   int
 }
 
 func New(slo time.Duration) *Health {
@@ -105,6 +121,23 @@ func (h *Health) RecordApply(appliedLSN, headLSN string, backlog int) {
 	} else {
 		h.lagBytes = 0
 	}
+}
+
+// RecordReplayHold says committed changes are held back because the local
+// standby has replayed only through replayLSN, and the oldest of them ends at
+// needLSN. While it holds, the mirror is not caught up: the lag keeps growing
+// from the last time it was, and readiness says why (readyApartFromHalts).
+func (h *Health) RecordReplayHold(replayLSN, needLSN string, held int) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.replayHeld, h.replayLSN, h.needLSN, h.heldTxns = true, replayLSN, needLSN, held
+}
+
+// ClearReplayHold says the standby has replayed what was held, or nothing was.
+func (h *Health) ClearReplayHold() {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.replayHeld, h.replayLSN, h.needLSN, h.heldTxns = false, "", "", 0
 }
 
 // RecordCaughtUp marks the mirror current. Call on every empty poll — it is
@@ -222,6 +255,8 @@ func (h *Health) Snapshot() Snapshot {
 		CompactionBacklog: h.backlog, Diverged: h.diverged,
 		Bootstrapped:      h.bootstrapped,
 		SlotRetainedBytes: h.slotRetained,
+		ReplayHeld:        h.replayHeld, ReplayLSN: h.replayLSN, NeedLSN: h.needLSN,
+		HeldTransactions: h.heldTxns,
 	}
 	if len(h.halted) > 0 {
 		s.HaltedTables = make(map[string]string, len(h.halted))
@@ -272,8 +307,22 @@ func (h *Health) readyApartFromHalts(s Snapshot) (bool, string) {
 		return false, "mirror diverged from source — verification failed"
 	}
 	if s.LagSeconds > h.slo.Seconds() {
+		if s.ReplayHeld {
+			// Not a stall and not a fault: the standby has not replayed the
+			// commits this mirror is holding back, and it will not show them
+			// until it has. Say so, with the two positions, so that nobody
+			// goes looking for a hung sidecar.
+			return false, fmt.Sprintf("waiting for local replay: %d change(s) held back until "+
+				"the standby replays through %s; standby replay is at %s, lag %.1fs exceeds freshnessSLO %.1fs",
+				s.HeldTransactions, s.NeedLSN, s.ReplayLSN, s.LagSeconds, h.slo.Seconds())
+		}
 		return false, fmt.Sprintf("lag %.1fs exceeds freshnessSLO %.1fs",
 			s.LagSeconds, h.slo.Seconds())
+	}
+	if s.ReplayHeld {
+		return true, fmt.Sprintf("lag %.1fs within SLO %.1fs; waiting for local replay: %d change(s) held "+
+			"back until the standby replays through %s (replay is at %s)",
+			s.LagSeconds, h.slo.Seconds(), s.HeldTransactions, s.NeedLSN, s.ReplayLSN)
 	}
 	return true, fmt.Sprintf("lag %.1fs within SLO %.1fs", s.LagSeconds, h.slo.Seconds())
 }

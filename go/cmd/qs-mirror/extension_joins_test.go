@@ -54,7 +54,10 @@ func TestFilterJoinsKeepsOnlyColumnsTheHeapHas(t *testing.T) {
 
 // The rows to delete are the ones the view will not expose; the rows to write
 // are the ones that are new or different. A row that is already right is neither.
-func TestJoinRowsChangeDeletesAndWritesOnlyWhatDiffers(t *testing.T) {
+// A sidecar writes the rows it is configured for and never deletes one: the
+// registry is shared by every sidecar in the database (Bug E). A row this node
+// no longer wants is left alone, which is the case this test is named for.
+func TestJoinRowsChangeWritesOnlyWhatDiffers(t *testing.T) {
 	a := extJoin{Column: "a", Domain: "d", Companion: "__qs_d_a"}
 	b := extJoin{Column: "b", Domain: "d", Companion: "__qs_d_b"}
 	aOther := extJoin{Column: "a", Domain: "e", Companion: "__qs_e_a"}
@@ -63,20 +66,16 @@ func TestJoinRowsChangeDeletesAndWritesOnlyWhatDiffers(t *testing.T) {
 		name    string
 		have    map[string]extJoin
 		want    []extJoin
-		wantDel []string
 		wantPut []extJoin
 	}{
-		{"nothing to do", map[string]extJoin{"a": a}, []extJoin{a}, nil, nil},
-		{"new row", map[string]extJoin{}, []extJoin{a}, nil, []extJoin{a}},
-		{"row leaves", map[string]extJoin{"a": a}, nil, []string{"a"}, nil},
-		{"domain changed", map[string]extJoin{"a": a}, []extJoin{aOther}, nil, []extJoin{aOther}},
-		{"one leaves, one arrives", map[string]extJoin{"a": a}, []extJoin{b}, []string{"a"}, []extJoin{b}},
+		{"nothing to do", map[string]extJoin{"a": a}, []extJoin{a}, nil},
+		{"new row", map[string]extJoin{}, []extJoin{a}, []extJoin{a}},
+		{"row leaves: left in the registry, nothing written", map[string]extJoin{"a": a}, nil, nil},
+		{"domain changed", map[string]extJoin{"a": a}, []extJoin{aOther}, []extJoin{aOther}},
+		{"one leaves, one arrives: the leaving row stays", map[string]extJoin{"a": a}, []extJoin{b}, []extJoin{b}},
 	}
 	for _, c := range cases {
-		del, put := joinRowsChange(c.have, c.want)
-		if strings.Join(del, ",") != strings.Join(c.wantDel, ",") {
-			t.Errorf("%s: delete %v, want %v", c.name, del, c.wantDel)
-		}
+		put := joinRowsChange(c.have, c.want)
 		if len(put) != len(c.wantPut) {
 			t.Errorf("%s: write %+v, want %+v", c.name, put, c.wantPut)
 			continue

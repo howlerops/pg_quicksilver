@@ -193,6 +193,7 @@ typedef enum
 	QR_LAKE_NOT_ATTACHED,
 	QR_JOIN_INCOMPLETE,
 	QR_TIMEZONE,
+	QR_NOT_STANDBY,
 	QR_NREASONS
 } QsReason;
 
@@ -219,6 +220,7 @@ static const char *const qs_reason_names[QR_NREASONS] = {
 	"lake is not attached on this node (see the detail)",
 	"a join domain column is not complete on this node",
 	"the session time zone is not proven for this statement",
+	"this node is not a standby: its mirror is no longer fed",
 };
 
 /* ---------------------------------------------------------------- shared memory */
@@ -3436,6 +3438,27 @@ qs_applied_lsn(QsMirror *m)
 	return Max(r, m->table_lsn);
 }
 
+/*
+ * The reason a mirror that failed qs_fresh is given. A node that is not a
+ * standby has no sidecar feeding its mirror, so a mirror that was fed and is
+ * no longer fresh is the promoted node's case (Item F): the reason says that,
+ * and keeps the detail of why. A mirror nothing ever reported on keeps the
+ * generic reason, which is the answer on a node that never had a feed.
+ */
+static QsReason
+qs_stale_reason(QsMirror *m, char *why, size_t whylen)
+{
+	if (!RecoveryInProgress() && qs_applied_lsn(m) != InvalidXLogRecPtr)
+	{
+		char		was[512];
+
+		strlcpy(was, why, sizeof(was));
+		snprintf(why, whylen, "this node is not a standby: its mirror is no longer fed (%s)", was);
+		return QR_NOT_STANDBY;
+	}
+	return QR_STALE;
+}
+
 static bool
 qs_fresh(QsMirror *m, XLogRecPtr now, char *why, size_t whylen)
 {
@@ -3452,6 +3475,21 @@ qs_fresh(QsMirror *m, XLogRecPtr now, char *why, size_t whylen)
 		else
 			snprintf(why, whylen, blocked ? "%s: its mirror on this node is reported unreadable (halted, rebuilding or not published)"
 				 : "%s: no applied LSN has been reported", m->heapname);
+		return false;
+	}
+
+	/*
+	 * The upper bound. The mirror is at or before this node's replay position
+	 * (the sidecar holds commits back until the standby has replayed them,
+	 * QS_GATE_ON_REPLAY), and a statement that can see `now` must not read
+	 * what is past it: that is the heap's answer at `now`, not the mirror's.
+	 * A mirror that is ahead of this statement's position goes to the heap, as
+	 * the lower bound below does for one that is behind.
+	 */
+	if (applied > now)
+	{
+		snprintf(why, whylen, "%s: mirror is at %X/%X, past what this node has replayed (%X/%X): this statement reads the heap",
+				 m->heapname, LSN_FORMAT_ARGS(applied), LSN_FORMAT_ARGS(now));
 		return false;
 	}
 	if (qs_min_applied_lsn != InvalidXLogRecPtr && applied < qs_min_applied_lsn)
@@ -3676,9 +3714,16 @@ qs_gate(List *heaps, XLogRecPtr now, bool reload, bool may_wait, double cost, ch
 			}
 			else if (!qs_fresh(m, now, why, whylen))
 			{
-				state = QR_STALE;
-				/* nobody is going to report an LSN for it in the next few milliseconds */
-				if (qs_applied_lsn(m) == InvalidXLogRecPtr)
+				state = qs_stale_reason(m, why, whylen);
+				/*
+				 * Nobody is going to report an LSN for it in the next few
+				 * milliseconds, or it is past this statement's position: a
+				 * report that is ahead of it does not come back down, so
+				 * waiting cannot help (the heap answers). Nor does a node
+				 * that is not a standby catch up: nothing feeds it.
+				 */
+				if (qs_applied_lsn(m) == InvalidXLogRecPtr || qs_applied_lsn(m) > now ||
+					!RecoveryInProgress())
 					can_wait = false;
 			}
 			if (state >= 0)
@@ -5450,7 +5495,7 @@ qs_decide(Query *orig, PlannedStmt *heap, const char *query_string, int cursorOp
 		now = qs_current_lsn();
 		foreach(lc, w.mirrors)
 			if (!qs_fresh((QsMirror *) lfirst(lc), now, detail, sizeof(detail)))
-				QS_HEAP(QR_STALE, detail, NIL);
+				QS_HEAP(qs_stale_reason((QsMirror *) lfirst(lc), detail, sizeof(detail)), detail, NIL);
 	}
 
 	/* the executor will say so properly; do not even ask the mirror */

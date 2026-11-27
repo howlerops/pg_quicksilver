@@ -135,7 +135,10 @@ type extLink struct {
 	// applied is the end of the last transaction the pump applied in this
 	// stream, when it holds nothing unapplied: see position.
 	applied atomic.Uint64
-	tick    time.Duration
+	// replay is the standby's replay position as the pump last read it, or
+	// no limit with the gate off (setReplay, reportFor).
+	replay atomic.Uint64
+	tick   time.Duration
 	// nudge is the pump saying "I just finished applying": the reporter looks
 	// now, and keeps looking every millisecond until the lake has published
 	// what was applied, instead of finding out on its next 25 ms tick.
@@ -163,7 +166,61 @@ func newExtLink(log *slog.Logger, o options) *extLink {
 	if d, err := time.ParseDuration(os.Getenv("QS_EXTENSION_REPORT_INTERVAL")); err == nil && d >= time.Millisecond {
 		e.tick = d
 	}
+	// Until the pump says otherwise nothing is clamped (the gate is off) or
+	// nothing is reported past replay (the gate is on and no position is known).
+	e.replay.Store(0)
+	if !gateOnReplay {
+		e.replay.Store(^uint64(0))
+	}
 	return e
+}
+
+// setReplay is the standby's replay position as the pump last read it. The
+// reporter may not vouch for a position past it (reportFor). With the gate off
+// it is set to no limit, so the reporter is unchanged from before the gate.
+func (e *extLink) setReplay(replay uint64, gated bool) {
+	if e == nil {
+		return
+	}
+	if !gated {
+		replay = ^uint64(0)
+	}
+	if e.replay.Swap(replay) != replay {
+		if pumpEvents {
+			select {
+			case e.nudge <- struct{}{}:
+			default:
+			}
+		}
+	}
+}
+
+// reportFor is what the reporter says for one table, given the lake's
+// published LSN for it (0 when none), the position this node may vouch for
+// (pos, 0 when none), whether the lake's current manifest is the published one,
+// and the standby's replay position. It is the replay gate's report rule
+// (replaygate.go):
+//
+//   - a table whose published LSN is past replay is not to be read here yet:
+//     its snapshot is at a point this node has not replayed, so the answer is
+//     ok=false and the caller reports 0/0;
+//   - otherwise the published LSN stands, and the idle position is used only
+//     as far as replay, so a report never runs past what this node has
+//     replayed.
+func reportFor(published, pos, replay uint64, current bool) (lsn uint64, ok bool) {
+	if published > replay {
+		return 0, false
+	}
+	lsn = published
+	if current && pos > lsn {
+		if pos > replay {
+			pos = replay
+		}
+		if pos > lsn {
+			lsn = pos
+		}
+	}
+	return lsn, true
 }
 
 func (e *extLink) say(why, msg string, args ...any) {
@@ -275,24 +332,24 @@ func filterJoins(joins []extJoin, cols []extColumn) []extJoin {
 	return out
 }
 
-// joinRowsChange is what quicksilver.join_domains must lose and gain for one
-// heap table: the columns whose rows are not wanted any more, and the rows
-// that are new or different. A row that is already right is neither.
-func joinRowsChange(have map[string]extJoin, want []extJoin) (del []string, put []extJoin) {
-	wanted := map[string]bool{}
+// joinRowsChange is what quicksilver.join_domains must gain for one heap
+// table: the rows that are new or different. A row that is already right needs
+// nothing.
+//
+// It never says what to DELETE. quicksilver.join_domains is one registry for
+// every sidecar that shares the database: a sidecar that does not mirror a join
+// domain's table on its own node must not remove the row another sidecar
+// relies on. Completeness is per node (shared memory, not this table), so a
+// row this node no longer wants is harmless configuration and stays. Removing
+// it is an operator's decision, made once for every sidecar: see docs/16, the
+// join domain cleanup statement.
+func joinRowsChange(have map[string]extJoin, want []extJoin) (put []extJoin) {
 	for _, j := range want {
-		wanted[j.Column] = true
 		if h, ok := have[j.Column]; !ok || h != j {
 			put = append(put, j)
 		}
 	}
-	for c := range have {
-		if !wanted[c] {
-			del = append(del, c)
-		}
-	}
-	sort.Strings(del)
-	return del, put
+	return put
 }
 
 // The pump brackets every tick with these. Between pumpBusy and pumpIdle a
@@ -378,6 +435,7 @@ func (e *extLink) position() uint64 {
 func (e *extLink) lsns() map[string]string {
 	out := make(map[string]string, len(e.known))
 	pos := e.position()
+	replay := e.replay.Load()
 	var stats map[string]ducklake.TableStats
 	if lake != nil {
 		stats, _ = lake.Stats()
@@ -401,12 +459,17 @@ func (e *extLink) lsns() map[string]string {
 			out[q] = "0/0"
 			continue
 		}
-		out[q] = st.PublishedLSN
 		// Not the manifest sequence numbers: they count files, and a manifest
 		// that only marks rows dead has its predecessor's.
-		if _, current := lake.Current(q); current && pos > parseLSNBytes(st.PublishedLSN) {
-			out[q] = fmt.Sprintf("%X/%X", uint32(pos>>32), uint32(pos))
+		_, current := lake.Current(q)
+		lsn, ok := reportFor(parseLSNBytes(st.PublishedLSN), pos, replay, current)
+		if !ok {
+			// Published past what this node has replayed (a snapshot at a point
+			// the standby has not reached): not to be read here yet.
+			out[q] = "0/0"
+			continue
 		}
+		out[q] = fmt.Sprintf("%X/%X", uint32(lsn>>32), uint32(lsn))
 	}
 	return out
 }
@@ -1037,12 +1100,9 @@ func (e *extLink) sync(ctx context.Context, conn *pgx.Conn, desired map[string]b
 			return err
 		}
 		if len(cols) == 0 {
-			// The table is gone on the source; the pump will say so. Its join rows go with it.
-			if e.haveJoins {
-				if _, err := e.dropJoins(ctx, tx, schema, table, nil); err != nil {
-					return err
-				}
-			}
+			// The table is gone on the source; the pump will say so. Its join
+			// rows are left alone: the registry is shared, and a row whose heap
+			// is gone names an OID nothing else resolves to (see joinRowsChange).
 			continue
 		}
 		want := filterJoins(joins[q], cols)
@@ -1069,12 +1129,12 @@ func (e *extLink) sync(ctx context.Context, conn *pgx.Conn, desired map[string]b
 				"this sidecar's; leaving it alone", "table", q)
 			continue
 		}
-		// The registry first: a companion the view is about to stop exposing has
-		// its row deleted before the view changes (docs/40, "Join keys"). The
-		// rows that are new or different are written once the view is made.
+		// The registry rows that are new or different are written once the view
+		// is made, which is what exposes their companions (docs/40, "Join keys").
+		// A row this node no longer wants is left in the registry (joinRowsChange).
 		var put []extJoin
 		if e.haveJoins {
-			if put, err = e.dropJoins(ctx, tx, schema, table, want); err != nil {
+			if put, err = e.joinRowsToWrite(ctx, tx, schema, table, want); err != nil {
 				return err
 			}
 		}
@@ -1151,13 +1211,9 @@ func (e *extLink) sync(ctx context.Context, conn *pgx.Conn, desired map[string]b
 	}
 	var dropped []string
 	for _, g := range drop {
-		// Its join rows first, then the view that exposes the companions (docs/40).
-		if e.haveJoins {
-			if _, err := tx.Exec(ctx, `DELETE FROM quicksilver.join_domains j USING quicksilver.mirrors m
-				WHERE m.mirror = $1::oid AND j.heap = m.heap`, g.oid); err != nil {
-				return err
-			}
-		}
+		// The view that exposes the companions goes; the join rows stay. They
+		// are the registry every sidecar shares, and the heap may well still
+		// be mirrored by another (joinRowsChange; docs/16 has the cleanup).
 		if _, err := tx.Exec(ctx, `DELETE FROM quicksilver.mirrors WHERE mirror = $1::oid`, g.oid); err != nil {
 			return err
 		}
@@ -1200,27 +1256,20 @@ func joinRowsOf(ctx context.Context, tx pgx.Tx, schema, table string) (map[strin
 	return have, rows.Err()
 }
 
-// dropJoins deletes the rows of a heap table that the view will not expose
-// any more, and returns the rows still to write once the view is made.
-// Nothing is written when nothing differs: the registry's trigger tells every
-// backend to reread it, and a sync that changes nothing must not do that.
-func (e *extLink) dropJoins(ctx context.Context, tx pgx.Tx, schema, table string, want []extJoin) ([]extJoin, error) {
+// joinRowsToWrite is the rows this node must write for a heap table, given the
+// rows the registry holds and the ones this node is configured for. It deletes
+// nothing: see joinRowsChange. Nothing is written when nothing differs: the
+// registry's trigger tells every backend to reread it, and a sync that changes
+// nothing must not do that.
+func (e *extLink) joinRowsToWrite(ctx context.Context, tx pgx.Tx, schema, table string, want []extJoin) ([]extJoin, error) {
 	have, err := joinRowsOf(ctx, tx, schema, table)
 	if err != nil {
 		return nil, err
 	}
-	del, put := joinRowsChange(have, want)
-	if len(del) > 0 {
-		if _, err := tx.Exec(ctx, `DELETE FROM quicksilver.join_domains
-			WHERE heap = to_regclass(format('%I.%I', $1::text, $2::text)) AND column_name = ANY($3::text[])`,
-			schema, table, del); err != nil {
-			return nil, fmt.Errorf("%s.%s: join domains: %w", schema, table, err)
-		}
-	}
-	return put, nil
+	return joinRowsChange(have, want), nil
 }
 
-// putJoins writes the rows dropJoins returned, once the view exposes them.
+// putJoins writes the rows joinRowsToWrite returned, once the view exposes them.
 func (e *extLink) putJoins(ctx context.Context, tx pgx.Tx, schema, table string, put []extJoin) error {
 	for _, j := range put {
 		if _, err := tx.Exec(ctx, `

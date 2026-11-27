@@ -74,6 +74,11 @@ func validateSwitches(params map[string]string, add func(param, value, msg strin
 			add("autoRebuildLegacy", raw, "must be true or false")
 		}
 	}
+	if raw := get("gateOnReplay"); raw != "" {
+		if _, err := strconv.ParseBool(raw); err != nil {
+			add("gateOnReplay", raw, "must be true or false")
+		}
+	}
 	if raw := get("bloomColumns"); raw != "" && !bloomOff(raw) {
 		for _, part := range strings.Split(raw, ";") {
 			name, _, ok := strings.Cut(strings.TrimSpace(part), "=")
@@ -134,6 +139,7 @@ func bloomOff(raw string) bool {
 func switchEnv(cfg Config) []corev1.EnvVar {
 	env := []corev1.EnvVar{
 		{Name: "QS_AUTO_REBUILD_LEGACY", Value: onOff(cfg.AutoRebuildLegacy)},
+		{Name: "QS_GATE_ON_REPLAY", Value: onOff(cfg.GateOnReplay)},
 	}
 	if cfg.SlotJanitor != "" {
 		env = append(env, corev1.EnvVar{Name: "QS_SLOT_JANITOR", Value: slotJanitorEnv(cfg.SlotJanitor)})
