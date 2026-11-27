@@ -19,6 +19,10 @@ su postgres -c "$PG/pg_basebackup -D $BASE/standby2 -R -X stream -S qs_s2 -c fas
 echo "port = 5803" >> $BASE/standby2/postgresql.conf
 echo "hot_standby_feedback = on" >> $BASE/standby2/postgresql.conf
 echo "sync_replication_slots = on" >> $BASE/standby2/postgresql.conf
+# pg_basebackup copied the promoted server's duckdb.allowed_directories, which names the OLD
+# node's mirror ($BASE/mirror); this node's sidecar writes $BASE/mirror2, so its own mirror
+# must be listed too (k_two_standbys.sh does the same).
+echo "duckdb.allowed_directories = '$BASE/mirror2,/tmp/qs_regress'" >> $BASE/standby2/postgresql.conf
 su postgres -c "$PG/pg_ctl -D $BASE/standby2 -l $BASE/standby2.log -w start" >/dev/null && echo "standby2 started on 5803"
 echo "   standby2 in recovery: $(q 5803 'SELECT pg_is_in_recovery()')"
 echo "5. sidecar on standby2 (slot qs_int2, mirror $BASE/mirror2)"

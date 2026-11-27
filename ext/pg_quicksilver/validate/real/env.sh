@@ -12,6 +12,8 @@ REPO=$(cd "$HERE/../../../.." && pwd)
 EX_TABLES="t_num t_str t_time t_doc customers orders"
 # JOIN_DOMAINS=on: the two uuid-keyed tables of corpus_join.sql, mirrored with their domain (join_tables.sql)
 [ "${JOIN_DOMAINS:-off}" = on ] && EX_TABLES="$EX_TABLES jcust jord"
+# the sidecar's domain (join_tables.sql): the registry row exists only when the sidecar is given it
+JD=""; [ "${JOIN_DOMAINS:-off}" = on ] && JD="QS_JOIN_DOMAINS='cust=ex.jcust.id,ex.jord.cust'"
 die() { echo "FAIL: $*" >&2; exit 1; }
 # psq PORT SQL [DB]
 psq() { su postgres -c "$PG/psql -X -h /tmp -p $1 -U postgres -d ${3:-$DB} -v ON_ERROR_STOP=1 -Atc \"$2\"" 2>&1; }

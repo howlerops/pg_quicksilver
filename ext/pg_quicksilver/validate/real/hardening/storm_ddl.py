@@ -50,14 +50,18 @@ def reporter(sport, deadline, out, interval):
     conn.close()
 
 
-def reader(sport, route, deadline, out, lock):
+def reader(sport, route, deadline, out, lock, expected=None, max_lag=None):
     conn = psycopg.connect(f"host=/tmp port={sport} user=postgres dbname=app", autocommit=True)
     conn.execute(f"SET quicksilver.route = {route}")
+    if max_lag and route == "auto":
+        conn.execute(f"SET quicksilver.max_lag = '{max_lag}'")
     stats = collections.Counter()
     while time.time() < deadline:
         try:
-            conn.execute("SELECT count(*), sum(amount) FROM public.orders").fetchall()
+            got = conn.execute("SELECT count(*), sum(amount) FROM public.orders").fetchall()
             stats["ok"] += 1
+            if expected is not None and got != expected:
+                stats["WRONG ANSWER"] += 1
             if route == "auto":
                 side, reason = conn.execute("SELECT side, reason FROM quicksilver.last_decision()").fetchone()
                 stats[f"decision {side}: {reason}"] += 1
@@ -80,10 +84,18 @@ def main():
     ap.add_argument("--heap", type=int, default=2)
     ap.add_argument("--routed", type=int, default=2)
     ap.add_argument("--alter-interval", type=float, default=0.3, help="seconds between ALTERs")
+    ap.add_argument("--max-lag", default=None, help="quicksilver.max_lag for the routed readers (e.g. 64MB)")
     ap.add_argument("--report-interval", type=float, default=0.025,
                     help="seconds between replay-position reports on the standby (0 = none)")
     args = ap.parse_args()
 
+    # The storm only ALTERs orders, so the answer must never change: the heap's count and sum on the
+    # standby, read before the storm, is the value every answer is compared with.
+    hc = psycopg.connect(f"host=/tmp port={args.sport} user=postgres dbname=app", autocommit=True)
+    hc.execute("SET quicksilver.route = off")
+    expected = hc.execute("SELECT count(*), sum(amount) FROM public.orders").fetchall()
+    hc.close()
+    print("expected (heap, standby, before the storm):", expected)
     deadline = time.time() + args.seconds
     out = {"alters": 0, "alter_errors": collections.Counter(), "reports": 0,
            "report_errors": collections.Counter()}
@@ -93,9 +105,9 @@ def main():
     if args.report_interval > 0:
         threads.append(threading.Thread(target=reporter, args=(args.sport, deadline, out, args.report_interval)))
     for _ in range(args.heap):
-        threads.append(threading.Thread(target=reader, args=(args.sport, "off", deadline, results, lock)))
+        threads.append(threading.Thread(target=reader, args=(args.sport, "off", deadline, results, lock, expected)))
     for _ in range(args.routed):
-        threads.append(threading.Thread(target=reader, args=(args.sport, "auto", deadline, results, lock)))
+        threads.append(threading.Thread(target=reader, args=(args.sport, "auto", deadline, results, lock, expected, args.max_lag)))
     for t in threads:
         t.start()
     for t in threads:

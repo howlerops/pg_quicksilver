@@ -9,7 +9,7 @@ start)
   T=${QS_TABLES_OVERRIDE:-public.orders,public.customers,public.qs_types$(for t in $EX_TABLES; do printf ',ex.%s' $t; done)}
   su postgres -c "QS_CLUSTER=qsint QS_MODE=shadow QS_INGEST=logical QS_DUCKLAKE=on \
     QS_DUCKLAKE_RETENTION=${RETENTION:-60s} QS_SERVE_WITH_HALTED_TABLES=on \
-    QS_TABLES=$T QS_SLOT=qs_int QS_PUBLICATION=qs_int \
+    QS_TABLES=$T QS_SLOT=qs_int QS_PUBLICATION=qs_int $JD \
     QS_MIRROR_PATH=$MIRROR QS_FRESHNESS_SLO=30s ${SIDECAR_ENV:-} \
     QS_PRIMARY_HOST=localhost QS_PRIMARY_PORT=$PPORT \
     QS_LOCAL_SOCKET_DIR=/tmp QS_LOCAL_PORT=$SPORT \
