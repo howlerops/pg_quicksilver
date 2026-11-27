@@ -3479,14 +3479,18 @@ qs_fresh(QsMirror *m, XLogRecPtr now, char *why, size_t whylen)
 	}
 
 	/*
-	 * The upper bound. The mirror is at or before this node's replay position
-	 * (the sidecar holds commits back until the standby has replayed them,
-	 * QS_GATE_ON_REPLAY), and a statement that can see `now` must not read
-	 * what is past it: that is the heap's answer at `now`, not the mirror's.
-	 * A mirror that is ahead of this statement's position goes to the heap, as
-	 * the lower bound below does for one that is behind.
+	 * The upper bound. On a standby the mirror is at or before this node's
+	 * replay position (the sidecar holds commits back until the standby has
+	 * replayed them, QS_GATE_ON_REPLAY), and a statement that can see `now`
+	 * must not read what is past it: that is the heap's answer at `now`, not
+	 * the mirror's. A mirror that is ahead of this statement's position goes to
+	 * the heap, as the lower bound below does for one that is behind.
+	 *
+	 * Only on a standby. A primary has no sidecar and no replay position: its
+	 * `now` is the insert position, and a report vouched for it (the regression
+	 * harness, validate/real/primary_report.sh) is not a claim about replay.
 	 */
-	if (applied > now)
+	if (RecoveryInProgress() && applied > now)
 	{
 		snprintf(why, whylen, "%s: mirror is at %X/%X, past what this node has replayed (%X/%X): this statement reads the heap",
 				 m->heapname, LSN_FORMAT_ARGS(applied), LSN_FORMAT_ARGS(now));

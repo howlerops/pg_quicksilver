@@ -557,6 +557,7 @@ this; moving `mirrorPath` to one would.
 | `slotJanitor` | on | `QS_SLOT_JANITOR` | `off` stops the sidecar dropping the replication slots of Pods that are gone; their WAL is then kept until someone drops them |
 | `slotJanitorAfter` | `6h` | `QS_SLOT_JANITOR_AFTER` | inactivity before such a slot is dropped; at least `1m` |
 | `autoRebuildLegacy` | `"false"` | `QS_AUTO_REBUILD_LEGACY` | rebuild a table holding data from an older writer at start (see *Files from an older sidecar*) |
+| `gateOnReplay` | `"true"` | `QS_GATE_ON_REPLAY` | hold a commit in the mirror until the local standby has replayed it (see *The replay gate*). `"false"` restores the old behaviour, for a mirror with no local Postgres to replay |
 | `bloomColumns` | the sidecar's default | `QS_BLOOM_COLUMNS` | the bloom filter columns, in the sidecar's spelling (see *Bloom filters*) |
 | `clusterBy` | the sidecar's default | `QS_CLUSTER_BY` | the clustering column per table, `schema.table=column,…`, or `none` for a table that should not be clustered |
 | `numericScale` | unset | `QS_NUMERIC_SCALE` | the opt-in decimal scale for `numeric` columns (see *`numeric` without a precision*) |
@@ -594,6 +595,40 @@ a primary (which has no mirror) is untouched and answers from the heap.
   has reached what the statement can see on its instance. With steady writes
   to a mirrored table that is rarely true (docs/40 has the numbers); such a
   workload sets `quicksilver.max_lag` or stays on the heap.
+
+### The replay gate, and WAL on the primary
+
+The sidecar reads the primary's WAL and the standby replays its own, at their
+own speeds. With `gateOnReplay` on (the default) a commit is applied to the
+mirror, and so becomes readable there, only once the standby has replayed it.
+The sidecar keeps receiving from the primary while it holds commits back, up to
+the same memory and disk bounds as before, and does not confirm them, so the
+replication slot keeps them. Nothing about the mirror is ahead of the standby's
+own data, which is what keeps a session from reading newer data routed and older
+data from the heap.
+
+The consequence for the primary is that **WAL is retained while the standby
+does not replay.** A standby whose replay is paused (`pg_wal_replay_pause()`),
+or delayed (`recovery_min_apply_delay`), holds back the mirror with it, and the
+slot holds the WAL the mirror has not confirmed. The bound is the usual one:
+`QS_MAX_SLOT_WAL_BYTES` (the slot guard, docs/15) drops the slot before the
+primary's disk fills, and the mirror is then rebuilt from a snapshot. Size
+`max_slot_wal_keep_size` and the disk for the longest replay pause you
+expect. A paused standby is not an error: its readiness says so.
+
+Readiness and the probe body say what the sidecar is waiting for:
+
+    waiting for local replay: 3 change(s) held back until the standby replays through
+    0/F458EB9; standby replay is at 0/F458D98, lag 3.1s exceeds freshnessSLO 30.0s
+
+and `quicksilver_lag_seconds` keeps growing while the hold lasts. The lag is not
+a stall; the two LSNs are the whole story. `replay_held`, `replay_lsn` and
+`need_lsn` in the probe body carry the same.
+
+With `gateOnReplay` off the sidecar applies a commit as soon as the stream has
+it, and a mirror with no local Postgres (no standby to replay) is the only
+reason to turn it off. The extension's own bound on what it reads is on either
+way (docs/40, "Freshness is strict by default").
 
 ### Sizing `sidecarMemory`
 
@@ -1097,9 +1132,25 @@ column is incomplete. The mirror relation exposes its companion from then on.
 Whether a join is compared on companions is decided by each node's report
 (`quicksilver.report_join_complete`), and a column that stops being complete on
 a node has its joins compared on the uuid columns on that node only.
-All sidecars of one primary must have the same `QS_JOIN_DOMAINS`: the registry
-row and the view are shared, and a sidecar that does not mirror a table removes
-them.
+The registry is shared by every sidecar of one primary, so a sidecar never
+removes a row. A sidecar that does not mirror a join domain's table (its
+`QS_TABLES` leaves it out, or the table is gone on this node) leaves the row
+another sidecar relies on in place; the row is harmless configuration, because
+completeness is each node's own report. The view this sidecar makes is its own
+and follows its own configuration.
+
+A domain removed from every sidecar leaves its rows behind until an operator
+removes them, once, on the primary, after the last sidecar has stopped naming the
+domain in `QS_JOIN_DOMAINS`:
+
+```sql
+-- the rows of one domain
+DELETE FROM quicksilver.join_domains WHERE domain = 'cust';
+-- the rows of a heap table that no longer exists (its OID resolves to nothing)
+DELETE FROM quicksilver.join_domains j
+ WHERE NOT EXISTS (SELECT 1 FROM pg_catalog.pg_class c WHERE c.oid = j.heap);
+```
+
 
 Not verified: a crash of the whole host, as opposed to the fsync failures the
 tests inject; joins from engines other than DuckDB; domains across more than

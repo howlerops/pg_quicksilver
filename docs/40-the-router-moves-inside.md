@@ -856,12 +856,17 @@ hook and nowhere else:
 1. The node's position R is read once, before the mirror side is planned: the
    replay position on a standby, the insert position on a primary (the same
    function the freshness comparison uses).
-2. The mirror's reported LSN is compared with R. At or past it, the statement
-   goes on to be routed. Behind it, and the bound has not run out, the planner
-   sleeps on the report condition variable (`ConditionVariableTimedSleep`, which
-   waits with `WL_EXIT_ON_PM_DEATH`) in steps of at most 5 ms, and checks
-   interrupts on each step, so a cancel or `statement_timeout` ends it. Each
-   report wakes it early.
+2. The mirror's reported LSN X is compared with R, and there are two bounds.
+   The statement is routed only when `R - bound <= X <= R`: at or past the lower
+   bound (`R` less `quicksilver.max_lag`, zero by default), and not past `R`.
+   Behind the lower bound, and the bound has not run out, the planner sleeps on
+   the report condition variable (`ConditionVariableTimedSleep`, which waits
+   with `WL_EXIT_ON_PM_DEATH`) in steps of at most 5 ms, and checks interrupts on
+   each step, so a cancel or `statement_timeout` ends it. Each report wakes it
+   early. Past `R` the mirror has committed something this statement cannot see
+   (the sidecar holds commits back until the standby has replayed them, but a
+   statement that started before a replay step may still find the mirror one),
+   so waiting cannot help: the statement goes to the heap at once.
 3. The bound is `max(quicksilver.freshness_wait, min(cost x ms_per_cost_unit x
    freshness_wait_fraction, freshness_wait_max))`, where cost is the heap plan's
    total cost. With the defaults a heap plan of cost 10,000 waits at most 5 ms,
@@ -1531,9 +1536,14 @@ The regression test `sql/reload.sql` runs a routed statement, changes the regist
 A promoted standby is not fed. Its sidecar stands down and drops its replication
 slot, so the mirror stops at the position it had reached, and the node's own
 position moves on with every write. Routing on that node must stop for
-freshness, and it does: the freshness check comes before anything else, and a
-mirror 54 MB behind is answered by the heap with "mirror is not fresh enough"
-(measured on a promoted test node).
+freshness, and it does: the freshness check comes before anything else. A
+mirror that was fed and is no longer fresh on a node that is not a standby is
+answered by the heap with the reason "this node is not a standby: its mirror is
+no longer fed", followed by the detail of the freshness failure (it was "mirror
+is not fresh enough" before, which told an operator nothing about the cause). A
+mirror nothing ever reported on keeps the
+generic reason. The reason is set by the code; the promoted-node refusal was not
+re-measured on a promoted node for this change.
 
 What could go wrong instead is the lake. The node's `duckdb.allowed_directories`
 is copied from the node it came from, and the lake's catalog is the one the
