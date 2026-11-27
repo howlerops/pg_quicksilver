@@ -1449,3 +1449,83 @@ The lifetime rule now in force:
 5. A mirror's catalog facts are read once, while the entry is held. A lookup that can find the relation gone marks the mirror unusable with a reason, and the statement goes to the heap.
 
 The regression test `sql/reload.sql` runs a routed statement, changes the registry in the same session, and asks `EXPLAIN` and a prepared routed statement again across the changes. Its output does not depend on which side answered, since the sidecar may write the registry while it runs.
+
+## Promotion
+
+A promoted standby is not fed. Its sidecar stands down and drops its replication
+slot, so the mirror stops at the position it had reached, and the node's own
+position moves on with every write. Routing on that node must stop for
+freshness, and it does: the freshness check comes before anything else, and a
+mirror 54 MB behind is answered by the heap with "mirror is not fresh enough"
+(measured on a promoted test node).
+
+What could go wrong instead is the lake. The node's `duckdb.allowed_directories`
+is copied from the node it came from, and the lake's catalog is the one the
+registry names. A catalog outside the directories DuckDB may read here cannot be
+attached, and before this change the failure was silent: `attach_lakes()`
+returned -1, the mirror plan then failed with "could not plan it", and the
+attach error was thrown away. Now the attach records which lake failed and why
+(the catalog is not on this node, it is outside `duckdb.allowed_directories`, or
+DuckDB refused it, with DuckDB's message). A decision that cannot attach falls
+back with the reason "lake is not attached on this node", and the detail names
+the lake. The first failure per backend is a WARNING, and only when the catalog
+is there: a standby with no lake yet, or a primary, is not a mistake.
+
+The operator sets `duckdb.allowed_directories` on each node to the directory that
+holds that node's mirror. The extension does not widen it, because it is the only
+thing that keeps an ordinary role out of other mirrors.
+
+`sql/lakeattach.sql` checks the behaviour: routed with the lake readable, refused
+(-1, the heap with the reason) with a directory that does not hold it.
+
+## Keyword names
+
+pg_duckdb writes the mirror subquery in DuckDB's SQL, and the names in it come
+out as PostgreSQL's `quote_identifier` leaves them. PostgreSQL does not reserve
+AT, PIVOT, QUALIFY, ASOF, ANTI, SEMI, POSITIONAL, LAMBDA, DESCRIBE, SUMMARIZE,
+SHOW and about a hundred other words that DuckDB does, so `SELECT at, pivot FROM
+(...)` reaches DuckDB, which fails on it. The complete fix is in pg_duckdb's
+deparser (quote every identifier it writes). That change is not in this tree.
+
+Here the extension does not mirror a table with such a name: a table named so,
+or one with a column named so, is answered by the heap, and its reason names the
+word. The list is measured, not guessed: each of DuckDB 2.0.1's keywords (502
+words in all categories) was tried as a bare name in the three shapes pg_duckdb
+writes (a select list with an alias, a cast with an alias, a qualified
+reference). 105 fail in one of them. COLUMNS, EXCLUDE and REPLACE are added,
+because DuckDB reads them as star modifiers. The whole table is the unit,
+because the mirror relation is a view of the table, and its definition is what
+pg_duckdb writes; one such column makes the view unplannable.
+
+`sql/keywords.sql` routes a table of ordinary names with mixed case and an
+embedded quote, and checks each keyword on its own, a keyword-named table, and
+`SELECT *`.
+
+## Join aliases
+
+The walk over a statement visits every expression. It used to visit the alias
+list of each join too, and that list names every column of the join whether a
+statement reads it or not. So a jsonb column that no expression read kept its
+joins on the heap. The walk now skips the join alias lists. A column that is
+read still decides: its Var is in the target list, a qual or a sort, and the
+walk sees it there. `SELECT *`, a whole-row reference, and a NATURAL or USING
+join that compares a jsonb column still fall back (`sql/joinalias.sql`).
+
+## Lock order
+
+A routed statement holds its heap relation's lock from the parser. Building the
+mirror opens the mirror view, and the registry is read for every mirror, not
+only the ones the statement names. A standby's startup process replays a DDL by
+taking the view's lock and then the heap's, so a routed reader that waits for
+the view while holding the heap, or for another table the replay holds, is one
+side of a cycle. The other side is the startup process, and the cycle is
+reported to the reader as "deadlock detected" (validate/real/hardening/cycle.py
+reproduces it deterministically; before this change the routed reader got it).
+
+The rule now: the registry build and the mirror's parse take their relations
+with ConditionalLockRelationOid. A relation that cannot be locked now makes the
+entry transient, with the reason "locked by another session (not waited for)",
+and it is built again the next time it is asked for, when both relations can be
+locked. A failure that is a deadlock, a serialization failure or a cancel is
+transient too, so it is not kept as a fact about the mirror. A heap-only reader
+takes no lock on the view and makes no cycle.
