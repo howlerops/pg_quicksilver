@@ -7,6 +7,7 @@ echo "--- rebuild a 200k base (reload, forces a churn compaction)"
 psq "TRUNCATE items" >/dev/null
 su postgres -c "$PG/psql -X -q -h $BASE/sock -p $PP -d $DB -c \"INSERT INTO items SELECT gen_random_uuid(), g, 1+g%200, 'paid', round((random()*1e6)::numeric,2), now(), jsonb_build_object('g',g), CASE WHEN g%3=0 THEN NULL ELSE 'n '||g END, g, g%2=0, current_date FROM generate_series(1,200000) g\""
 wait_applied a
+# shellcheck disable=SC2034  # not read here: a loop counter, or read by a script that sources this
 for i in $(seq 300); do tr -d '\n ' < $E/mirror_a/public.items/state.json | grep -q '"delta_files":\(null\|\[\]\)' && break; sleep 0.2; done
 sleep 2
 echo "state: $(tr -d '\n ' < $E/mirror_a/public.items/state.json | cut -c1-260)"

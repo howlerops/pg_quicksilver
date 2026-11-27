@@ -10,7 +10,7 @@ L_TABLES=$ALLT,fv.lines
 echo "1. fv.lines on the primary ($PPORT is gone; promoted primary is $SPORT)"
 if false; then q $SPORT "DROP TABLE IF EXISTS fv.lines; CREATE TABLE fv.lines (id bigint PRIMARY KEY, event_id uuid NOT NULL, qty int NOT NULL); INSERT INTO fv.lines SELECT i, md5('e' || ((i % 200000) + 1)::text)::uuid, 1 + i % 7 FROM generate_series(1, 300000) i; ANALYZE fv.lines" >/dev/null && echo "fv.lines created"; fi
 echo "2. sidecar3 restarted with join domains"
-kill $(cat $BASE/mirror4.pid) 2>/dev/null; for _ in $(seq 300); do kill -0 $(cat $BASE/mirror4.pid) 2>/dev/null || break; sleep 0.2; done
+kill "$(cat $BASE/mirror4.pid)" 2>/dev/null; for _ in $(seq 300); do kill -0 "$(cat $BASE/mirror4.pid)" 2>/dev/null || break; sleep 0.2; done
 SC_TABLES=$L_TABLES bash $FV/scripts/launch_sc.sh mirror4 qs_int4 5806 5807 $SMD $SPORT QS_JOIN_DOMAINS='ev=fv.events.id,fv.lines.event_id'
 # wait until the standby has caught up (readyz lag under one second), then for the domain's rows
 for _ in $(seq 1200); do curl -s http://127.0.0.1:5807/readyz | grep -q '"lag_seconds":0\.[0-9]' && break; sleep 0.5; done
@@ -25,7 +25,7 @@ for _ in $(seq 360); do [ "$(q $SP "SELECT count(*) FROM quicksilver.join_domain
 for _ in $(seq 120); do python3 -I $FV/scripts/fv_probe.py --port $SP --sql "$JQ" > $OUT/l_join_on.txt 2>&1; grep -q "routed_to_mirror=True" $OUT/l_join_on.txt && break; sleep 2; done
 echo "probe exit $?"; cut -c1-220 $OUT/l_join_on.txt | head -6
 echo "--- sidecar3 with QS_JOIN_DOMAINS unset"
-kill $(cat $BASE/mirror4.pid) 2>/dev/null; for _ in $(seq 300); do kill -0 $(cat $BASE/mirror4.pid) 2>/dev/null || break; sleep 0.2; done
+kill "$(cat $BASE/mirror4.pid)" 2>/dev/null; for _ in $(seq 300); do kill -0 "$(cat $BASE/mirror4.pid)" 2>/dev/null || break; sleep 0.2; done
 SC_TABLES=$L_TABLES bash $FV/scripts/launch_sc.sh mirror4 qs_int4 5806 5807 $SMD $SPORT
 sleep 3
 echo "join_domains rows after restart without the variable: $(q $SP 'SELECT count(*) FROM quicksilver.join_domains' 2>&1 | head -1)"

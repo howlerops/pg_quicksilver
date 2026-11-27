@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # Shared by the item scripts of the multi-table, rebuild and pooler demonstrations.
 # Everything they start lives under $BASE and on ports 5660-5669. Sidecars are
 # started here and their PIDs recorded in $OUT; nothing is killed by name.

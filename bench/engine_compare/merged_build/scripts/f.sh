@@ -13,7 +13,7 @@ sleep 3
 echo "--- 3 s later"; probe
 sleep 20
 echo "--- 23 s later"; probe
-echo "--- sidecar alive? $(kill -0 $(cat $OUT/sc_a.pid) 2>/dev/null && echo yes || echo no)"
+echo "--- sidecar alive? $(kill -0 "$(cat $OUT/sc_a.pid)" 2>/dev/null && echo yes || echo no)"
 echo "--- new log lines (first 6 + count)"; tail -n +$((n0+1)) $L | cut -c1-900 | head -6; echo "new log lines total: $(tail -n +$((n0+1)) $L | wc -l)"
 echo "--- metrics (halt/ready/verif related)"; curl -s http://127.0.0.1:9301/metrics | grep -i "halt\|ready\|verif\|diverg\|lag" | grep -v '^#' | head -12
 echo "--- mirror dir"; ls $E/mirror_a/public.items; echo "state: $(tr -d '\n ' < $E/mirror_a/public.items/state.json | cut -c1-500)"

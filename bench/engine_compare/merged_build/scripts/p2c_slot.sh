@@ -9,6 +9,7 @@ bash $S/qs_wait_ready.sh slot_new; sleep 20; slot
 echo "mirror applied_lsn: $(python3 -c "import json;print(json.load(open('$Q/mirror_new/public.orders/state.json'))['applied_lsn'])")"
 psq "CREATE TABLE public.junk(g int, t text); ALTER TABLE public.junk ALTER COLUMN t SET STORAGE EXTERNAL" >/dev/null
 psq "select 'junk in publication: '||count(*) from pg_publication_tables where pubname='qs_bench' and tablename='junk'"
+# shellcheck disable=SC2034  # not read here: a loop counter, or read by a script that sources this
 for i in 1 2 3 4 5 6; do
   psq "INSERT INTO junk SELECT g, repeat(md5(g::text), 30) FROM generate_series(1,700000) g" >/dev/null
   sleep 16; slot
@@ -16,6 +17,6 @@ for i in 1 2 3 4 5 6; do
 done
 echo "--- sidecar log (no slow-tick lines)"; grep -v "slow tick" $R/qs_mirror_slot_new.log | cut -c1-520 | tail -8
 sleep 3; psq "select slot_name||' restart='||restart_lsn||' active='||active from pg_replication_slots"
-kill $(cat $Q/qs.pid); sleep 2
+kill "$(cat $Q/qs.pid)"; sleep 2
 psq "DROP TABLE public.junk" >/dev/null
 echo P2C_DONE

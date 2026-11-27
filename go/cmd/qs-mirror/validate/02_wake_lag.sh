@@ -13,6 +13,7 @@ export QS_MIRROR_BIN=${2:?sidecar binary}
 exec > >(tee "$OUT/02_wake_lag_$LABEL.txt") 2>&1
 set -x
 export PS4='+ '
+# shellcheck disable=SC2034  # not read here: a loop counter, or read by a script that sources this
 TABLES=public.bench
 
 pg_down s1 2>/dev/null; pg_down p2 2>/dev/null

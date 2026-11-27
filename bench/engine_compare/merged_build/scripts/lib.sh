@@ -1,3 +1,5 @@
+# shellcheck shell=bash
+# shellcheck disable=SC2034  # sourced: its variables are read by the scripts that source it
 # common helpers for part 1
 E=/tmp/claude-0/-home-user-pg-quicksilver/58894071-fd3a-5a32-94ab-41a0530826ff/scratchpad/e2e
 PG=/usr/lib/postgresql/17/bin
@@ -23,7 +25,7 @@ lsn_num() { python3 -c "a,b='$1'.split('/');print((int(a,16)<<32)|int(b,16))"; }
 wait_applied() {
   local name=$1 mark at
   psq "UPDATE marker SET n=n+1" >/dev/null
-  mark=$(lsn_num $(psq "SELECT pg_current_wal_lsn()::text"))
+  mark=$(lsn_num "$(psq "SELECT pg_current_wal_lsn()::text")")
   psq "UPDATE items SET qty=qty WHERE seq=(SELECT min(seq) FROM items)" >/dev/null
   for i in $(seq $(( ${2:-120} * 10 ))); do
     at=$(python3 -c "import json;print(json.load(open('$E/mirror_$name/public.items/state.json')).get('applied_lsn') or '0/0')" 2>/dev/null)

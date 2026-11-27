@@ -1,3 +1,5 @@
+# shellcheck shell=bash
+# shellcheck disable=SC2034  # sourced: its variables are read by the scripts that source it
 # Shared by the validate scripts. PG may point at another build (the cassert one).
 PG=${PG:-/usr/lib/postgresql/17/bin}
 BASE=${BASE:-/var/lib/postgresql/qsext/c}

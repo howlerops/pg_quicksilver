@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # Sourced by the scenario scripts after env.sh: the twelve tables of Part 1 and sidecar helpers.
 ALLT=public.orders,public.customers,public.qs_types,ex.t_num,ex.t_str,ex.t_time,ex.t_doc,ex.customers,ex.orders,fv.events,fv.accounts,fv.lookup
 export QS_TABLES_OVERRIDE=$ALLT

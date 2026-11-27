@@ -36,7 +36,7 @@ duckdb.enable_external_access = off
 duckdb.allowed_directories = '$BB/mirror,/tmp/qs_regress'
 CONF
 taskset -c $CPUS su postgres -c "$PG/pg_ctl -D $BB/primary -l $BB/primary.log -w start" >/dev/null 2>&1 || { tail $BB/primary.log; exit 1; }
-echo $(cat $BB/primary/postmaster.pid | head -1) > /dev/null
+echo "$(cat $BB/primary/postmaster.pid | head -1)" > /dev/null
 PB=$(head -1 $BB/primary/postmaster.pid)
 echo "primary pid $PB"
 echo "$PB" > $BB/primary.pid
@@ -70,5 +70,5 @@ for _ in $(seq 36000); do [ "$(curl -s -o /dev/null -w '%{http_code}' http://127
 T2=$(date +%s.%N)
 echo "initial sync: sidecar start to ready $(python3 -c "print(round($T2-$T1,1))") s; pid $(cat $BB/mirror.pid)"
 echo "readyz: $(curl -s http://127.0.0.1:$BHEALTH/readyz | cut -c1-200)"
-echo "VmHWM at ready: $(awk '/VmHWM/{print $2" kB"}' /proc/$(cat $BB/mirror.pid)/status)  VmRSS: $(awk '/VmRSS/{print $2" kB"}' /proc/$(cat $BB/mirror.pid)/status)"
+echo "VmHWM at ready: $(awk '/VmHWM/{print $2" kB"}' /proc/"$(cat $BB/mirror.pid)"/status)  VmRSS: $(awk '/VmRSS/{print $2" kB"}' /proc/"$(cat $BB/mirror.pid)"/status)"
 echo "$(date -u +%T) done"

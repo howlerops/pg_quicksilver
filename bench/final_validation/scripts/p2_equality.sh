@@ -4,7 +4,7 @@
 # mirror directory (mirror6, slot qs_int6): scenario m left a text-timestamp mirror behind.
 . "$(dirname "$0")/env.sh"; . "$(dirname "$0")/run.sh"
 P=$SPORT; SP=5806
-kill $(cat $BASE/mirror5.pid) 2>/dev/null; for _ in $(seq 300); do kill -0 $(cat $BASE/mirror5.pid) 2>/dev/null || break; sleep 0.2; done
+kill "$(cat $BASE/mirror5.pid)" 2>/dev/null; for _ in $(seq 300); do kill -0 "$(cat $BASE/mirror5.pid)" 2>/dev/null || break; sleep 0.2; done
 echo "mirror5 sidecar stopped"
 rm -rf $BASE/mirror6 && mkdir -p $BASE/mirror6 && chown postgres $BASE/mirror6
 echo "duckdb.allowed_directories = '$BASE/mirror3,$BASE/mirror4,$BASE/mirror5,$BASE/mirror6,/tmp/qs_regress'" >> $BASE/standby3/postgresql.conf

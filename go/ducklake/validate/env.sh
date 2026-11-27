@@ -1,3 +1,5 @@
+# shellcheck shell=bash
+# shellcheck disable=SC2034  # sourced: its variables are read by the scripts that source it
 # Shared by the scripts in this directory. Everything they start lives under
 # $BASE and on ports 5570-5572; teardown.sh removes all of it.
 PG=/usr/lib/postgresql/17/bin

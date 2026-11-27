@@ -1,3 +1,5 @@
+# shellcheck shell=bash
+# shellcheck disable=SC2034  # sourced: its variables are read by the scripts that source it
 # Shared by the final-validation scripts. Sourced.
 # The private PostgreSQL 17 tree (pg_duckdb 1.2.2 patched) and this run's ports and data.
 PGTREE=${PGTREE:-/var/lib/postgresql/qspgd/pg17/usr/lib/postgresql/17}

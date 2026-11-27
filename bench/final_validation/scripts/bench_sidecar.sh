@@ -12,7 +12,7 @@ start)
   if [ -z "${NOWAIT:-}" ]; then for _ in $(seq 36000); do [ "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:$BHEALTH/readyz)" = 200 ] && break; sleep 0.1; done; fi
   T2=$(date +%s.%N)
   echo "sidecar pid $(cat $BB/mirror.pid): start to ready $(python3 -c "print(round($T2-$T1,1))") s"
-  echo "VmHWM $(awk '/VmHWM/{print $2" kB"}' /proc/$(cat $BB/mirror.pid)/status) VmRSS $(awk '/VmRSS/{print $2" kB"}' /proc/$(cat $BB/mirror.pid)/status)" ;;
+  echo "VmHWM $(awk '/VmHWM/{print $2" kB"}' /proc/"$(cat $BB/mirror.pid)"/status) VmRSS $(awk '/VmRSS/{print $2" kB"}' /proc/"$(cat $BB/mirror.pid)"/status)" ;;
 stop)
   P=$(cat $BB/mirror.pid)
   echo "VmHWM before stop $(awk '/VmHWM/{print $2" kB"}' /proc/$P/status 2>/dev/null)"

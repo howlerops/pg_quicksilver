@@ -13,6 +13,7 @@
 exec > >(tee "$OUT/04_halt.txt") 2>&1
 set -x
 export PS4='+ '
+# shellcheck disable=SC2034  # not read here: a loop counter, or read by a script that sources this
 TABLES=public.t1,public.t2,public.t3
 HEALTH=127.0.0.1:5611
 STOP=$OUT/04_writers.stop

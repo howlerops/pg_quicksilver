@@ -33,6 +33,7 @@ run() { # label port protocol
 "$HERE/router.sh" start >/dev/null || exit 1
 RPORT=5494 NOKILL=1 "$HERE/router.sh" start -cache-ttl 0 >/dev/null || exit 1
 for proto in simple prepared; do
+  # shellcheck disable=SC2034  # not read here: a loop counter, or read by a script that sources this
   for rep in 1 2 3; do
     run "direct, $proto" "${PPORT:-5491}" $proto
     run "router, warm decision cache, $proto" 5490 $proto

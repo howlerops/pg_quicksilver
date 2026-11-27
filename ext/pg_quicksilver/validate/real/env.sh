@@ -1,3 +1,5 @@
+# shellcheck shell=bash
+# shellcheck disable=SC2034  # sourced: its variables are read by the scripts that source it
 # Shared by the scripts in this directory: the extension, the sidecar and the
 # DuckLake mirror wired together as they are deployed. Everything lives under
 # $BASE and on ports 5580-5589; teardown.sh removes all of it, by PID.

@@ -18,6 +18,7 @@ UPDATE orders o SET doc = (SELECT string_agg(md5(random()::text || o.seq::text |
 SQL
 echo "rows with an out-of-line doc: $(psq 'SELECT count(*) FROM orders WHERE pg_column_size(doc) > 2000')"
 "$HERE/settle.sh"
+# shellcheck disable=SC2034  # not read here: a loop counter, or read by a script that sources this
 for i in 1 2 3; do echo "UPDATE orders SET amount = amount + 1 WHERE seq BETWEEN 1000 AND 1500;" | sql; sleep 0.4; done
 "$HERE/settle.sh"
 "$HERE/sidecar.sh" stop

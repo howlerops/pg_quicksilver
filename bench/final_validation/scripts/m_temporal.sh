@@ -4,7 +4,7 @@
 # (mirror4, from scenario l) is stopped first: two sidecars with one registry fight over it.
 . "$(dirname "$0")/env.sh"; . "$(dirname "$0")/run.sh"
 P=$SPORT
-kill $(cat $BASE/mirror4.pid) 2>/dev/null; for _ in $(seq 300); do kill -0 $(cat $BASE/mirror4.pid) 2>/dev/null || break; sleep 0.2; done
+kill "$(cat $BASE/mirror4.pid)" 2>/dev/null; for _ in $(seq 300); do kill -0 "$(cat $BASE/mirror4.pid)" 2>/dev/null || break; sleep 0.2; done
 echo "mirror4 sidecar stopped"
 rm -rf $BASE/mirror5 && mkdir -p $BASE/mirror5 && chown postgres $BASE/mirror5
 echo "duckdb.allowed_directories = '$BASE/mirror3,$BASE/mirror4,$BASE/mirror5,/tmp/qs_regress'" >> $BASE/standby3/postgresql.conf

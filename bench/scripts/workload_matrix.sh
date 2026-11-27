@@ -10,7 +10,7 @@
 #   bash bench/scripts/workload_matrix.sh            # all shapes
 #   SHAPES="jsonb churn" bash bench/scripts/workload_matrix.sh
 set -uo pipefail
-cd "$(dirname "$0")/../.."
+cd "$(dirname "$0")/../.." || exit 1
 source "$(dirname "$0")/lib_dropdb.sh"
 source "$(dirname "$0")/lib_syncslots.sh"
 

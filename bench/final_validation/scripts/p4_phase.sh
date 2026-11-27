@@ -45,7 +45,7 @@ drain)
   bash $FV/scripts/bench_sidecar.sh drain $LSN
   python3 -c "print('drain wall seconds from sidecar start: %.1f' % ($(date +%s.%N)-$T0))"
   echo "cgroup after drain: usage $(cat $CG/memory.usage_in_bytes) max $(cat $CG/memory.max_usage_in_bytes) failcnt $(cat $CG/memory.failcnt)"
-  echo "sidecar VmHWM $(awk '/VmHWM/{print $2" kB"}' /proc/$(cat $BB/mirror.pid)/status 2>/dev/null)"
+  echo "sidecar VmHWM $(awk '/VmHWM/{print $2" kB"}' /proc/"$(cat $BB/mirror.pid)"/status 2>/dev/null)"
   ;;
 status)
   P=$(cat $BB/mirror.pid 2>/dev/null)

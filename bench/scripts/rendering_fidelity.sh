@@ -25,7 +25,7 @@
 #   bash bench/scripts/rendering_fidelity.sh          # pinned: must PASS
 #   QS_PIN_RENDERING=0 bash bench/scripts/rendering_fidelity.sh   # must FAIL
 set -uo pipefail
-cd "$(dirname "$0")/../.."
+cd "$(dirname "$0")/../.." || exit 1
 source "$(dirname "$0")/lib_dropdb.sh"
 source "$(dirname "$0")/lib_syncslots.sh"
 
@@ -135,8 +135,10 @@ psq "INSERT INTO t SELECT g, '2026-01-15 12:00:00+00'::timestamptz,
 for _ in $(seq 60); do
   psq "INSERT INTO t VALUES (999999, '2026-01-15 12:00:00+00', '2026-01-15', 'marker')
        ON CONFLICT (id) DO UPDATE SET note='marker'" >/dev/null 2>&1
+  # shellcheck disable=SC2034  # not read here: a loop counter, or read by a script that sources this
   n=$(python3 -c "
 import json;print(len(json.load(open('$MIRROR/public.t/state.json')).get('delta_files',[])))" 2>/dev/null || echo 0)
+  # shellcheck disable=SC2034  # not read here: a loop counter, or read by a script that sources this
   m=$(/tmp/qs-verify -dsn \"\" 2>/dev/null; echo)
   sleep 1
   ROWS=$(su postgres -c "$PG/psql -h /tmp -p 5443 -U postgres -d $DB -Atc 'SELECT count(*) FROM t'")

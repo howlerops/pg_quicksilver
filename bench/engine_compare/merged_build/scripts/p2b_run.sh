@@ -41,6 +41,7 @@ export QS_COMPACT_IDLE_SECONDS=120; catchup new catchup2_new
 say "qs B2 warm, new, immediately after the drain (before any rewrite)"; qbench new B2 new
 grep -c 'compaction started' $R/qs_mirror_catchup2_new.log
 say "waiting for the idle rewrite"
+# shellcheck disable=SC2034  # not read here: a loop counter, or read by a script that sources this
 for i in $(seq 1800); do grep -q 'msg=compacted table=public.orders' $R/qs_mirror_catchup2_new.log && break; sleep 0.5; done
 grep 'compaction started\|msg=compacted\|merged deltas' $R/qs_mirror_catchup2_new.log | cut -c1-220
 say "qs B2 warm, new, after the idle rewrite"; qbench new B2 new_idle

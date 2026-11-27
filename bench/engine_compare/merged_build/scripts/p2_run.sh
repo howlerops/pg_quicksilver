@@ -1,7 +1,7 @@
 #!/bin/bash
 # part 2: old build (bench/bin, c5421c5) and merged build side by side on the same data, same pinning (cpus 2-3)
 set -u
-Q=/tmp/qsb; S=$Q/scripts_merged; R=$Q/results_merged; PG=/usr/lib/postgresql/17/bin
+Q=/tmp/qsb; S=$Q/scripts_merged; R=$Q/results_merged
 say() { echo "=== $(date -u +%T) $*"; }
 bin() { [ "$1" = old ] && echo $Q/bin || echo $Q/bin_merged; }
 start() { QS_M=$Q/mirror_$1 QS_BIN=$(bin $1) bash $S/qs_start.sh $2 >/dev/null 2>&1 </dev/null; }
@@ -26,6 +26,7 @@ say "pg B"; pgbench_ B
 say "drain, new build"; QS_M=$Q/mirror_new QS_BIN=$Q/bin_merged python3 -W ignore $S/qs_catchup.py catchup_new 2>&1 | tail -1
 say "qs B warm, new (immediately after drain)"; qbench new B new
 say "waiting for the idle rewrite"
+# shellcheck disable=SC2034  # not read here: a loop counter, or read by a script that sources this
 for i in $(seq 1800); do grep -q 'msg=compacted table=public.orders' $R/qs_mirror_catchup_new.log && break; sleep 0.5; done
 grep 'compaction started\|msg=compacted\|merged deltas' $R/qs_mirror_catchup_new.log | cut -c1-220
 say "qs B warm, new, after idle compaction"; qbench new B new_idle

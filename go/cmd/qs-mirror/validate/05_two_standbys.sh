@@ -7,6 +7,7 @@
 exec > >(tee "$OUT/05_two_standbys.txt") 2>&1
 set -x
 export PS4='+ '
+# shellcheck disable=SC2034  # not read here: a loop counter, or read by a script that sources this
 TABLES=public.items
 
 rm -f "$OUT/s1.log" "$OUT/s1.pid" "$OUT/s2.log" "$OUT/s2.pid"

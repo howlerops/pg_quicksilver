@@ -22,7 +22,7 @@
 #   bash bench/scripts/bootstrap_profile.sh              # narrow and jsonb
 #   SHAPES="wide" ROWS=400000 bash bench/scripts/bootstrap_profile.sh
 set -uo pipefail
-cd "$(dirname "$0")/../.."
+cd "$(dirname "$0")/../.." || exit 1
 
 PG=/usr/lib/postgresql/17/bin
 BASE=/var/lib/postgresql/qs17

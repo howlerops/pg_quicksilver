@@ -7,6 +7,7 @@ L=$OUT/sc_a.log
 n0=$(grep -c 'compaction started' $L); c0=$(grep -c 'msg=compacted' $L)
 echo "churn burst at $(date -u +%T.%N)"
 psq "UPDATE items SET amount=coalesce(amount,0)+1, note='churn' WHERE seq % 2 = 0"
+# shellcheck disable=SC2034  # not read here: a loop counter, or read by a script that sources this
 for i in $(seq 600); do [ "$(grep -c 'compaction started' $L)" -gt "$n0" ] && break; sleep 0.02; done
 echo "compaction started seen at $(date -u +%T.%N); compacted-so-far=$(( $(grep -c 'msg=compacted' $L) - c0 ))"
 psq "TRUNCATE items"; echo "TRUNCATE committed at $(date -u +%T.%N); compacted-so-far=$(( $(grep -c 'msg=compacted' $L) - c0 ))"

@@ -22,7 +22,7 @@
 # worse than no guard at all — the primary keeps filling and the log says it is
 # fine.
 set -uo pipefail
-cd "$(dirname "$0")/../.."
+cd "$(dirname "$0")/../.." || exit 1
 source "$(dirname "$0")/lib_dropdb.sh"
 
 PG=/usr/lib/postgresql/17/bin
@@ -103,6 +103,7 @@ say "produce more WAL than the limit allows"
 # The limit is 64 KB, so a single ordinary write crosses it. What is being
 # tested is the guard's behaviour once it decides to act, not the arithmetic
 # that gets it there.
+# shellcheck disable=SC2034  # not read here: a loop counter, or read by a script that sources this
 for i in $(seq 30); do
   psq 5443 "UPDATE m SET amount = amount + 1, ts = now() WHERE id % 97 = 0" >/dev/null 2>&1
   grep -q "dropping its own slot" $BASE/guard.log && break

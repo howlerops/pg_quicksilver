@@ -23,7 +23,7 @@
 # A run that is fast and wrong is a failure. A run that is correct and slow is a
 # result.
 set -uo pipefail
-cd "$(dirname "$0")/../.."
+cd "$(dirname "$0")/../.." || exit 1
 source "$(dirname "$0")/lib_dropdb.sh"
 source "$(dirname "$0")/lib_syncslots.sh"
 
