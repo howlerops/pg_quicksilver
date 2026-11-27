@@ -353,6 +353,12 @@ func checkLayout(t *testing.T, tbl *Table, path string, notNull bool, shape stri
 	sc := md.Schema
 	wantDelta := map[string]bool{"i": true, "c_smallint": true, "c_integer": true, "c_bigint": true, "c_num9": true, "c_num12": true,
 		"c_num18": true, "c_num18int": true, "c_date": true, "c_time": true, "c_ts": true, "c_tstz": true, "c_created": true}
+	if !TemporalTypes {
+		// QS_TEMPORAL_TYPES=0 stores these as text, and text is not delta encoded.
+		for _, c := range []string{"c_date", "c_time", "c_ts", "c_tstz", "c_created"} {
+			delete(wantDelta, c)
+		}
+	}
 	for i := 0; i < sc.NumColumns(); i++ {
 		col := sc.Column(i)
 		name := col.Name()
