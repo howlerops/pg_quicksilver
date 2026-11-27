@@ -308,6 +308,7 @@ typedef struct QsMirror
 	Oid			heap;			/* hash key */
 	Oid			mirror;
 	bool		usable;
+	bool		transient;		/* the reason is a lock or a cancel: the entry is built again when asked for */
 	bool		rls;
 	char	   *reason;
 	char	   *heapname;
@@ -953,6 +954,19 @@ qs_build_mirror(QsMirror *m)
 	char	   *mrelname = NULL;
 
 	m->usable = false;
+	m->transient = false;
+	/*
+	 * Not waited for either: the registry is read for every mirror, not only
+	 * the ones the statement names, so a heap relation that the statement does
+	 * not read can be locked by a DDL replay, and waiting for it would be a
+	 * cycle as well. A statement that names the heap has it already (re-entrant).
+	 */
+	if (!ConditionalLockRelationOid(m->heap, AccessShareLock))
+	{
+		m->reason = "heap relation is locked by another session (not waited for)";
+		m->transient = true;
+		return;
+	}
 	heap = try_table_open(m->heap, AccessShareLock);
 	if (heap == NULL)
 	{
@@ -1147,6 +1161,20 @@ qs_build_mirror(QsMirror *m)
 	 * analysis is not expected to fail; if it does anyway, the mirror is
 	 * unusable and the statement that triggered the load is not disturbed.
 	 */
+	/*
+	 * The mirror view is opened by the parse below. It is not waited for: this
+	 * runs while the statement holds its heap relation's lock, and a standby's
+	 * startup process that holds the view's lock while it waits for that heap
+	 * lock makes a cycle (docs/40, "Lock order"). Not available now: the entry
+	 * is unusable for this statement and is tried again the next time it is asked
+	 * for (qs_mirror_lookup).
+	 */
+	if (!ConditionalLockRelationOid(m->mirror, AccessShareLock))
+	{
+		m->reason = "mirror relation is locked by another session (not waited for)";
+		m->transient = true;
+		goto out;
+	}
 	old = CurrentMemoryContext;
 	PG_TRY();
 	{
@@ -1165,6 +1193,13 @@ qs_build_mirror(QsMirror *m)
 		MemoryContextSwitchTo(old);
 		ed = CopyErrorData();
 		FlushErrorState();
+		/*
+		 * A lock that was waited for and lost (a deadlock, a serialization
+		 * failure) or a cancel is no fact about the mirror: the entry is tried
+		 * again, not kept unusable until the registry is loaded again.
+		 */
+		m->transient = ERRCODE_TO_CATEGORY(ed->sqlerrcode) == ERRCODE_TRANSACTION_ROLLBACK ||
+			ed->sqlerrcode == ERRCODE_QUERY_CANCELED;
 		m->reason = MemoryContextStrdup(qs_cache_cxt, psprintf("mirror relation cannot be read: %s", ed->message));
 		q = NULL;
 	}
@@ -2099,9 +2134,24 @@ qs_load_registry(void)
 static QsMirror *
 qs_mirror_lookup(Oid relid)
 {
+	QsMirror   *m;
+
 	if (!qs_mirror_hash)
 		return NULL;
-	return hash_search(qs_mirror_hash, &relid, HASH_FIND, NULL);
+	m = hash_search(qs_mirror_hash, &relid, HASH_FIND, NULL);
+	/*
+	 * An entry that could not be locked when the registry was read is built
+	 * now, and only if both relations can be locked now, without waiting (see
+	 * qs_build_mirror): until then the statement is the heap's.
+	 */
+	if (m != NULL && m->transient && ConditionalLockRelationOid(m->heap, AccessShareLock) &&
+		ConditionalLockRelationOid(m->mirror, AccessShareLock))
+	{
+		m->transient = false;
+		m->reason = NULL;
+		qs_build_mirror(m);
+	}
+	return m;
 }
 
 static QsAllowEntry *
