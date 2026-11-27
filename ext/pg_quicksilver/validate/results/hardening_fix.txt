@@ -1,0 +1,57 @@
+# hardening_fix.txt: results of the registry-lifetime fix (commits 40a2a52, 9c336ab, 80c4414)
+# (i) ALTER storm, 330 s, 4 readers (2 heap control, 2 routed), sidecar 25 ms reports, assertion build
+#     validate/real/hardening: storm5.py (ADD COLUMN only: a dropped column keeps its attribute number)
+seconds=330 alters={'add': 996} reports={'ok': 9364}
+counts={'heap:true': 7938, 'auto:true': 5429} wrong=0 first_wrong=[]
+decisions={'heap|reads a relation with no usabl|public.orders: mirror relation changed while it wa': 630, 'mirror|routed|416667 rows from mirrored tables, over 50000': 276, 'heap|reads a relation with no usabl|public.orders: mirror relation does not exist': 194, 'heap|mirror is not fresh enough|public.orders: mirror is at 0/11B8DE28, this node ': 42, 'heap|mirror is not fresh enough|public.orders: mirror is at 0/11BC37C8, this node ': 41, 'heap|mirror is not fresh enough|public.orders: mirror is at 0/1768A8B0, this node ': 41, 'heap|mirror is not fresh enough|public.orders: mirror is at 0/159BDC10, this node ': 41, 'heap|mirror is not fresh enough|public.orders: mirror is at 0/1C023748, this node ': 41, 'heap|mirror is not fresh enough|public.orders: mirror is at 0/119C5888, this node ': 40, 'heap|mirror is not fresh enough|public.orders: mirror is at 0/13ABF6C8, this node ': 40, 'heap|mirror is not fresh enough|public.orders: mirror is at 0/17B0C030, this node ': 40, 'heap|mirror is not fresh enough|public.orders: mirror is at 0/1B336EC8, this node ': 40}
+errors=33
+      17 auto-reader3: DeadlockDetected deadlock detected
+      15 auto-reader2: DeadlockDetected deadlock detected
+       1 heap-reader1: DeadlockDetected deadlock detected
+
+# (ii) sidecar re-registration storm, 334 s, 4 routed readers (direct, PREPARE/EXECUTE x10, cursor, last_decision), status thread, assertion build
+seconds=334 ok={'mirror_status': 1611, 'direct': 1252, 'prepared': 12520, 'cursor': 1252, 'rounds': 1252} wrong=0 first_wrong=[]
+sidecar restarts={'stop=0 start=0': 40}
+errors=0
+
+# (iii) regression test: sql/reload.sql, three runs on the assertion build, all ok
+# (iv) full regression suite (16 tests), assertion build: 16 ok; # All 16 tests passed.
+#      normal build:                         16 ok; # All 16 tests passed.
+
+# (v) equality.py, normal build, superuser (postgres):
+{
+ "statements": 1142,
+ "routed_to_mirror": 438,
+ "stayed_on_heap": 704,
+ "routed_identical": 438,
+ "routed_same_error": 0,
+ "routed_different": 0,
+ "heap_different": 0,
+# (v) equality.py, normal build, ordinary role (eq_ordinary):
+{
+ "statements": 1142,
+ "routed_to_mirror": 438,
+ "stayed_on_heap": 704,
+ "routed_identical": 438,
+ "routed_same_error": 0,
+ "routed_different": 0,
+ "heap_different": 0,
+
+# (vi) txfuzz.py, normal build, 2000 scripts (seed 1):
+statements by first word: SELECT 10398, BEGIN 2279, SAVEPOINT 2066, DECLARE 1787, ROLLBACK 1470, INSERT 1043, FETCH 1003, EXPLAIN ANALYZE 915, COMMIT 899, PREPARE 759, EXECUTE 759, EXPLAIN 648, UPDATE 547, RELEASE 505, DELETE 474, END 403, CLOSE 298, START 295, SET 172, DO 146
+scripts: 2000   statements: 26866   errors (the same on both sides): 9660   answered by the mirror with the router on: 7086
+scripts that differed: 0   connections lost: 0
+
+# (vii) memory: one standby backend, 200000 routed statements, registry re-read about once a second:
+statements=200000 seconds=1297 wrong=0 errors=0 writer_updates=1296
+rss_kb start=27436 middle=124400 end=125624
+last_decision=[('mirror', 'routed')] sampled_every_1000={'mirror': 200, 'heap': 0}
+pg_backend_memory_contexts (ORDER BY total_bytes DESC LIMIT 8):
+  ('CacheMemoryContext', 'TopMemoryContext', 1048576, 1024904)
+  ('TopMemoryContext', None, 143360, 118680)
+  ('quicksilver cache', 'TopMemoryContext', 131072, 83056)
+  ('Timezones', 'TopMemoryContext', 104112, 101440)
+  ('MessageContext', 'TopMemoryContext', 65536, 31912)
+  ('WAL record construction', 'TopMemoryContext', 50200, 43800)
+  ('ExecutorState', 'PortalContext', 49200, 40168)
+  ('GUCMemoryContext', 'TopMemoryContext', 40960, 28928)
