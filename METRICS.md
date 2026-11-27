@@ -35,6 +35,109 @@ CPU 3. **The machine was not quiet:** another Quicksilver stack on the same host
 2 to 4 throughout, so the "load below 2" rule could not be met. Each table below is one run unless
 it says best of 5 (best/median of five warm runs).
 
+### 0.1 The replay gate, the routed join, and the final tree (2026-11-27)
+
+Run on branch `worktree-agent-a2364e4f4c4d74a28` from `7bc7565`, with the commits that add the replay
+gate. The host, PostgreSQL 17.12 and the pg_duckdb build are those of §0. The primary, a hot standby and
+the production sidecar were built here from a private copy of the PostgreSQL 17 tree (the copy of the
+current pg_duckdb patch, checked line by line against the patch's added code). Each live cluster is
+primary + standby + `qs-mirror` on its own ports; nothing else was started on them.
+
+**Visibility gate, live.** Replay was paused on the standby, 500 rows written on the primary, and the
+routed count was compared with the heap count of the same session, ten samples each. Before: the
+pre-change extension with the gate off (`QS_GATE_ON_REPLAY=off`).
+
+| state | heap | routed | samples where routed = heap |
+|---|---|---|---|
+| paused, before (pre-change extension, gate off) | 1,001,000 | **1,001,500** | 0 of 10 (routed ahead of the heap by 500) |
+| paused, after (gate on) | 1,006,813 | 1,006,813 | 10 of 10 |
+| paused, relaxed freshness (`quicksilver.max_lag = 100MB`), after | 1,006,813 | 1,006,813 | routed never above the heap (4 of 4) |
+| after resume, after | 1,007,313 | 1,007,313 | equal; replay caught up in 0.10 s |
+
+The "before" row is the old behaviour reproduced: the mirror had the 500 rows that the standby's heap did
+not have yet, and a read sent to the mirror saw newer data than the heap at the same moment. It is also
+why the freshness check needed an upper bound, which the extension now has on a standby. The "before" run
+was with the gate off and the old extension together; the gate off alone, with the new extension, gives
+the heap's answer, because the new upper bound refuses a mirror that is ahead.
+
+**Continuous writes, gate on.** A writer inserted one row per 20 ms for 180 s. A sampler on the standby read
+heap, routed, heap in one session, 2,567 times. Violations of `heap1 <= routed <= heap2`: **0**. Writes
+8,267, write errors 0. Before (gate off, old extension, 90 s): 1,283 samples, 0 violations, 4,146 writes.
+Under continuous writes the mirror normally trails the standby's replay, so the race the gate closes
+rarely shows; the paused run above is the case that shows it.
+
+**Visibility lag, commit to routed-visible.** One insert per commit every 50 ms for 60 s; the routed count
+was polled every 5 ms.
+
+| run | commits seen | median | p95 | max |
+|---|---|---|---|---|
+| before (gate off, old extension) | 1,167 | 50.2 ms | 79.4 ms | 283.8 ms |
+| after (gate on), run 1 | 1,159 | 55.4 ms | 93.8 ms | 248.3 ms |
+| after (gate on), run 2 | 1,167 | 52.7 ms | 87.1 ms | 264.2 ms |
+
+The gate adds about 3 to 5 ms to the median and 8 to 14 ms to the p95 in these runs. That is the standby's
+own replay lag, which a commit now waits for before it can be routed. Each figure is one 60-second run,
+and the "before" side has one run; the spread between the two "after" runs is the only variance measured.
+
+**Readiness while replay is paused.** `/readyz` said `ready: true`, `lag 3.1s within SLO 30.0s; waiting for
+local replay: 1 change(s) held back until the standby replays through 0/F458EB9 (replay is at 0/F458D98)`,
+and `slot_retained_bytes` was 243,920 while the hold lasted. After resume: lag 0.2 s.
+
+**Join domain registry (Bug E), live, one sidecar.** A registry row for a column this sidecar does not
+mirror was planted on the primary, and the sidecar restarted. The row survived; the sync said
+`unchanged=9 dropped=[]`. The old code deleted it. The two-sidecar case on one host was not run: the
+lake catalog path is one per cluster, which the join setup already notes as unshown.
+
+**Regression suite, serial (`--max-connections=1`), 20 tests** (the `REGRESS` list has 20 names, not 21):
+`All 20 tests passed`, on a fresh cluster with the sidecar running and `primary_report.sh` run first. One
+expected file changed: `freshness.out`, for the reason text of a fed, stale mirror on the primary (Item F).
+Before that change the same suite gave 19 of 20, with only that file differing.
+
+**Equality (`validate/equality.py`), join domains on, 1,000,000 orders.** Each run compares every statement
+with the heap and with the router, on the primary, after `primary_report.sh`.
+
+| run | statements | routed | identical | routed different | heap different |
+|---|---|---|---|---|---|
+| superuser, UTC | 1,142 | 449 | 449 | **0** | **0** |
+| superuser, America/New_York | 1,142 | 449 | 449 | **0** | **0** |
+| `qs_eq` (ordinary role), UTC | 1,142 | 449 | 449 | **0** | **0** |
+| `qs_eq` (ordinary role), America/New_York | 1,142 | 449 | 449 | **0** | **0** |
+
+**Transaction fuzz (`validate/real/txfuzz.py --scripts 2000 --seed 1`).** 2,000 scripts, 26,866 statements,
+9,660 of them errors on both sides and the same, **7,086 answered by the mirror**, 0 scripts differing,
+0 connections lost.
+
+**Revenue by month, routed (1,000,000 orders, 24 months).** The seed's `created_at` spans 12 days, so for
+this measurement it was respread on the primary to `2024-01-01 + (id mod 730) days + (id*7919 mod 86400)
+seconds`: 24 distinct months, 2024-01 to 2025-12. Standby, the join to `customers` grouped by month, median
+of five runs (the first included, each after `quicksilver.forget_last()`), `quicksilver.route` heap against
+auto, with `SET TimeZone` to the zone and `min_cost = min_rows = 0`. The query:
+
+```sql
+SELECT date_trunc('month', o.created_at) AS month, sum(o.amount) AS revenue, count(*) AS orders
+  FROM public.orders o JOIN public.customers c ON c.id = o.customer_id
+ GROUP BY 1 ORDER BY 1
+```
+
+The runner was a short Python script that is not checked in; it compares the md5 of the rows of the two
+sides, and the answers were equal in both zones:
+
+| zone | heap | routed | speedup | answers |
+|---|---|---|---|---|
+| UTC | 455.3 ms | 73.4 ms | 6.21x | identical (24 rows) |
+| America/New_York | 469.1 ms | 89.4 ms | 5.25x | identical (25 rows) |
+
+The routed plan in New York was `Custom Scan (QuicksilverRoute)`, `Quicksilver: mirror`, decision `mirror,
+routed`. The 10,000,000-order run was not done; `bench/final_validation/scripts/fv_bench.py` was not used,
+because its revenue query needs the bench dataset (`customers.created_at`), which the seed does not have.
+
+**Go.** `go build ./...`, `go vet ./...`, and `go test -short -count=1 ./...` pass (10 packages with tests).
+
+**What is not measured.** A `kill -9` of the sidecar while it holds commits, live; a snapshot taken at S
+and read before replay reaches S, live (the rule is unit-tested only); `recovery_min_apply_delay`, live; a
+promoted node's refusal reason, live; the two-sidecar join case; the 10,000,000-order headline; the
+`fv_bench` suite.
+
 ### Part 1: functional scenarios
 
 Twelve tables on the standby's sidecar: `public.orders` (200k rows, then 10M in Part 3),
@@ -167,7 +270,9 @@ two are not the same experiment.
    CollateExpr` is not on the allowlist. `GROUP BY` without `ORDER BY` routes. An ICU database
    (the default of `setup.sh`) does not route text ordering at all.
 3. **`date_trunc(text, timestamptz)` is not on the allowlist.** The revenue-by-month join is heap in
-   every state.
+   every state. *Superseded 2026-11-27 (§0.1): `date_trunc` is routed for a constant unit in a session
+   zone the extension has proven (240 of 499 zones checked, 40 of them for `hour`), and the join is
+   routed in UTC and America/New_York, with identical answers.*
 4. **After a promotion the old sidecar stands down but does not exit.** Its log says `this node is the
    primary — standing down` and `dropped this Pod's replication slot`. Its process kept running, and its
    `/readyz` stayed `ready: true` with `applied_lsn` frozen and `lag_seconds` rising. It was stopped by
@@ -212,7 +317,8 @@ two are not the same experiment.
   primary, standby and sidecar.
 - **Warm cache only** for the six-query suite. The cold rows of the earlier results are not repeated.
 - **Routing covers only what the allowlist names.** Two of the six queries (the join with `date_trunc`, the
-  point lookup by design) are heap in the routed engine; a DuckDB-native reader is faster than the heap on
+  point lookup by design) are heap in the routed engine (the join is routed in proven zones since 2026-11-27,
+  §0.1); a DuckDB-native reader is faster than the heap on
   the aggregates and slower on point lookups (24 ms against 0.1 ms), so the routed numbers and the
   DuckDB numbers answer different questions.
 - **The mirror is slower than the heap for key lookups, by two orders of magnitude when DuckDB reads it

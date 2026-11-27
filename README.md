@@ -45,10 +45,21 @@ it doesn't hold.
 ### Three things that table says
 
 **1. The routed win is what the extension lets through.** Aggregates the extension routes run
-16 to 30 times faster than the heap; the filtered aggregate 3×. The join and the point lookup are
-not routed, so they are not faster: the join needs `date_trunc(text, timestamptz)`, which the
-allowlist does not name, and the lookup is cheap on the heap by design. Routing is per statement,
+16 to 30 times faster than the heap; the filtered aggregate 3×. The point lookup is cheap on the
+heap by design, so it is not routed. The revenue-by-month join is routed in the session time zones
+the extension has proven: `date_trunc` reads the session's `TimeZone`, so a zone is admitted only
+after DuckDB's answer for it has been checked against PostgreSQL's (240 of the 499 zones checked; 40 of
+them for `hour`; the check is in `ext/pg_quicksilver/validate/results/tz_check.txt`).
+In any other zone the join stays on the heap. Measured 2026-11-27 on 1,000,000 orders spread over 24
+months, on a standby, median of five warm runs: UTC, heap 455 ms against routed 73 ms; America/New_York,
+heap 469 ms against routed 89 ms; the answers were identical in both zones. The table above was measured
+before this, when the join was not routed; [METRICS.md](METRICS.md) §0.1 has the newer numbers. Routing is per statement,
 and the answer is the heap's whichever side runs it.
+
+A routed read is the heap's answer at the same point. A mirror is read only when it has reached the
+statement's replay position on the standby and is not past it (both bounds are in
+[docs/40](docs/40-the-router-moves-inside.md), "Freshness is strict by default"), and the sidecar
+holds a commit back until the standby has replayed it (docs/16, "The replay gate").
 
 **2. The heap degrades with churn; the mirror does not.** After 700k changes the heap's `count(*)`
 went from 252 ms to 1.5 s and the routed one held at 7.5 ms. Across the three states measured, every
