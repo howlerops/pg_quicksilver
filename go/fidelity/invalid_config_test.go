@@ -3,9 +3,12 @@ package fidelity
 // An invalid Quicksilver configuration, against the Pod CloudNativePG 1.30
 // really builds. The operator never calls the plugin's ValidateClusterCreate or
 // ValidateClusterChange (no caller in internal/webhook or internal/controller),
-// so a misspelled parameter is admitted and reaches the lifecycle hook. These
-// tests pin what the hook then does, for the cases in
-// go/internal/plugin/lifecycle.go invalidConfigResponse.
+// so a misspelled parameter is admitted and reaches the lifecycle hook.
+//
+// The hook tells a Pod being built from a Pod that runs by the operator's
+// status.instancesStatus, not by status.instanceNames: the latter is filled
+// from PVCs, so a fresh instance with a PVC and no Pod is listed there. See
+// invalidConfigResponse in go/internal/plugin/lifecycle.go.
 
 import (
 	"context"
@@ -38,18 +41,66 @@ func hookOutcome(t *testing.T, cluster *cnpgv1.Cluster, podJSON []byte,
 	return res.GetJsonPatch(), nil
 }
 
-func withParams(params map[string]string, running bool) *cnpgv1.Cluster {
+// withInstanceStatus sets the operator's two views of the instances: pvcs is
+// status.instanceNames (PVC-derived), listed is status.instancesStatus (Pods).
+func withInstanceStatus(params map[string]string, pvcs, listed []string) *cnpgv1.Cluster {
 	c := quicksilverCluster()
 	c.Spec.Plugins[0].Parameters = params
-	if running {
-		c.Status.Instances = 3
-		c.Status.InstanceNames = []string{"app-1", "app-2", "app-3"}
+	c.Status.InstanceNames = pvcs
+	c.Status.Instances = len(pvcs)
+	if len(listed) > 0 {
+		c.Status.InstancesStatus = map[cnpgv1.PodStatus][]string{cnpgv1.PodHealthy: listed}
 	}
 	return c
 }
 
+var (
+	misspelledParams = map[string]string{"tables": "public.events", "tabels": "x"}
+	allPVCs          = []string{"app-1", "app-2", "app-3"}
+)
+
+// A fresh Cluster: every instance has a PVC and none has a Pod yet. Each Pod
+// must be built WITHOUT the mirror, with no error, so the reconcile completes.
+func TestFreshClusterWithPVCsButNoPodsBuildsWithoutMirror(t *testing.T) {
+	cluster := withInstanceStatus(misspelledParams, allPVCs, nil)
+	for _, serial := range []int{1, 2, 3} {
+		pod := realInstancePod(t, cluster, serial)
+		podJSON, err := json.Marshal(pod)
+		must(t, err)
+		for _, op := range []lifecycle.OperatorOperationType_Type{
+			lifecycle.OperatorOperationType_TYPE_CREATE,
+			lifecycle.OperatorOperationType_TYPE_EVALUATE,
+		} {
+			patch, err := hookOutcome(t, cluster, podJSON, op)
+			if err != nil {
+				t.Fatalf("serial %d, %v: a fresh Pod was refused, which stops the reconcile "+
+					"before the status is written: %v", serial, op, err)
+			}
+			if len(patch) != 0 {
+				t.Errorf("serial %d, %v: a fresh Pod was patched with an invalid config: %s", serial, op, patch)
+			}
+		}
+	}
+}
+
+// A replica joining a running primary: the primary is listed, the replica's
+// Pod is not yet.
+func TestReplicaBeingBuiltNextToRunningPrimaryHasNoMirror(t *testing.T) {
+	cluster := withInstanceStatus(misspelledParams, allPVCs, []string{"app-1"})
+	pod := realInstancePod(t, cluster, 2)
+	podJSON, err := json.Marshal(pod)
+	must(t, err)
+	patch, err := hookOutcome(t, cluster, podJSON, lifecycle.OperatorOperationType_TYPE_EVALUATE)
+	if err != nil {
+		t.Fatalf("a replica being built was refused: %v", err)
+	}
+	if len(patch) != 0 {
+		t.Errorf("a replica being built got a patch from an invalid config: %s", patch)
+	}
+}
+
 func TestMisspelledParameterOnNewClusterBuildsPodWithoutMirror(t *testing.T) {
-	cluster := withParams(map[string]string{"tables": "public.events", "tabels": "x"}, false)
+	cluster := withInstanceStatus(misspelledParams, nil, nil)
 	pod := realInstancePod(t, cluster, 1)
 	if patched := runHook(t, cluster, pod, lifecycle.OperatorOperationType_TYPE_CREATE); patched != nil {
 		t.Errorf("a misspelled parameter injected a mirror into a real Pod: %v",
@@ -58,7 +109,7 @@ func TestMisspelledParameterOnNewClusterBuildsPodWithoutMirror(t *testing.T) {
 }
 
 func TestTakeoverWithoutAckNeverGetsTheReadinessGate(t *testing.T) {
-	cluster := withParams(map[string]string{"mode": "takeover", "tables": "public.events"}, false)
+	cluster := withInstanceStatus(map[string]string{"mode": "takeover", "tables": "public.events"}, nil, nil)
 	pod := realInstancePod(t, cluster, 1)
 	if patched := runHook(t, cluster, pod, lifecycle.OperatorOperationType_TYPE_CREATE); patched != nil {
 		t.Errorf("mode: takeover without acknowledgeOLTPRegression injected into a real Pod: %v",
@@ -66,24 +117,24 @@ func TestTakeoverWithoutAckNeverGetsTheReadinessGate(t *testing.T) {
 	}
 }
 
-// A running cluster must not get a changed Pod spec from an invalid config: the
-// rollout check evaluates with EVALUATE, and an error there is skipped by the
-// operator, so the running instances are not restarted.
-func TestInvalidConfigOnRunningClusterIsRefusedForEvaluate(t *testing.T) {
-	cluster := withParams(map[string]string{"tabels": "x", "tables": "public.events"}, true)
+// The rollout check of a running instance: its Pod is listed. An error here is
+// skipped by the operator's rollout check, so the instance is not rolled to drop
+// a mirror it runs with.
+func TestRunningInstanceOnInvalidConfigIsRefusedForEvaluate(t *testing.T) {
+	cluster := withInstanceStatus(misspelledParams, allPVCs, allPVCs)
 	pod := realInstancePod(t, cluster, 2)
 	podJSON, err := json.Marshal(pod)
 	must(t, err)
 	if _, err := hookOutcome(t, cluster, podJSON, lifecycle.OperatorOperationType_TYPE_EVALUATE); err == nil {
-		t.Error("EVALUATE on a running cluster with an invalid config returned no error; " +
-			"the rollout check would compare against a Pod without the mirror and restart every instance")
+		t.Error("EVALUATE of a running instance with an invalid config returned no error; " +
+			"the rollout check would compare against a Pod without the mirror and restart it")
 	}
 }
 
 // PATCH carries the role labels the operator writes on failover. An invalid
 // config must not turn that write into an error.
 func TestInvalidConfigDoesNotBlockPodPatch(t *testing.T) {
-	cluster := withParams(map[string]string{"tabels": "x", "tables": "public.events"}, true)
+	cluster := withInstanceStatus(misspelledParams, allPVCs, allPVCs)
 	pod := realInstancePod(t, cluster, 2)
 	podJSON, err := json.Marshal(pod)
 	must(t, err)

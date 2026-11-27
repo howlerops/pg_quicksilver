@@ -208,13 +208,13 @@ happens then is what the operator does ask the plugin about:
   ```
 
   A valid configuration writes `state: valid` and no `configErrors`.
-- **A Cluster with no instances yet.** The instance Pod is built **without** the
-  mirror. PostgreSQL starts, and nothing is in takeover, so no readiness gate
-  takes a replica out of `-ro`.
-- **A Cluster that already has instances.** No new instance Pod is built for it
-  and no rollout is planned from the invalid configuration. Running Pods keep the
-  mirror they have. An instance Pod that is deleted is not rebuilt until the
-  parameters are fixed; the operator logs the reason on each pass.
+- **An instance Pod the operator is about to build** (a first instance, a replacement,
+  or a replica being joined) is built **without** the mirror. The operator does not list
+  it in `status.instancesStatus` yet, which is how the plugin tells it from a running one.
+  PostgreSQL starts, the reconcile completes, and the status says why there is no mirror.
+- **A running instance** (listed in `status.instancesStatus`) keeps the mirror it has and
+  is **not rolled**. The operator's rollout check gets an error for it, logs it and skips
+  it. A running instance that is deleted is rebuilt without the mirror.
 - **Pod patches and updates** (role labels on failover and switchover) are never
   blocked by a configuration error, and never add the mirror.
 

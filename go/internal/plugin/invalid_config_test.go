@@ -17,6 +17,11 @@ import (
 // is an ordinary Cluster that reaches the plugin the way the real operator sends
 // it: as serialised JSON, through LifecycleHook (CREATE, EVALUATE, PATCH, UPDATE)
 // and SetStatusInCluster.
+//
+// What tells a Pod being built from a Pod that already runs is the operator's
+// status.instancesStatus (see invalidConfigResponse). status.instanceNames is
+// filled from PVCs and is NOT that signal: an instance whose PVC exists but whose
+// Pod does not yet is listed there. Each case states both lists.
 
 var (
 	validParams = map[string]string{
@@ -39,9 +44,23 @@ var (
 	}
 )
 
-// testCluster builds a Cluster with the plugin enabled. running reports whether
-// the operator has already built instance Pods for it.
-func testCluster(params map[string]string, running bool) *apiv1.Cluster {
+// Status shapes, as the operator writes them.
+var (
+	// A fresh Cluster before any Pod: nothing has a PVC or a Pod.
+	noInstances = struct{ pvcs, listed []string }{nil, nil}
+	// PVCs exist for both instances, but no Pod has been created for either:
+	// the operator's PVC-derived instanceNames already lists both.
+	pvcsNoPods = struct{ pvcs, listed []string }{[]string{"pg-1", "pg-2"}, nil}
+	// The primary runs (listed as a Pod); the replica's PVC exists and its Pod
+	// is about to be built.
+	replicaBeingBuilt = struct{ pvcs, listed []string }{[]string{"pg-1", "pg-2"}, []string{"pg-1"}}
+	// Both instances run.
+	bothRunning = struct{ pvcs, listed []string }{[]string{"pg-1", "pg-2"}, []string{"pg-1", "pg-2"}}
+)
+
+// testCluster builds a Cluster with the plugin enabled and the given instance
+// status. The Pod under test is always pg-2.
+func testCluster(params map[string]string, shape struct{ pvcs, listed []string }) *apiv1.Cluster {
 	enabled := true
 	c := &apiv1.Cluster{
 		TypeMeta:   metav1.TypeMeta{APIVersion: "postgresql.cnpg.io/v1", Kind: "Cluster"},
@@ -51,9 +70,11 @@ func testCluster(params map[string]string, running bool) *apiv1.Cluster {
 	c.Spec.Plugins = []apiv1.PluginConfiguration{{
 		Name: PluginName, Enabled: &enabled, Parameters: params,
 	}}
-	if running {
-		c.Status.Instances = 2
-		c.Status.InstanceNames = []string{"pg-1", "pg-2"}
+	c.Status.InstanceNames = shape.pvcs
+	c.Status.Instances = len(shape.pvcs)
+	if len(shape.listed) > 0 {
+		c.Status.InstancesStatus = map[apiv1.PodStatus][]string{apiv1.PodHealthy: shape.listed}
+		c.Status.ReadyInstances = len(shape.listed)
 	}
 	return c
 }
@@ -79,52 +100,52 @@ func TestLifecycleHookDecisionForInvalidConfig(t *testing.T) {
 	type tc struct {
 		name        string
 		params      map[string]string
-		running     bool
+		shape       struct{ pvcs, listed []string }
 		op          lifecycle.OperatorOperationType_Type
 		wantErr     bool
 		wantSidecar bool
 		wantGate    bool // the readiness gate that takes a replica out of -ro
 	}
+	create := lifecycle.OperatorOperationType_TYPE_CREATE
+	evaluate := lifecycle.OperatorOperationType_TYPE_EVALUATE
+	patch := lifecycle.OperatorOperationType_TYPE_PATCH
+	update := lifecycle.OperatorOperationType_TYPE_UPDATE
+
 	cases := []tc{
-		{"valid shadow, create of a new Pod", validParams, false,
-			lifecycle.OperatorOperationType_TYPE_CREATE, false, true, false},
-		{"valid shadow, evaluate on a running cluster", validParams, true,
-			lifecycle.OperatorOperationType_TYPE_EVALUATE, false, true, false},
-		{"valid takeover with ack, create", takeoverAck, false,
-			lifecycle.OperatorOperationType_TYPE_CREATE, false, true, true},
+		{"valid shadow, create of a new Pod", validParams, noInstances, create, false, true, false},
+		{"valid shadow, evaluate of a running Pod", validParams, bothRunning, evaluate, false, true, false},
+		{"valid takeover with ack, create", takeoverAck, noInstances, create, false, true, true},
 
-		{"misspelled tabels, create, new cluster: built without the mirror", misspelled, false,
-			lifecycle.OperatorOperationType_TYPE_CREATE, false, false, false},
-		{"misspelled tabels, evaluate, new cluster: built without the mirror", misspelled, false,
-			lifecycle.OperatorOperationType_TYPE_EVALUATE, false, false, false},
-		{"misspelled tabels, evaluate, running cluster: refused, no rollout", misspelled, true,
-			lifecycle.OperatorOperationType_TYPE_EVALUATE, true, false, false},
-		{"misspelled tabels, create, running cluster: refused", misspelled, true,
-			lifecycle.OperatorOperationType_TYPE_CREATE, true, false, false},
-		{"misspelled tabels, patch (role label): never blocked", misspelled, true,
-			lifecycle.OperatorOperationType_TYPE_PATCH, false, false, false},
-		{"misspelled tabels, update: never blocked", misspelled, true,
-			lifecycle.OperatorOperationType_TYPE_UPDATE, false, false, false},
+		// The fresh-cluster case that failed in CI: PVCs exist, no Pod yet.
+		// The Pod must be built WITHOUT the mirror, and nothing may error.
+		{"misspelled, fresh cluster, PVCs but no Pod: built without mirror", misspelled, pvcsNoPods, evaluate, false, false, false},
+		{"misspelled, fresh cluster, PVCs but no Pod, create: built without mirror", misspelled, pvcsNoPods, create, false, false, false},
+		// A replica joining a running primary: its Pod is not listed yet.
+		{"misspelled, replica being built next to a running primary: no mirror", misspelled, replicaBeingBuilt, evaluate, false, false, false},
+		{"misspelled, no instances at all: built without mirror", misspelled, noInstances, create, false, false, false},
 
-		{"takeover without ack, create, new cluster: no takeover", takeoverNoAck, false,
-			lifecycle.OperatorOperationType_TYPE_CREATE, false, false, false},
-		{"takeover without ack, evaluate, running: refused, no rollout", takeoverNoAck, true,
-			lifecycle.OperatorOperationType_TYPE_EVALUATE, true, false, false},
-		{"takeover without ack, patch, running: no takeover injected", takeoverNoAck, true,
-			lifecycle.OperatorOperationType_TYPE_PATCH, false, false, false},
+		// The rollout check of a running Pod: it is listed, so the error keeps the
+		// operator from comparing it with a Pod that has no mirror.
+		{"misspelled, evaluate of a running Pod: refused, no rollout", misspelled, bothRunning, evaluate, true, false, false},
+		{"misspelled, create of an already-listed Pod: refused", misspelled, bothRunning, create, true, false, false},
+		{"misspelled, patch (role label) of a running Pod: never blocked", misspelled, bothRunning, patch, false, false, false},
+		{"misspelled, update of a running Pod: never blocked", misspelled, bothRunning, update, false, false, false},
 
-		// Not a validation error today: the sidecar image is not checked against
-		// a tag policy, and the default image itself is :latest. Pinned so that a
+		{"takeover without ack, fresh cluster: no takeover", takeoverNoAck, pvcsNoPods, create, false, false, false},
+		{"takeover without ack, evaluate of a running Pod: refused, no rollout", takeoverNoAck, bothRunning, evaluate, true, false, false},
+		{"takeover without ack, patch of a running Pod: no takeover injected", takeoverNoAck, bothRunning, patch, false, false, false},
+
+		// Not a validation error today: the sidecar image is not checked against a
+		// tag policy, and the default image itself is :latest. Pinned so that a
 		// future rule is a deliberate change to this table.
-		{"sidecarImage :latest is accepted (no rule yet)", latestImage, false,
-			lifecycle.OperatorOperationType_TYPE_CREATE, false, true, false},
+		{"sidecarImage :latest is accepted (no rule yet)", latestImage, noInstances, create, false, true, false},
 	}
 
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			req := &lifecycle.OperatorLifecycleRequest{
 				OperationType:     &lifecycle.OperatorOperationType{Type: c.op},
-				ClusterDefinition: mustJSON(t, testCluster(c.params, c.running)),
+				ClusterDefinition: mustJSON(t, testCluster(c.params, c.shape)),
 				ObjectDefinition:  mustJSON(t, testPod()),
 			}
 			resp, err := LifecycleImpl{}.LifecycleHook(context.Background(), req)
@@ -164,7 +185,7 @@ func TestSetStatusInClusterPublishesConfigErrors(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			raw, err := OperatorImpl{}.SetStatusInCluster(context.Background(),
-				&operator.SetStatusInClusterRequest{Cluster: mustJSON(t, testCluster(c.params, true))})
+				&operator.SetStatusInClusterRequest{Cluster: mustJSON(t, testCluster(c.params, bothRunning))})
 			if err != nil {
 				t.Fatalf("SetStatusInCluster: %v", err)
 			}

@@ -849,10 +849,11 @@ ok "plugin running — the -plugin image was PULLED and STARTED"
 #     Cluster has a quicksilver-mirror container. mode: takeover without the
 #     acknowledgement therefore never gets its readiness gate either.
 #
-# One instance each, deliberately. The operator writes .status.pluginStatus only
-# when its reconcile completes, and while the configuration is invalid the
-# plugin does not let a Cluster that already has an instance build another, so
-# a two-instance Cluster would never reach that write.
+# Two instances each. The primary is built without the mirror, and so is the
+# replica, which is what this proves: a Pod the operator is about to build is not
+# refused, and it gets no mirror. The operator writes .status.pluginStatus once
+# its reconcile completes, which needs both instances, so the status check below
+# also proves the reconcile is not stopped by the invalid configuration.
 INVALID_CLUSTERS=(misspelled-params takeover-no-ack)
 
 invalid_cluster() { # <name> <parameters, as YAML lines>
@@ -862,7 +863,7 @@ kind: Cluster
 metadata:
   name: $1
 spec:
-  instances: 1
+  instances: 2
   imageName: $STOCK_PG_IMAGE
   storage:
     size: 1Gi
@@ -891,13 +892,15 @@ await_plugin_status() { # <cluster> <expected text> <seconds>
   return 1
 }
 
-await_instance_pod() { # <cluster> <seconds>
-  local name=$1 deadline=$(( $(now) + $2 )) pods=""
+# Waits until <count> instance Pods exist, and says how many there were.
+await_instance_pods() { # <cluster> <count> <seconds>
+  local name=$1 want=$2 deadline=$(( $(now) + $3 )) n=0
   while [ "$(now)" -lt "$deadline" ]; do
-    pods=$(kc get pods -l "cnpg.io/podRole=instance,cnpg.io/cluster=$name" -o name 2>/dev/null)
-    if [ -n "$pods" ]; then return 0; fi
+    n=$(kc get pods -l "cnpg.io/podRole=instance,cnpg.io/cluster=$name" -o name 2>/dev/null | wc -l)
+    if [ "$n" -ge "$want" ]; then return 0; fi
     sleep 5
   done
+  echo "    instance Pods seen: $n of $want"
   return 1
 }
 
@@ -914,7 +917,7 @@ mirror_in_any_instance() { # <cluster>
 
 check_invalid() { # <cluster> <expected text>
   local name=$1 want=$2
-  if await_plugin_status "$name" "$want" 300; then
+  if await_plugin_status "$name" "$want" 420; then
     ok "$name: the plugin's status reports \"$want\""
   else
     bad "$name: the plugin never reported \"$want\" in its status, so the operator did not ask the plugin about this Cluster"
@@ -924,8 +927,8 @@ check_invalid() { # <cluster> <expected text>
   else
     bad "$name: the status does not say state: invalid configuration"
   fi
-  if ! await_instance_pod "$name" 300; then
-    bad "$name: no instance Pod was created, so the invalid configuration stopped the Cluster from starting"
+  if ! await_instance_pods "$name" 2 420; then
+    bad "$name: its two instance Pods were not both created, so the invalid configuration stopped the Cluster from starting or from being rebuilt"
   else
     mirror_in_any_instance "$name"
     case $? in

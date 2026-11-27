@@ -3,6 +3,7 @@ package plugin
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -105,7 +106,7 @@ func (LifecycleImpl) LifecycleHook(
 	// acknowledgement would inject the readiness gate that takes replicas out
 	// of -ro. Decide per operation, see invalidConfigResponse.
 	if faults := Validate(cluster, PluginParameters(cluster)); len(faults) > 0 {
-		return invalidConfigResponse(req.GetOperationType().GetType(), cluster, faults)
+		return invalidConfigResponse(req.GetOperationType().GetType(), cluster, pod.Name, faults)
 	}
 
 	mutated := pod.DeepCopy()
@@ -122,49 +123,53 @@ func (LifecycleImpl) LifecycleHook(
 }
 
 // invalidConfigResponse is what LifecycleHook does for a Pod when the Cluster's
-// Quicksilver configuration fails Validate. It is a deliberate trade between
-// two things the operator does with a hook result, both checked against the
-// operator source (CloudNativePG 1.26.0 and 1.30.0 behave the same here):
+// Quicksilver configuration fails Validate. The discriminator is whether the
+// Pod already exists, read from cluster.status.instancesStatus.
 //
-//   - An error from EVALUATE is how the operator's rollout check learns what a
-//     Pod should look like (internal/controller/cluster_upgrade.go,
-//     isPodNeedingRollout). That check logs a checker error and skips it, so an
-//     error here means "no rollout", and a running primary is not restarted.
-//     Returning an empty patch instead would evaluate the Pod WITHOUT the
-//     sidecar, the stored Pod spec would then differ, and every instance would
-//     be rolled to drop a mirror it had been running.
+// Why the status and not the Cluster as a whole: status.instances,
+// status.instanceNames and the PVC-derived lists are filled from PVCs, so an
+// instance whose PVC exists but whose Pod does not yet is already listed there
+// (pkg/reconciler/persistentvolumeclaim/status.go:216-229 in 1.30). A
+// Cluster-level "has instances" test therefore misreads a fresh Cluster as a
+// running one. instancesStatus is built from the Pods the operator listed in
+// this reconcile (ListStatusPods, api/v1/base_funcs.go:59, with terminating Pods
+// skipped), so it is the operator's own record of which Pods exist. It is
+// written in updateResourceStatus, before the instance creation and the
+// rollout checks of the same reconcile.
 //
-//   - An error from CREATE, or from EVALUATE while building a new instance
-//     (internal/controller/cluster_create.go, ensureInstancesAreCreated), stops
-//     that reconcile before finalizeReconciliation. The status that reports the
-//     fault is written there, so a refusal that aborts the reconcile would hide
-//     the reason. That is why a Cluster with no instances yet is built WITHOUT
-//     the mirror rather than refused: PostgreSQL comes up, the reconcile
-//     completes, and .status.pluginStatus says why there is no mirror.
+// The two callers that reach EVALUATE for a Pod are then told apart:
 //
-// So, per operation:
+//   - A Pod that is NOT in instancesStatus is being built (first instance,
+//     replacement, or a replica being joined). Its evaluated spec is the one the
+//     operator will create, so an empty patch builds it WITHOUT the mirror.
+//     PostgreSQL starts, the reconcile completes, and the status says why.
 //
-//   - CREATE and EVALUATE, Cluster with no instances: empty patch. The Pod runs
-//     PostgreSQL with no mirror. Nothing takes over.
-//   - CREATE and EVALUATE, Cluster that already has instances: an error. No
-//     new instance Pod is built and no rollout is planned, so the running
-//     database is left alone and the operator logs the reason on every pass.
-//   - PATCH and UPDATE: empty patch. The operator patches instance Pods for
-//     role labels on failover and switchover, and an error there would block
-//     the failover. Existing Pods keep whatever they already have.
+//   - A Pod that IS in instancesStatus is being compared with the spec the
+//     operator stored when it built that Pod: the rollout check
+//     (1.30 internal/controller/cluster_upgrade.go checkPodSpecIsOutdated;
+//     1.26 the same check at :380). An error there is logged and skipped by
+//     isPodNeedingRollout (1.30 cluster_upgrade.go:415-420; 1.26 :342-346), so
+//     the running instance is not rolled. An empty patch here would evaluate the
+//     Pod without the mirror it runs with, and every instance would be rolled to
+//     drop it, the primary included.
+//
+// PATCH and UPDATE get an empty patch always. The operator patches instance Pods
+// for role labels on failover and switchover (pkg/reconciler/instance/metadata.go:65,
+// through the extended client), and an error there would block the failover.
 //
 // The one thing this never does is inject the sidecar, so mode: takeover
 // without its acknowledgement cannot reach the readiness gate.
 func invalidConfigResponse(
 	op lifecycle.OperatorOperationType_Type,
 	cluster *apiv1.Cluster,
+	podName string,
 	faults []*operator.ValidationError,
 ) (*lifecycle.OperatorLifecycleResponse, error) {
 	switch op {
 	case lifecycle.OperatorOperationType_TYPE_CREATE, lifecycle.OperatorOperationType_TYPE_EVALUATE:
-		if clusterHasInstances(cluster) {
-			return nil, fmt.Errorf("quicksilver: not building an instance Pod for cluster %s/%s, "+
-				"its configuration is invalid: %s", cluster.Namespace, cluster.Name, describeFaults(faults))
+		if podIsListed(cluster, podName) {
+			return nil, fmt.Errorf("quicksilver: not re-evaluating running instance %s of cluster %s/%s, "+
+				"its configuration is invalid: %s", podName, cluster.Namespace, cluster.Name, describeFaults(faults))
 		}
 		return &lifecycle.OperatorLifecycleResponse{}, nil
 	default:
@@ -172,12 +177,15 @@ func invalidConfigResponse(
 	}
 }
 
-// clusterHasInstances reports whether the operator has already built instance
-// Pods for this Cluster. Before the first instance exists the operator's
-// status says so, and the check is only used to choose between the two
-// invalid-config outcomes above.
-func clusterHasInstances(cluster *apiv1.Cluster) bool {
-	return cluster.Status.Instances > 0 || len(cluster.Status.InstanceNames) > 0
+// podIsListed reports whether the operator's status lists the named Pod as an
+// existing, non-terminating instance.
+func podIsListed(cluster *apiv1.Cluster, podName string) bool {
+	for _, names := range cluster.Status.InstancesStatus {
+		if slices.Contains(names, podName) {
+			return true
+		}
+	}
+	return false
 }
 
 // describeFaults renders validation errors as one line for an error message.

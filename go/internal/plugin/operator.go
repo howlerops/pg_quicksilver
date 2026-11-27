@@ -214,9 +214,9 @@ func (OperatorImpl) SetStatusInCluster(
 	case len(faults) > 0:
 		st.State = StateInvalidConfig
 		st.ConfigErrors = configErrors(faults)
-		st.Message = "configuration is invalid, so Quicksilver adds no mirror to any instance Pod it " +
-			"builds, and does not change running Pods. A Cluster that already has instances gets no new " +
-			"instance Pods until this is fixed. Fix the parameters in configErrors."
+		st.Message = "configuration is invalid: Quicksilver adds no mirror to any instance Pod it builds, " +
+			"and leaves running instance Pods as they are (they keep their mirror and are not rolled). " +
+			"An instance Pod that is deleted is rebuilt without the mirror. Fix the parameters in configErrors."
 	case cfg.Mode == ModeOff:
 		st.State = StateValid
 		st.Message = "mode: off — no mirror is being built"
