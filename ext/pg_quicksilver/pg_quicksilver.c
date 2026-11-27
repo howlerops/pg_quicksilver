@@ -5413,7 +5413,9 @@ qs_decide(Query *orig, PlannedStmt *heap, const char *query_string, int cursorOp
 	ce = qs_cache_get(queryid);
 	if (ce && ce->negative && !(qs_route == QS_ROUTE_MIRROR && qs_allow_unsafe))
 	{
-		snprintf(detail, sizeof(detail), "%s (remembered)", ce->detail);
+		/* a long detail is cut so that the mark always fits: it is what says the mirror was not asked */
+		snprintf(detail, sizeof(detail), "%.*s (remembered)",
+				 (int) (sizeof(detail) - sizeof(" (remembered)")), ce->detail);
 		QS_HEAP(ce->reason, detail, NIL);
 	}
 
