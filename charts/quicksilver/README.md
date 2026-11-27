@@ -155,7 +155,9 @@ plugin parameter is set there, on the Cluster, not in this chart's values:
 | `database`, `credentialsSecret`, `slotName`, `publication`, `mirrorPath`, `ingest` | | [docs/16](https://github.com/howlerops/pg_quicksilver/blob/main/docs/16-deploying.md#enabling-it-on-a-cluster) |
 
 They are strings: `ducklake: "true"`, with the quotes. An unknown parameter or
-a value of the wrong kind is refused at admission. `slotName` is a prefix:
+a value of the wrong kind is not refused by the API server, because the operator does
+not ask a plugin at admission. It is reported as `state: invalid configuration` with
+`configErrors` in `.status.pluginStatus` (see [docs/16](https://github.com/howlerops/pg_quicksilver/blob/main/docs/16-deploying.md#what-the-plugin-refuses-and-what-it-does-instead)), and no mirror is built from it. `slotName` is a prefix:
 each instance Pod's sidecar has a replication slot of its own,
 `<slotName>_<pod name>`.
 

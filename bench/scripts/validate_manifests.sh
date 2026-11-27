@@ -161,7 +161,7 @@ for path in sorted(glob.glob("examples/*.yaml")):
     unknown = set(params) - known
     if unknown:
         # An example that the plugin's own validator would reject is worse than
-        # no example: it is a documented way to fail admission.
+        # no example: it is a documented way to get an invalid configuration.
         print(f"FAIL: {path} uses parameters the plugin rejects:", sorted(unknown)); bad = 1
         continue
     # Plugin parameters are map[string]string. `ducklake: true` without the

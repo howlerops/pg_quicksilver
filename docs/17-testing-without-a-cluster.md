@@ -149,8 +149,8 @@ Detecting a pruned field is a separate walk over the document, and it is now its
 own check — which is the one that actually catches a typo'd field name.
 
 A third check confirms every parameter in the example is one the plugin's own
-validator accepts, so the documented example cannot be a documented way to fail
-admission.
+validator accepts, so the documented example cannot be a documented way to get an
+invalid configuration.
 
 ---
 

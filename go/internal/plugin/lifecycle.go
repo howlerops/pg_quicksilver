@@ -9,9 +9,11 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 
+	apiv1 "github.com/cloudnative-pg/api/pkg/api/v1"
 	"github.com/cloudnative-pg/cnpg-i-machinery/pkg/pluginhelper/decoder"
 	"github.com/cloudnative-pg/cnpg-i-machinery/pkg/pluginhelper/object"
 	"github.com/cloudnative-pg/cnpg-i/pkg/lifecycle"
+	"github.com/cloudnative-pg/cnpg-i/pkg/operator"
 )
 
 // MirrorContainerName is the injected sidecar's container name. It is also the
@@ -96,6 +98,16 @@ func (LifecycleImpl) LifecycleHook(
 		return &lifecycle.OperatorLifecycleResponse{}, nil
 	}
 
+	// The operator never asks plugins to validate at admission (see
+	// Validate's callers in docs/16), so an invalid configuration arrives
+	// here as an ordinary Cluster. It must not reach MirrorSidecar: a
+	// misspelled parameter would be ignored, and mode: takeover without the
+	// acknowledgement would inject the readiness gate that takes replicas out
+	// of -ro. Decide per operation, see invalidConfigResponse.
+	if faults := Validate(cluster, PluginParameters(cluster)); len(faults) > 0 {
+		return invalidConfigResponse(req.GetOperationType().GetType(), cluster, faults)
+	}
+
 	mutated := pod.DeepCopy()
 	sidecar := MirrorSidecar(cluster.Name, cfg)
 	if err := object.InjectPluginSidecarInitContainer(mutated, sidecar, true); err != nil {
@@ -107,6 +119,75 @@ func (LifecycleImpl) LifecycleHook(
 		return nil, err
 	}
 	return &lifecycle.OperatorLifecycleResponse{JsonPatch: patch}, nil
+}
+
+// invalidConfigResponse is what LifecycleHook does for a Pod when the Cluster's
+// Quicksilver configuration fails Validate. It is a deliberate trade between
+// two things the operator does with a hook result, both checked against the
+// operator source (CloudNativePG 1.26.0 and 1.30.0 behave the same here):
+//
+//   - An error from EVALUATE is how the operator's rollout check learns what a
+//     Pod should look like (internal/controller/cluster_upgrade.go,
+//     isPodNeedingRollout). That check logs a checker error and skips it, so an
+//     error here means "no rollout", and a running primary is not restarted.
+//     Returning an empty patch instead would evaluate the Pod WITHOUT the
+//     sidecar, the stored Pod spec would then differ, and every instance would
+//     be rolled to drop a mirror it had been running.
+//
+//   - An error from CREATE, or from EVALUATE while building a new instance
+//     (internal/controller/cluster_create.go, ensureInstancesAreCreated), stops
+//     that reconcile before finalizeReconciliation. The status that reports the
+//     fault is written there, so a refusal that aborts the reconcile would hide
+//     the reason. That is why a Cluster with no instances yet is built WITHOUT
+//     the mirror rather than refused: PostgreSQL comes up, the reconcile
+//     completes, and .status.pluginStatus says why there is no mirror.
+//
+// So, per operation:
+//
+//   - CREATE and EVALUATE, Cluster with no instances: empty patch. The Pod runs
+//     PostgreSQL with no mirror. Nothing takes over.
+//   - CREATE and EVALUATE, Cluster that already has instances: an error. No
+//     new instance Pod is built and no rollout is planned, so the running
+//     database is left alone and the operator logs the reason on every pass.
+//   - PATCH and UPDATE: empty patch. The operator patches instance Pods for
+//     role labels on failover and switchover, and an error there would block
+//     the failover. Existing Pods keep whatever they already have.
+//
+// The one thing this never does is inject the sidecar, so mode: takeover
+// without its acknowledgement cannot reach the readiness gate.
+func invalidConfigResponse(
+	op lifecycle.OperatorOperationType_Type,
+	cluster *apiv1.Cluster,
+	faults []*operator.ValidationError,
+) (*lifecycle.OperatorLifecycleResponse, error) {
+	switch op {
+	case lifecycle.OperatorOperationType_TYPE_CREATE, lifecycle.OperatorOperationType_TYPE_EVALUATE:
+		if clusterHasInstances(cluster) {
+			return nil, fmt.Errorf("quicksilver: not building an instance Pod for cluster %s/%s, "+
+				"its configuration is invalid: %s", cluster.Namespace, cluster.Name, describeFaults(faults))
+		}
+		return &lifecycle.OperatorLifecycleResponse{}, nil
+	default:
+		return &lifecycle.OperatorLifecycleResponse{}, nil
+	}
+}
+
+// clusterHasInstances reports whether the operator has already built instance
+// Pods for this Cluster. Before the first instance exists the operator's
+// status says so, and the check is only used to choose between the two
+// invalid-config outcomes above.
+func clusterHasInstances(cluster *apiv1.Cluster) bool {
+	return cluster.Status.Instances > 0 || len(cluster.Status.InstanceNames) > 0
+}
+
+// describeFaults renders validation errors as one line for an error message.
+func describeFaults(faults []*operator.ValidationError) string {
+	parts := make([]string, 0, len(faults))
+	for _, f := range faults {
+		name := strings.Join(f.GetPathComponents(), ".")
+		parts = append(parts, fmt.Sprintf("%s (%s): %s", name, f.GetValue(), f.GetMessage()))
+	}
+	return strings.Join(parts, "; ")
 }
 
 // MirrorSidecar builds the container spec. Exported so the tests can assert on

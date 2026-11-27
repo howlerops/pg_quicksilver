@@ -142,7 +142,7 @@ attempt to read denied rows and columns.
 
 **Threshold:** enforced, or reliably detectable so we can refuse to mirror such tables.
 
-**If it fails:** the `ValidateClusterCreate` refusal from
+**If it fails:** the refusal from
 [06](06-compatibility-and-semantics.md#4-security) becomes permanent. That narrows the
 addressable market — many production tables use RLS — and must be stated plainly in the
 README rather than discovered by a user.
