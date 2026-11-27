@@ -99,7 +99,13 @@ PG_MODULE_MAGIC;
 #define QS_SCAN_NAME		"QuicksilverRoute"
 #define QS_DUCKDB_SCAN_NAME	"DuckDBScan"
 #define QS_GENERIC_PENALTY	1.0e10
-#define QS_DETAIL_LEN		200
+/*
+ * A decision's detail, and the reason it is built into. 200 bytes cut a stale
+ * mirror's message (relation name, two LSNs, a byte count and the max_lag
+ * sentence) in the middle of a word, and where it was cut moved with the digit
+ * counts of the LSNs, so the same decision printed differently from run to run.
+ */
+#define QS_DETAIL_LEN		512
 
 /* what a decision depends on in the session TimeZone (custom_private: the eighth element) */
 #define QS_ZONE_USED	1

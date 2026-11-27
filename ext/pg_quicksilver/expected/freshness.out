@@ -191,9 +191,9 @@ SELECT h.b, g.b FROM qt.h h JOIN qt.g g ON g.id = h.id ORDER BY h.id;
 (1 row)
 
 :last
- side |                         reason                          |                                                                                       detail                                                                                        
-------+---------------------------------------------------------+-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
- heap | this node is not a standby: its mirror is no longer fed | this node is not a standby: its mirror is no longer fed (qt.g: mirror is at N, this node is at N (N WAL bytes behind; quicksilver.max_lag = N routes only a mirror that has caught 
+ side |                         reason                          |                                                                                         detail                                                                                          
+------+---------------------------------------------------------+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ heap | this node is not a standby: its mirror is no longer fed | this node is not a standby: its mirror is no longer fed (qt.g: mirror is at N, this node is at N (N WAL bytes behind; quicksilver.max_lag = N routes only a mirror that has caught up))
 (1 row)
 
 SELECT quicksilver.report_applied_lsn('qt.g', pg_current_wal_insert_lsn() + 100000000);
@@ -231,9 +231,9 @@ SELECT b, count(*) FROM qt.h GROUP BY b;
 (1 row)
 
 :last
- side |                         reason                          |                                                                                       detail                                                                                        
-------+---------------------------------------------------------+-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
- heap | this node is not a standby: its mirror is no longer fed | this node is not a standby: its mirror is no longer fed (qt.h: mirror is at N, this node is at N (N WAL bytes behind; quicksilver.max_lag = N routes only a mirror that has caught 
+ side |                         reason                          |                                                                                         detail                                                                                          
+------+---------------------------------------------------------+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ heap | this node is not a standby: its mirror is no longer fed | this node is not a standby: its mirror is no longer fed (qt.h: mirror is at N, this node is at N (N WAL bytes behind; quicksilver.max_lag = N routes only a mirror that has caught up))
 (1 row)
 
 -- a mirror that is ahead of the node is not behind it
@@ -265,9 +265,9 @@ SELECT b, count(*) FROM qt.h GROUP BY b;
 (1 row)
 
 :last
- side |                         reason                          |                                                                                       detail                                                                                        
-------+---------------------------------------------------------+-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
- heap | this node is not a standby: its mirror is no longer fed | this node is not a standby: its mirror is no longer fed (qt.h: mirror is at N, this node is at N (N WAL bytes behind; quicksilver.max_lag = N routes only a mirror that has caught 
+ side |                         reason                          |                                                                                         detail                                                                                          
+------+---------------------------------------------------------+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ heap | this node is not a standby: its mirror is no longer fed | this node is not a standby: its mirror is no longer fed (qt.h: mirror is at N, this node is at N (N WAL bytes behind; quicksilver.max_lag = N routes only a mirror that has caught up))
 (1 row)
 
 SET quicksilver.freshness_wait = 0;
