@@ -100,6 +100,26 @@ SELECT quicksilver.report_applied_lsn('jd.note', pg_current_wal_lsn());
  
 (1 row)
 
+-- and this node reads each domain column complete. The registry rows say which
+-- columns are members; only the node's report lets a join compare their companions.
+SELECT quicksilver.report_join_complete('jd.cust', 'id', true);
+ report_join_complete 
+----------------------
+ 
+(1 row)
+
+SELECT quicksilver.report_join_complete('jd.ord', 'cust', true);
+ report_join_complete 
+----------------------
+ 
+(1 row)
+
+SELECT quicksilver.report_join_complete('jd.note', 'cust', true);
+ report_join_complete 
+----------------------
+ 
+(1 row)
+
 -- ---------------------------------------------------------------- the rewrite
 -- inner join: rewritten, and the same answer as the heap
 EXPLAIN (COSTS OFF) SELECT c.region, sum(o.amount) FROM jd.cust c JOIN jd.ord o ON o.cust = c.id GROUP BY c.region ORDER BY 1;
@@ -186,6 +206,67 @@ SELECT count(*) FROM jd.ord a JOIN jd.ord b ON a.cust = b.cust;
 (1 row)
 
 -- ---------------------------------------------------------------- not rewritten
+-- a column this node does not read complete: the registry row is there, the join is
+-- compared on the uuid columns, and the answer is the heap's
+SELECT quicksilver.report_join_complete('jd.ord', 'cust', false);
+ report_join_complete 
+----------------------
+ 
+(1 row)
+
+EXPLAIN (COSTS OFF) SELECT c.region, sum(o.amount) FROM jd.cust c JOIN jd.ord o ON o.cust = c.id GROUP BY c.region ORDER BY 1;
+                    QUERY PLAN                    
+--------------------------------------------------
+ Custom Scan (QuicksilverRoute)
+   Quicksilver: mirror
+   ->  Sort
+         Sort Key: c.region COLLATE "C"
+         ->  HashAggregate
+               Group Key: c.region
+               ->  Hash Join
+                     Hash Cond: (o.cust = c.id)
+                     ->  Seq Scan on ord o
+                     ->  Hash
+                           ->  Seq Scan on cust c
+(11 rows)
+
+SELECT c.region, sum(o.amount) FROM jd.cust c JOIN jd.ord o ON o.cust = c.id GROUP BY c.region ORDER BY 1;
+ region | sum 
+--------+-----
+ east   |  30
+ west   |  90
+(2 rows)
+
+:last
+  side  | reason |           detail           
+--------+--------+----------------------------
+ mirror | routed | quicksilver.route = mirror
+(1 row)
+
+-- reported again: rewritten again
+SELECT quicksilver.report_join_complete('jd.ord', 'cust', true);
+ report_join_complete 
+----------------------
+ 
+(1 row)
+
+EXPLAIN (COSTS OFF) SELECT c.region, sum(o.amount) FROM jd.cust c JOIN jd.ord o ON o.cust = c.id GROUP BY c.region ORDER BY 1;
+                    QUERY PLAN                    
+--------------------------------------------------
+ Custom Scan (QuicksilverRoute)
+   Quicksilver: mirror
+   Join keys: 1 rewritten to companions
+   ->  Sort
+         Sort Key: c.region COLLATE "C"
+         ->  HashAggregate
+               Group Key: c.region
+               ->  Hash Join
+                     Hash Cond: (o.cust = c.id)
+                     ->  Seq Scan on ord o
+                     ->  Hash
+                           ->  Seq Scan on cust c
+(12 rows)
+
 -- one side not in the domain (the registry row for orders.cust is gone)
 DELETE FROM quicksilver.join_domains WHERE heap = 'jd.ord'::regclass;
 EXPLAIN (COSTS OFF) SELECT c.region, sum(o.amount) FROM jd.cust c JOIN jd.ord o ON o.cust = c.id GROUP BY c.region ORDER BY 1;

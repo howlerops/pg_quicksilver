@@ -36,6 +36,14 @@ type LakeManifest struct {
 	Refusal string
 	Columns []LakeColumn
 	Files   []LakeFile
+	// JoinComplete lists the join domain member columns of this table whose
+	// companion every data file of the manifest carries (sorted). It is
+	// decided from the manifest, not from the table as it stands, so that the
+	// sidecar can say what a reader of the lake will see (joindomain.go).
+	JoinComplete []string
+	// JoinMembers lists every join domain member column of this table that is
+	// configured, complete or not (sorted). Set even for a refusal.
+	JoinMembers []string
 	// Err is set when the manifest could not be described (a vector the
 	// manifest names could not be read). The publisher must not publish it.
 	Err error
@@ -119,6 +127,7 @@ func (t *Table) describe(st *State, refusal string) *LakeManifest {
 		Schema: schema, Table: name, Dir: t.Dir,
 		Seq: st.Seq, AppliedLSN: st.AppliedLSN, Refusal: refusal,
 	}
+	m.JoinMembers = t.joinColumns()
 	if refusal != "" {
 		return m
 	}
@@ -133,15 +142,19 @@ func (t *Table) describe(st *State, refusal string) *LakeManifest {
 		}
 		m.Columns = append(m.Columns, col)
 	}
-	// A join domain's companion is declared only once every file that carries
-	// its column carries it too (joindomain.go). Until then the lake does not
-	// know the companion exists, and the files that have one are read by their
-	// logical columns alone.
+	// Every join domain member's companion is declared, from the moment the
+	// domain is configured, whether or not every file carries it. A file that
+	// does not carry it reads it as NULL (the column's initial default), and
+	// the mirror relation that exposes it keeps one definition on every node.
+	// Whether a NULL here can be compared is not the lake's business: that is
+	// JoinComplete, which the sidecar reports per node, and the extension's
+	// join rewrite reads only where it says complete (docs/40, "Join keys").
 	for _, col := range t.joinColumns() {
+		m.Columns = append(m.Columns, LakeColumn{
+			Name: companionName(col), PGType: "bigint", Type: arrow.PrimitiveTypes.Int64,
+		})
 		if t.domainCompleteIn(st, col) {
-			m.Columns = append(m.Columns, LakeColumn{
-				Name: companionName(col), PGType: "bigint", Type: arrow.PrimitiveTypes.Int64,
-			})
+			m.JoinComplete = append(m.JoinComplete, col)
 		}
 	}
 	live := map[string]bool{}

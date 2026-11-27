@@ -187,6 +187,7 @@ typedef enum
 	QR_FALLBACK,
 	QR_UNCONFINED,
 	QR_LAKE_NOT_ATTACHED,
+	QR_JOIN_INCOMPLETE,
 	QR_NREASONS
 } QsReason;
 
@@ -211,6 +212,7 @@ static const char *const qs_reason_names[QR_NREASONS] = {
 	"mirror failed at execution; answered from the heap",
 	"the role is not a superuser (see docs/40)",
 	"lake is not attached on this node (see the detail)",
+	"a join domain column is not complete on this node",
 };
 
 /* ---------------------------------------------------------------- shared memory */
@@ -245,17 +247,50 @@ typedef struct QsLsnEntry
 	TimestampTz at;
 } QsLsnEntry;
 
+/*
+ * A join domain column this node reports complete (quicksilver.report_join_complete).
+ * An entry exists only while its column is complete: an incomplete report removes it.
+ * The epoch is unique per insertion (QsShared.join_seq), so a scan that compared the
+ * column under one epoch sees another after any report in between, even one that was
+ * followed by a complete report again. Nothing here survives a postmaster restart.
+ */
+typedef struct QsJoinKey
+{
+	Oid			dbid;
+	Oid			relid;
+	char		column[NAMEDATALEN];
+} QsJoinKey;
+
+typedef struct QsJoinEntry
+{
+	QsJoinKey	key;
+	uint64		epoch;
+} QsJoinEntry;
+
+#define QS_JOIN_MAX 1024
+
+/* A join column a scan compares as companions, with the epoch its report had when checked. */
+typedef struct QsJoinSeen
+{
+	Oid			relid;
+	char		column[NAMEDATALEN];
+	uint64		epoch;
+} QsJoinSeen;
+
 typedef struct QsShared
 {
 	LWLock	   *lock;
 	pg_atomic_uint64 reasons[QR_NREASONS];
 	pg_atomic_uint64 dropped;
 	ConditionVariable reported;	/* an applied LSN was reported: wakes statements waiting for their mirror */
+	pg_atomic_uint64 join_gen;	/* moves whenever a join column is reported complete or incomplete */
+	uint64		join_seq;		/* under the lock: the epoch of the last column made complete */
 } QsShared;
 
 static QsShared *qs_shared = NULL;
 static HTAB *qs_stat_hash = NULL;
 static HTAB *qs_lsn_hash = NULL;
+static HTAB *qs_join_hash = NULL;
 
 #define QS_LSN_MAX 1024
 
@@ -337,6 +372,7 @@ typedef struct QsJoinExp
 	AttrNumber	attno;			/* the heap column */
 	char	   *domain;
 	char	   *companion;
+	char	   *column;			/* the heap column's name: the join report is keyed by it */
 	AttrNumber	resno;
 } QsJoinExp;
 
@@ -391,6 +427,7 @@ static Oid	qs_joins_relid = InvalidOid;
 static List *qs_join_rows = NIL;	/* QsJoinRow, in qs_cache_cxt */
 static bool qs_join_domains = true;	/* quicksilver.join_domains */
 static int	qs_join_keys_now = 0;	/* rewritten by the decision being made: EXPLAIN */
+static List *qs_join_used_now = NIL;	/* the join domain columns those rewrites compare: (heap oid, column) */
 
 /*
  * The one operator the rewrite compares companions with: =(bigint,bigint), and
@@ -529,6 +566,7 @@ void		_PG_init(void);
 
 PG_FUNCTION_INFO_V1(qs_changed);
 PG_FUNCTION_INFO_V1(qs_report_applied_lsn);
+PG_FUNCTION_INFO_V1(qs_report_join_complete);
 PG_FUNCTION_INFO_V1(qs_mirror_status);
 PG_FUNCTION_INFO_V1(qs_check);
 PG_FUNCTION_INFO_V1(qs_last_decision);
@@ -1144,6 +1182,7 @@ qs_build_mirror(QsMirror *m)
 			QsJoinExp  *je = palloc0(sizeof(QsJoinExp));
 
 			je->attno = hattno;
+			je->column = pstrdup(jr->column);
 			je->domain = pstrdup(jr->domain);
 			je->companion = pstrdup(jr->companion);
 			joinx = lappend(joinx, je);
@@ -3130,6 +3169,65 @@ qs_cost(PlannedStmt *stmt, QsCost *c)
 		qs_cost_walk((Plan *) lfirst(lc), 1.0, 1.0, c);
 }
 
+/* ---------------------------------------------------------------- join domain completeness */
+
+/*
+ * Whether this node reports the join domain column of the heap complete, and its epoch if
+ * so (epoch may be NULL). An absent column is not complete: that is also what a node that
+ * has never been told, or was restarted, says.
+ */
+static bool
+qs_join_complete_now(Oid relid, const char *column, uint64 *epoch)
+{
+	QsJoinKey	key;
+	QsJoinEntry *e;
+	bool		ok;
+
+	if (!qs_shared || !qs_join_hash)
+		return false;
+	memset(&key, 0, sizeof(key));
+	key.dbid = MyDatabaseId;
+	key.relid = relid;
+	strlcpy(key.column, column, sizeof(key.column));
+	LWLockAcquire(qs_shared->lock, LW_SHARED);
+	e = hash_search(qs_join_hash, &key, HASH_FIND, NULL);
+	ok = (e != NULL);
+	if (ok && epoch)
+		*epoch = e->epoch;
+	LWLockRelease(qs_shared->lock);
+	return ok;
+}
+
+/*
+ * A scan that compared join columns checks them again before it hands on each row, and at
+ * the end of its rows. The shared counter is read first, so a report made after that read
+ * is seen by the next check: when the counter has not moved there is nothing to look at.
+ * A column that is no longer complete, or was reported again since the scan began, is an
+ * error. The rows that were already returned were read from complete companions; the next
+ * row may not be, so the statement stops rather than give it.
+ */
+static void
+qs_join_recheck(List *seen, uint64 *seen_gen)
+{
+	uint64		gen = pg_atomic_read_u64(&qs_shared->join_gen);
+	ListCell   *lc;
+
+	if (gen == *seen_gen)
+		return;
+	foreach(lc, seen)
+	{
+		QsJoinSeen *j = (QsJoinSeen *) lfirst(lc);
+		uint64		epoch = 0;
+
+		if (!qs_join_complete_now(j->relid, j->column, &epoch) || epoch != j->epoch)
+			ereport(ERROR,
+					(errcode(ERRCODE_T_R_SERIALIZATION_FAILURE),
+					 errmsg("a join domain column changed while this statement ran"),
+					 errhint("The statement can be run again.")));
+	}
+	*seen_gen = gen;
+}
+
 /* ---------------------------------------------------------------- freshness */
 
 static XLogRecPtr
@@ -3783,6 +3881,8 @@ typedef struct QsScanState
 	instr_time	mirror_time;
 	double		waited_ms;
 	char	   *mirror_plan_text;
+	List	   *join_seen;		/* QsJoinSeen: the columns this scan compares, checked when it began */
+	uint64		join_gen;		/* qs_shared->join_gen when join_seen was last verified */
 } QsScanState;
 
 static bool
@@ -4010,6 +4110,8 @@ qs_combine(PlannedStmt *heap, PlannedStmt *mirror, uint64 queryid, const char *r
 									makeString(psprintf(UINT64_FORMAT, queryid)), heap_relids);
 	/* sixth: the join keys rewritten to companions (EXPLAIN) */
 	cs->custom_private = lappend(cs->custom_private, makeInteger(qs_join_keys_now));
+	/* seventh: each join column the rewrites compare, as (heap oid, column name) */
+	cs->custom_private = lappend(cs->custom_private, qs_join_used_now);
 	cs->methods = &qs_scan_methods;
 
 	heap->planTree = (Plan *) cs;
@@ -4470,6 +4572,7 @@ qs_begin_scan(CustomScanState *node, EState *estate, int eflags)
 	{
 		const char *why = NULL;
 		char		stale[QS_DETAIL_LEN];
+		bool		join_failed = false;
 		int			state = qs_state_blocks(&why);
 
 		if (state >= 0 && why == NULL)
@@ -4510,9 +4613,39 @@ qs_begin_scan(CustomScanState *node, EState *estate, int eflags)
 			else
 				st->waited_ms = qs_gated_waited_ms;
 		}
+		/*
+		 * The join rewrites compare companions, so each column they use must be complete on
+		 * this node now: the plan was made from the report of an earlier moment. A column
+		 * that is not answers from the heap, and it is never read from the mirror.
+		 */
+		if (why == NULL && list_length(cs->custom_private) > 6)
+		{
+			ListCell   *lj;
+			uint64		gen = qs_shared ? pg_atomic_read_u64(&qs_shared->join_gen) : 0;
+
+			foreach(lj, (List *) list_nth(cs->custom_private, 6))
+			{
+				List	   *pair = (List *) lfirst(lj);
+				QsJoinSeen *j = palloc0(sizeof(QsJoinSeen));
+
+				j->relid = (Oid) intVal(linitial(pair));
+				strlcpy(j->column, strVal(lsecond(pair)), sizeof(j->column));
+				if (!qs_join_complete_now(j->relid, j->column, &j->epoch))
+				{
+					strlcpy(stale, "a join domain column is not complete on this node", sizeof(stale));
+					why = stale;
+					state = QR_JOIN_INCOMPLETE;
+					join_failed = true;
+					st->join_seen = NIL;
+					break;
+				}
+				st->join_seen = lappend(st->join_seen, j);
+			}
+			st->join_gen = gen;
+		}
 		if (why)
 		{
-			if (!st->can_fallback && !qs_fallback)
+			if (!st->can_fallback && !qs_fallback && !join_failed)
 				why = NULL;		/* the user asked for the mirror's errors, not the heap */
 			else if (!st->can_fallback)
 				ereport(ERROR,
@@ -4546,8 +4679,22 @@ qs_begin_scan(CustomScanState *node, EState *estate, int eflags)
 		qs_mirror_drain(st, true);
 }
 
+static TupleTableSlot *qs_exec_scan_rows(CustomScanState *node);
+
+/* Every row, and the end of the rows, is checked against the join reports (qs_join_recheck). */
 static TupleTableSlot *
 qs_exec_scan(CustomScanState *node)
+{
+	QsScanState *st = (QsScanState *) node;
+	TupleTableSlot *slot = qs_exec_scan_rows(node);
+
+	if (st->join_seen != NIL)
+		qs_join_recheck(st->join_seen, &st->join_gen);
+	return slot;
+}
+
+static TupleTableSlot *
+qs_exec_scan_rows(CustomScanState *node)
 {
 	QsScanState *st = (QsScanState *) node;
 	TupleTableSlot *slot = node->ss.ss_ScanTupleSlot;
@@ -4902,7 +5049,7 @@ qs_join_query(Query *q, List **out)
  * nodes are still the ones in that statement. Returns how many were rewritten.
  */
 static int
-qs_join_apply(List *cands)
+qs_join_apply(List *cands, List **used)
 {
 	ListCell   *lc;
 	int			n = 0;
@@ -4918,6 +5065,16 @@ qs_join_apply(List *cands)
 
 		if (ea == NULL || eb == NULL || strcmp(ea->domain, eb->domain) != 0)
 			continue;
+		/*
+		 * Both companions must be complete on this node now: a file that lacks one
+		 * reads NULL for it, and a NULL never compares equal. qs_begin_scan checks
+		 * this again, when the plan is run, and the scan checks it while it runs.
+		 */
+		if (!qs_join_complete_now(c->ma->heap, ea->column, NULL) ||
+			!qs_join_complete_now(c->mb->heap, eb->column, NULL))
+			continue;
+		*used = lappend(*used, list_make2(makeInteger((int) c->ma->heap), makeString(pstrdup(ea->column))));
+		*used = lappend(*used, list_make2(makeInteger((int) c->mb->heap), makeString(pstrdup(eb->column))));
 		c->op->opno = QS_OID_INT8EQ;
 		c->op->opfuncid = get_opcode(QS_OID_INT8EQ);
 		c->op->args = list_make2(makeVar(c->rta, ea->resno, INT8OID, -1, InvalidOid, 0),
@@ -4996,6 +5153,7 @@ qs_decide(Query *orig, PlannedStmt *heap, const char *query_string, int cursorOp
 	List	   *heap_relids = NIL;
 	List	   *join_cands = NIL;
 	int			join_rewrites = 0;
+	List	   *join_used = NIL;
 
 	detail[0] = '\0';
 	qs_cost(heap, &cost);
@@ -5211,7 +5369,7 @@ qs_decide(Query *orig, PlannedStmt *heap, const char *query_string, int cursorOp
 	subst.companions = join_cands != NIL;
 	qs_subst_query(mq, &subst);
 	if (!subst.failed && join_cands != NIL)
-		join_rewrites = qs_join_apply(join_cands);
+		join_rewrites = qs_join_apply(join_cands, &join_used);
 	if (!subst.failed && w.has_extern_param)
 		mq = (Query *) qs_param_mutator((Node *) mq, &subst);
 	if (subst.failed || generation != qs_load_count || !qs_cache_valid)
@@ -5223,6 +5381,7 @@ qs_decide(Query *orig, PlannedStmt *heap, const char *query_string, int cursorOp
 	}
 	qs_relids_walker((Node *) mq, &mirror_relids);
 	qs_join_keys_now = join_rewrites;
+	qs_join_used_now = join_used;
 	foreach(lc, w.mirrors)
 		heap_relids = lappend_oid(heap_relids, ((QsMirror *) lfirst(lc))->heap);
 
@@ -5774,6 +5933,53 @@ qs_report_applied_lsn_impl(PG_FUNCTION_ARGS)
 	PG_RETURN_VOID();
 }
 
+/*
+ * quicksilver.report_join_complete(heap, column, complete): this node's report of a join
+ * domain column (docs/40, "Join keys"). Shared memory of this server, so a report made on
+ * one node says nothing about another. Only a standby reports complete: a node that is not
+ * the sidecar (go/cmd/qs-mirror, extension.go) reports incomplete on a node that is no
+ * longer a standby, so that a promoted node does not keep the reports of its standby days.
+ */
+Datum
+qs_report_join_complete(PG_FUNCTION_ARGS)
+{
+	Oid			relid = PG_GETARG_OID(0);
+	Name		column = PG_GETARG_NAME(1);
+	bool		complete = PG_GETARG_BOOL(2);
+	QsJoinKey	key;
+	QsJoinEntry *e;
+	bool		found;
+
+	if (!qs_shared)
+		ereport(ERROR, (errmsg("pg_quicksilver must be in shared_preload_libraries")));
+	memset(&key, 0, sizeof(key));
+	key.dbid = MyDatabaseId;
+	key.relid = relid;
+	strlcpy(key.column, NameStr(*column), sizeof(key.column));
+	LWLockAcquire(qs_shared->lock, LW_EXCLUSIVE);
+	if (!complete)
+	{
+		if (hash_search(qs_join_hash, &key, HASH_REMOVE, NULL) != NULL)
+			pg_atomic_fetch_add_u64(&qs_shared->join_gen, 1);
+	}
+	else
+	{
+		e = hash_search(qs_join_hash, &key, HASH_ENTER_NULL, &found);
+		if (e == NULL)
+		{
+			LWLockRelease(qs_shared->lock);
+			ereport(ERROR, (errmsg("too many complete join domain columns (%d)", QS_JOIN_MAX)));
+		}
+		if (!found)
+		{
+			e->epoch = ++qs_shared->join_seq;
+			pg_atomic_fetch_add_u64(&qs_shared->join_gen, 1);
+		}
+	}
+	LWLockRelease(qs_shared->lock);
+	PG_RETURN_VOID();
+}
+
 static Datum qs_mirror_status_impl(PG_FUNCTION_ARGS);
 
 Datum
@@ -6240,6 +6446,7 @@ qs_shmem_size(void)
 
 	size = add_size(size, hash_estimate_size(qs_stats_max, sizeof(QsStatEntry)));
 	size = add_size(size, hash_estimate_size(QS_LSN_MAX, sizeof(QsLsnEntry)));
+	size = add_size(size, hash_estimate_size(QS_JOIN_MAX, sizeof(QsJoinEntry)));
 	return size;
 }
 
@@ -6268,6 +6475,7 @@ qs_shmem_startup(void)
 		for (int i = 0; i < QR_NREASONS; i++)
 			pg_atomic_init_u64(&qs_shared->reasons[i], 0);
 		pg_atomic_init_u64(&qs_shared->dropped, 0);
+		pg_atomic_init_u64(&qs_shared->join_gen, 0);
 		ConditionVariableInit(&qs_shared->reported);
 		qs_shared->lock = &(GetNamedLWLockTranche("pg_quicksilver"))->lock;
 	}
@@ -6281,6 +6489,11 @@ qs_shmem_startup(void)
 	ctl.entrysize = sizeof(QsLsnEntry);
 	qs_lsn_hash = ShmemInitHash("pg_quicksilver applied LSNs", QS_LSN_MAX, QS_LSN_MAX, &ctl,
 								HASH_ELEM | HASH_BLOBS);
+	memset(&ctl, 0, sizeof(ctl));
+	ctl.keysize = sizeof(QsJoinKey);
+	ctl.entrysize = sizeof(QsJoinEntry);
+	qs_join_hash = ShmemInitHash("pg_quicksilver complete join columns", QS_JOIN_MAX, QS_JOIN_MAX, &ctl,
+								 HASH_ELEM | HASH_BLOBS);
 	LWLockRelease(AddinShmemInitLock);
 }
 

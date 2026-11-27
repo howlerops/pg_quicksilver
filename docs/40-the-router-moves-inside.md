@@ -1396,8 +1396,8 @@ and its denial cases are refused (`bench/results/pg_duckdb_1.2.2_confinement.txt
 
 A join on two uuid columns is compared on the mirror as the sidecar's integer
 companions when both columns are in one join domain (docs/16, "Join domains"):
-`quicksilver.join_domains` holds the columns and their companions, written by
-the sidecar in step with the mirror relations. A companion is exposed by a
+`quicksilver.join_domains` holds the configured columns and their companions,
+written by the sidecar once per configuration, not per file. A companion is exposed by a
 mirror relation after the heap's columns, and only for a statement that can
 use it; a whole-row reference is never routed, so a companion cannot appear
 in a record. Only the join comparison changes. The uuid columns are still
@@ -1408,7 +1408,7 @@ columns of two different mirrored relations of the same query level, both in
 one domain, in a join condition or as an AND-ed WHERE conjunct, including
 inside a FROM subquery (each level has its own range table). Not rewritten:
 sublinks (IN, EXISTS), a cast on either side, any other operator, a column
-outside the domain, a column whose companion is not complete. The GUC
+outside the domain, a column this node does not report complete. The GUC
 `quicksilver.join_domains = off` disables the rewrite; EXPLAIN shows
 `Join keys: N rewritten to companions` when N > 0.
 
@@ -1423,8 +1423,25 @@ corpus (1,217 statements, 498 routed).
 
 Under writes that change the join keys, the answer stayed equal to the heap at
 every known-LSN check (`validate/real/joinchurn.py`). When the domain passes its
-key cap it becomes incomplete, its rows leave the registry, and the statements
-go on being routed without the rewrite.
+key cap it becomes incomplete on that node: the node reports the column
+incomplete before the manifest that carries the NULL companions is published,
+its registry row stays, and the statements go on being routed without the
+rewrite.
+
+Completeness is per node, and the report lives in that node's shared memory
+(`quicksilver.report_join_complete(heap, column, complete)`, granted as
+`report_applied_lsn` is). It is not persisted: after a restart, or with no
+report, a column is not complete. A report of complete is only made for a
+published manifest that is complete for the column, and an incomplete manifest
+is preceded by its incomplete report (sidecar, `beforePublish`). A scan that
+compared a column checks, before it hands on each row and at the end of its
+rows, that the column's report has not changed since it began; if it has, the
+statement fails with "a join domain column changed while this statement ran",
+and it can be run again. Rows already returned were read from complete
+companions. Measured (`validate/real/joinnodes.py`, one standby, 120 s, four
+routed workers while a superuser flipped the report 793 times): 17,284 routed
+answers equal to the heap, 1,240 of them ended with that error, and no
+registry row was inserted or deleted.
 
 Not done: a jsonb column in any table a join reads keeps the join on the heap.
 The walk visits the join's alias variables, and a jsonb one among them refuses

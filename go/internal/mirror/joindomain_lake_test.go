@@ -80,9 +80,23 @@ func TestJoinDomainLakeWaitsForCompleteness(t *testing.T) {
 	if things.DomainComplete("ref") {
 		t.Fatal("an old file without the column, under a non-NULL default, counted as complete")
 	}
-	for _, c := range lakeDeclared(t, things) {
+	// The companion is declared whenever the domain is configured (the mirror
+	// relation keeps one definition on every node), but the manifest does not
+	// call the column complete: that is what the sidecar reports.
+	m := things.LakeManifest()
+	declared := false
+	for _, c := range m.Columns {
 		if c.Name == "__qs_d_ref" {
-			t.Fatal("an incomplete companion was declared to the lake")
+			declared = true
 		}
+	}
+	if !declared {
+		t.Fatal("a configured companion is not declared to the lake")
+	}
+	if len(m.JoinComplete) != 0 {
+		t.Fatalf("JoinComplete = %v for an incomplete table, want none", m.JoinComplete)
+	}
+	if len(m.JoinMembers) != 1 || m.JoinMembers[0] != "ref" {
+		t.Fatalf("JoinMembers = %v, want [ref]", m.JoinMembers)
 	}
 }

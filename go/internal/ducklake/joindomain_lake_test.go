@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"math/rand"
-	"strings"
 	"testing"
 	"time"
 
@@ -220,10 +219,18 @@ func TestJoinDomainIncompleteStillReads(t *testing.T) {
 	if err != nil || cnt[0][0] != "700" {
 		t.Fatalf("lake orders: %v (%v), want 700 rows", cnt, err)
 	}
-	if _, err := rd.query(false, `SELECT count(*) FROM lake.public.orders WHERE "__qs_d_customer_id" IS NOT NULL`); err == nil {
-		t.Fatal("the lake exposes a companion that is not declared while incomplete")
-	} else if !strings.Contains(err.Error(), "__qs_d_customer_id") {
-		t.Fatalf("unexpected error reading the undeclared companion: %v", err)
+	// The companion is declared, and the base written without it reads NULL.
+	// The sidecar, not the lake, keeps a join from comparing those NULLs. Of
+	// the 700 orders every fifth has a NULL customer: 400 base rows read NULL
+	// for the companion (no file carries it), and 60 of the 300 delta rows
+	// carry a NULL member, so 460 NULL companions and 240 set.
+	nulls, err := rd.query(false, `SELECT count(*) FROM lake.public.orders WHERE "__qs_d_customer_id" IS NULL`)
+	if err != nil || nulls[0][0] != "460" {
+		t.Fatalf("companion NULLs: %v (%v), want 460", nulls, err)
+	}
+	set, err := rd.query(false, `SELECT count(*) FROM lake.public.orders WHERE "__qs_d_customer_id" IS NOT NULL`)
+	if err != nil || set[0][0] != "240" {
+		t.Fatalf("companions set: %v (%v), want 240", set, err)
 	}
 
 	// A rewrite completes the domain, and the companion is then declared and read.

@@ -183,6 +183,7 @@ func main() {
 	ext = newExtLink(log, o)
 	h.AddMetrics(ext.Metrics)
 	go ext.run(ctx)
+	go ext.runJoins(ctx)
 	h.AddMetrics(pumpWakes.Metrics)
 	h.AddMetrics(spool.Metrics)
 	h.AddMetrics(legacy.Metrics)

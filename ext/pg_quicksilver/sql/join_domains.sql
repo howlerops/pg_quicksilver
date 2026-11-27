@@ -73,6 +73,11 @@ INSERT INTO quicksilver.join_domains VALUES
 SELECT quicksilver.report_applied_lsn('jd.cust', pg_current_wal_lsn());
 SELECT quicksilver.report_applied_lsn('jd.ord', pg_current_wal_lsn());
 SELECT quicksilver.report_applied_lsn('jd.note', pg_current_wal_lsn());
+-- and this node reads each domain column complete. The registry rows say which
+-- columns are members; only the node's report lets a join compare their companions.
+SELECT quicksilver.report_join_complete('jd.cust', 'id', true);
+SELECT quicksilver.report_join_complete('jd.ord', 'cust', true);
+SELECT quicksilver.report_join_complete('jd.note', 'cust', true);
 
 -- ---------------------------------------------------------------- the rewrite
 -- inner join: rewritten, and the same answer as the heap
@@ -93,6 +98,16 @@ SELECT count(*) FROM jd.ord a JOIN jd.ord b ON a.cust = b.cust;
 :last
 
 -- ---------------------------------------------------------------- not rewritten
+-- a column this node does not read complete: the registry row is there, the join is
+-- compared on the uuid columns, and the answer is the heap's
+SELECT quicksilver.report_join_complete('jd.ord', 'cust', false);
+EXPLAIN (COSTS OFF) SELECT c.region, sum(o.amount) FROM jd.cust c JOIN jd.ord o ON o.cust = c.id GROUP BY c.region ORDER BY 1;
+SELECT c.region, sum(o.amount) FROM jd.cust c JOIN jd.ord o ON o.cust = c.id GROUP BY c.region ORDER BY 1;
+:last
+-- reported again: rewritten again
+SELECT quicksilver.report_join_complete('jd.ord', 'cust', true);
+EXPLAIN (COSTS OFF) SELECT c.region, sum(o.amount) FROM jd.cust c JOIN jd.ord o ON o.cust = c.id GROUP BY c.region ORDER BY 1;
+
 -- one side not in the domain (the registry row for orders.cust is gone)
 DELETE FROM quicksilver.join_domains WHERE heap = 'jd.ord'::regclass;
 EXPLAIN (COSTS OFF) SELECT c.region, sum(o.amount) FROM jd.cust c JOIN jd.ord o ON o.cust = c.id GROUP BY c.region ORDER BY 1;

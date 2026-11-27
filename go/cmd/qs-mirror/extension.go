@@ -103,11 +103,26 @@ type extLink struct {
 	present   bool
 	saidWhy   string
 	lastHalt  string
-	// lastJoins is the join domain columns the last observe saw complete, and
+	// lastJoins is the join domain configuration the last observe saw, and
 	// haveJoins says the primary has quicksilver.join_domains (an extension
 	// older than it has none, and the mirror then carries no companions).
 	lastJoins string
 	haveJoins bool
+
+	// Join domain completeness, this node's half (see the join report below).
+	// jdCfg, jdPub and jdPend are under mu; the connection and what was last
+	// sent are under jdMu, which every report and every flip takes.
+	jdCfg       map[string][]string        // configured member columns by table
+	jdPub       map[string]map[string]bool // complete columns of the manifest the lake serves
+	jdPend      map[string]map[string]bool // columns a manifest being published is incomplete for
+	jdMu        sync.Mutex
+	jdConn      *pgx.Conn
+	jdSent      map[joinKey]bool
+	jdSentAt    time.Time
+	jdAbsent    bool
+	jdAbsentAt  time.Time
+	jdLastErr   string
+	sendJoinsFn func(map[joinKey]bool) error // tests only; nil sends to the local server
 
 	// what the last report said, for the tests and for /metrics
 	reported map[string]string
@@ -134,6 +149,8 @@ func newExtLink(log *slog.Logger, o options) *extLink {
 	e := &extLink{log: log, o: o, dirty: true,
 		schema:  env("QS_EXTENSION_SCHEMA", "quicksilver_mirror"),
 		blocked: map[string]bool{}, known: map[string]bool{}, reported: map[string]string{},
+		jdCfg: map[string][]string{}, jdPub: map[string]map[string]bool{},
+		jdPend: map[string]map[string]bool{}, jdSent: map[joinKey]bool{},
 		nudge: make(chan struct{}, 1)}
 	switch strings.ToLower(strings.TrimSpace(os.Getenv("QS_EXTENSION"))) {
 	case "off", "0", "false", "no":
@@ -181,32 +198,46 @@ func (e *extLink) observe(tables map[string]*mirror.Table) {
 		// a halted table leaves the registry, a rebuilt one returns: at the next tick, not the next retry
 		e.lastHalt, e.dirty, e.checkedAt = s, true, time.Time{}
 	}
-	// A join domain column becoming complete (or stopping) changes the registry
-	// the same way: its companion is exposed, or it is not, at the next tick.
+	// The join domain configuration changes the registry: its companion is
+	// exposed, or it is not, at the next tick. Completeness does not (joinSig).
 	if s := joinSig(joinsWanted(tables)); s != e.lastJoins {
 		e.lastJoins, e.dirty, e.checkedAt = s, true, time.Time{}
 	}
+	e.mu.Lock()
+	for q, t := range tables {
+		var cols []string
+		for _, m := range t.JoinMemberships() {
+			cols = append(cols, m.Column)
+		}
+		if len(cols) == 0 {
+			delete(e.jdCfg, q)
+		} else {
+			e.jdCfg[q] = cols
+		}
+	}
+	e.mu.Unlock()
 }
 
-// extJoin is a join domain column the mirror exposes: the heap column, its
-// domain, and the companion the lake declares for it. Only complete columns
-// are here: the lake declares a companion only for those.
+// extJoin is a join domain member column the mirror exposes: the heap column,
+// its domain, and its companion. The companion is exposed for every configured
+// member, whether or not every file carries it (a file that does not reads it
+// as NULL). Whether a node may compare companions is that node's report, not
+// the registry's (see the join report below).
 type extJoin struct {
 	Column, Domain, Companion string
 }
 
-// joinsWanted is the complete join domain columns of every table that is not
-// halted, by qualified name, in column order.
+// joinsWanted is the configured join domain columns of every table that is not
+// halted, by qualified name, in column order. It depends on the configuration
+// only: a column does not leave the registry because its files are incomplete.
 func joinsWanted(tables map[string]*mirror.Table) map[string][]extJoin {
 	out := map[string][]extJoin{}
 	for q, t := range tables {
 		if t.Halted() != "" {
 			continue
 		}
-		for _, dc := range t.DomainColumns() {
-			if dc.Complete {
-				out[q] = append(out[q], extJoin{Column: dc.Column, Domain: dc.Domain, Companion: dc.Companion})
-			}
+		for _, m := range t.JoinMemberships() {
+			out[q] = append(out[q], extJoin{Column: m.Column, Domain: m.Domain, Companion: m.Companion})
 		}
 	}
 	return out
@@ -490,6 +521,245 @@ func (e *extLink) run(ctx context.Context) {
 		e.reported = now
 		e.mu.Unlock()
 	}
+}
+
+// ---- join domain completeness: this node's report ------------------------------
+//
+// pg_quicksilver rewrites a uuid join to the companions only where this node's
+// shared memory says both columns are complete (quicksilver.report_join_complete).
+// Those reports must never say complete for a manifest the lake can serve that
+// has a companion-less file of the column. Three rules keep that true. Nothing
+// is persisted: a restart starts from nothing reported, which is incomplete.
+//
+//  1. Complete means PUBLISHED. A column is reported complete only once the
+//     manifest the lake serves carries it complete (afterPublish).
+//  2. Incomplete comes BEFORE publication. A manifest that is incomplete for a
+//     column is published only after the column has been reported incomplete
+//     and the report acknowledged (beforePublish), so a reader can never see
+//     that manifest while the column is still reported complete. A column goes
+//     back to complete only after a complete manifest is published, so no
+//     complete report can get ahead of an incomplete manifest still to come.
+//  3. Reports are sent one at a time (jdMu), so a flip to incomplete is never
+//     overtaken by an older complete report.
+//
+// pg_quicksilver adds the last step: a scan that read a column it found complete
+// checks, when it ends, that the column's report is still the one it found (an
+// epoch the report sets when the column becomes complete). A flip that happens
+// while the scan runs is then an error, not a wrong answer. The registry
+// (quicksilver.join_domains) is static and is not written for completeness, so
+// the report is the only thing that moves.
+type joinKey struct{ table, column string }
+
+const extJoinReportSQL = `
+SELECT quicksilver.report_join_complete(c.oid, v.col::name, v.ok)
+  FROM unnest($1::text[], $2::text[], $3::text[], $4::bool[]) AS v(s, t, col, ok)
+  JOIN pg_catalog.pg_namespace n ON n.nspname = v.s
+  JOIN pg_catalog.pg_class c ON c.relnamespace = n.oid AND c.relname = v.t`
+
+// joinWantLocked is what each configured column should be reported as now:
+// complete when the published manifest has it complete and no manifest pending
+// publication is incomplete for it. Caller holds e.mu.
+func (e *extLink) joinWantLocked() map[joinKey]bool {
+	want := map[joinKey]bool{}
+	for q, cols := range e.jdCfg {
+		for _, c := range cols {
+			want[joinKey{q, c}] = e.jdPub[q][c] && !e.jdPend[q][c]
+		}
+	}
+	return want
+}
+
+func sameJoinReports(a, b map[joinKey]bool) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for k, v := range a {
+		if w, ok := b[k]; !ok || w != v {
+			return false
+		}
+	}
+	return true
+}
+
+// reportJoinsLocked sends the join completeness state if it differs from what
+// was last sent, or a heartbeat is due; force sends regardless. Caller holds
+// jdMu. An error means the state did not reach the node; it is sent again on
+// the next call.
+func (e *extLink) reportJoinsLocked(ctx context.Context, force bool) error {
+	e.mu.Lock()
+	want := e.joinWantLocked()
+	e.mu.Unlock()
+	if len(want) == 0 {
+		return nil
+	}
+	if !force && sameJoinReports(want, e.jdSent) && time.Since(e.jdSentAt) < extHeartbeat {
+		return nil
+	}
+	if e.jdAbsent && !force && time.Since(e.jdAbsentAt) < extRecheck {
+		return nil
+	}
+	if e.sendJoinsFn != nil { // tests: the state machine without a database
+		if err := e.sendJoinsFn(want); err != nil {
+			return err
+		}
+		e.jdSent, e.jdSentAt = want, time.Now()
+		return nil
+	}
+	if e.jdConn == nil {
+		c, err := pgx.Connect(ctx, e.o.localDSN())
+		if err != nil {
+			return err
+		}
+		var have bool
+		if err := c.QueryRow(ctx, `SELECT to_regprocedure('quicksilver.report_join_complete(regclass,name,boolean)') IS NOT NULL`).Scan(&have); err != nil {
+			_ = c.Close(ctx)
+			return err
+		}
+		if !have {
+			// Nothing on this node reads its mirrors through pg_quicksilver, so
+			// nothing can be rewritten here and publication need not wait.
+			_ = c.Close(ctx)
+			e.jdAbsent, e.jdAbsentAt = true, time.Now()
+			return nil
+		}
+		e.jdConn, e.jdAbsent = c, false
+	}
+	var schemas, tables, cols []string
+	var oks []bool
+	for k, ok := range want {
+		s, t, _ := strings.Cut(k.table, ".")
+		schemas = append(schemas, s)
+		tables = append(tables, t)
+		cols = append(cols, k.column)
+		oks = append(oks, ok)
+	}
+	rctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	// A node that is not a standby (a primary, or one that was promoted) reads its
+	// own tables and reports nothing complete: the reports of its standby days are
+	// replaced by this one, within a heartbeat of the promotion.
+	var standby bool
+	if err := e.jdConn.QueryRow(rctx, `SELECT pg_is_in_recovery()`).Scan(&standby); err != nil {
+		_ = e.jdConn.Close(context.WithoutCancel(ctx))
+		e.jdConn = nil
+		return err
+	}
+	if !standby {
+		for i := range oks {
+			oks[i] = false
+		}
+		for k := range want {
+			want[k] = false
+		}
+	}
+	if _, err := e.jdConn.Exec(rctx, extJoinReportSQL, schemas, tables, cols, oks); err != nil {
+		_ = e.jdConn.Close(context.WithoutCancel(ctx))
+		e.jdConn = nil
+		return err
+	}
+	if e.jdLastErr != "" {
+		e.log.Info("reporting join domain completeness to the local PostgreSQL again")
+		e.jdLastErr = ""
+	}
+	e.jdSent, e.jdSentAt = want, time.Now()
+	return nil
+}
+
+// runJoins sends join completeness until ctx ends: what afterPublish made
+// complete goes out here, and the state is heartbeated, so a report lost with a
+// restart of the local server comes back.
+func (e *extLink) runJoins(ctx context.Context) {
+	if e == nil || e.off {
+		return
+	}
+	defer func() {
+		e.jdMu.Lock()
+		if e.jdConn != nil {
+			_ = e.jdConn.Close(context.WithoutCancel(ctx))
+			e.jdConn = nil
+		}
+		e.jdMu.Unlock()
+	}()
+	tick := time.NewTicker(e.tick)
+	defer tick.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-tick.C:
+		}
+		e.jdMu.Lock()
+		if err := e.reportJoinsLocked(ctx, false); err != nil && ctx.Err() == nil {
+			if msg := err.Error(); msg != e.jdLastErr {
+				e.jdLastErr = msg
+				e.log.Warn("reporting join domain completeness to the local PostgreSQL failed; joins on those columns stay on the heap until it answers", "err", err)
+			}
+		}
+		e.jdMu.Unlock()
+	}
+}
+
+// beforePublish is the lake's hook before a manifest is served (rule 2). For a
+// manifest incomplete for some configured column it reports those columns
+// incomplete, and only then returns nil. If the report does not reach the node
+// it fails, and the publish is tried again. A manifest complete for every
+// column needs no report.
+func (e *extLink) beforePublish(m *mirror.LakeManifest) error {
+	if e == nil || e.off {
+		return nil
+	}
+	complete := map[string]bool{}
+	for _, c := range m.JoinComplete {
+		complete[c] = true
+	}
+	q := m.Qualified()
+	e.jdMu.Lock()
+	defer e.jdMu.Unlock()
+	e.mu.Lock()
+	var pend []string
+	for _, c := range m.JoinMembers {
+		if !complete[c] {
+			pend = append(pend, c)
+		}
+	}
+	if len(m.JoinMembers) > 0 {
+		e.jdCfg[q] = m.JoinMembers
+	}
+	if len(pend) > 0 {
+		if e.jdPend[q] == nil {
+			e.jdPend[q] = map[string]bool{}
+		}
+		for _, c := range pend {
+			e.jdPend[q][c] = true
+		}
+	}
+	e.mu.Unlock()
+	if len(pend) == 0 {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	return e.reportJoinsLocked(ctx, true)
+}
+
+// afterPublish is the lake's hook once a manifest is the one it serves (rule 1).
+// Nothing is sent here: runJoins sends the complete state at its next tick.
+func (e *extLink) afterPublish(m *mirror.LakeManifest) {
+	if e == nil || e.off {
+		return
+	}
+	pub := map[string]bool{}
+	for _, c := range m.JoinComplete {
+		pub[c] = true
+	}
+	q := m.Qualified()
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if len(m.JoinMembers) > 0 {
+		e.jdCfg[q] = m.JoinMembers
+	}
+	e.jdPub[q] = pub
+	delete(e.jdPend, q)
 }
 
 // extFastWindow bounds the millisecond polling that follows a nudge.

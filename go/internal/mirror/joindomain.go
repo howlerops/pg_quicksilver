@@ -451,6 +451,22 @@ type DomainColumn struct {
 	Complete  bool
 }
 
+// JoinMembership is a member column of this table, by name, with its domain and
+// companion. Unlike DomainColumns it does not look at the files, so it is cheap
+// enough to call on every tick: it says what the table is configured to carry.
+type JoinMembership struct {
+	Column, Domain, Companion string
+}
+
+// JoinMemberships lists this table's configured member columns, sorted.
+func (t *Table) JoinMemberships() []JoinMembership {
+	out := make([]JoinMembership, 0, len(t.joins))
+	for _, c := range t.joinColumns() {
+		out = append(out, JoinMembership{Column: c, Domain: t.joins[c].domain, Companion: companionName(c)})
+	}
+	return out
+}
+
 // DomainColumns lists this table's member columns, sorted by column name.
 func (t *Table) DomainColumns() []DomainColumn {
 	out := make([]DomainColumn, 0, len(t.joins))

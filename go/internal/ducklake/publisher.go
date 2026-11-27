@@ -89,6 +89,15 @@ type Options struct {
 	Log       *slog.Logger
 	// Now is the clock; tests move it.
 	Now func() time.Time
+	// BeforePublish is called under the publisher's work lock, before m is
+	// published, and not at all for a publish that is already current. An error
+	// fails this publish, which is tried again: the sidecar uses it to tell the
+	// node's readers a manifest is coming that they must not rewrite joins for,
+	// before the lake can serve it (extension.go, beforePublish).
+	BeforePublish func(m *mirror.LakeManifest) error
+	// AfterPublish is called once m is the table's published manifest, after the
+	// lake serves it. It is not called with the publisher's stats lock held.
+	AfterPublish func(m *mirror.LakeManifest)
 }
 
 // CatalogPath is where the catalog of a mirror's lake is.
@@ -467,10 +476,29 @@ func (p *Publisher) Publish(ctx context.Context, m *mirror.LakeManifest) (res Re
 	defer p.work.Unlock()
 	start := time.Now()
 	q := m.Qualified()
+	if p.opt.BeforePublish != nil {
+		if err := p.opt.BeforePublish(m); err != nil {
+			p.mu.Lock()
+			st := p.statsFor(q)
+			st.Errors++
+			st.LastError = err.Error()
+			p.mu.Unlock()
+			return res, err
+		}
+	}
 	var rewrite string
 	res, rewrite, err = p.publish(ctx, m)
 	res.Duration = time.Since(start)
+	published := p.recordPublish(q, m, res, rewrite, err)
+	if published && p.opt.AfterPublish != nil {
+		p.opt.AfterPublish(m)
+	}
+	return res, err
+}
 
+// recordPublish is the bookkeeping after one publish: the published manifest
+// and the stats. It reports whether m is now the table's published manifest.
+func (p *Publisher) recordPublish(q string, m *mirror.LakeManifest, res Result, rewrite string, err error) bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	st := p.statsFor(q)
@@ -478,7 +506,7 @@ func (p *Publisher) Publish(ctx context.Context, m *mirror.LakeManifest) (res Re
 		delete(p.tables, q) // whatever was half-built in memory is not the catalog
 		st.Errors++
 		st.LastError = err.Error()
-		return res, err
+		return false
 	}
 	st.LastError = ""
 	if p.published == nil {
@@ -502,7 +530,7 @@ func (p *Publisher) Publish(ctx context.Context, m *mirror.LakeManifest) (res Re
 		p.recentN++
 		p.global.Snapshot = res.Snapshot
 	}
-	return res, nil
+	return true
 }
 
 // publishPlan is what a manifest needs of the lake's files, worked out before

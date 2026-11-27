@@ -66,6 +66,8 @@ func openLake(ctx context.Context, log *slog.Logger, o options, h *health.Health
 	}
 	p, err := ducklake.Open(ctx, ducklake.Options{
 		MirrorRoot: o.mirrorPath, Dir: os.Getenv("QS_DUCKLAKE_PATH"), Retention: retention, Log: log,
+		BeforePublish: func(m *mirror.LakeManifest) error { return ext.beforePublish(m) },
+		AfterPublish:  func(m *mirror.LakeManifest) { ext.afterPublish(m) },
 	})
 	if err != nil {
 		return err

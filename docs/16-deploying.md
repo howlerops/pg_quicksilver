@@ -1059,32 +1059,30 @@ that row silently fail to match. So the writer never does that:
 - Any file written once a domain is disabled carries no companion column for
   it at all. The file's schema says so, and a reader cannot mistake it for a
   NULL companion.
-- The lake's declaration is decided per manifest, when the manifest is
-  published. A manifest that names a companion-less file does not declare the
-  companion, in the same snapshot, so the lake never exposes a companion column
-  that some of its files do not carry. A query that names the undeclared
-  companion gets an error from DuckDB (a binder error), not NULLs. The registry
-  row in `quicksilver.join_domains` is removed by the sidecar later. Measured
-  (validate/real/joinburst.py, 205 routed comparisons on the standby while the
-  domain tripped at comparison 5): every comparison equal to the heap, and
-  after the trip no join was rewritten to companions; they compare the uuid
-  columns. A window between the trip and the registry removal, in which a
-  routed join names a companion the mirror no longer exposes, is not measured
-  here; the planner fallback for that case is not yet verified.
+- The lake declares the companion of every configured member column, from the
+  moment the domain is configured, and not only once every file carries it. A
+  file without the companion reads it as NULL (the column's initial default),
+  so the mirror relation that exposes it is the same on every node. Whether a
+  node may compare companions is not the lake's to say: each manifest lists
+  the complete member columns (`JoinComplete`), and the sidecar reports those
+  to its own node (docs/40, "Join keys"). A NULL companion is therefore never
+  compared unless that node has said its column is complete.
 
 Tests: `TestJoinDomainCapMidBatch` and `TestJoinDomainCapMidRewrite` (go/internal/mirror)
 trip the cap in the middle of a batch and in the middle of a background rewrite
 and read every file with its hidden column: no row has a non-NULL member and a
-NULL companion. `TestJoinDomainCapTripPublishesNoCompanion`
-(go/internal/ducklake) checks that the first manifest naming a companion-less
-file does not declare the companion, and that DuckDB reading it gets an error.
+NULL companion. `TestJoinDomainCapTripKeepsCompanionDeclared`
+(go/internal/ducklake) checks that the companion stays declared after the cap
+trips, that the companion-less file reads NULL, and that the manifest no longer
+lists the column as complete.
 
 A table counts as complete for a domain when every file it names that carries
 the member also carries the companion. A table written before the domain was
 switched on is incomplete until its next base rewrite, which writes the
-companion, and no older delta files remain. The lake declares a companion only
-for a complete column; an incomplete one is not declared, and its files are
-read by their logical columns alone. Metrics: `quicksilver_join_domain_keys` and
+companion, and no older delta files remain. The manifest lists its complete
+member columns (`JoinComplete`); the sidecar reports completeness per node,
+before an incomplete manifest is published and after a complete one is
+(extension.go, `beforePublish` and `afterPublish`). Metrics: `quicksilver_join_domain_keys` and
 `quicksilver_join_domain_disabled`, one series per domain.
 
 Measured on this tree (single thread, best of 5, DuckDB 2.0.1, 50k customers
@@ -1093,12 +1091,15 @@ companion join 8.4 ms, the same 500,000 rows and the same sum. The companions
 add 1.09 MB to the orders base file (+12.6%) and about 2 KB to customers.
 
 With the extension (pg_quicksilver, docs/40 "Join keys") the sidecar also
-keeps `quicksilver.join_domains` on the primary: one row per complete member
-column, and the mirror relation exposes its companion. A join between two
-members of one domain is then compared on the companions when the statement
-is routed. A column that stops being complete (its domain passes
-QS_JOIN_DOMAIN_MAX_KEYS, or it leaves QS_JOIN_DOMAINS) loses its row at the
-next tick, and its joins go back to comparing the uuid columns.
+keeps `quicksilver.join_domains` on the primary: one row per configured member
+column, written once when the domain is configured and never removed because a
+column is incomplete. The mirror relation exposes its companion from then on.
+Whether a join is compared on companions is decided by each node's report
+(`quicksilver.report_join_complete`), and a column that stops being complete on
+a node has its joins compared on the uuid columns on that node only.
+All sidecars of one primary must have the same `QS_JOIN_DOMAINS`: the registry
+row and the view are shared, and a sidecar that does not mirror a table removes
+them.
 
 Not verified: a crash of the whole host, as opposed to the fsync failures the
 tests inject; joins from engines other than DuckDB; domains across more than

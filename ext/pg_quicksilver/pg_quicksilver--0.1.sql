@@ -138,6 +138,11 @@ $$;
 CREATE FUNCTION quicksilver.report_applied_lsn(heap regclass, lsn pg_lsn) RETURNS void
     AS 'MODULE_PATHNAME', 'qs_report_applied_lsn' LANGUAGE C STRICT;
 
+-- The join domain columns this node reads complete (docs/40, "Join keys"): shared memory,
+-- like report_applied_lsn, and the same privilege. complete = false is always safe.
+CREATE FUNCTION quicksilver.report_join_complete(heap regclass, column_name name, complete boolean) RETURNS void
+    AS 'MODULE_PATHNAME', 'qs_report_join_complete' LANGUAGE C STRICT;
+
 -- Attaches the lakes in this session, for somebody who wants to read a mirror
 -- relation by name. A routed statement needs no such call. Returns how many
 -- are attached, -1 if one could not be (no catalog on this node, for one).
@@ -198,7 +203,8 @@ $$;
 GRANT USAGE ON SCHEMA quicksilver TO PUBLIC;
 REVOKE ALL ON FUNCTION quicksilver.prune() FROM PUBLIC;
 REVOKE ALL ON FUNCTION quicksilver.register_mirror(regclass, regclass, bigint),
-    quicksilver.report_applied_lsn(regclass, pg_lsn), quicksilver.reset(),
+    quicksilver.report_applied_lsn(regclass, pg_lsn),
+    quicksilver.report_join_complete(regclass, name, boolean), quicksilver.reset(),
     quicksilver.attach_lakes() FROM PUBLIC;
 
 -- The metadata that describes other sessions and the cluster: the mirrors,
