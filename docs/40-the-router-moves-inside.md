@@ -1431,3 +1431,21 @@ The walk visits the join's alias variables, and a jsonb one among them refuses
 the statement even when it is not referenced. Relaxing that needs care: a
 COALESCE from FULL JOIN USING lives in the same alias variables. RIGHT and
 FULL joins are not on the allowlist, so they are answered from the heap.
+
+## A crash in the registry load
+
+On a hot standby, `ALTER TABLE public.orders ADD COLUMN` run again and again on the primary, with a client counting the table and the sidecar reporting applied LSNs every 25 ms, killed backends with SIGSEGV. The backends died in their first planning statement (`quicksilver.report_applied_lsn(...)`, `quicksilver.last_decision()`). The crash is the same on the assertion build and on the normal one (`validate/results/crash_backtrace.txt`).
+
+The cause is a check and a use with a call in between. The registry load checked that the mirror relation exists (a syscache lookup), then looked its namespace and name up again for the `FROM` clause. A standby replays the sidecar's `DROP VIEW` of a mirror it is rebuilding; the invalidation is accepted in that window, the second lookups return nothing, and `quote_qualified_identifier` dereferences NULL. `validate/real/hardening/race_mirror.sh` reproduces it deterministically: gdb stops a backend between the two lookups, another session drops the view, and the invalidation is forced.
+
+The same load also replaced the registry by `MemoryContextReset` of its own context. No crash came from that path (the decision code checks the registry generation after the calls that can process invalidations, and no load runs inside a decision), but nothing enforced it, so it was not safe by inspection.
+
+The lifetime rule now in force:
+
+1. A load builds the registry in a new memory context and retires the old one. A retired context is deleted only when no hook or SQL-callable function of the extension is on the stack (`qs_in_ext`, counted on every entry and decremented on every exit, error exits included), no load runs and no decision is in progress (`qs_busy`). The sweep runs at the start of a top-level planning and at the end of a transaction.
+2. A load is not re-entered (`qs_loading`). Planning passes through while it runs, as if the extension were not installed; a read of the registry raises an ERROR.
+3. Nothing that outlives a statement points into a registry context: the last-decision record holds a fixed buffer and top-context strings, plans carry OIDs and copied strings, and executor state looks a mirror up again by OID, answering from the heap if it is gone.
+4. A decision takes the registry generation before anything that can process invalidations, and makes its decision again if the generation moved.
+5. A mirror's catalog facts are read once, while the entry is held. A lookup that can find the relation gone marks the mirror unusable with a reason, and the statement goes to the heap.
+
+The regression test `sql/reload.sql` runs a routed statement, changes the registry in the same session, and asks `EXPLAIN` and a prepared routed statement again across the changes. Its output does not depend on which side answered, since the sidecar may write the registry while it runs.
