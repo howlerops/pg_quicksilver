@@ -1,0 +1,18 @@
+{
+ "engine": "native",
+ "state": "B",
+ "mode": "cold",
+ "queries": {
+  "count_star": {
+   "sql": "SELECT count(*) FROM orders",
+   "ok": true,
+   "ms": [
+    13.369145000069693
+   ],
+   "best_ms": 13.369145000069693,
+   "median_ms": 13.369145000069693,
+   "rows": 1
+  }
+ },
+ "at": "2026-11-25T01:19:19.048323"
+}

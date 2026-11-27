@@ -1,0 +1,988 @@
++ export 'PS4=+ '
++ PS4='+ '
++ rm -f /home/user/pg_quicksilver/.claude/worktrees/agent-a205c91741fc17a04/go/cmd/qs-mirror/validate/out/p1.log /home/user/pg_quicksilver/.claude/worktrees/agent-a205c91741fc17a04/go/cmd/qs-mirror/validate/out/s1.log /home/user/pg_quicksilver/.claude/worktrees/agent-a205c91741fc17a04/go/cmd/qs-mirror/validate/out/p1.pid /home/user/pg_quicksilver/.claude/worktrees/agent-a205c91741fc17a04/go/cmd/qs-mirror/validate/out/s1.pid
++ for d in $BASE/p1 $BASE/s1 $BASE/s2 $BASE/mirror
++ rm -rf /var/lib/postgresql/qsy1/p1
++ for d in $BASE/p1 $BASE/s1 $BASE/s2 $BASE/mirror
++ rm -rf /var/lib/postgresql/qsy1/s1
++ for d in $BASE/p1 $BASE/s1 $BASE/s2 $BASE/mirror
++ rm -rf /var/lib/postgresql/qsy1/s2
++ for d in $BASE/p1 $BASE/s1 $BASE/s2 $BASE/mirror
++ rm -rf /var/lib/postgresql/qsy1/mirror
++ install -d -o postgres -g postgres /var/lib/postgresql/qsy1 /var/lib/postgresql/qsy1/sock /var/lib/postgresql/qsy1/mirror
++ pgu '/usr/lib/postgresql/17/bin/initdb -D /var/lib/postgresql/qsy1/p1 -U postgres -A trust --locale=C.UTF-8 -E UTF8'
++ su postgres -s /bin/bash -c '/usr/lib/postgresql/17/bin/initdb -D /var/lib/postgresql/qsy1/p1 -U postgres -A trust --locale=C.UTF-8 -E UTF8'
++ cat
++ pg_up p1 5600
++ pgu '/usr/lib/postgresql/17/bin/pg_ctl -D /var/lib/postgresql/qsy1/p1 -l /var/lib/postgresql/qsy1/p1.log -w -o '\''-c port=5600 -c unix_socket_directories=/var/lib/postgresql/qsy1/sock -c listen_addresses=localhost'\'' start'
++ su postgres -s /bin/bash -c '/usr/lib/postgresql/17/bin/pg_ctl -D /var/lib/postgresql/qsy1/p1 -l /var/lib/postgresql/qsy1/p1.log -w -o '\''-c port=5600 -c unix_socket_directories=/var/lib/postgresql/qsy1/sock -c listen_addresses=localhost'\'' start'
++ sql 5600 postgres
++ cat
++ su postgres -s /bin/bash -c '/usr/lib/postgresql/17/bin/psql -X -A -t -q -v ON_ERROR_STOP=1 -h /var/lib/postgresql/qsy1/sock -p 5600 -U postgres -d postgres -f -'
++ sql 5600 app
++ cat
++ su postgres -s /bin/bash -c '/usr/lib/postgresql/17/bin/psql -X -A -t -q -v ON_ERROR_STOP=1 -h /var/lib/postgresql/qsy1/sock -p 5600 -U postgres -d app -f -'
++ sql 5600 postgres
++ cat
++ su postgres -s /bin/bash -c '/usr/lib/postgresql/17/bin/psql -X -A -t -q -v ON_ERROR_STOP=1 -h /var/lib/postgresql/qsy1/sock -p 5600 -U postgres -d postgres -f -'
+(s1phys,)
++ pgu '/usr/lib/postgresql/17/bin/pg_basebackup -c fast -h /var/lib/postgresql/qsy1/sock -p 5600 -U postgres -D /var/lib/postgresql/qsy1/s1 -R -X stream -S s1phys'
++ su postgres -s /bin/bash -c '/usr/lib/postgresql/17/bin/pg_basebackup -c fast -h /var/lib/postgresql/qsy1/sock -p 5600 -U postgres -D /var/lib/postgresql/qsy1/s1 -R -X stream -S s1phys'
++ pgu '/usr/lib/postgresql/17/bin/pg_basebackup -c fast -h /var/lib/postgresql/qsy1/sock -p 5600 -U postgres -D /var/lib/postgresql/qsy1/s2 -R -X stream'
++ su postgres -s /bin/bash -c '/usr/lib/postgresql/17/bin/pg_basebackup -c fast -h /var/lib/postgresql/qsy1/sock -p 5600 -U postgres -D /var/lib/postgresql/qsy1/s2 -R -X stream'
++ for s in s1 s2
++ port=5601
++ '[' s1 = s2 ']'
++ app=s1
++ printf '\nport = 5601\nlisten_addresses = '\''localhost'\''\nunix_socket_directories = '\''/var/lib/postgresql/qsy1/sock'\''\nprimary_conninfo = '\''host=localhost port=5600 user=postgres dbname=app application_name=s1'\''\nhot_standby_feedback = on\n'
++ '[' s1 = s1 ']'
++ printf 'primary_slot_name = '\''s1phys'\''\nsync_replication_slots = on\n'
++ pgu '/usr/lib/postgresql/17/bin/pg_ctl -D /var/lib/postgresql/qsy1/s1 -l /var/lib/postgresql/qsy1/s1.log -w start'
++ su postgres -s /bin/bash -c '/usr/lib/postgresql/17/bin/pg_ctl -D /var/lib/postgresql/qsy1/s1 -l /var/lib/postgresql/qsy1/s1.log -w start'
++ for s in s1 s2
++ port=5601
++ '[' s2 = s2 ']'
++ port=5602
++ app=s2
++ printf '\nport = 5602\nlisten_addresses = '\''localhost'\''\nunix_socket_directories = '\''/var/lib/postgresql/qsy1/sock'\''\nprimary_conninfo = '\''host=localhost port=5600 user=postgres dbname=app application_name=s2'\''\nhot_standby_feedback = on\n'
++ '[' s2 = s1 ']'
++ pgu '/usr/lib/postgresql/17/bin/pg_ctl -D /var/lib/postgresql/qsy1/s2 -l /var/lib/postgresql/qsy1/s2.log -w start'
++ su postgres -s /bin/bash -c '/usr/lib/postgresql/17/bin/pg_ctl -D /var/lib/postgresql/qsy1/s2 -l /var/lib/postgresql/qsy1/s2.log -w start'
++ sql 5600 postgres
++ su postgres -s /bin/bash -c '/usr/lib/postgresql/17/bin/psql -X -A -t -q -v ON_ERROR_STOP=1 -h /var/lib/postgresql/qsy1/sock -p 5600 -U postgres -d postgres -f -'
++ cat
+(qs_v1_gone,0/4000060)
+(qs_v1_s2,0/4000098)
++ echo '--- slots on P as created (nothing consumes them yet)'
+--- slots on P as created (nothing consumes them yet)
++ sql 5600 postgres
++ cat
++ su postgres -s /bin/bash -c '/usr/lib/postgresql/17/bin/psql -X -A -t -q -v ON_ERROR_STOP=1 -h /var/lib/postgresql/qsy1/sock -p 5600 -U postgres -d postgres -f -'
+qs_v1_gone|f
+qs_v1_s2|f
+s1phys|t
++ TABLES=public.t1
++ start_sc p1 p1 5610 5600 5600 QS_SLOT_JANITOR_INTERVAL=2s QS_SLOT_JANITOR_AFTER=5s QS_PRIMARY_POLL_INTERVAL=1s
++ local name=p1 pod=p1 hp=5610 lp=5600 pp=5600
++ shift 5
++ mkdir -p /var/lib/postgresql/qsy1/mirror/p1
++ echo 24575
++ nohup env QS_CLUSTER=qsv QS_MODE=shadow QS_INGEST=logical QS_TABLES=public.t1 QS_SLOT=qs_v1 QS_PUBLICATION=qs_v1 QS_MIRROR_PATH=/var/lib/postgresql/qsy1/mirror/p1 QS_FRESHNESS_SLO=15s QS_PRIMARY_HOST=localhost QS_PRIMARY_PORT=5600 QS_LOCAL_SOCKET_DIR=/var/lib/postgresql/qsy1/sock QS_LOCAL_PORT=5600 QS_DATABASE=app QS_PGUSER=postgres QS_POD_NAME=p1 QS_HEALTH_ADDR=127.0.0.1:5610 QS_SLOT_JANITOR_INTERVAL=2s QS_SLOT_JANITOR_AFTER=5s QS_PRIMARY_POLL_INTERVAL=1s /tmp/claude-0/-home-user-pg-quicksilver/58894071-fd3a-5a32-94ab-41a0530826ff/scratchpad/bin/qs-mirror
+++ cat /home/user/pg_quicksilver/.claude/worktrees/agent-a205c91741fc17a04/go/cmd/qs-mirror/validate/out/p1.pid
++ echo 'started sidecar p1 pod=p1 pid=24575'
+started sidecar p1 pod=p1 pid=24575
++ TABLES=public.t1
++ start_sc s1 s1 5611 5601 5600
++ local name=s1 pod=s1 hp=5611 lp=5601 pp=5600
++ shift 5
++ mkdir -p /var/lib/postgresql/qsy1/mirror/s1
++ echo 24584
++ nohup env QS_CLUSTER=qsv QS_MODE=shadow QS_INGEST=logical QS_TABLES=public.t1 QS_SLOT=qs_v1 QS_PUBLICATION=qs_v1 QS_MIRROR_PATH=/var/lib/postgresql/qsy1/mirror/s1 QS_FRESHNESS_SLO=15s QS_PRIMARY_HOST=localhost QS_PRIMARY_PORT=5600 QS_LOCAL_SOCKET_DIR=/var/lib/postgresql/qsy1/sock QS_LOCAL_PORT=5601 QS_DATABASE=app QS_PGUSER=postgres QS_POD_NAME=s1 QS_HEALTH_ADDR=127.0.0.1:5611 /tmp/claude-0/-home-user-pg-quicksilver/58894071-fd3a-5a32-94ab-41a0530826ff/scratchpad/bin/qs-mirror
+++ cat /home/user/pg_quicksilver/.claude/worktrees/agent-a205c91741fc17a04/go/cmd/qs-mirror/validate/out/s1.pid
++ echo 'started sidecar s1 pod=s1 pid=24584'
+started sidecar s1 pod=s1 pid=24584
++ ready_alive 5610
+++ seq 100
++ for _ in $(seq 100)
++ curl -sf http://127.0.0.1:5610/healthz
++ return 0
++ echo 'p1 alive (it stands down, so it is never ready)'
+p1 alive (it stands down, so it is never ready)
++ ready 5611
+++ seq 600
++ for _ in $(seq $(( ${2:-60} * 10 )))
++ curl -sf http://127.0.0.1:5611/readyz
++ sleep 0.1
++ for _ in $(seq $(( ${2:-60} * 10 )))
++ curl -sf http://127.0.0.1:5611/readyz
++ return 0
++ sql 5600 app
++ cat
++ su postgres -s /bin/bash -c '/usr/lib/postgresql/17/bin/psql -X -A -t -q -v ON_ERROR_STOP=1 -h /var/lib/postgresql/qsy1/sock -p 5600 -U postgres -d app -f -'
+++ sql 5600 app
+++ cat
+++ su postgres -s /bin/bash -c '/usr/lib/postgresql/17/bin/psql -X -A -t -q -v ON_ERROR_STOP=1 -h /var/lib/postgresql/qsy1/sock -p 5600 -U postgres -d app -f -'
++ TARGET=0/4057C10
++ wait_mirror s1 public.t1 0/4057C10 120
++ local at
+++ seq 1200
++ for _ in $(seq $(( ${4:-120} * 10 )))
+++ applied_lsn s1 public.t1
+++ /tmp/claude-0/-home-user-pg-quicksilver/58894071-fd3a-5a32-94ab-41a0530826ff/scratchpad/bin/qs-query -mirror /var/lib/postgresql/qsy1/mirror/s1 -table public.t1 -lsn
++ at=0/4057BE0
++ '[' -n 0/4057BE0 ']'
+++ lsn_num 0/4057BE0
+++ python3 -c 'a,b='\''0/4057BE0'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
+++ lsn_num 0/4057C10
+++ python3 -c 'a,b='\''0/4057C10'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
++ '[' 67468256 -ge 67468304 ']'
++ sleep 0.1
++ for _ in $(seq $(( ${4:-120} * 10 )))
+++ applied_lsn s1 public.t1
+++ /tmp/claude-0/-home-user-pg-quicksilver/58894071-fd3a-5a32-94ab-41a0530826ff/scratchpad/bin/qs-query -mirror /var/lib/postgresql/qsy1/mirror/s1 -table public.t1 -lsn
++ at=0/4057C0F
++ '[' -n 0/4057C0F ']'
+++ lsn_num 0/4057C0F
+++ python3 -c 'a,b='\''0/4057C0F'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
+++ lsn_num 0/4057C10
+++ python3 -c 'a,b='\''0/4057C10'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
++ '[' 67468303 -ge 67468304 ']'
++ sleep 0.1
++ for _ in $(seq $(( ${4:-120} * 10 )))
+++ applied_lsn s1 public.t1
+++ /tmp/claude-0/-home-user-pg-quicksilver/58894071-fd3a-5a32-94ab-41a0530826ff/scratchpad/bin/qs-query -mirror /var/lib/postgresql/qsy1/mirror/s1 -table public.t1 -lsn
++ at=0/4057C0F
++ '[' -n 0/4057C0F ']'
+++ lsn_num 0/4057C0F
+++ python3 -c 'a,b='\''0/4057C0F'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
+++ lsn_num 0/4057C10
+++ python3 -c 'a,b='\''0/4057C10'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
++ '[' 67468303 -ge 67468304 ']'
++ sleep 0.1
++ for _ in $(seq $(( ${4:-120} * 10 )))
+++ applied_lsn s1 public.t1
+++ /tmp/claude-0/-home-user-pg-quicksilver/58894071-fd3a-5a32-94ab-41a0530826ff/scratchpad/bin/qs-query -mirror /var/lib/postgresql/qsy1/mirror/s1 -table public.t1 -lsn
++ at=0/4057C0F
++ '[' -n 0/4057C0F ']'
+++ lsn_num 0/4057C0F
+++ python3 -c 'a,b='\''0/4057C0F'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
+++ lsn_num 0/4057C10
+++ python3 -c 'a,b='\''0/4057C10'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
++ '[' 67468303 -ge 67468304 ']'
++ sleep 0.1
++ for _ in $(seq $(( ${4:-120} * 10 )))
+++ applied_lsn s1 public.t1
+++ /tmp/claude-0/-home-user-pg-quicksilver/58894071-fd3a-5a32-94ab-41a0530826ff/scratchpad/bin/qs-query -mirror /var/lib/postgresql/qsy1/mirror/s1 -table public.t1 -lsn
++ at=0/4057C0F
++ '[' -n 0/4057C0F ']'
+++ lsn_num 0/4057C0F
+++ python3 -c 'a,b='\''0/4057C0F'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
+++ lsn_num 0/4057C10
+++ python3 -c 'a,b='\''0/4057C10'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
++ '[' 67468303 -ge 67468304 ']'
++ sleep 0.1
++ for _ in $(seq $(( ${4:-120} * 10 )))
+++ applied_lsn s1 public.t1
+++ /tmp/claude-0/-home-user-pg-quicksilver/58894071-fd3a-5a32-94ab-41a0530826ff/scratchpad/bin/qs-query -mirror /var/lib/postgresql/qsy1/mirror/s1 -table public.t1 -lsn
++ at=0/4057C0F
++ '[' -n 0/4057C0F ']'
+++ lsn_num 0/4057C0F
+++ python3 -c 'a,b='\''0/4057C0F'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
+++ lsn_num 0/4057C10
+++ python3 -c 'a,b='\''0/4057C10'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
++ '[' 67468303 -ge 67468304 ']'
++ sleep 0.1
++ for _ in $(seq $(( ${4:-120} * 10 )))
+++ applied_lsn s1 public.t1
+++ /tmp/claude-0/-home-user-pg-quicksilver/58894071-fd3a-5a32-94ab-41a0530826ff/scratchpad/bin/qs-query -mirror /var/lib/postgresql/qsy1/mirror/s1 -table public.t1 -lsn
++ at=0/4057C0F
++ '[' -n 0/4057C0F ']'
+++ lsn_num 0/4057C0F
+++ python3 -c 'a,b='\''0/4057C0F'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
+++ lsn_num 0/4057C10
+++ python3 -c 'a,b='\''0/4057C10'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
++ '[' 67468303 -ge 67468304 ']'
++ sleep 0.1
++ for _ in $(seq $(( ${4:-120} * 10 )))
+++ applied_lsn s1 public.t1
+++ /tmp/claude-0/-home-user-pg-quicksilver/58894071-fd3a-5a32-94ab-41a0530826ff/scratchpad/bin/qs-query -mirror /var/lib/postgresql/qsy1/mirror/s1 -table public.t1 -lsn
++ at=0/4057C0F
++ '[' -n 0/4057C0F ']'
+++ lsn_num 0/4057C0F
+++ python3 -c 'a,b='\''0/4057C0F'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
+++ lsn_num 0/4057C10
+++ python3 -c 'a,b='\''0/4057C10'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
++ '[' 67468303 -ge 67468304 ']'
++ sleep 0.1
++ for _ in $(seq $(( ${4:-120} * 10 )))
+++ applied_lsn s1 public.t1
+++ /tmp/claude-0/-home-user-pg-quicksilver/58894071-fd3a-5a32-94ab-41a0530826ff/scratchpad/bin/qs-query -mirror /var/lib/postgresql/qsy1/mirror/s1 -table public.t1 -lsn
++ at=0/4057C0F
++ '[' -n 0/4057C0F ']'
+++ lsn_num 0/4057C0F
+++ python3 -c 'a,b='\''0/4057C0F'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
+++ lsn_num 0/4057C10
+++ python3 -c 'a,b='\''0/4057C10'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
++ '[' 67468303 -ge 67468304 ']'
++ sleep 0.1
++ for _ in $(seq $(( ${4:-120} * 10 )))
+++ applied_lsn s1 public.t1
+++ /tmp/claude-0/-home-user-pg-quicksilver/58894071-fd3a-5a32-94ab-41a0530826ff/scratchpad/bin/qs-query -mirror /var/lib/postgresql/qsy1/mirror/s1 -table public.t1 -lsn
++ at=0/4057C0F
++ '[' -n 0/4057C0F ']'
+++ lsn_num 0/4057C0F
+++ python3 -c 'a,b='\''0/4057C0F'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
+++ lsn_num 0/4057C10
+++ python3 -c 'a,b='\''0/4057C10'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
++ '[' 67468303 -ge 67468304 ']'
++ sleep 0.1
++ for _ in $(seq $(( ${4:-120} * 10 )))
+++ applied_lsn s1 public.t1
+++ /tmp/claude-0/-home-user-pg-quicksilver/58894071-fd3a-5a32-94ab-41a0530826ff/scratchpad/bin/qs-query -mirror /var/lib/postgresql/qsy1/mirror/s1 -table public.t1 -lsn
++ at=0/4057C0F
++ '[' -n 0/4057C0F ']'
+++ lsn_num 0/4057C0F
+++ python3 -c 'a,b='\''0/4057C0F'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
+++ lsn_num 0/4057C10
+++ python3 -c 'a,b='\''0/4057C10'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
++ '[' 67468303 -ge 67468304 ']'
++ sleep 0.1
++ for _ in $(seq $(( ${4:-120} * 10 )))
+++ applied_lsn s1 public.t1
+++ /tmp/claude-0/-home-user-pg-quicksilver/58894071-fd3a-5a32-94ab-41a0530826ff/scratchpad/bin/qs-query -mirror /var/lib/postgresql/qsy1/mirror/s1 -table public.t1 -lsn
++ at=0/4057C0F
++ '[' -n 0/4057C0F ']'
+++ lsn_num 0/4057C0F
+++ python3 -c 'a,b='\''0/4057C0F'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
+++ lsn_num 0/4057C10
+++ python3 -c 'a,b='\''0/4057C10'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
++ '[' 67468303 -ge 67468304 ']'
++ sleep 0.1
++ for _ in $(seq $(( ${4:-120} * 10 )))
+++ applied_lsn s1 public.t1
+++ /tmp/claude-0/-home-user-pg-quicksilver/58894071-fd3a-5a32-94ab-41a0530826ff/scratchpad/bin/qs-query -mirror /var/lib/postgresql/qsy1/mirror/s1 -table public.t1 -lsn
++ at=0/4057C0F
++ '[' -n 0/4057C0F ']'
+++ lsn_num 0/4057C0F
+++ python3 -c 'a,b='\''0/4057C0F'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
+++ lsn_num 0/4057C10
+++ python3 -c 'a,b='\''0/4057C10'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
++ '[' 67468303 -ge 67468304 ']'
++ sleep 0.1
++ for _ in $(seq $(( ${4:-120} * 10 )))
+++ applied_lsn s1 public.t1
+++ /tmp/claude-0/-home-user-pg-quicksilver/58894071-fd3a-5a32-94ab-41a0530826ff/scratchpad/bin/qs-query -mirror /var/lib/postgresql/qsy1/mirror/s1 -table public.t1 -lsn
++ at=0/4057C0F
++ '[' -n 0/4057C0F ']'
+++ lsn_num 0/4057C0F
+++ python3 -c 'a,b='\''0/4057C0F'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
+++ lsn_num 0/4057C10
+++ python3 -c 'a,b='\''0/4057C10'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
++ '[' 67468303 -ge 67468304 ']'
++ sleep 0.1
++ for _ in $(seq $(( ${4:-120} * 10 )))
+++ applied_lsn s1 public.t1
+++ /tmp/claude-0/-home-user-pg-quicksilver/58894071-fd3a-5a32-94ab-41a0530826ff/scratchpad/bin/qs-query -mirror /var/lib/postgresql/qsy1/mirror/s1 -table public.t1 -lsn
++ at=0/4057C0F
++ '[' -n 0/4057C0F ']'
+++ lsn_num 0/4057C0F
+++ python3 -c 'a,b='\''0/4057C0F'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
+++ lsn_num 0/4057C10
+++ python3 -c 'a,b='\''0/4057C10'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
++ '[' 67468303 -ge 67468304 ']'
++ sleep 0.1
++ for _ in $(seq $(( ${4:-120} * 10 )))
+++ applied_lsn s1 public.t1
+++ /tmp/claude-0/-home-user-pg-quicksilver/58894071-fd3a-5a32-94ab-41a0530826ff/scratchpad/bin/qs-query -mirror /var/lib/postgresql/qsy1/mirror/s1 -table public.t1 -lsn
++ at=0/4057C0F
++ '[' -n 0/4057C0F ']'
+++ lsn_num 0/4057C0F
+++ python3 -c 'a,b='\''0/4057C0F'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
+++ lsn_num 0/4057C10
+++ python3 -c 'a,b='\''0/4057C10'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
++ '[' 67468303 -ge 67468304 ']'
++ sleep 0.1
++ for _ in $(seq $(( ${4:-120} * 10 )))
+++ applied_lsn s1 public.t1
+++ /tmp/claude-0/-home-user-pg-quicksilver/58894071-fd3a-5a32-94ab-41a0530826ff/scratchpad/bin/qs-query -mirror /var/lib/postgresql/qsy1/mirror/s1 -table public.t1 -lsn
++ at=0/4057C0F
++ '[' -n 0/4057C0F ']'
+++ lsn_num 0/4057C0F
+++ python3 -c 'a,b='\''0/4057C0F'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
+++ lsn_num 0/4057C10
+++ python3 -c 'a,b='\''0/4057C10'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
++ '[' 67468303 -ge 67468304 ']'
++ sleep 0.1
++ for _ in $(seq $(( ${4:-120} * 10 )))
+++ applied_lsn s1 public.t1
+++ /tmp/claude-0/-home-user-pg-quicksilver/58894071-fd3a-5a32-94ab-41a0530826ff/scratchpad/bin/qs-query -mirror /var/lib/postgresql/qsy1/mirror/s1 -table public.t1 -lsn
++ at=0/4057C0F
++ '[' -n 0/4057C0F ']'
+++ lsn_num 0/4057C0F
+++ python3 -c 'a,b='\''0/4057C0F'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
+++ lsn_num 0/4057C10
+++ python3 -c 'a,b='\''0/4057C10'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
++ '[' 67468303 -ge 67468304 ']'
++ sleep 0.1
++ for _ in $(seq $(( ${4:-120} * 10 )))
+++ applied_lsn s1 public.t1
+++ /tmp/claude-0/-home-user-pg-quicksilver/58894071-fd3a-5a32-94ab-41a0530826ff/scratchpad/bin/qs-query -mirror /var/lib/postgresql/qsy1/mirror/s1 -table public.t1 -lsn
++ at=0/4057C0F
++ '[' -n 0/4057C0F ']'
+++ lsn_num 0/4057C0F
+++ python3 -c 'a,b='\''0/4057C0F'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
+++ lsn_num 0/4057C10
+++ python3 -c 'a,b='\''0/4057C10'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
++ '[' 67468303 -ge 67468304 ']'
++ sleep 0.1
++ for _ in $(seq $(( ${4:-120} * 10 )))
+++ applied_lsn s1 public.t1
+++ /tmp/claude-0/-home-user-pg-quicksilver/58894071-fd3a-5a32-94ab-41a0530826ff/scratchpad/bin/qs-query -mirror /var/lib/postgresql/qsy1/mirror/s1 -table public.t1 -lsn
++ at=0/4057C0F
++ '[' -n 0/4057C0F ']'
+++ lsn_num 0/4057C0F
+++ python3 -c 'a,b='\''0/4057C0F'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
+++ lsn_num 0/4057C10
+++ python3 -c 'a,b='\''0/4057C10'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
++ '[' 67468303 -ge 67468304 ']'
++ sleep 0.1
++ for _ in $(seq $(( ${4:-120} * 10 )))
+++ applied_lsn s1 public.t1
+++ /tmp/claude-0/-home-user-pg-quicksilver/58894071-fd3a-5a32-94ab-41a0530826ff/scratchpad/bin/qs-query -mirror /var/lib/postgresql/qsy1/mirror/s1 -table public.t1 -lsn
++ at=0/4057C0F
++ '[' -n 0/4057C0F ']'
+++ lsn_num 0/4057C0F
+++ python3 -c 'a,b='\''0/4057C0F'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
+++ lsn_num 0/4057C10
+++ python3 -c 'a,b='\''0/4057C10'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
++ '[' 67468303 -ge 67468304 ']'
++ sleep 0.1
++ for _ in $(seq $(( ${4:-120} * 10 )))
+++ applied_lsn s1 public.t1
+++ /tmp/claude-0/-home-user-pg-quicksilver/58894071-fd3a-5a32-94ab-41a0530826ff/scratchpad/bin/qs-query -mirror /var/lib/postgresql/qsy1/mirror/s1 -table public.t1 -lsn
++ at=0/4057C0F
++ '[' -n 0/4057C0F ']'
+++ lsn_num 0/4057C0F
+++ python3 -c 'a,b='\''0/4057C0F'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
+++ lsn_num 0/4057C10
+++ python3 -c 'a,b='\''0/4057C10'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
++ '[' 67468303 -ge 67468304 ']'
++ sleep 0.1
++ for _ in $(seq $(( ${4:-120} * 10 )))
+++ applied_lsn s1 public.t1
+++ /tmp/claude-0/-home-user-pg-quicksilver/58894071-fd3a-5a32-94ab-41a0530826ff/scratchpad/bin/qs-query -mirror /var/lib/postgresql/qsy1/mirror/s1 -table public.t1 -lsn
++ at=0/4057C0F
++ '[' -n 0/4057C0F ']'
+++ lsn_num 0/4057C0F
+++ python3 -c 'a,b='\''0/4057C0F'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
+++ lsn_num 0/4057C10
+++ python3 -c 'a,b='\''0/4057C10'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
++ '[' 67468303 -ge 67468304 ']'
++ sleep 0.1
++ for _ in $(seq $(( ${4:-120} * 10 )))
+++ applied_lsn s1 public.t1
+++ /tmp/claude-0/-home-user-pg-quicksilver/58894071-fd3a-5a32-94ab-41a0530826ff/scratchpad/bin/qs-query -mirror /var/lib/postgresql/qsy1/mirror/s1 -table public.t1 -lsn
++ at=0/4057C0F
++ '[' -n 0/4057C0F ']'
+++ lsn_num 0/4057C0F
+++ python3 -c 'a,b='\''0/4057C0F'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
+++ lsn_num 0/4057C10
+++ python3 -c 'a,b='\''0/4057C10'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
++ '[' 67468303 -ge 67468304 ']'
++ sleep 0.1
++ for _ in $(seq $(( ${4:-120} * 10 )))
+++ applied_lsn s1 public.t1
+++ /tmp/claude-0/-home-user-pg-quicksilver/58894071-fd3a-5a32-94ab-41a0530826ff/scratchpad/bin/qs-query -mirror /var/lib/postgresql/qsy1/mirror/s1 -table public.t1 -lsn
++ at=0/4057C0F
++ '[' -n 0/4057C0F ']'
+++ lsn_num 0/4057C0F
+++ python3 -c 'a,b='\''0/4057C0F'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
+++ lsn_num 0/4057C10
+++ python3 -c 'a,b='\''0/4057C10'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
++ '[' 67468303 -ge 67468304 ']'
++ sleep 0.1
++ for _ in $(seq $(( ${4:-120} * 10 )))
+++ applied_lsn s1 public.t1
+++ /tmp/claude-0/-home-user-pg-quicksilver/58894071-fd3a-5a32-94ab-41a0530826ff/scratchpad/bin/qs-query -mirror /var/lib/postgresql/qsy1/mirror/s1 -table public.t1 -lsn
++ at=0/4057C0F
++ '[' -n 0/4057C0F ']'
+++ lsn_num 0/4057C0F
+++ python3 -c 'a,b='\''0/4057C0F'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
+++ lsn_num 0/4057C10
+++ python3 -c 'a,b='\''0/4057C10'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
++ '[' 67468303 -ge 67468304 ']'
++ sleep 0.1
++ for _ in $(seq $(( ${4:-120} * 10 )))
+++ applied_lsn s1 public.t1
+++ /tmp/claude-0/-home-user-pg-quicksilver/58894071-fd3a-5a32-94ab-41a0530826ff/scratchpad/bin/qs-query -mirror /var/lib/postgresql/qsy1/mirror/s1 -table public.t1 -lsn
++ at=0/4057C0F
++ '[' -n 0/4057C0F ']'
+++ lsn_num 0/4057C0F
+++ python3 -c 'a,b='\''0/4057C0F'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
+++ lsn_num 0/4057C10
+++ python3 -c 'a,b='\''0/4057C10'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
++ '[' 67468303 -ge 67468304 ']'
++ sleep 0.1
++ for _ in $(seq $(( ${4:-120} * 10 )))
+++ applied_lsn s1 public.t1
+++ /tmp/claude-0/-home-user-pg-quicksilver/58894071-fd3a-5a32-94ab-41a0530826ff/scratchpad/bin/qs-query -mirror /var/lib/postgresql/qsy1/mirror/s1 -table public.t1 -lsn
++ at=0/4057C0F
++ '[' -n 0/4057C0F ']'
+++ lsn_num 0/4057C0F
+++ python3 -c 'a,b='\''0/4057C0F'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
+++ lsn_num 0/4057C10
+++ python3 -c 'a,b='\''0/4057C10'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
++ '[' 67468303 -ge 67468304 ']'
++ sleep 0.1
++ for _ in $(seq $(( ${4:-120} * 10 )))
+++ applied_lsn s1 public.t1
+++ /tmp/claude-0/-home-user-pg-quicksilver/58894071-fd3a-5a32-94ab-41a0530826ff/scratchpad/bin/qs-query -mirror /var/lib/postgresql/qsy1/mirror/s1 -table public.t1 -lsn
++ at=0/4057C0F
++ '[' -n 0/4057C0F ']'
+++ lsn_num 0/4057C0F
+++ python3 -c 'a,b='\''0/4057C0F'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
+++ lsn_num 0/4057C10
+++ python3 -c 'a,b='\''0/4057C10'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
++ '[' 67468303 -ge 67468304 ']'
++ sleep 0.1
++ for _ in $(seq $(( ${4:-120} * 10 )))
+++ applied_lsn s1 public.t1
+++ /tmp/claude-0/-home-user-pg-quicksilver/58894071-fd3a-5a32-94ab-41a0530826ff/scratchpad/bin/qs-query -mirror /var/lib/postgresql/qsy1/mirror/s1 -table public.t1 -lsn
++ at=0/4057C0F
++ '[' -n 0/4057C0F ']'
+++ lsn_num 0/4057C0F
+++ python3 -c 'a,b='\''0/4057C0F'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
+++ lsn_num 0/4057C10
+++ python3 -c 'a,b='\''0/4057C10'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
++ '[' 67468303 -ge 67468304 ']'
++ sleep 0.1
++ for _ in $(seq $(( ${4:-120} * 10 )))
+++ applied_lsn s1 public.t1
+++ /tmp/claude-0/-home-user-pg-quicksilver/58894071-fd3a-5a32-94ab-41a0530826ff/scratchpad/bin/qs-query -mirror /var/lib/postgresql/qsy1/mirror/s1 -table public.t1 -lsn
++ at=0/4057C0F
++ '[' -n 0/4057C0F ']'
+++ lsn_num 0/4057C0F
+++ python3 -c 'a,b='\''0/4057C0F'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
+++ lsn_num 0/4057C10
+++ python3 -c 'a,b='\''0/4057C10'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
++ '[' 67468303 -ge 67468304 ']'
++ sleep 0.1
++ for _ in $(seq $(( ${4:-120} * 10 )))
+++ applied_lsn s1 public.t1
+++ /tmp/claude-0/-home-user-pg-quicksilver/58894071-fd3a-5a32-94ab-41a0530826ff/scratchpad/bin/qs-query -mirror /var/lib/postgresql/qsy1/mirror/s1 -table public.t1 -lsn
++ at=0/4057C0F
++ '[' -n 0/4057C0F ']'
+++ lsn_num 0/4057C0F
+++ python3 -c 'a,b='\''0/4057C0F'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
+++ lsn_num 0/4057C10
+++ python3 -c 'a,b='\''0/4057C10'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
++ '[' 67468303 -ge 67468304 ']'
++ sleep 0.1
++ for _ in $(seq $(( ${4:-120} * 10 )))
+++ applied_lsn s1 public.t1
+++ /tmp/claude-0/-home-user-pg-quicksilver/58894071-fd3a-5a32-94ab-41a0530826ff/scratchpad/bin/qs-query -mirror /var/lib/postgresql/qsy1/mirror/s1 -table public.t1 -lsn
++ at=0/4057C0F
++ '[' -n 0/4057C0F ']'
+++ lsn_num 0/4057C0F
+++ python3 -c 'a,b='\''0/4057C0F'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
+++ lsn_num 0/4057C10
+++ python3 -c 'a,b='\''0/4057C10'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
++ '[' 67468303 -ge 67468304 ']'
++ sleep 0.1
++ for _ in $(seq $(( ${4:-120} * 10 )))
+++ applied_lsn s1 public.t1
+++ /tmp/claude-0/-home-user-pg-quicksilver/58894071-fd3a-5a32-94ab-41a0530826ff/scratchpad/bin/qs-query -mirror /var/lib/postgresql/qsy1/mirror/s1 -table public.t1 -lsn
++ at=0/4057C0F
++ '[' -n 0/4057C0F ']'
+++ lsn_num 0/4057C0F
+++ python3 -c 'a,b='\''0/4057C0F'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
+++ lsn_num 0/4057C10
+++ python3 -c 'a,b='\''0/4057C10'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
++ '[' 67468303 -ge 67468304 ']'
++ sleep 0.1
++ for _ in $(seq $(( ${4:-120} * 10 )))
+++ applied_lsn s1 public.t1
+++ /tmp/claude-0/-home-user-pg-quicksilver/58894071-fd3a-5a32-94ab-41a0530826ff/scratchpad/bin/qs-query -mirror /var/lib/postgresql/qsy1/mirror/s1 -table public.t1 -lsn
++ at=0/4057C0F
++ '[' -n 0/4057C0F ']'
+++ lsn_num 0/4057C0F
+++ python3 -c 'a,b='\''0/4057C0F'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
+++ lsn_num 0/4057C10
+++ python3 -c 'a,b='\''0/4057C10'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
++ '[' 67468303 -ge 67468304 ']'
++ sleep 0.1
++ for _ in $(seq $(( ${4:-120} * 10 )))
+++ applied_lsn s1 public.t1
+++ /tmp/claude-0/-home-user-pg-quicksilver/58894071-fd3a-5a32-94ab-41a0530826ff/scratchpad/bin/qs-query -mirror /var/lib/postgresql/qsy1/mirror/s1 -table public.t1 -lsn
++ at=0/4057C0F
++ '[' -n 0/4057C0F ']'
+++ lsn_num 0/4057C0F
+++ python3 -c 'a,b='\''0/4057C0F'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
+++ lsn_num 0/4057C10
+++ python3 -c 'a,b='\''0/4057C10'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
++ '[' 67468303 -ge 67468304 ']'
++ sleep 0.1
++ for _ in $(seq $(( ${4:-120} * 10 )))
+++ applied_lsn s1 public.t1
+++ /tmp/claude-0/-home-user-pg-quicksilver/58894071-fd3a-5a32-94ab-41a0530826ff/scratchpad/bin/qs-query -mirror /var/lib/postgresql/qsy1/mirror/s1 -table public.t1 -lsn
++ at=0/4057C0F
++ '[' -n 0/4057C0F ']'
+++ lsn_num 0/4057C0F
+++ python3 -c 'a,b='\''0/4057C0F'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
+++ lsn_num 0/4057C10
+++ python3 -c 'a,b='\''0/4057C10'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
++ '[' 67468303 -ge 67468304 ']'
++ sleep 0.1
++ for _ in $(seq $(( ${4:-120} * 10 )))
+++ applied_lsn s1 public.t1
+++ /tmp/claude-0/-home-user-pg-quicksilver/58894071-fd3a-5a32-94ab-41a0530826ff/scratchpad/bin/qs-query -mirror /var/lib/postgresql/qsy1/mirror/s1 -table public.t1 -lsn
++ at=0/4057C0F
++ '[' -n 0/4057C0F ']'
+++ lsn_num 0/4057C0F
+++ python3 -c 'a,b='\''0/4057C0F'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
+++ lsn_num 0/4057C10
+++ python3 -c 'a,b='\''0/4057C10'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
++ '[' 67468303 -ge 67468304 ']'
++ sleep 0.1
++ for _ in $(seq $(( ${4:-120} * 10 )))
+++ applied_lsn s1 public.t1
+++ /tmp/claude-0/-home-user-pg-quicksilver/58894071-fd3a-5a32-94ab-41a0530826ff/scratchpad/bin/qs-query -mirror /var/lib/postgresql/qsy1/mirror/s1 -table public.t1 -lsn
++ at=0/4057C0F
++ '[' -n 0/4057C0F ']'
+++ lsn_num 0/4057C0F
+++ python3 -c 'a,b='\''0/4057C0F'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
+++ lsn_num 0/4057C10
+++ python3 -c 'a,b='\''0/4057C10'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
++ '[' 67468303 -ge 67468304 ']'
++ sleep 0.1
++ for _ in $(seq $(( ${4:-120} * 10 )))
+++ applied_lsn s1 public.t1
+++ /tmp/claude-0/-home-user-pg-quicksilver/58894071-fd3a-5a32-94ab-41a0530826ff/scratchpad/bin/qs-query -mirror /var/lib/postgresql/qsy1/mirror/s1 -table public.t1 -lsn
++ at=0/4057C0F
++ '[' -n 0/4057C0F ']'
+++ lsn_num 0/4057C0F
+++ python3 -c 'a,b='\''0/4057C0F'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
+++ lsn_num 0/4057C10
+++ python3 -c 'a,b='\''0/4057C10'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
++ '[' 67468303 -ge 67468304 ']'
++ sleep 0.1
++ for _ in $(seq $(( ${4:-120} * 10 )))
+++ applied_lsn s1 public.t1
+++ /tmp/claude-0/-home-user-pg-quicksilver/58894071-fd3a-5a32-94ab-41a0530826ff/scratchpad/bin/qs-query -mirror /var/lib/postgresql/qsy1/mirror/s1 -table public.t1 -lsn
++ at=0/4057C0F
++ '[' -n 0/4057C0F ']'
+++ lsn_num 0/4057C0F
+++ python3 -c 'a,b='\''0/4057C0F'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
+++ lsn_num 0/4057C10
+++ python3 -c 'a,b='\''0/4057C10'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
++ '[' 67468303 -ge 67468304 ']'
++ sleep 0.1
++ for _ in $(seq $(( ${4:-120} * 10 )))
+++ applied_lsn s1 public.t1
+++ /tmp/claude-0/-home-user-pg-quicksilver/58894071-fd3a-5a32-94ab-41a0530826ff/scratchpad/bin/qs-query -mirror /var/lib/postgresql/qsy1/mirror/s1 -table public.t1 -lsn
++ at=0/4057C0F
++ '[' -n 0/4057C0F ']'
+++ lsn_num 0/4057C0F
+++ python3 -c 'a,b='\''0/4057C0F'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
+++ lsn_num 0/4057C10
+++ python3 -c 'a,b='\''0/4057C10'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
++ '[' 67468303 -ge 67468304 ']'
++ sleep 0.1
++ for _ in $(seq $(( ${4:-120} * 10 )))
+++ applied_lsn s1 public.t1
+++ /tmp/claude-0/-home-user-pg-quicksilver/58894071-fd3a-5a32-94ab-41a0530826ff/scratchpad/bin/qs-query -mirror /var/lib/postgresql/qsy1/mirror/s1 -table public.t1 -lsn
++ at=0/4057C0F
++ '[' -n 0/4057C0F ']'
+++ lsn_num 0/4057C0F
+++ python3 -c 'a,b='\''0/4057C0F'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
+++ lsn_num 0/4057C10
+++ python3 -c 'a,b='\''0/4057C10'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
++ '[' 67468303 -ge 67468304 ']'
++ sleep 0.1
++ for _ in $(seq $(( ${4:-120} * 10 )))
+++ applied_lsn s1 public.t1
+++ /tmp/claude-0/-home-user-pg-quicksilver/58894071-fd3a-5a32-94ab-41a0530826ff/scratchpad/bin/qs-query -mirror /var/lib/postgresql/qsy1/mirror/s1 -table public.t1 -lsn
++ at=0/4057C0F
++ '[' -n 0/4057C0F ']'
+++ lsn_num 0/4057C0F
+++ python3 -c 'a,b='\''0/4057C0F'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
+++ lsn_num 0/4057C10
+++ python3 -c 'a,b='\''0/4057C10'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
++ '[' 67468303 -ge 67468304 ']'
++ sleep 0.1
++ for _ in $(seq $(( ${4:-120} * 10 )))
+++ applied_lsn s1 public.t1
+++ /tmp/claude-0/-home-user-pg-quicksilver/58894071-fd3a-5a32-94ab-41a0530826ff/scratchpad/bin/qs-query -mirror /var/lib/postgresql/qsy1/mirror/s1 -table public.t1 -lsn
++ at=0/4057C0F
++ '[' -n 0/4057C0F ']'
+++ lsn_num 0/4057C0F
+++ python3 -c 'a,b='\''0/4057C0F'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
+++ lsn_num 0/4057C10
+++ python3 -c 'a,b='\''0/4057C10'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
++ '[' 67468303 -ge 67468304 ']'
++ sleep 0.1
++ for _ in $(seq $(( ${4:-120} * 10 )))
+++ applied_lsn s1 public.t1
+++ /tmp/claude-0/-home-user-pg-quicksilver/58894071-fd3a-5a32-94ab-41a0530826ff/scratchpad/bin/qs-query -mirror /var/lib/postgresql/qsy1/mirror/s1 -table public.t1 -lsn
++ at=0/4057C0F
++ '[' -n 0/4057C0F ']'
+++ lsn_num 0/4057C0F
+++ python3 -c 'a,b='\''0/4057C0F'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
+++ lsn_num 0/4057C10
+++ python3 -c 'a,b='\''0/4057C10'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
++ '[' 67468303 -ge 67468304 ']'
++ sleep 0.1
++ for _ in $(seq $(( ${4:-120} * 10 )))
+++ applied_lsn s1 public.t1
+++ /tmp/claude-0/-home-user-pg-quicksilver/58894071-fd3a-5a32-94ab-41a0530826ff/scratchpad/bin/qs-query -mirror /var/lib/postgresql/qsy1/mirror/s1 -table public.t1 -lsn
++ at=0/4057C0F
++ '[' -n 0/4057C0F ']'
+++ lsn_num 0/4057C0F
+++ python3 -c 'a,b='\''0/4057C0F'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
+++ lsn_num 0/4057C10
+++ python3 -c 'a,b='\''0/4057C10'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
++ '[' 67468303 -ge 67468304 ']'
++ sleep 0.1
++ for _ in $(seq $(( ${4:-120} * 10 )))
+++ applied_lsn s1 public.t1
+++ /tmp/claude-0/-home-user-pg-quicksilver/58894071-fd3a-5a32-94ab-41a0530826ff/scratchpad/bin/qs-query -mirror /var/lib/postgresql/qsy1/mirror/s1 -table public.t1 -lsn
++ at=0/4057C0F
++ '[' -n 0/4057C0F ']'
+++ lsn_num 0/4057C0F
+++ python3 -c 'a,b='\''0/4057C0F'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
+++ lsn_num 0/4057C10
+++ python3 -c 'a,b='\''0/4057C10'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
++ '[' 67468303 -ge 67468304 ']'
++ sleep 0.1
++ for _ in $(seq $(( ${4:-120} * 10 )))
+++ applied_lsn s1 public.t1
+++ /tmp/claude-0/-home-user-pg-quicksilver/58894071-fd3a-5a32-94ab-41a0530826ff/scratchpad/bin/qs-query -mirror /var/lib/postgresql/qsy1/mirror/s1 -table public.t1 -lsn
++ at=0/4057C0F
++ '[' -n 0/4057C0F ']'
+++ lsn_num 0/4057C0F
+++ python3 -c 'a,b='\''0/4057C0F'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
+++ lsn_num 0/4057C10
+++ python3 -c 'a,b='\''0/4057C10'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
++ '[' 67468303 -ge 67468304 ']'
++ sleep 0.1
++ for _ in $(seq $(( ${4:-120} * 10 )))
+++ applied_lsn s1 public.t1
+++ /tmp/claude-0/-home-user-pg-quicksilver/58894071-fd3a-5a32-94ab-41a0530826ff/scratchpad/bin/qs-query -mirror /var/lib/postgresql/qsy1/mirror/s1 -table public.t1 -lsn
++ at=0/4057C0F
++ '[' -n 0/4057C0F ']'
+++ lsn_num 0/4057C0F
+++ python3 -c 'a,b='\''0/4057C0F'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
+++ lsn_num 0/4057C10
+++ python3 -c 'a,b='\''0/4057C10'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
++ '[' 67468303 -ge 67468304 ']'
++ sleep 0.1
++ for _ in $(seq $(( ${4:-120} * 10 )))
+++ applied_lsn s1 public.t1
+++ /tmp/claude-0/-home-user-pg-quicksilver/58894071-fd3a-5a32-94ab-41a0530826ff/scratchpad/bin/qs-query -mirror /var/lib/postgresql/qsy1/mirror/s1 -table public.t1 -lsn
++ at=0/4057C0F
++ '[' -n 0/4057C0F ']'
+++ lsn_num 0/4057C0F
+++ python3 -c 'a,b='\''0/4057C0F'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
+++ lsn_num 0/4057C10
+++ python3 -c 'a,b='\''0/4057C10'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
++ '[' 67468303 -ge 67468304 ']'
++ sleep 0.1
++ for _ in $(seq $(( ${4:-120} * 10 )))
+++ applied_lsn s1 public.t1
+++ /tmp/claude-0/-home-user-pg-quicksilver/58894071-fd3a-5a32-94ab-41a0530826ff/scratchpad/bin/qs-query -mirror /var/lib/postgresql/qsy1/mirror/s1 -table public.t1 -lsn
++ at=0/4057C0F
++ '[' -n 0/4057C0F ']'
+++ lsn_num 0/4057C0F
+++ python3 -c 'a,b='\''0/4057C0F'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
+++ lsn_num 0/4057C10
+++ python3 -c 'a,b='\''0/4057C10'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
++ '[' 67468303 -ge 67468304 ']'
++ sleep 0.1
++ for _ in $(seq $(( ${4:-120} * 10 )))
+++ applied_lsn s1 public.t1
+++ /tmp/claude-0/-home-user-pg-quicksilver/58894071-fd3a-5a32-94ab-41a0530826ff/scratchpad/bin/qs-query -mirror /var/lib/postgresql/qsy1/mirror/s1 -table public.t1 -lsn
++ at=0/4057C0F
++ '[' -n 0/4057C0F ']'
+++ lsn_num 0/4057C0F
+++ python3 -c 'a,b='\''0/4057C0F'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
+++ lsn_num 0/4057C10
+++ python3 -c 'a,b='\''0/4057C10'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
++ '[' 67468303 -ge 67468304 ']'
++ sleep 0.1
++ for _ in $(seq $(( ${4:-120} * 10 )))
+++ applied_lsn s1 public.t1
+++ /tmp/claude-0/-home-user-pg-quicksilver/58894071-fd3a-5a32-94ab-41a0530826ff/scratchpad/bin/qs-query -mirror /var/lib/postgresql/qsy1/mirror/s1 -table public.t1 -lsn
++ at=0/4057C0F
++ '[' -n 0/4057C0F ']'
+++ lsn_num 0/4057C0F
+++ python3 -c 'a,b='\''0/4057C0F'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
+++ lsn_num 0/4057C10
+++ python3 -c 'a,b='\''0/4057C10'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
++ '[' 67468303 -ge 67468304 ']'
++ sleep 0.1
++ for _ in $(seq $(( ${4:-120} * 10 )))
+++ applied_lsn s1 public.t1
+++ /tmp/claude-0/-home-user-pg-quicksilver/58894071-fd3a-5a32-94ab-41a0530826ff/scratchpad/bin/qs-query -mirror /var/lib/postgresql/qsy1/mirror/s1 -table public.t1 -lsn
++ at=0/4057C0F
++ '[' -n 0/4057C0F ']'
+++ lsn_num 0/4057C0F
+++ python3 -c 'a,b='\''0/4057C0F'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
+++ lsn_num 0/4057C10
+++ python3 -c 'a,b='\''0/4057C10'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
++ '[' 67468303 -ge 67468304 ']'
++ sleep 0.1
++ for _ in $(seq $(( ${4:-120} * 10 )))
+++ applied_lsn s1 public.t1
+++ /tmp/claude-0/-home-user-pg-quicksilver/58894071-fd3a-5a32-94ab-41a0530826ff/scratchpad/bin/qs-query -mirror /var/lib/postgresql/qsy1/mirror/s1 -table public.t1 -lsn
++ at=0/4057C0F
++ '[' -n 0/4057C0F ']'
+++ lsn_num 0/4057C0F
+++ python3 -c 'a,b='\''0/4057C0F'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
+++ lsn_num 0/4057C10
+++ python3 -c 'a,b='\''0/4057C10'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
++ '[' 67468303 -ge 67468304 ']'
++ sleep 0.1
++ for _ in $(seq $(( ${4:-120} * 10 )))
+++ applied_lsn s1 public.t1
+++ /tmp/claude-0/-home-user-pg-quicksilver/58894071-fd3a-5a32-94ab-41a0530826ff/scratchpad/bin/qs-query -mirror /var/lib/postgresql/qsy1/mirror/s1 -table public.t1 -lsn
++ at=0/4057C0F
++ '[' -n 0/4057C0F ']'
+++ lsn_num 0/4057C0F
+++ python3 -c 'a,b='\''0/4057C0F'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
+++ lsn_num 0/4057C10
+++ python3 -c 'a,b='\''0/4057C10'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
++ '[' 67468303 -ge 67468304 ']'
++ sleep 0.1
++ for _ in $(seq $(( ${4:-120} * 10 )))
+++ applied_lsn s1 public.t1
+++ /tmp/claude-0/-home-user-pg-quicksilver/58894071-fd3a-5a32-94ab-41a0530826ff/scratchpad/bin/qs-query -mirror /var/lib/postgresql/qsy1/mirror/s1 -table public.t1 -lsn
++ at=0/4057C0F
++ '[' -n 0/4057C0F ']'
+++ lsn_num 0/4057C0F
+++ python3 -c 'a,b='\''0/4057C0F'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
+++ lsn_num 0/4057C10
+++ python3 -c 'a,b='\''0/4057C10'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
++ '[' 67468303 -ge 67468304 ']'
++ sleep 0.1
++ for _ in $(seq $(( ${4:-120} * 10 )))
+++ applied_lsn s1 public.t1
+++ /tmp/claude-0/-home-user-pg-quicksilver/58894071-fd3a-5a32-94ab-41a0530826ff/scratchpad/bin/qs-query -mirror /var/lib/postgresql/qsy1/mirror/s1 -table public.t1 -lsn
++ at=0/4057C0F
++ '[' -n 0/4057C0F ']'
+++ lsn_num 0/4057C0F
+++ python3 -c 'a,b='\''0/4057C0F'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
+++ lsn_num 0/4057C10
+++ python3 -c 'a,b='\''0/4057C10'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
++ '[' 67468303 -ge 67468304 ']'
++ sleep 0.1
++ for _ in $(seq $(( ${4:-120} * 10 )))
+++ applied_lsn s1 public.t1
+++ /tmp/claude-0/-home-user-pg-quicksilver/58894071-fd3a-5a32-94ab-41a0530826ff/scratchpad/bin/qs-query -mirror /var/lib/postgresql/qsy1/mirror/s1 -table public.t1 -lsn
++ at=0/4057C0F
++ '[' -n 0/4057C0F ']'
+++ lsn_num 0/4057C0F
+++ python3 -c 'a,b='\''0/4057C0F'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
+++ lsn_num 0/4057C10
+++ python3 -c 'a,b='\''0/4057C10'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
++ '[' 67468303 -ge 67468304 ']'
++ sleep 0.1
++ for _ in $(seq $(( ${4:-120} * 10 )))
+++ applied_lsn s1 public.t1
+++ /tmp/claude-0/-home-user-pg-quicksilver/58894071-fd3a-5a32-94ab-41a0530826ff/scratchpad/bin/qs-query -mirror /var/lib/postgresql/qsy1/mirror/s1 -table public.t1 -lsn
++ at=0/4057C0F
++ '[' -n 0/4057C0F ']'
+++ lsn_num 0/4057C0F
+++ python3 -c 'a,b='\''0/4057C0F'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
+++ lsn_num 0/4057C10
+++ python3 -c 'a,b='\''0/4057C10'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
++ '[' 67468303 -ge 67468304 ']'
++ sleep 0.1
++ for _ in $(seq $(( ${4:-120} * 10 )))
+++ applied_lsn s1 public.t1
+++ /tmp/claude-0/-home-user-pg-quicksilver/58894071-fd3a-5a32-94ab-41a0530826ff/scratchpad/bin/qs-query -mirror /var/lib/postgresql/qsy1/mirror/s1 -table public.t1 -lsn
++ at=0/4057C0F
++ '[' -n 0/4057C0F ']'
+++ lsn_num 0/4057C0F
+++ python3 -c 'a,b='\''0/4057C0F'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
+++ lsn_num 0/4057C10
+++ python3 -c 'a,b='\''0/4057C10'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
++ '[' 67468303 -ge 67468304 ']'
++ sleep 0.1
++ for _ in $(seq $(( ${4:-120} * 10 )))
+++ applied_lsn s1 public.t1
+++ /tmp/claude-0/-home-user-pg-quicksilver/58894071-fd3a-5a32-94ab-41a0530826ff/scratchpad/bin/qs-query -mirror /var/lib/postgresql/qsy1/mirror/s1 -table public.t1 -lsn
++ at=0/4057C0F
++ '[' -n 0/4057C0F ']'
+++ lsn_num 0/4057C0F
+++ python3 -c 'a,b='\''0/4057C0F'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
+++ lsn_num 0/4057C10
+++ python3 -c 'a,b='\''0/4057C10'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
++ '[' 67468303 -ge 67468304 ']'
++ sleep 0.1
++ for _ in $(seq $(( ${4:-120} * 10 )))
+++ applied_lsn s1 public.t1
+++ /tmp/claude-0/-home-user-pg-quicksilver/58894071-fd3a-5a32-94ab-41a0530826ff/scratchpad/bin/qs-query -mirror /var/lib/postgresql/qsy1/mirror/s1 -table public.t1 -lsn
++ at=0/4057C0F
++ '[' -n 0/4057C0F ']'
+++ lsn_num 0/4057C0F
+++ python3 -c 'a,b='\''0/4057C0F'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
+++ lsn_num 0/4057C10
+++ python3 -c 'a,b='\''0/4057C10'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
++ '[' 67468303 -ge 67468304 ']'
++ sleep 0.1
++ for _ in $(seq $(( ${4:-120} * 10 )))
+++ applied_lsn s1 public.t1
+++ /tmp/claude-0/-home-user-pg-quicksilver/58894071-fd3a-5a32-94ab-41a0530826ff/scratchpad/bin/qs-query -mirror /var/lib/postgresql/qsy1/mirror/s1 -table public.t1 -lsn
++ at=0/4057C0F
++ '[' -n 0/4057C0F ']'
+++ lsn_num 0/4057C0F
+++ python3 -c 'a,b='\''0/4057C0F'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
+++ lsn_num 0/4057C10
+++ python3 -c 'a,b='\''0/4057C10'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
++ '[' 67468303 -ge 67468304 ']'
++ sleep 0.1
++ for _ in $(seq $(( ${4:-120} * 10 )))
+++ applied_lsn s1 public.t1
+++ /tmp/claude-0/-home-user-pg-quicksilver/58894071-fd3a-5a32-94ab-41a0530826ff/scratchpad/bin/qs-query -mirror /var/lib/postgresql/qsy1/mirror/s1 -table public.t1 -lsn
++ at=0/4057C0F
++ '[' -n 0/4057C0F ']'
+++ lsn_num 0/4057C0F
+++ python3 -c 'a,b='\''0/4057C0F'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
+++ lsn_num 0/4057C10
+++ python3 -c 'a,b='\''0/4057C10'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
++ '[' 67468303 -ge 67468304 ']'
++ sleep 0.1
++ for _ in $(seq $(( ${4:-120} * 10 )))
+++ applied_lsn s1 public.t1
+++ /tmp/claude-0/-home-user-pg-quicksilver/58894071-fd3a-5a32-94ab-41a0530826ff/scratchpad/bin/qs-query -mirror /var/lib/postgresql/qsy1/mirror/s1 -table public.t1 -lsn
++ at=0/4057C0F
++ '[' -n 0/4057C0F ']'
+++ lsn_num 0/4057C0F
+++ python3 -c 'a,b='\''0/4057C0F'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
+++ lsn_num 0/4057C10
+++ python3 -c 'a,b='\''0/4057C10'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
++ '[' 67468303 -ge 67468304 ']'
++ sleep 0.1
++ for _ in $(seq $(( ${4:-120} * 10 )))
+++ applied_lsn s1 public.t1
+++ /tmp/claude-0/-home-user-pg-quicksilver/58894071-fd3a-5a32-94ab-41a0530826ff/scratchpad/bin/qs-query -mirror /var/lib/postgresql/qsy1/mirror/s1 -table public.t1 -lsn
++ at=0/4057C0F
++ '[' -n 0/4057C0F ']'
+++ lsn_num 0/4057C0F
+++ python3 -c 'a,b='\''0/4057C0F'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
+++ lsn_num 0/4057C10
+++ python3 -c 'a,b='\''0/4057C10'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
++ '[' 67468303 -ge 67468304 ']'
++ sleep 0.1
++ for _ in $(seq $(( ${4:-120} * 10 )))
+++ applied_lsn s1 public.t1
+++ /tmp/claude-0/-home-user-pg-quicksilver/58894071-fd3a-5a32-94ab-41a0530826ff/scratchpad/bin/qs-query -mirror /var/lib/postgresql/qsy1/mirror/s1 -table public.t1 -lsn
++ at=0/4057C0F
++ '[' -n 0/4057C0F ']'
+++ lsn_num 0/4057C0F
+++ python3 -c 'a,b='\''0/4057C0F'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
+++ lsn_num 0/4057C10
+++ python3 -c 'a,b='\''0/4057C10'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
++ '[' 67468303 -ge 67468304 ']'
++ sleep 0.1
++ for _ in $(seq $(( ${4:-120} * 10 )))
+++ applied_lsn s1 public.t1
+++ /tmp/claude-0/-home-user-pg-quicksilver/58894071-fd3a-5a32-94ab-41a0530826ff/scratchpad/bin/qs-query -mirror /var/lib/postgresql/qsy1/mirror/s1 -table public.t1 -lsn
++ at=0/4057C0F
++ '[' -n 0/4057C0F ']'
+++ lsn_num 0/4057C0F
+++ python3 -c 'a,b='\''0/4057C0F'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
+++ lsn_num 0/4057C10
+++ python3 -c 'a,b='\''0/4057C10'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
++ '[' 67468303 -ge 67468304 ']'
++ sleep 0.1
++ for _ in $(seq $(( ${4:-120} * 10 )))
+++ applied_lsn s1 public.t1
+++ /tmp/claude-0/-home-user-pg-quicksilver/58894071-fd3a-5a32-94ab-41a0530826ff/scratchpad/bin/qs-query -mirror /var/lib/postgresql/qsy1/mirror/s1 -table public.t1 -lsn
++ at=0/4057C0F
++ '[' -n 0/4057C0F ']'
+++ lsn_num 0/4057C0F
+++ python3 -c 'a,b='\''0/4057C0F'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
+++ lsn_num 0/4057C10
+++ python3 -c 'a,b='\''0/4057C10'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
++ '[' 67468303 -ge 67468304 ']'
++ sleep 0.1
++ for _ in $(seq $(( ${4:-120} * 10 )))
+++ applied_lsn s1 public.t1
+++ /tmp/claude-0/-home-user-pg-quicksilver/58894071-fd3a-5a32-94ab-41a0530826ff/scratchpad/bin/qs-query -mirror /var/lib/postgresql/qsy1/mirror/s1 -table public.t1 -lsn
++ at=0/4057C0F
++ '[' -n 0/4057C0F ']'
+++ lsn_num 0/4057C0F
+++ python3 -c 'a,b='\''0/4057C0F'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
+++ lsn_num 0/4057C10
+++ python3 -c 'a,b='\''0/4057C10'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
++ '[' 67468303 -ge 67468304 ']'
++ sleep 0.1
++ for _ in $(seq $(( ${4:-120} * 10 )))
+++ applied_lsn s1 public.t1
+++ /tmp/claude-0/-home-user-pg-quicksilver/58894071-fd3a-5a32-94ab-41a0530826ff/scratchpad/bin/qs-query -mirror /var/lib/postgresql/qsy1/mirror/s1 -table public.t1 -lsn
++ at=0/4057C47
++ '[' -n 0/4057C47 ']'
+++ lsn_num 0/4057C47
+++ python3 -c 'a,b='\''0/4057C47'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
+++ lsn_num 0/4057C10
+++ python3 -c 'a,b='\''0/4057C10'\''.split('\''/'\'');print((int(a,16)<<32)|int(b,16))'
++ '[' 67468359 -ge 67468304 ']'
++ return 0
++ echo 'mirror s1 caught up to 0/4057C10'
+mirror s1 caught up to 0/4057C10
+++ seq 150
++ for _ in $(seq 150)
+++ sql 5600 postgres
+++ cat
+++ su postgres -s /bin/bash -c '/usr/lib/postgresql/17/bin/psql -X -A -t -q -v ON_ERROR_STOP=1 -h /var/lib/postgresql/qsy1/sock -p 5600 -U postgres -d postgres -f -'
++ n=0
++ '[' 0 = 0 ']'
++ break
++ sleep 4
++ echo '--- slots on P after the janitor'
+--- slots on P after the janitor
++ sql 5600 postgres
++ cat
++ su postgres -s /bin/bash -c '/usr/lib/postgresql/17/bin/psql -X -A -t -q -v ON_ERROR_STOP=1 -h /var/lib/postgresql/qsy1/sock -p 5600 -U postgres -d postgres -f -'
+qs_v1_s1|t
+qs_v1_s2|f
+s1phys|t
++ echo '--- janitor lines from the primary'\''s sidecar'
+--- janitor lines from the primary's sidecar
++ grep -i janitor /home/user/pg_quicksilver/.claude/worktrees/agent-a205c91741fc17a04/go/cmd/qs-mirror/validate/out/p1.log
+time=2026-11-26T15:52:18.678Z level=INFO msg="slot janitor on: when this instance is the primary it drops this cluster's Quicksilver slots that nothing will consume again" slots="qs_v1 and qs_v1_*" interval=2s wal_limit_bytes=4294967296 inactive_limit=5s off="QS_SLOT_JANITOR=off"
+time=2026-11-26T15:52:18.716Z level=INFO msg="slot janitor: keeping slot" slot=qs_v1_gone rule=recently_inactive why="inactive for 0s, under 5s"
+time=2026-11-26T15:52:18.716Z level=INFO msg="slot janitor: keeping slot" slot=qs_v1_s2 rule=pod_connected why="instance \"s2\" is streaming from this primary"
+time=2026-11-26T15:52:20.747Z level=INFO msg="slot janitor: keeping slot" slot=qs_v1_s1 rule=active why="a sidecar is consuming it"
+time=2026-11-26T15:52:24.810Z level=WARN msg="slot janitor: dropped slot; if its sidecar returns it will find no slot, create one and rebuild its mirror from a snapshot" slot=qs_v1_gone rule=orphaned why="inactive for 6s (limit 5s) and no instance of this cluster has a replication connection or a physical slot by that name"
++ echo '--- S1'\''s sidecar still consuming (applied rows on the mirror)'
+--- S1's sidecar still consuming (applied rows on the mirror)
++ sql 5600 app
++ cat
++ su postgres -s /bin/bash -c '/usr/lib/postgresql/17/bin/psql -X -A -t -q -v ON_ERROR_STOP=1 -h /var/lib/postgresql/qsy1/sock -p 5600 -U postgres -d app -f -'
++ sleep 2
+++ applied_lsn s1 public.t1
+++ /tmp/claude-0/-home-user-pg-quicksilver/58894071-fd3a-5a32-94ab-41a0530826ff/scratchpad/bin/qs-query -mirror /var/lib/postgresql/qsy1/mirror/s1 -table public.t1 -lsn
++ echo 'mirror t1 applied LSN: 0/40584AF'
+mirror t1 applied LSN: 0/40584AF
++ verify s1 public.t1 5600
++ /tmp/claude-0/-home-user-pg-quicksilver/58894071-fd3a-5a32-94ab-41a0530826ff/scratchpad/bin/qs-verify -dsn 'postgres://postgres@localhost:5600/app?sslmode=disable' -mirror /var/lib/postgresql/qsy1/mirror/s1 -table public.t1
+applied_lsn=0/40584AF
+mirror 1000 rows (checksum 42f5a2f1c66f3fe6)
+source 1000 rows (checksum 42f5a2f1c66f3fe6)
+MATCH
++ stop_sc s1
++ local p
+++ cat /home/user/pg_quicksilver/.claude/worktrees/agent-a205c91741fc17a04/go/cmd/qs-mirror/validate/out/s1.pid
++ p=24584
++ kill -TERM 24584
+++ seq 300
++ for _ in $(seq 300)
++ kill -0 24584
++ sleep 0.1
++ for _ in $(seq 300)
++ kill -0 24584
++ break
++ echo 'stopped sidecar s1 pid=24584'
+stopped sidecar s1 pid=24584
++ stop_sc p1
++ local p
+++ cat /home/user/pg_quicksilver/.claude/worktrees/agent-a205c91741fc17a04/go/cmd/qs-mirror/validate/out/p1.pid
++ p=24575
++ kill -TERM 24575
+++ seq 300
++ for _ in $(seq 300)
++ kill -0 24575
++ sleep 0.1
++ for _ in $(seq 300)
++ kill -0 24575
++ break
++ echo 'stopped sidecar p1 pid=24575'
+stopped sidecar p1 pid=24575
++ pg_down s2
++ pgu '/usr/lib/postgresql/17/bin/pg_ctl -D /var/lib/postgresql/qsy1/s2 -m fast -w stop'
++ pg_down s1
++ pgu '/usr/lib/postgresql/17/bin/pg_ctl -D /var/lib/postgresql/qsy1/s1 -m fast -w stop'
++ pg_down p1
++ pgu '/usr/lib/postgresql/17/bin/pg_ctl -D /var/lib/postgresql/qsy1/p1 -m fast -w stop'

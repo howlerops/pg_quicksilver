@@ -27,6 +27,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/howlerops/pg_quicksilver/go/internal/changestream"
+	"github.com/howlerops/pg_quicksilver/go/internal/mirror"
 )
 
 // slowTick is the threshold for saying something. 200 ms is the interval
@@ -71,7 +72,11 @@ func envDuration(key string, def time.Duration) time.Duration {
 // where nothing else in the loop can run.
 //
 // Zero disables the cap and restores the old unbounded behaviour for A/B.
-var maxTickChanges = int(envInt("QS_MAX_TICK_CHANGES", 250_000))
+//
+// The default is derived from the memory limit (memlimit.go): 250,000 from
+// about 3 GiB up, about 22,000 at 256Mi, where the old default was OOM-killed
+// while draining a backlog.
+var maxTickChanges = int(envInt("QS_MAX_TICK_CHANGES", defaultTickChanges(memSizing.Bytes)))
 
 func envInt(key string, def int64) int64 {
 	if v := os.Getenv(key); v != "" {
@@ -89,13 +94,19 @@ func envInt(key string, def int64) int64 {
 // built around: half a transaction in the mirror is a state the source never
 // had. So a single transaction larger than the cap is applied whole and
 // overruns, which is correct — the alternative is not applying it at all.
+//
+// What it no longer does is overrun in MEMORY. A transaction past the spool
+// threshold is on disk (changestream/spool.go), counted here by Len(), and
+// Table.Apply lands it in chunks of mirror.ApplyChunkChanges while keeping it
+// invisible until the last one is written. The tick is still long; the heap
+// is not.
 func capBatch(txns []changestream.Transaction) []changestream.Transaction {
 	if maxTickChanges <= 0 || len(txns) <= 1 {
 		return txns
 	}
 	n := 0
 	for i, t := range txns {
-		n += len(t.Changes)
+		n += t.Len()
 		if n >= maxTickChanges {
 			return txns[:i+1]
 		}
@@ -164,8 +175,9 @@ func currentLSN(ctx context.Context, conn *pgx.Conn) (string, error) {
 	return lsn, err
 }
 
-// maxPendingChanges is how much may wait in memory before the loop stops
-// reading from the stream.
+// maxPendingChanges is how much may wait in pump's own queue before the loop
+// stops taking from the stream's buffer. It is half of the memory bound; the
+// other half is maxStreamBufferedChanges, below.
 //
 // Four ticks' worth. Enough that a tick never waits on the network for work it
 // could already have, and small enough that the queue is a buffer rather than a
@@ -176,3 +188,56 @@ func currentLSN(ctx context.Context, conn *pgx.Conn) (string, error) {
 // Reading without a bound while applying with one is what put 2.4 GB of
 // resident memory behind a 139 MB mirror.
 var maxPendingChanges = int(envInt("QS_MAX_PENDING_CHANGES", 4*int64(maxTickChanges)))
+
+// maxStreamBufferedChanges is how much the stream itself may hold, received but
+// not yet taken by pump, before it stops reading the replication socket and
+// leaves the rest in PostgreSQL's WAL.
+//
+// maxPendingChanges alone bounded nothing: pump declining to take from the
+// stream only moved the backlog into the stream's buffer, which had no cap
+// (47 MB to 1.27 GB of heap in seven seconds, against a 256Mi default limit).
+// The two caps are one budget. Pump takes the whole stream buffer whenever its
+// queue is under maxPendingChanges, so the worst case in memory is
+//
+//	maxPendingChanges + 2 x maxStreamBufferedChanges (+ one transaction)
+//
+// where "one transaction" used to mean all of it and now means what init()
+// below says: a large one waits on disk and counts here by its length only.
+//
+// — the queue just under its cap, one full buffer taken on top, and the buffer
+// refilled behind it. A quarter of the queue (one tick's worth at the
+// defaults) keeps that at 1.5x maxPendingChanges without leaving a tick short
+// of work.
+var maxStreamBufferedChanges = int(envInt("QS_MAX_STREAM_BUFFERED_CHANGES", int64(maxPendingChanges)/4))
+
+// The three knobs that bound what ONE transaction costs in memory, whatever its
+// size (the two above bound many small ones):
+//
+//	QS_SPOOL_THRESHOLD_CHANGES  a transaction that arrives whole is held in
+//	QS_SPOOL_THRESHOLD_BYTES    memory until it crosses either, then spooled to
+//	                            <mirror>/.spool; one the server streams in
+//	                            progress is spooled from its first change
+//	QS_APPLY_CHUNK_CHANGES      how many changes of a larger transaction Apply
+//	                            holds at once
+//	QS_STREAM_IN_PROGRESS=off   proto_version 1, for PostgreSQL 13 and older
+//
+// The worst case in memory becomes
+//
+//	(maxPendingChanges + 2 x maxStreamBufferedChanges) small changes queued
+//	+ min(QS_SPOOL_THRESHOLD_CHANGES rows, QS_SPOOL_THRESHOLD_BYTES) assembling
+//	+ QS_APPLY_CHUNK_CHANGES rows being applied
+//	+ 1 bit per row of each file the transaction supersedes rows in
+//
+// with no term in the size of the largest transaction.
+func init() {
+	changestream.DefaultMaxBufferedChanges = maxStreamBufferedChanges
+	changestream.SpoolThresholdChanges = int(envInt("QS_SPOOL_THRESHOLD_CHANGES",
+		int64(changestream.SpoolThresholdChanges)))
+	changestream.SpoolThresholdBytes = int(envInt("QS_SPOOL_THRESHOLD_BYTES",
+		int64(changestream.SpoolThresholdBytes)))
+	mirror.ApplyChunkChanges = int(envInt("QS_APPLY_CHUNK_CHANGES",
+		int64(mirror.ApplyChunkChanges)))
+	if v := os.Getenv("QS_STREAM_IN_PROGRESS"); v == "off" || v == "0" || v == "false" {
+		changestream.DefaultInProgress = false
+	}
+}

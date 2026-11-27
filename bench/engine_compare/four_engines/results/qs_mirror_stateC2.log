@@ -1,0 +1,6 @@
+time=2026-11-25T01:26:31.736Z level=INFO msg="quicksilver mirror starting" cluster=bench pod=bench-1 mode=shadow ingest=logical tables="[public.orders public.customers]" slo=15s
+time=2026-11-25T01:26:31.756Z level=INFO msg="resuming from the existing slot" slot=qs_bench
+time=2026-11-25T01:26:32.194Z level=INFO msg="key index built" table=public.customers keys=500000 seconds=0.437417125
+time=2026-11-25T01:26:42.119Z level=INFO msg="key index built" table=public.orders keys=10100000 seconds=9.92470563
+time=2026-11-25T01:27:03.853Z level=INFO msg="merged deltas" table=public.orders rows=695000 seconds=4.830465409
+time=2026-11-25T01:27:03.853Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=4866 merge_deltas_ms=4830 apply_ms=36

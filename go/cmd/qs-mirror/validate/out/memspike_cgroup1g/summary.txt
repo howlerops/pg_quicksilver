@@ -1,0 +1,17 @@
+samples=615 rss_mb p50=264 p95=458 max=846 final_hwm_mb=861
+per-minute peak RSS (MB): 18:14=334 18:15=389 18:16=384 18:17=483 18:18=393 18:19=365 18:20=458 18:21=370 18:22=717 18:23=846 18:24=372
+peaks >= 1000 MB, with the sidecar events in the 3 s before and 1 s after:
+event counts:
+    1133 merged deltas
+      17 merged deltas during compaction
+      12 compaction started
+       4 snapshot complete
+       4 key index built
+       1 memory sizing
+       1 quicksilver mirror starting
+       1 pprof listening
+       1 ducklake publishing on
+       1 slot janitor on: when this instance is the primary it drops this cluster's Quicksilver slots that nothing will consume again
+       1 pg_quicksilver is not installed in this database; no mirror relation is registered (CREATE EXTENSION pg_quicksilver on the primary to route reads; this is looked at again every minute)
+       1 new replication slot; bootstrapping by snapshot
+       1 schema evolved at a DDL barrier

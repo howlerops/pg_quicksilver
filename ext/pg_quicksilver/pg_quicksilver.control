@@ -1,0 +1,7 @@
+comment = 'fail-closed routing of read queries between heap tables and their columnar mirrors'
+default_version = '0.1'
+module_pathname = '$libdir/pg_quicksilver'
+relocatable = false
+schema = quicksilver
+superuser = true
+trusted = false

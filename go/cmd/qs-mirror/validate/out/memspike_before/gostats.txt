@@ -1,0 +1,35 @@
+== heap.1.debug1.txt
+# Sys = 1407167064
+# HeapAlloc = 805568232
+# HeapIdle = 580681728
+# HeapInuse = 810450944
+# HeapReleased = 133144576
+# NextGC = 1551650666
+== heap.2.debug1.txt
+# Sys = 1407167064
+# HeapAlloc = 1126694920
+# HeapIdle = 259973120
+# HeapInuse = 1131061248
+# HeapReleased = 11673600
+# NextGC = 1551650666
+== heap.3.debug1.txt
+# Sys = 1407167064
+# HeapAlloc = 1144203128
+# HeapIdle = 242499584
+# HeapInuse = 1148567552
+# HeapReleased = 10059776
+# NextGC = 1551650666
+== heap.4.debug1.txt
+# Sys = 1407167064
+# HeapAlloc = 1231966040
+# HeapIdle = 153731072
+# HeapInuse = 1237336064
+# HeapReleased = 10059776
+# NextGC = 1551650666
+== heap.5.debug1.txt
+# Sys = 1407232600
+# HeapAlloc = 48187560
+# HeapIdle = 1335771136
+# HeapInuse = 55361536
+# HeapReleased = 141623296
+# NextGC = 87354562

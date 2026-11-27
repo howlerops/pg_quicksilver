@@ -42,18 +42,29 @@ CREATE TABLE IF NOT EXISTS quicksilver.ddl_log (
     statement text
 );
 
+-- SECURITY DEFINER, with a pinned search_path. An event trigger function runs as
+-- whoever issued the DDL, and this one writes to a table in a schema nobody but
+-- its owner can touch: without it, every CREATE or ALTER by an ordinary role in
+-- a mirrored database failed with "permission denied for schema quicksilver" —
+-- the mirror's bookkeeping taking the application's migrations down with it.
 CREATE OR REPLACE FUNCTION quicksilver.on_ddl() RETURNS event_trigger
-LANGUAGE plpgsql AS $$
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $$
 DECLARE r record;
 BEGIN
     FOR r IN SELECT * FROM pg_event_trigger_ddl_commands() LOOP
         -- never log our own bookkeeping, or the log recurses
         IF r.schema_name IS DISTINCT FROM 'quicksilver' THEN
-            INSERT INTO quicksilver.ddl_log(tag, object, statement)
-            VALUES (r.command_tag, r.object_identity, current_query());
+            -- The statement text is NOT stored. Nothing reads it: the barrier
+            -- needs only that a row arrived. And DDL can carry secrets (CREATE
+            -- SUBSCRIPTION ... CONNECTION, CREATE USER MAPPING ... OPTIONS),
+            -- which this table would then keep and publish.
+            INSERT INTO quicksilver.ddl_log(tag, object)
+            VALUES (r.command_tag, r.object_identity);
         END IF;
     END LOOP;
 END $$;
+
+REVOKE ALL ON FUNCTION quicksilver.on_ddl() FROM PUBLIC;
 
 DROP EVENT TRIGGER IF EXISTS quicksilver_ddl;
 CREATE EVENT TRIGGER quicksilver_ddl ON ddl_command_end

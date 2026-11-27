@@ -22,11 +22,13 @@ import (
 	_ "net/http/pprof"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"sort"
 	"strings"
 	"syscall"
 	"time"
 
+	"github.com/jackc/pglogrepl"
 	"github.com/jackc/pgx/v5"
 
 	"github.com/howlerops/pg_quicksilver/go/internal/changestream"
@@ -41,7 +43,8 @@ type options struct {
 	mode         string
 	ingest       string
 	tables       []string
-	slot         string
+	slot         string // this Pod's own slot; see slotname.go
+	slotBase     string // the configured name it was derived from
 	publication  string
 	mirrorPath   string
 	freshnessSLO time.Duration
@@ -84,6 +87,9 @@ func loadOptions() options {
 		d = 30 * time.Second
 	}
 	o.freshnessSLO = d
+	// QS_SLOT is the same on every Pod; the slot must not be.
+	o.slotBase = o.slot
+	o.slot = podSlotName(o.slotBase, o.podName)
 	return o
 }
 
@@ -117,6 +123,8 @@ func (o options) localDSN() string {
 func main() {
 	log := slog.New(slog.NewTextHandler(os.Stdout, nil))
 	o := loadOptions()
+	changestream.SpoolDir = filepath.Join(o.mirrorPath, ".spool")
+	logMemorySizing(log)
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
@@ -138,7 +146,13 @@ func main() {
 	}
 	log.Info("quicksilver mirror starting",
 		"cluster", o.cluster, "pod", o.podName, "mode", o.mode,
-		"ingest", o.ingest, "tables", o.tables, "slo", o.freshnessSLO)
+		"ingest", o.ingest, "tables", o.tables, "slo", o.freshnessSLO,
+		"slot", o.slot, "configured_slot", o.slotBase)
+	if o.podName == "" {
+		log.Warn("QS_POD_NAME is not set, so the replication slot is not unique to "+
+			"this sidecar; a second sidecar given the same QS_SLOT would share one "+
+			"cursor with it and silently miss rows", "slot", o.slot)
+	}
 
 	if o.mode == "off" {
 		log.Info("mode: off — not building a mirror; idling so the Pod stays healthy")
@@ -149,13 +163,59 @@ func main() {
 		log.Error("unsupported ingest mode", "ingest", o.ingest)
 		os.Exit(1)
 	}
+	// Join domains (experimental, off unless QS_JOIN_DOMAINS is set).
+	specs, maxKeys, err := joinDomainSettings()
+	if err != nil {
+		log.Error("join domains", "err", err)
+		os.Exit(1)
+	}
+	joinDomainSpecs, joinDomainMax = specs, maxKeys
 
-	supervise(ctx, log, o, h)
+	if err := openLake(ctx, log, o, h); err != nil {
+		log.Error("QS_DUCKLAKE is on and the lake cannot be opened", "err", err)
+		os.Exit(1)
+	}
+	if lake != nil {
+		defer lake.Close()
+	}
+	// pg_quicksilver, if the database has it (extension.go). The reporter is
+	// its own goroutine with its own connection to the local server.
+	ext = newExtLink(log, o)
+	h.AddMetrics(ext.Metrics)
+	go ext.run(ctx)
+	go ext.runJoins(ctx)
+	h.AddMetrics(pumpWakes.Metrics)
+	h.AddMetrics(spool.Metrics)
+	h.AddMetrics(legacy.Metrics)
+	jan := newJanitor(log, o)
+	h.AddMetrics(jan.Metrics)
+	h.AddMetrics(joinDomainMetrics.Metrics)
+
+	// Halted tables, from the manifests, BEFORE anything connects. Opening a
+	// table needs the source's catalog, and a probe that waits for the source
+	// to answer reports "still bootstrapping" about a Pod whose real condition
+	// is on its own disk and will not pass by itself.
+	h.SetServeWithHalted(serveWithHalted())
+	h.SetTables(len(o.tables))
+	for _, qualified := range o.tables {
+		schema, name, ok := strings.Cut(qualified, ".")
+		if !ok {
+			continue // runMirror reports it
+		}
+		if reason := mirror.HaltedOnDisk(o.mirrorPath, schema, name); reason != "" {
+			h.SetHalted(qualified, reason)
+			log.Error("table is halted in its manifest and stays out of service",
+				"table", qualified, "reason", reason,
+				"serve_with_halted_tables", serveWithHalted())
+		}
+	}
+
+	supervise(ctx, log, o, h, jan)
 }
 
 // supervise is the outer loop. It owns exactly two decisions: what role this
 // node currently has, and how long to wait before trying again after a failure.
-func supervise(ctx context.Context, log *slog.Logger, o options, h *health.Health) {
+func supervise(ctx context.Context, log *slog.Logger, o options, h *health.Health, jan *janitor) {
 	backoff := time.Second
 	wasPrimary := false
 	// The local socket is not there yet for the first seconds of a Pod's life:
@@ -190,10 +250,15 @@ func supervise(ctx context.Context, log *slog.Logger, o options, h *health.Healt
 				if err := clearStaleSyncSlots(ctx, o, log); err != nil {
 					log.Warn("could not reconcile synchronized_standby_slots", "err", err)
 				}
+				releaseOwnSlot(ctx, o, log, "this node was promoted and no longer consumes it")
 				wasPrimary = true
 			}
 			h.RecordCaughtUp() // a node that builds no mirror is never stale
-			sleep(ctx, 10*time.Second)
+			// The primary is where every Quicksilver slot of this cluster
+			// lives, and this instance is the only one with a superuser
+			// socket to it and nothing else to do (janitor.go).
+			jan.maybeRun(ctx)
+			sleep(ctx, primaryPoll)
 			continue
 		}
 
@@ -208,7 +273,19 @@ func supervise(ctx context.Context, log *slog.Logger, o options, h *health.Healt
 		// or the next start resumes the same runaway slot and the primary keeps
 		// filling up.
 		if errors.Is(err, ErrSlotTooFar) {
-			dropSlot(ctx, o, o.slot, log)
+			dropSlot(ctx, o, log)
+		}
+		// ErrHalted now means EVERY table is halted: one halted table among
+		// several is skipped and the stream carries on, confirming as it goes
+		// (halt.go). With none left there is nothing to stream for, so nothing
+		// confirms the slot and nothing guards it either: the guard lives in
+		// the pump. Left alone the slot pins WAL on the primary for as long as
+		// the halt lasts, and each table is rebuilt from a snapshot regardless.
+		// So the slot goes now. Once is enough; dropSlot is quiet when there
+		// is nothing to drop. The next attempt re-reads the manifests, which
+		// is also how a rebuild request is noticed without a restart here.
+		if errors.Is(err, ErrHalted) {
+			dropSlot(ctx, o, log)
 		}
 		log.Error("mirror stopped", "err", err, "retry_in", backoff)
 		sleep(ctx, backoff)
@@ -217,6 +294,10 @@ func supervise(ctx context.Context, log *slog.Logger, o options, h *health.Healt
 		}
 	}
 }
+
+// ErrHalted is runMirror or pump stopping because EVERY table's manifest records
+// a durable halt. See supervise for what happens to the slot.
+var ErrHalted = errors.New("the mirror is halted")
 
 func sleep(ctx context.Context, d time.Duration) {
 	t := time.NewTimer(d)
@@ -259,22 +340,35 @@ type roleWatch struct {
 }
 
 func (r *roleWatch) isPrimary(ctx context.Context) (bool, error) {
+	inRecovery, _, err := r.state(ctx)
+	return !inRecovery, err
+}
+
+// state is isPrimary and the standby's replay position in one query: the
+// replay gate needs both once per tick, and asking twice would double the
+// round trips. replay is 0 when the node has replayed nothing (NULL), and is
+// meaningful only in recovery.
+func (r *roleWatch) state(ctx context.Context) (inRecovery bool, replay uint64, err error) {
 	if r.conn == nil || r.conn.IsClosed() {
 		c, err := pgx.Connect(ctx, r.o.localDSN())
 		if err != nil {
-			return false, err
+			return false, 0, err
 		}
 		r.conn = c
 	}
-	var inRecovery bool
-	if err := r.conn.QueryRow(ctx, "SELECT pg_is_in_recovery()").Scan(&inRecovery); err != nil {
+	var rep *string
+	if err := r.conn.QueryRow(ctx,
+		"SELECT pg_is_in_recovery(), pg_last_wal_replay_lsn()::text").Scan(&inRecovery, &rep); err != nil {
 		// A broken connection must not read as "not promoted". Drop it so the
 		// next tick reconnects, and report the error rather than a guess.
 		_ = r.conn.Close(ctx)
 		r.conn = nil
-		return false, err
+		return false, 0, err
 	}
-	return !inRecovery, nil
+	if rep != nil {
+		replay = changestream.ParseLSN(*rep)
+	}
+	return inRecovery, replay, nil
 }
 
 func (r *roleWatch) close(ctx context.Context) {
@@ -407,6 +501,21 @@ func runMirror(ctx context.Context, log *slog.Logger, o options, h *health.Healt
 	}
 
 	tables := map[string]*mirror.Table{}
+	// Every way out of here abandons these Tables: supervise calls runMirror
+	// again and that opens new ones. Left open, each kept its key index mapped
+	// and a timer that would go on unlinking files in a directory the new
+	// Table now owns.
+	defer func() {
+		for _, t := range tables {
+			t.Close()
+		}
+	}()
+	// Join domains, if any are configured. Opened per run, like the tables.
+	jd, err := openJoinDomains(log, o.mirrorPath, joinDomainSpecs, joinDomainMax)
+	if err != nil {
+		return fmt.Errorf("join domains: %w", err)
+	}
+	defer jd.Close()
 	for _, qualified := range o.tables {
 		schema, name, ok := strings.Cut(qualified, ".")
 		if !ok {
@@ -424,14 +533,60 @@ func runMirror(ctx context.Context, log *slog.Logger, o options, h *health.Healt
 		if err != nil {
 			return err
 		}
-		if reason := t.Halted(); reason != "" {
-			// Durable, so a restart cannot quietly resume. Readiness goes false
-			// and stays false: this node must leave the endpoint.
-			h.RecordVerification(true)
-			return fmt.Errorf("%s is halted and will not resume without an operator: %s",
-				qualified, reason)
+		if err := t.AttachJoinDomains(jd); err != nil {
+			return fmt.Errorf("%s: %w", qualified, err)
 		}
+		lakeAttach(t)
 		tables[qualified] = t
+	}
+
+	// Legacy-format data, before the halted plan below: an automatic rebuild
+	// (QS_AUTO_REBUILD_LEGACY) is a halt plus a REBUILD request, and the plan
+	// is what acts on both.
+	if err := checkLegacy(log, tables, autoRebuildLegacy()); err != nil {
+		return err
+	}
+
+	// Halted tables. Durable, so a restart cannot quietly resume one: it stays
+	// in `tables` so every loop below can see it and step over it, and it
+	// leaves that state in exactly one way — an operator's rebuild request.
+	haltedNow, requested := map[string]string{}, map[string]bool{}
+	for q, t := range tables {
+		haltedNow[q] = t.Halted()
+		requested[q] = rebuildRequested(t.Dir)
+	}
+	// A table with a stored generated column: halted here, whatever its
+	// manifest said, and not rebuilt even if asked (halt.go).
+	if err := haltGenerated(ctx, log, h, conn, tables, requested); err != nil {
+		return err
+	}
+	for q, t := range tables {
+		haltedNow[q] = t.Halted()
+	}
+	hplan := planHalted(haltedNow, requested)
+	for _, q := range hplan.Stale {
+		log.Warn("discarding a rebuild request for a table that is not halted",
+			"table", q, "file", filepath.Join(tables[q].Dir, rebuildMarker))
+		_ = os.Remove(filepath.Join(tables[q].Dir, rebuildMarker))
+	}
+	for _, q := range append(append([]string{}, hplan.Stay...), hplan.Rebuild...) {
+		h.SetHalted(q, tables[q].Halted())
+	}
+	// The registry is configuration and a halt is not in it: a halted table keeps
+	// its row, and this node stops reading it through its report (observe), at
+	// once and before the pump starts.
+	ext.observe(tables)
+	ext.markDirty()
+	ext.reconcile(ctx, conn, tables)
+	if len(hplan.Stay) == len(tables) {
+		// Before the slot is touched: there is nothing to stream for.
+		return errAllHalted(tables)
+	}
+	rebuilding := map[string]bool{}
+	for _, q := range hplan.Rebuild {
+		rebuilding[q] = true
+		log.Info("rebuild requested for a halted table; it will be re-snapshotted",
+			"table", q, "halted_for", tables[q].Halted())
 	}
 
 	st, err := changestream.NewStreaming(ctx, o.primaryDSN(), o.slot, o.publication, published)
@@ -440,6 +595,8 @@ func runMirror(ctx context.Context, log *slog.Logger, o options, h *health.Healt
 	}
 	defer func() { _ = st.Close(context.WithoutCancel(ctx)) }()
 	st.Failover = true
+	spool.attach(st)
+	defer spool.attach(nil)
 
 	consistent, created, err := st.CreateSlot(ctx)
 	if err != nil {
@@ -463,59 +620,108 @@ func runMirror(ctx context.Context, log *slog.Logger, o options, h *health.Healt
 		// is measured from process start — so without the bootstrap gate it
 		// would join the read endpoint immediately with an empty mirror.
 		for q, t := range tables {
+			if t.Halted() != "" && !rebuilding[q] {
+				continue // halted, and nobody asked: not even a snapshot
+			}
 			t0 := time.Now()
 			n, err := t.Snapshot(ctx, conn, consistent.String())
 			if err != nil {
-				return fmt.Errorf("snapshot %s: %w", q, err)
+				// A source value this table cannot hold halts the table, here
+				// as in the pump; the rest still bootstrap.
+				if herr := haltOrFail(log, h, q, t, fmt.Errorf("snapshot %s: %w", q, err)); herr != nil {
+					return herr
+				}
+				continue
 			}
 			log.Info("snapshot complete", "table", q, "rows", n,
 				"seconds", time.Since(t0).Seconds())
+			if rebuilding[q] {
+				if err := finishRebuild(log, h, q, t); err != nil {
+					return err
+				}
+			}
 		}
 		if err := st.Start(ctx, consistent); err != nil {
 			return err
 		}
 	} else {
-		// A table can join a slot the others are already using — QS_TABLES
-		// gained an entry, or the `tables:` pattern started matching one.
-		// snapshot.go has listed that as a case needing a snapshot since it was
-		// written; the decision here was made per-SLOT rather than per-TABLE,
-		// so it never got one.
+		// The slot existing proves nothing about THIS mirror. Each table is
+		// compared with the slot's confirmed position and resumes only if it has
+		// reached it; see resume.go for the comparison and for why the snapshot
+		// of the ones that have not is taken the way it is.
 		//
-		// What that produced was the shape this project keeps finding. The new
-		// table received every change from the moment it was added and nothing
-		// before it: 1,010 rows against a source of 6,000, no error, no warning,
-		// and a mirror that answers questions. The end-to-end suite found it the
-		// first time it ran two tables through one sidecar.
+		// The same path serves a table that joined a slot the others were
+		// already using — QS_TABLES gained an entry, or the `tables:` pattern
+		// started matching one. That decision used to be per-SLOT, and what it
+		// produced was the shape this project keeps finding: 1,010 rows against a
+		// source of 6,000, no error, no warning, and a mirror that answers
+		// questions.
 		//
-		// The snapshot is taken at the CURRENT LSN while the stream resumes from
-		// the slot's older position, so this depends on the per-table LSN floor
-		// in Table.Apply to discard the replayed prefix. Without that floor this
-		// would write pre-snapshot values over post-snapshot ones.
-		var fresh []string
+		// The stream resumes from the slot's older position either way, so a
+		// re-snapshotted table depends on the per-table LSN floor in Table.Apply
+		// to discard the replayed prefix.
+		confirmed, err := slotConfirmedLSN(ctx, conn, o.slot)
+		if err != nil {
+			return fmt.Errorf("cannot compare the mirror with its slot, so will not resume: %w", err)
+		}
+		applied := make(map[string]string, len(tables))
 		for q, t := range tables {
-			if t.State.AppliedLSN == "" {
-				fresh = append(fresh, q)
+			// A halted table's applied_lsn stopped when it halted, so the
+			// comparison would always say "re-snapshot" — which is the rebuild
+			// nobody asked for.
+			if t.Halted() != "" {
+				continue
 			}
+			applied[q] = t.State.AppliedLSN
 		}
-		if len(fresh) > 0 {
-			sort.Strings(fresh)
-			at, err := currentLSN(ctx, conn)
-			if err != nil {
-				return fmt.Errorf("current lsn for a newly added table: %w", err)
+		plan := planResume(applied, confirmed)
+		// The rebuilds an operator asked for go through the same path, for the
+		// same reason it exists: the stream resumes from the slot's older
+		// position, so the table needs a snapshot with an exact LSN floor.
+		for _, q := range hplan.Rebuild {
+			plan = append(plan, resnapshot{q, "an operator asked for this halted table to be rebuilt (" +
+				rebuildMarker + " file)"})
+		}
+		// resnapshotTables stops at the first table that fails. If that table
+		// failed because the source holds something it cannot represent, it is
+		// halted (or stays halted) and the others are tried again without it;
+		// anything else is the process's problem, as before.
+		for len(plan) > 0 {
+			err := resnapshotTables(ctx, log, o, conn, tables, plan)
+			if err == nil {
+				break
 			}
-			log.Info("tables added to an existing slot; snapshotting just those",
-				"tables", fresh, "at", at)
-			for _, q := range fresh {
-				t0 := time.Now()
-				n, err := tables[q].Snapshot(ctx, conn, at)
-				if err != nil {
-					return fmt.Errorf("snapshot %s: %w", q, err)
+			rest := plan[:0:0]
+			for _, r := range plan {
+				if classifyTableError(err, tables[r.Table].Halted()) == haltTable &&
+					strings.Contains(err.Error(), "snapshot "+r.Table+":") {
+					if herr := haltOrFail(log, h, r.Table, tables[r.Table], err); herr != nil {
+						return herr
+					}
+					if rebuilding[r.Table] {
+						log.Error("the requested rebuild failed and the table stays halted; "+
+							"the request is kept, so fix the source and restart to try again",
+							"table", r.Table, "err", err)
+						delete(rebuilding, r.Table)
+					}
+					continue
 				}
-				log.Info("snapshot complete", "table", q, "rows", n,
-					"seconds", time.Since(t0).Seconds())
+				rest = append(rest, r)
+			}
+			if len(rest) == len(plan) {
+				return err
+			}
+			plan = rest
+		}
+		for _, q := range hplan.Rebuild {
+			if rebuilding[q] {
+				if err := finishRebuild(log, h, q, tables[q]); err != nil {
+					return err
+				}
 			}
 		}
-		log.Info("resuming from the existing slot", "slot", o.slot)
+		log.Info("resuming from the existing slot", "slot", o.slot,
+			"confirmed", pglogrepl.LSN(confirmed))
 		if err := st.Start(ctx, 0); err != nil {
 			return err
 		}
@@ -541,8 +747,15 @@ func runMirror(ctx context.Context, log *slog.Logger, o options, h *health.Healt
 	// Pod that lies is an outage. The cost is logged per table so that an
 	// operator whose restart budget this breaks can see exactly what it was.
 	built := make([]string, 0, len(tables))
-	for q := range tables {
+	for q, t := range tables {
+		if t.Halted() != "" {
+			continue // out of service: nothing will look a key up in it
+		}
 		built = append(built, q)
+	}
+	if len(built) == 0 {
+		// Every table that was not already halted halted during its snapshot.
+		return errAllHalted(tables)
 	}
 	sort.Strings(built) // a stable order, so two restarts log comparably
 	for _, q := range built {
@@ -555,8 +768,13 @@ func runMirror(ctx context.Context, log *slog.Logger, o options, h *health.Healt
 			"seconds", time.Since(t0).Seconds())
 	}
 
+	lakeReconcile(tables)
+	ext.markDirty()
+	ext.reconcile(ctx, conn, tables)
 	h.RecordBootstrapped()
 
+	ext.attachStream(st)
+	defer ext.attachStream(nil)
 	return pump(ctx, log, o, h, conn, st, tables)
 }
 
@@ -570,8 +788,15 @@ func pump(
 	// committed after a schema change, in the one shape this project keeps
 	// finding: row counts stay plausible and nothing errors.
 	var pending []changestream.Transaction
-	ticker := time.NewTicker(200 * time.Millisecond)
+	// The ticker is the FALLBACK. The loop is woken by the stream (wake.go):
+	// it used to find a commit only when this fired, on average 100 ms late.
+	ticker := time.NewTicker(pumpFallbackInterval)
 	defer ticker.Stop()
+	pacer := newApplyPacer(applyMaxRate, applyBurst, time.Now())
+	ready := st.Ready()
+	if !pumpEvents {
+		ready = nil // QS_PUMP_EVENTS=off: the polling loop this replaced
+	}
 
 	// One connection for the role check, held for the life of the loop rather
 	// than opened per tick. See roleWatch.
@@ -584,42 +809,124 @@ func pump(
 	guard := &slotGuard{slot: o.slot, conn: conn, last: time.Now()}
 	warnedStuck := false
 
+	// confirmedLSN is the newest position this loop may consider confirmed. It
+	// starts at the highest applied_lsn + 1, which the resume check has shown
+	// to be at or beyond the slot's confirmed_flush_lsn (resume.go), so an idle
+	// position below it — the walsender re-decoding from restart_lsn after a
+	// restart — is never confirmed backwards.
+	var confirmedLSN uint64
+	for _, t := range tables {
+		if t.Halted() != "" {
+			continue
+		}
+		if at := changestream.ParseLSN(t.State.AppliedLSN) + 1; at > confirmedLSN {
+			confirmedLSN = at
+		}
+	}
+	var lastIdleConfirm time.Time
+	var appliedThrough uint64 // see extLink.pumpIdle
+	// For the stuck-stream test below: the position at the previous slot
+	// measurement, and how many measurements in a row found the slot far
+	// behind without that position having moved.
+	measuredAt, stalled := confirmedLSN, 0
+
+	// replayLSN is the standby's replay position as of this tick (replay.go).
+	// held says the last tick had transactions and none could be applied
+	// because the standby had not replayed their commits yet.
+	var replayLSN uint64
+	held := false
+
 	for {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-ticker.C:
+		// A backlog (what a DDL or size barrier cut off) is applied at once;
+		// otherwise wait to be told there is something, or for the fallback.
+		// A held backlog is different: nothing can be applied until the
+		// standby replays, so poll that on a short timer rather than spin.
+		var why wakeReason
+		if held {
+			why = wakeBacklog
+			if err := pollReplay(ctx, ready); err != nil {
+				return err
+			}
+		} else {
+			var werr error
+			why, werr = waitForWork(ctx, ready, ticker.C, len(pending) > 0, wakeCoalesce)
+			if werr != nil {
+				return werr
+			}
+		}
+		pumpWakes.note(why)
+		if why == wakeStream {
+			if d := pacer.wait(time.Now()); d > 0 {
+				pumpWakes.paced.Add(1)
+				sleep(ctx, d)
+				if ctx.Err() != nil {
+					return ctx.Err()
+				}
+			}
 		}
 
 		tt := newTickTimer()
+
+		// Tables halted since the last tick (the apply below, a schema change,
+		// a background rewrite) are reported to readiness here, and stepped
+		// over by every loop in this function from now on. The stream is still
+		// read and still confirmed, so the slot advances past the halted
+		// table's changes and pins no WAL for it: they are discarded, because
+		// the only way back for that table is a snapshot anyway.
+		if noteHalted(log, h, tables) == 0 {
+			ext.observe(tables)
+			return errAllHalted(tables)
+		}
+		// Cheap unless something changed: one comparison of the halted set.
+		ext.reconcile(ctx, conn, tables)
+		tt.done("extension")
 
 		// A promotion of THIS node means we are now the primary and must stop.
 		// Checking here rather than only in the supervisor keeps the window
 		// small: a mirror that keeps streaming after its node is promoted is
 		// reading its own writes.
-		if primary, err := role.isPrimary(ctx); err == nil && primary {
-			return fmt.Errorf("this node was promoted; handing back to the supervisor")
+		// The same query gives the replay position the gate below needs. A
+		// failed read keeps the last one: replay only moves forward, so an
+		// older value is conservative, and a node that cannot be asked gets no
+		// new commit past what it last showed.
+		if inRecovery, replayNow, err := role.state(ctx); err == nil {
+			if !inRecovery {
+				return fmt.Errorf("this node was promoted; handing back to the supervisor")
+			}
+			replayLSN = replayNow
+			ext.setReplay(replayLSN, gateOnReplay)
 		}
 		tt.done("is_primary")
 
-		// BACKPRESSURE. Do not drain the stream into memory when there is
-		// already more waiting than a tick will apply.
+		// BACKPRESSURE. Do not take from the stream when there is already
+		// more waiting here than a tick will apply.
 		//
-		// This is the half of the tick cap that was missing. Capping what a tick
-		// APPLIES, without capping what it READS, does not slow the backlog
-		// down — it moves it from PostgreSQL's WAL, where it costs disk, into
-		// this process's heap, where it costs RSS. The large-scale run measured
-		// the result: 2.4 GB resident for a mirror holding a 139 MB table,
-		// 125 bytes per live row, and a qs-verify OOM-killed beside it.
+		// Capping what a tick APPLIES without capping what is READ does not
+		// slow the backlog down — it moves it from PostgreSQL's WAL, where it
+		// costs disk, into this process's heap, where it costs RSS. The
+		// large-scale run measured the result: 2.4 GB resident for a mirror
+		// holding a 139 MB table, 125 bytes per live row, and a qs-verify
+		// OOM-killed beside it.
 		//
-		// Skipping the read is safe because nothing is lost: the stream's buffer
-		// and then the slot hold what is not taken, which is what they are for.
-		// It is the WAL that should absorb a backlog, not the sidecar — and the
-		// slot guard already bounds how much WAL that may be.
+		// This check is only half of the bound, and for a while it was the
+		// only half: skipping Transactions() left the stream's receiver
+		// reading the socket into its own uncapped buffer, so the backlog
+		// accumulated one layer down instead (47 MB to 1.27 GB of heap in
+		// seven seconds). The other half is in changestream.Streaming: at
+		// maxStreamBufferedChanges it stops reading the socket, while still
+		// sending status updates so the walsender does not time it out, and
+		// TCP flow control holds the rest in WAL. Together: at most
+		// maxPendingChanges + 2 x maxStreamBufferedChanges row-changes in
+		// memory, plus one transaction — pgoutput proto v1 delivers a
+		// transaction whole however large it is.
+		//
+		// Nothing is lost by not taking: the slot holds what is not read, and
+		// the slot guard already bounds how much WAL that may be.
 		queued := 0
 		for _, t := range pending {
-			queued += len(t.Changes)
+			queued += t.Len()
 		}
+		ext.pumpBusy() // whatever Transactions() hands out is not applied yet
 		if queued < maxPendingChanges {
 			fresh, err := st.Transactions(ctx)
 			if err != nil {
@@ -628,6 +935,39 @@ func pump(
 			pending = append(pending, fresh...)
 		}
 		tt.done("read_stream")
+
+		// THE REPLAY GATE (replaygate.go). Only the prefix whose commits the
+		// standby has replayed may be applied. Everything else stays in pending,
+		// unconfirmed, and the stream keeps being read up to the same bounds
+		// as before, so a held backlog costs what a backlog always cost.
+		applyable := len(pending)
+		if gateOnReplay {
+			applyable = gatedPrefix(pending, replayLSN)
+		}
+		if applyable == 0 && len(pending) > 0 {
+			// Held. Say what we are waiting for, and do not look like a stall:
+			// no caught-up report (the lag must keep showing), no confirm, no
+			// idle advance. Maintenance still runs, so a rewrite that finished
+			// is still swapped in while replay is paused.
+			need := changestream.ParseLSN(pending[0].NextLSN)
+			h.RecordReplayHold(lsnString(replayLSN), lsnString(need), len(pending))
+			if !held {
+				log.Info("holding back commits until the local standby replays them",
+					"replay_lsn", lsnString(replayLSN), "commit_end_lsn", lsnString(need),
+					"held_transactions", len(pending))
+			}
+			held = true
+			maintain(log, tables, tt)
+			lakeRewrites(log, tables)
+			tt.report(log)
+			continue
+		}
+		if held {
+			held = false
+			h.ClearReplayHold()
+			log.Info("local standby replayed the held commits; applying them",
+				"replay_lsn", lsnString(replayLSN), "held_transactions", len(pending))
+		}
 		if len(pending) == 0 {
 			// Idle is not stale. An unchanging source is perfectly fresh, and
 			// conflating the two reports a quiet database as broken.
@@ -645,6 +985,74 @@ func pump(
 			// nothing; a stuck stream retains more with every commit. So the
 			// question the guard already asks every interval answers this one
 			// too: silence plus a growing slot is not idleness.
+			//
+			// IDLE ADVANCE. Before asking, move the slot past WAL that was not
+			// for this mirror. The source being quiet FOR US is not the source
+			// being quiet: other tables, vacuum and other databases write WAL
+			// the walsender decodes and sends nothing for, and a confirmation
+			// only ever followed a transaction. So a caught-up mirror's slot
+			// stood still, pinned all of it, read as "stuck" below, and at
+			// QS_MAX_SLOT_WAL_BYTES the guard dropped the slot of a mirror
+			// that was missing nothing — with /readyz at 200 throughout.
+			//
+			// IdleLSN is a position P such that every transaction committing
+			// below P has already been handed to this loop, and `pending` is
+			// empty, so every one of them is applied. That makes P confirmable.
+			//
+			// The values, and why these two:
+			//
+			//	applied_lsn  <-  P-1     written first, fsynced, on EVERY table
+			//	confirm      <-  P       only after that
+			//
+			// which is the pump's own convention (applied = commit, confirm =
+			// commit+1) with P-1 standing where the commit LSN stands. Both
+			// readers of applied_lsn stay exact:
+			//
+			//   - planResume re-snapshots when confirmed > applied+1. Here
+			//     confirmed == applied+1, and applied is durable before the
+			//     confirmation is even queued, so a crash between the two
+			//     leaves the slot BEHIND the mirror, which is the replayable
+			//     direction.
+			//   - Table.Apply skips commit LSN < applied_lsn, i.e. < P-1. Every
+			//     transaction not yet handed out commits at or above P, so the
+			//     floor cannot touch it; and PostgreSQL skips only commits
+			//     starting below the confirmed P, so it is still sent. A
+			//     transaction open across this advance commits later, above P,
+			//     and restart_lsn — which the server holds at the oldest
+			//     transaction still in progress regardless of what is
+			//     confirmed — keeps its WAL.
+			//
+			// It goes through Apply with a transaction that changes nothing
+			// rather than a new way to write applied_lsn: that is the code path
+			// that already owns the floor and the fsync. A table whose floor is
+			// above P-1 (re-snapshotted at a later point) ignores it.
+			//
+			// Rate-limited because each advance is a state.json fsync per
+			// table, and a keepalive can arrive for every few bytes of WAL.
+			p := idleTarget(st.IdleLSN(), replayLSN, gateOnReplay)
+			if p > confirmedLSN && time.Since(lastIdleConfirm) >= idleConfirmInterval {
+				marker := changestream.Transaction{
+					CommitLSN: pglogrepl.LSN(p - 1).String(),
+					NextLSN:   pglogrepl.LSN(p).String(),
+				}
+				for _, t := range tables {
+					if t.Halted() != "" {
+						continue
+					}
+					if _, err := t.Apply([]changestream.Transaction{marker}); err != nil {
+						return fmt.Errorf("idle advance: %w", err)
+					}
+				}
+				if err := st.Confirm(ctx, marker.NextLSN); err != nil {
+					return fmt.Errorf("idle confirm: %w", err)
+				}
+				log.Debug("confirmed WAL that held nothing for this mirror",
+					"slot", o.slot, "from", pglogrepl.LSN(confirmedLSN).String(),
+					"to", marker.NextLSN)
+				confirmedLSN, lastIdleConfirm = p, time.Now()
+				tt.done("idle_confirm")
+			}
+
 			retained, unconfirmed, gerr := guard.check(ctx, log)
 			if gerr != nil {
 				return gerr
@@ -652,11 +1060,30 @@ func pump(
 			if retained >= 0 {
 				h.RecordSlotRetention(retained)
 			}
+			// What "stuck" has to mean now that an idle mirror confirms. A slot
+			// far behind is no longer evidence by itself: one burst of
+			// unrelated WAL puts it a segment behind until the next idle
+			// advance lands. The evidence is that it is far behind AND the
+			// position this loop holds has not moved since the previous
+			// measurement AND the stream is not offering one to move to — for
+			// a whole interval, twice, so a burst that arrives just before a
+			// measurement is not a fault. And the verdict stands until the next
+			// measurement: it used to be recomputed on every tick from "no
+			// measurement this tick", which cleared it 200 ms after it was
+			// reached, so readiness never did fail.
+			if unconfirmed >= 0 {
+				if unconfirmed >= stuckSlotBytes && confirmedLSN == measuredAt && st.IdleLSN() <= confirmedLSN {
+					stalled++
+				} else {
+					stalled = 0
+				}
+				measuredAt = confirmedLSN
+			}
 			// UNCONFIRMED, not retained. See slotguard.go: retention is what the
 			// slot costs the primary in disk; confirmation is how far behind
 			// this mirror actually is. Using the first gave a mirror that was
 			// 103 bytes behind a "your stream is stuck" warning at 537 MB.
-			if unconfirmed >= stuckSlotBytes {
+			if stalled >= 2 {
 				// Deliberately NOT RecordCaughtUp: lag_seconds keeps growing
 				// from the last real progress, so readiness fails once the SLO
 				// is exceeded and this node leaves the read endpoint. Serving
@@ -677,10 +1104,25 @@ func pump(
 				warnedStuck = false
 				h.RecordCaughtUp()
 			}
+			// Maintenance runs on idle ticks too. It used to run only below, on
+			// a tick that had applied something, which got the timing exactly
+			// backwards: a mirror that stopped receiving writes also stopped
+			// asking whether to compact, and stopped SWAPPING IN a rewrite that
+			// had already finished. So a burst that ended mid-rewrite left the
+			// new base file written and unused, and a burst that ended just
+			// short of the churn threshold left the base under a deletion
+			// vector — count(*) at 332 ms instead of 3 on a 10M-row table —
+			// until the next write, however long that took to arrive. Idle is
+			// when a rewrite is cheapest and when its result lasts longest.
+			maintain(log, tables, tt)
+			lakeRewrites(log, tables)
+			ext.pumpIdle(appliedThrough) // nothing handed out is unapplied
 			tt.report(log)
 			continue
 		}
-		txns := pending
+		// txns is what the replay gate lets through; the rest of pending stays
+		// queued behind it, in order, and is cut below only when it is applied.
+		txns := pending[:applyable]
 
 		// A DDL transaction is a barrier: apply up to and including it, then
 		// re-read the catalog before anything after it is applied. Noticing the
@@ -688,13 +1130,10 @@ func pump(
 		// list, which drops the new column while row counts still match.
 		cut := -1
 		for i, t := range txns {
-			for _, c := range t.Changes {
-				if c.Qualified() == ddl.LogTable {
-					cut = i
-					break
-				}
-			}
-			if cut >= 0 {
+			// Touches, not a walk over t.Changes: a spooled transaction has
+			// none in memory, and a DDL inside one is still a barrier.
+			if t.Touches(ddl.LogTable) {
+				cut = i
 				break
 			}
 		}
@@ -719,12 +1158,28 @@ func pump(
 		// millisecond whenever `pending` is non-empty, so the same work is done
 		// in more, smaller ticks — which is the entire point.
 		head = capBatch(head)
-		pending = append([]changestream.Transaction(nil), txns[len(head):]...)
+		// head is a prefix of txns, which is a prefix of pending: everything
+		// after it, held ones included, stays queued in order.
+		pending = append([]changestream.Transaction(nil), pending[len(head):]...)
 
-		for _, t := range tables {
-			if _, err := t.Apply(head); err != nil {
-				return fmt.Errorf("apply: %w", err)
+		for q, t := range tables {
+			if t.Halted() != "" {
+				continue
 			}
+			if _, err := t.Apply(head); err != nil {
+				// Either this table cannot continue — it is halted, durably,
+				// and the others apply this same batch — or the process cannot.
+				// classifyTableError (halt.go) is where that is decided.
+				if herr := haltOrFail(log, h, q, t, err); herr != nil {
+					return fmt.Errorf("apply: %w", herr)
+				}
+			}
+		}
+		pacer.spend(time.Now())
+		ext.observe(tables) // a table that just halted is reported unreadable at once
+		if noteHalted(log, h, tables) == 0 {
+			// Not confirmed: with no table left the slot is about to be dropped.
+			return errAllHalted(tables)
 		}
 		tt.done("apply")
 		last := head[len(head)-1]
@@ -732,6 +1187,25 @@ func pump(
 			return fmt.Errorf("confirm: %w", err)
 		}
 		tt.done("confirm")
+		if at := changestream.ParseLSN(last.NextLSN); at > confirmedLSN {
+			confirmedLSN = at
+		}
+		// Not confirmedLSN: that starts from the furthest table's manifest,
+		// and after a resume the other tables are behind it until the stream
+		// has been replayed to them. This counts only what THIS stream applied.
+		if at := changestream.ParseLSN(last.NextLSN); at > appliedThrough {
+			appliedThrough = at
+		}
+		// Tell the reporter NOW that everything handed out is applied, rather
+		// than at the end of the tick: what follows is bookkeeping and
+		// maintenance (a delta merge alone was measured at 250-340 ms on this
+		// goroutine), and none of it changes what a reader may be told. Not
+		// at a DDL barrier: there the schema is re-read first, below.
+		reportedEarly := false
+		if len(pending) == 0 && cut < 0 {
+			ext.pumpIdle(appliedThrough)
+			reportedEarly = true
+		}
 
 		var headLSN string
 		_ = conn.QueryRow(ctx, "SELECT pg_current_wal_lsn()::text").Scan(&headLSN)
@@ -745,97 +1219,128 @@ func pump(
 		tt.done("slot_guard")
 		backlog := 0
 		for _, t := range tables {
+			if t.Halted() != "" {
+				continue
+			}
 			backlog += t.CompactionBacklog()
 		}
 		h.RecordApply(last.CommitLSN, headLSN, backlog)
 
 		if cut >= 0 {
+			// An unsupported change halts its table inside evolve and is not
+			// an error; what comes back here is the catalog being unreadable
+			// or a manifest that could not be written.
 			if err := evolve(ctx, log, h, conn, tables); err != nil {
-				h.RecordVerification(true)
 				return err
 			}
+			if noteHalted(log, h, tables) == 0 {
+				return errAllHalted(tables)
+			}
+			// The heap's columns changed: the mirror relation is made again.
+			ext.markDirty()
+			ext.reconcile(ctx, conn, tables)
 			tt.done("evolve")
 		}
 
-		// Compaction is triggered by how much has CHANGED, not by how many
-		// batches have gone by. It rewrites every live row, so a batch-count
-		// trigger makes the cost scale with the table while the trigger scales
-		// with traffic — measured at 5M rows as a 30x throughput collapse and a
-		// multi-gigabyte RSS spike (docs/18).
-		for q, t := range tables {
-			// A finished rewrite is swapped in here, on this goroutine, which is
-			// what lets the swap decide liveness against the current index with
-			// no locking.
-			if t.Compacting() {
-				if n, err := t.FinishCompaction(); err != nil {
-					log.Warn("compaction failed", "table", q, "err", err)
-				} else if n > 0 {
-					log.Info("compacted", "table", q, "rows", n)
-				}
-				// The rewrite itself is asynchronous; THIS is the part that is
-				// not. The swap walks the rewritten file deciding liveness
-				// against the current index, so it is O(rows in the file) on
-				// the apply goroutine, and on a shape with a large base and
-				// small deltas it is the only candidate for a tail.
-				tt.done("finish_compaction")
-			}
-			reason := t.CompactReason()
-			switch {
-			case t.Compacting() && t.ShouldMergeDeltas():
-				// Merging is allowed DURING a rewrite, over the deltas the
-				// rewrite is not reading. Blocking it let the file count grow
-				// unchecked behind a rewrite that heavy churn had already made
-				// stale (docs/19).
-				n, err := t.MergeDeltas()
-				if err != nil {
-					log.Warn("delta merge failed", "table", q, "err", err)
-				} else if n > 0 {
-					log.Info("merged deltas during compaction", "table", q, "rows", n)
-				}
-				tt.done("merge_during_compaction")
-
-			case t.Compacting():
-				// a rewrite is in flight and the file count is fine
-
-			case reason != "":
-				// Enough of the TABLE has changed to justify rewriting the base.
-				// This runs in the BACKGROUND: doing it inline is what put p99
-				// commit-to-visible at 24.6s against a p50 of 206ms (docs/19).
-				//
-				// `reason` names WHICH trigger pulled — churn or dead-fraction.
-				// Without it, an A/B of the dead-fraction trigger came back with
-				// identical compaction counts in both arms and no way to tell
-				// "the knob costs nothing" from "the knob never fired".
-				if c := t.BeginCompaction(); c != nil {
-					log.Info("compaction started", "table", q, "why", reason,
-						"base_rows", t.State.BaseRows, "delta_rows", t.State.DeltaRows)
-				}
-				tt.done("begin_compaction")
-
-			case t.ShouldMergeDeltas():
-				// too many files to read through, but not enough churn to pay
-				// for a base rewrite — merge the deltas instead, which costs
-				// only what the deltas hold
-				t0 := time.Now()
-				n, err := t.MergeDeltas()
-				if err != nil {
-					log.Warn("delta merge failed", "table", q, "err", err)
-					continue
-				}
-				log.Info("merged deltas", "table", q, "rows", n,
-					"seconds", time.Since(t0).Seconds())
-				tt.done("merge_deltas")
-			}
-		}
-
+		maintain(log, tables, tt)
+		lakeRewrites(log, tables)
 		tt.report(log)
 
 		// Whatever the barrier cut off is held in `pending` and applied on the
 		// next tick, against the schema we just re-read.
-		if len(pending) > 0 {
-			ticker.Reset(time.Millisecond)
-		} else {
-			ticker.Reset(200 * time.Millisecond)
+		if len(pending) == 0 && !reportedEarly {
+			ext.pumpIdle(appliedThrough) // everything handed out has been applied
+		}
+	}
+}
+
+// maintain is the part of a tick that is about the mirror's files rather than
+// the stream: swap in a rewrite that has finished, start one that is due, merge
+// deltas that have piled up. It runs on EVERY tick, whether or not the tick
+// applied anything — see the idle branch of pump for what happened when it did
+// not.
+//
+// That is affordable because none of the questions it asks costs anything when
+// the answer is no: CompactReason is counters and a clock, and ShouldMergeDeltas
+// is a length.
+func maintain(log *slog.Logger, tables map[string]*mirror.Table, tt *tickTimer) {
+	// Compaction is triggered by how much has CHANGED, not by how many
+	// batches have gone by. It rewrites every live row, so a batch-count
+	// trigger makes the cost scale with the table while the trigger scales
+	// with traffic — measured at 5M rows as a 30x throughput collapse and a
+	// multi-gigabyte RSS spike (docs/18).
+	for q, t := range tables {
+		if t.Halted() != "" {
+			continue
+		}
+		// A finished rewrite is swapped in here, on this goroutine, which is
+		// what lets the swap decide liveness against the current index with
+		// no locking.
+		if t.Compacting() {
+			if n, err := t.FinishCompaction(); err != nil {
+				log.Warn("compaction failed", "table", q, "err", err)
+				// Or the trigger that started it starts it again on the next
+				// tick, and now every tick is one.
+				t.CompactionFailed()
+			} else if n > 0 {
+				log.Info("compacted", "table", q, "rows", n,
+					"seconds", t.LastRewrite().Seconds())
+			}
+			// The rewrite itself is asynchronous; THIS is the part that is
+			// not. The swap walks the rewritten file deciding liveness
+			// against the current index, so it is O(rows in the file) on
+			// the apply goroutine, and on a shape with a large base and
+			// small deltas it is the only candidate for a tail.
+			tt.done("finish_compaction")
+		}
+		reason := t.CompactReason()
+		switch {
+		case t.Compacting() && t.ShouldMergeDeltas():
+			// Merging is allowed DURING a rewrite, over the deltas the
+			// rewrite is not reading. Blocking it let the file count grow
+			// unchecked behind a rewrite that heavy churn had already made
+			// stale (docs/19).
+			n, err := t.MergeDeltas()
+			if err != nil {
+				log.Warn("delta merge failed", "table", q, "err", err)
+			} else if n > 0 {
+				log.Info("merged deltas during compaction", "table", q, "rows", n)
+			}
+			tt.done("merge_during_compaction")
+
+		case t.Compacting():
+			// a rewrite is in flight and the file count is fine
+
+		case reason != "":
+			// Enough of the TABLE has changed to justify rewriting the base,
+			// or it has gone quiet with a deletion vector still on it.
+			// This runs in the BACKGROUND: doing it inline is what put p99
+			// commit-to-visible at 24.6s against a p50 of 206ms (docs/19).
+			//
+			// `reason` names WHICH trigger pulled — churn, dead-fraction or
+			// idle (mirror.CompactReason says what each is for).
+			// Without it, an A/B of the dead-fraction trigger came back with
+			// identical compaction counts in both arms and no way to tell
+			// "the knob costs nothing" from "the knob never fired".
+			if c := t.BeginCompaction(); c != nil {
+				log.Info("compaction started", "table", q, "why", reason,
+					"base_rows", t.State.BaseRows, "delta_rows", t.State.DeltaRows)
+			}
+			tt.done("begin_compaction")
+
+		case t.ShouldMergeDeltas():
+			// too many files to read through, but not enough churn to pay
+			// for a base rewrite — merge the deltas instead, which costs
+			// only what the deltas hold
+			t0 := time.Now()
+			n, err := t.MergeDeltas()
+			if err != nil {
+				log.Warn("delta merge failed", "table", q, "err", err)
+				continue
+			}
+			log.Info("merged deltas", "table", q, "rows", n,
+				"seconds", time.Since(t0).Seconds())
+			tt.done("merge_deltas")
 		}
 	}
 }
@@ -848,6 +1353,9 @@ func evolve(
 	conn *pgx.Conn, tables map[string]*mirror.Table,
 ) error {
 	for qualified, t := range tables {
+		if t.Halted() != "" {
+			continue
+		}
 		schema, name, _ := strings.Cut(qualified, ".")
 		live, liveOrder, err := ddl.LiveColumns(ctx, conn, schema, name)
 		if err != nil {
@@ -858,7 +1366,15 @@ func evolve(
 			continue
 		}
 		if !d.Safe() {
-			return fmt.Errorf("halting on unsupported schema change to %s: %s", qualified, d)
+			// Durable, like the rewrite case below. It used to be an error
+			// only, so the restart that followed re-read the catalog, took the
+			// new schema as though it had always been there, and resumed.
+			if err := t.Halt(fmt.Sprintf("halting %s: unsupported schema change (%s); "+
+				"the mirror must be rebuilt", qualified, d)); err != nil {
+				return err
+			}
+			recordHalt(log, h, qualified, t)
+			continue
 		}
 
 		// An added column may already hold values in rows the change stream will
@@ -875,15 +1391,23 @@ func evolve(
 			reason := fmt.Sprintf(
 				"column(s) %s were backfilled by a table rewrite; their values never "+
 					"appear in the change stream", strings.Join(bf.Rewritten, ", "))
+			// A stored generated column is the rewrite a rebuild does not cure:
+			// say that now rather than after the operator has tried one.
+			if gen, err := generatedColumns(ctx, conn, schema, name); err != nil {
+				return err
+			} else if len(gen) > 0 {
+				reason = generatedHaltReason(qualified, gen)
+			}
 			if err := t.Halt(reason); err != nil {
 				return err
 			}
 			// A volatile default or a stored generated column rewrote the heap:
 			// every pre-existing row got its own value and none of it reached
 			// the change stream. Serving NULL there would be silent corruption,
-			// so the mirror stops and says why. Recovery is an operator-ordered
-			// rebuild of this table.
-			return fmt.Errorf("halting %s: %s; the mirror must be rebuilt", qualified, reason)
+			// so this table stops and says why; the others carry on. Recovery
+			// is an operator-ordered rebuild of this table (halt.go).
+			recordHalt(log, h, qualified, t)
+			continue
 		}
 		// A rewrite in flight is reading this table's column list on another
 		// goroutine. Rather than lock the schema for the length of a rewrite,

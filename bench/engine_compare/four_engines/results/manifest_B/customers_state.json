@@ -1,0 +1,10 @@
+{
+  "applied_lsn": "1/CD875EA0",
+  "base_files": [
+    "000001.parquet"
+  ],
+  "delta_files": null,
+  "seq": 1,
+  "base_rows": 500000,
+  "delta_rows": 0
+}

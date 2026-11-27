@@ -1,0 +1,1 @@
+ERROR:  DuckDB execution is not allowed because you have not been granted the duckdb.postgres_role

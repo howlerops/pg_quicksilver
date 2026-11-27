@@ -1,0 +1,15 @@
+1. functions: ['ducklake_add_data_files', 'ducklake_delete_orphaned_files']
+   truth: [(19524, Decimal('971972014.36'))]  dead positions: 476
+2. the mirror's vector (one column, p) registered as-is:
+   as-is: count(*) -> [(19524,)] OK
+   as-is: scan -> ERROR Invalid Input Error: Invalid schema contained in the delete file WORK/mirror/public.orders/dv/000002.000000002.dv.parquet - expected file_name/position/[snapshot_id or row]
+3. converted:
+   (pos) only: count(*) -> [(19524,)] OK
+   (pos) only: scan -> ERROR Invalid Input Error: Invalid schema contained in the delete file WORK/probe/conv-delete.parquet - expected file_name/position/[snapshot_id or row]
+   (file_path, pos): count(*) -> [(19524,)] OK
+   (file_path, pos): scan -> [(19524, Decimal('971972014.36'))] OK
+   (file_path, pos), file_path = 'nonsense': count(*) -> [(19524,)] OK
+   (file_path, pos), file_path = 'nonsense': scan -> [(19524, Decimal('971972014.36'))] OK
+4. inlined in the catalog instead of a file:
+   inlined: count(*) -> [(19524,)] OK
+   inlined: scan -> [(19524, Decimal('971972014.36'))] OK

@@ -1,0 +1,5 @@
+sidecar stopped (pid 19776)
+staging seconds 50
+{'lsn_start': '2/A22676A0', 't_start': 1795733307.5714254, 'lsn_before_last_txn': '2/FDFF72D8', 't_last_commit': 1795733357.9052253, 'lsn_end': '2/FE213368', 'totals': {'status_updates': 500000, 'payl
+workload seconds 50
+end LSN 2/FE213368

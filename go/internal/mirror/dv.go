@@ -79,34 +79,61 @@ const dvRowGroup = 1 << 20
 // which the file parses as empty — which reads as "nothing in this file is
 // dead" and silently undoes every delete it described. So: temp file, fsync,
 // rename, exactly as writeJSON does and for exactly the same reason.
+//
+// The fsync error is returned, and the directory is recorded as owed a sync
+// after the rename (owesDirSync), which saveState pays before it writes the
+// manifest that names this generation. A vector that does not survive a crash
+// the manifest survives is ErrStaleManifest on every read.
 func writeDV(path string, positions []int) error {
 	tmp := path + ".tmp"
 	if err := writeDVFile(tmp, positions); err != nil {
 		_ = os.Remove(tmp)
 		return err
 	}
-	f, err := os.Open(tmp)
-	if err != nil {
+	if err := os.Rename(tmp, path); err != nil {
 		return err
 	}
-	_ = f.Sync()
-	_ = f.Close()
-	return os.Rename(tmp, path)
+	owesDirSync(filepath.Dir(path))
+	return nil
 }
 
-func writeDVFile(path string, positions []int) error {
+// writeDV is writeDV for a path in this table: the path is claimed first, so a
+// deadline standing against an earlier file of the same name (a generation a
+// crashed Apply wrote and the replay writes again) cannot fall on this one.
+func (t *Table) writeDV(path string, positions []int) error {
+	t.claim(path)
+	return writeDV(path, positions)
+}
+
+// writeDVFile writes the vector and fsyncs it before returning.
+func writeDVFile(path string, positions []int) (err error) {
 	f, err := os.Create(path)
 	if err != nil {
 		return err
 	}
-	defer f.Close()
+	// pqarrow closes the sink it is given, so it is given one it cannot close:
+	// the descriptor has to outlive the footer to be synced.
+	defer func() {
+		if err == nil {
+			err = syncFile(f)
+		}
+		if cerr := f.Close(); err == nil {
+			err = cerr
+		}
+	}()
 
 	props := parquet.NewWriterProperties(
 		parquet.WithCompression(compress.Codecs.Zstd),
 		parquet.WithCompressionLevel(ZstdLevel),
 		parquet.WithMaxRowGroupLength(dvRowGroup),
+		// No dictionary. Every position is distinct, so a dictionary is the
+		// column again plus a hash table built to discover that, and the writer
+		// then falls back to plain pages anyway. At two million positions the
+		// write took 200 ms and the file was a quarter larger (2.61 MB against
+		// 2.06 MB); without it the same write is 125 ms.
+		parquet.WithDictionaryDefault(false),
 	)
-	w, err := pqarrow.NewFileWriter(dvSchema, f, props, pqarrow.DefaultWriterProps())
+	w, err := pqarrow.NewFileWriter(dvSchema, keepOpen{f}, props, pqarrow.DefaultWriterProps())
 	if err != nil {
 		return err
 	}

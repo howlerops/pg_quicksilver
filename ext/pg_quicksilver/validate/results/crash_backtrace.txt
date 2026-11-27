@@ -1,0 +1,62 @@
+# crash_backtrace.txt: pg_quicksilver backend SIGSEGV, PostgreSQL 17.12 --enable-cassert build, baseline source (7752443)
+# A. deterministic reproduction (validate/real/hardening/race_mirror.sh): gdb stops the backend at pg_quicksilver.c:908
+#    (the existence check has passed), DROP VIEW of quicksilver_mirror."public.customers" from another session,
+#    AcceptInvalidationMessages() forced, continue.
+
+0x00007f6e1e12a257 in epoll_wait (epfd=5, events=0x558e0162d518, maxevents=1, timeout=4000) at ../sysdeps/unix/sysv/linux/epoll_wait.c:30
+
+Breakpoint 1 at 0x7f6e1ebe6bea: file pg_quicksilver.c, line 908.
+
+Breakpoint 1, qs_build_mirror (m=0x558e017822f8) at pg_quicksilver.c:908
+908		ReleaseSysCache(tup);
+
+Program received signal SIGSEGV, Segmentation fault.
+0x0000558dda8fef9d in quote_identifier (ident=ident@entry=0x0) at ruleutils.c:12846
+12846		safe = ((ident[0] >= 'a' && ident[0] <= 'z') || ident[0] == '_');
+#0  0x0000558dda8fef9d in quote_identifier (ident=ident@entry=0x0) at ruleutils.c:12846
+#1  0x0000558dda900056 in quote_qualified_identifier (qualifier=0x0, ident=0x0) at ruleutils.c:12921
+#2  0x00007f6e1ebe7445 in qs_build_mirror (m=0x558e017822f8) at pg_quicksilver.c:1023
+#3  0x00007f6e1ebe8298 in qs_load_mirrors (snap=0x558e016ba100) at pg_quicksilver.c:1241
+#4  0x00007f6e1ebe9b0f in qs_ensure_loaded () at pg_quicksilver.c:1851
+#5  0x00007f6e1ebf40cf in qs_planner (parse=0x558e01674050, query_string=0x558e01673190 "SELECT count(*) FROM customers", cursorOptions=2048, boundParams=0x0) at pg_quicksilver.c:5042
+#6  0x0000558dda81c1ab in pg_plan_query (querytree=querytree@entry=0x558e01674050, query_string=query_string@entry=0x558e01673190 "SELECT count(*) FROM customers", cursorOptions=cursorOptions@entry=2048, boundParams=boundParams@entry=0x0) at postgres.c:909
+#7  0x0000558dda81c2a3 in pg_plan_queries (querytrees=0x558e016c0ec8, query_string=query_string@entry=0x558e01673190 "SELECT count(*) FROM customers", cursorOptions=cursorOptions@entry=2048, boundParams=boundParams@entry=0x0) at postgres.c:1001
+
+# B. the storm core (standby backend, ALTER storm + sidecar), -O0 extension build, frame 2 locals:
+#    m = {heap = 16864 (public.orders), mirror = 18499, usable = false, heapname = "public.orders"}
+#    The existence check (SearchSysCache1 RELOID) had found the view; the second lookup at line 1023 found nothing.
+
+
+
+
+
+
+Program terminated with signal SIGSEGV, Segmentation fault.
+#0  0x0000555a35884f9d in quote_identifier (ident=ident@entry=0x0) at ruleutils.c:12846
+12846		safe = ((ident[0] >= 'a' && ident[0] <= 'z') || ident[0] == '_');
+#0  0x0000555a35884f9d in quote_identifier (ident=ident@entry=0x0) at ruleutils.c:12846
+#1  0x0000555a35886056 in quote_qualified_identifier (qualifier=0x0, ident=0x0) at ruleutils.c:12921
+#2  0x00007f628c943445 in qs_build_mirror (m=0x555a5f0e3da8) at pg_quicksilver.c:1023
+#3  0x00007f628c944298 in qs_load_mirrors (snap=0x555a5e87f100) at pg_quicksilver.c:1241
+#4  0x00007f628c945b0f in qs_ensure_loaded () at pg_quicksilver.c:1851
+#5  0x00007f628c9500cf in qs_planner (parse=0x555a5e8394d0, query_string=0x555a5e838190 "SELECT side || '|' || reason FROM quicksilver.last_decision();", cursorOptions=2048, boundParams=0x0) at pg_quicksilver.c:5042
+#6  0x0000555a357a21ab in pg_plan_query (querytree=querytree@entry=0x555a5e8394d0, query_string=query_string@entry=0x555a5e838190 "SELECT side || '|' || reason FROM quicksilver.last_decision();", cursorOptions=cursorOptions@entry=2048, boundParams=boundParams@entry=0x0) at postgres.c:909
+#7  0x0000555a357a22a3 in pg_plan_queries (querytrees=0x555a5ec677b0, query_string=query_string@entry=0x555a5e838190 "SELECT side || '|' || reason FROM quicksilver.last_decision();", cursorOptions=cursorOptions@entry=2048, boundParams=boundParams@entry=0x0) at postgres.c:1001
+#2  0x00007f628c943445 in qs_build_mirror (m=0x555a5f0e3da8) at pg_quicksilver.c:1023
+1023		appendStringInfo(&sql, " FROM %s m",
+heap = 0x7f628bb88ae8
+desc = 0x555a5f472ad8
+sql = {data = 0x555a5f15cf60 "SELECT m.id, m.customer_id, m.status, m.amount, m.created_at, m.note, m.x1, m.x2, m.x3, m.x4, m.x5, m.x6, m.x7, m.x8, m.x9, m.x10, m.x11, m.x12, m.x13, m.x14, m.x15, m.x16, m.x17, m.x18, m.x19, m.x20,"..., len = 4348, maxlen = 8192, cursor = 0}
+i = 310
+tup = 0x7f628b742e30
+cls = 0x7f628b742e78
+mkind = 118 'v'
+mowner = 16792
+raw = 0x555a5f14edc0
+rewritten = 0x555a5f1513b8
+q = 0x555a5f14ef20
+old = 0x555a5e838090
+lc = 0x0
+joinx = 0x0
+ncomp = 0
+__func__ = "qs_build_mirror"

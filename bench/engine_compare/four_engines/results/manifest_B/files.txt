@@ -1,0 +1,8 @@
+830560527 mirror/public.orders/base/000001.parquet
+19309629 mirror/public.orders/delta/000002.parquet
+19318773 mirror/public.orders/delta/000003.parquet
+19302621 mirror/public.orders/delta/000004.parquet
+3422366 mirror/public.orders/delta/000005.parquet
+1055642 mirror/public.orders/dv/000001.000000003.dv.parquet
+1098719 mirror/public.orders/dv/000001.000000004.dv.parquet
+424 mirror/public.orders/state.json

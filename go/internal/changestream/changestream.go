@@ -68,7 +68,11 @@ type Transaction struct {
 	CommitLSN string
 	// NextLSN is what to confirm through to actually consume this transaction.
 	NextLSN string
+	// Changes holds the transaction when it is small. A large one is on disk
+	// (spool.go) and Changes is nil: read either kind with Each, count either
+	// with Len, and never range over Changes to learn what a transaction did.
 	Changes []Change
+	spool   *Spool
 }
 
 // Stream is the interface phase 3 swaps out, not the callers.
@@ -251,6 +255,9 @@ func (l *Logical) Transactions(ctx context.Context) ([]Transaction, error) {
 // Confirm consumes everything through lsn. Call only after the mirror write is
 // durable; confirming early is how a crash loses data.
 func (l *Logical) Confirm(ctx context.Context, lsn string) error {
+	if err := runBeforeConfirm(lsn); err != nil {
+		return err
+	}
 	rows, err := l.conn.Query(ctx, fmt.Sprintf(
 		`SELECT 1 FROM pg_logical_slot_get_changes($1,$2,NULL,%s)`, slotOpts),
 		l.slot, lsn)

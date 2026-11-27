@@ -23,7 +23,7 @@
 # A run that is fast and wrong is a failure. A run that is correct and slow is a
 # result.
 set -uo pipefail
-cd "$(dirname "$0")/../.."
+cd "$(dirname "$0")/../.." || exit 1
 source "$(dirname "$0")/lib_dropdb.sh"
 source "$(dirname "$0")/lib_syncslots.sh"
 
@@ -35,6 +35,8 @@ MIRROR=$BASE/large-mirror
 HEALTH=127.0.0.1:9196
 DEBUG=127.0.0.1:9195
 DB=large
+source "$(dirname "$0")/lib_slotname.sh"
+SLOT=$(qs_pod_slot lg_slot lg-2)   # what the sidecar derives from QS_SLOT and QS_POD_NAME
 SHAPE=${SHAPE:-narrow}
 SECONDS_PER=${SECONDS_PER:-60}
 FAIL=0
@@ -184,7 +186,7 @@ chmod 755 /tmp/qs-mirror /tmp/qs-verify /tmp/qs-query
 
 say "bootstrap"
 rm -rf $MIRROR; install -d -o postgres -g postgres $MIRROR
-psq 5443 "SELECT pg_drop_replication_slot('lg_slot') FROM pg_replication_slots WHERE slot_name='lg_slot'" >/dev/null 2>&1
+psq 5443 "SELECT pg_drop_replication_slot('$SLOT') FROM pg_replication_slots WHERE slot_name='$SLOT'" >/dev/null 2>&1
 psq 5443 "DROP PUBLICATION IF EXISTS lg_pub" >/dev/null 2>&1
 boot_t0=$(date +%s.%N)
 su postgres -c "QS_CLUSTER=lg QS_MODE=shadow QS_INGEST=logical \
@@ -241,7 +243,7 @@ while [ "$(date +%s)" -lt "$END" ]; do
   # real source that is not actively trying to break its replica looks like.
   for _ in $(seq 60); do
     retained=$(psq 5443 "SELECT COALESCE(pg_wal_lsn_diff(pg_current_wal_lsn(), restart_lsn),0)::bigint
-                         FROM pg_replication_slots WHERE slot_name='lg_slot'" postgres 2>/dev/null)
+                         FROM pg_replication_slots WHERE slot_name='$SLOT'" postgres 2>/dev/null)
     [ -z "$retained" ] && break
     [ "$retained" -lt "$PACE_BYTES" ] && break
     paused=$((paused + 1))

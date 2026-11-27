@@ -187,9 +187,16 @@ func TestTemporalColumnsSurviveTheWriter(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"TIMESTAMP WITH TIME ZONE", "TIMESTAMP", "DATE", "TIME"} {
-		if !strings.Contains(sql, want) {
-			t.Errorf("the view does not present a column as %s", want)
+	// The files hold them natively, so the view names them bare: a cast is
+	// only written over a file that holds the column some other way
+	// (TestViewCastsOldFilesToTheDeclaredType).
+	for c, want := range map[string]string{"at": "TIMESTAMP WITH TIME ZONE",
+		"naive": "TIMESTAMP", "day": "DATE", "clock": "TIME"} {
+		if got := sqlType(tbl.Columns[c]); got != want {
+			t.Errorf("column %s is presented as %s, want %s", c, got, want)
+		}
+		if strings.Contains(sql, "CAST("+sqlIdent(c)) {
+			t.Errorf("the view casts %s, which the file already holds as %s:\n%s", c, want, sql)
 		}
 	}
 }

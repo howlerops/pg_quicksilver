@@ -56,6 +56,12 @@ func main() {
 	if err != nil {
 		fail("read columns: %v", err)
 	}
+	for c, typ := range cols {
+		switch strings.ToLower(strings.TrimSpace(typ)) {
+		case "boolean", "bool":
+			boolCols[c] = true
+		}
+	}
 	t, err := mirror.New(*root, schema, name, order[0], cols, order)
 	if err != nil {
 		fail("open mirror: %v", err)
@@ -186,36 +192,28 @@ func maxInt(a, b int) int {
 	return b
 }
 
+// boolCols is the table's boolean columns, for eachSourceRow.
+var boolCols = map[string]bool{}
+
 func eachSourceRow(ctx context.Context, conn *pgx.Conn, qualified string,
 	order []string, fn func(map[string]any) error,
 ) error {
-	sel := make([]string, len(order))
-	for i, c := range order {
-		sel[i] = `"` + c + `"::text`
-	}
-	rows, err := conn.Query(ctx, "SELECT "+strings.Join(sel, ", ")+" FROM "+qualified)
-	if err != nil {
-		return err
-	}
-	defer rows.Close()
-	for rows.Next() {
-		vals := make([]any, len(order))
-		ptrs := make([]any, len(order))
-		for i := range vals {
-			ptrs[i] = &vals[i]
-		}
-		if err := rows.Scan(ptrs...); err != nil {
-			return err
-		}
+	// As the type's output function prints it — the text pgoutput sends and
+	// the mirror was built from — not as `col::text`, which pads, strips and
+	// suffixes differently for char(n), inet and others (mirror.SourceRows).
+	return mirror.SourceRows(ctx, conn, qualified, order, func(vals []any) error {
 		m := make(map[string]any, len(order))
 		for i, c := range order {
 			m[c] = vals[i]
+			// The one type whose output text the mirror does not hold as text
+			// or as something that prints the same: a boolean prints t, and
+			// the mirror's bool renders as true.
+			if s, ok := vals[i].(string); ok && boolCols[c] {
+				m[c] = s == "t"
+			}
 		}
-		if err := fn(m); err != nil {
-			return err
-		}
-	}
-	return rows.Err()
+		return fn(m)
+	})
 }
 
 func fail(format string, args ...any) {

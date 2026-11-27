@@ -11,9 +11,34 @@
 //	qs-query -mirror /var/lib/postgresql/data/quicksilver -table public.events
 //	qs-query -mirror ... -table ... -view events   # wrapped in CREATE OR REPLACE VIEW
 //
-// The SQL reflects one manifest. A compaction landing mid-query deletes files
-// the query names; ask again and re-run, which is the same contract the
-// in-process reader has.
+// The SQL reflects one manifest. Generated here, it is this process's reading of
+// state.json at the moment it ran. The writer also PUBLISHES the SQL, after
+// every manifest change, as snapshot.json beside state.json (mirror/publish.go);
+// that is the one to use, and a reader needs no CLI for it:
+//
+//	qs-query -mirror ... -table ... -published        # the published snapshot's SQL
+//	qs-query -mirror ... -table ... -seq              # its sequence number, alone
+//	qs-query -mirror ... -table ... -published -lsn   # the LSN it stands at
+//	qs-query -mirror /mnt/qs -table ... -published -root /data/qs
+//	                                                  # for an engine that sees the mirror at /data/qs
+//
+// The published SQL names files relative to the table directory, and this
+// command renders them under the mirror root it was given (or -root), so a
+// reader that mounts the mirror at a different path from the writer's gets
+// paths that exist where it is.
+//
+// With QS_DUCKLAKE=on the sidecar also publishes the mirror as a DuckLake table,
+// and then there is nothing to regenerate at all (ducklake.go):
+//
+//	qs-query -mirror ... -table ... -ducklake         # ATTACH, the table name, freshness
+//	qs-query -mirror ... -table ... -ducklake -engine postgres -view v
+//
+// The sequence number goes up by one on every publish, so "has it changed" is
+// one integer compared with the one the reader holds. The files a published
+// snapshot names outlive it by the grace period in its descriptor
+// (QS_RETIRE_GRACE_SECONDS on the writer, 60 by default), so a query that
+// starts on the current snapshot finishes; one that outlasts the grace is told
+// a file is missing, and re-reads.
 package main
 
 import (
@@ -21,6 +46,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/jackc/pgx/v5"
@@ -37,6 +63,11 @@ func main() {
 	engine := flag.String("engine", engineDuckDB, "duckdb | postgres (a view readable through pg_duckdb)")
 	dsn := flag.String("dsn", "", "optional source connection, to read the column list from the catalog")
 	lsn := flag.Bool("lsn", false, "print only the applied LSN, for freshness gating")
+	published := flag.Bool("published", false, "print the snapshot the writer published, instead of regenerating from the manifest")
+	seq := flag.Bool("seq", false, "print only the published snapshot's sequence number, to detect change")
+	renderRoot := flag.String("root", "", "with -published: the mirror root the ENGINE will see, when it mounts the mirror at a different path from the one given to -mirror (default: -mirror)")
+	lake := flag.Bool("ducklake", false, "print what a reader of the DuckLake table needs (QS_DUCKLAKE=on): the ATTACH and the table name, or with -engine postgres the pg_duckdb view over it")
+	attachOnLogin := flag.Bool("attach-on-login", false, "with -ducklake -engine postgres: also emit a login event trigger that attaches the lake in every session")
 	flag.Parse()
 	if *root == "" || *table == "" {
 		flag.Usage()
@@ -45,6 +76,35 @@ func main() {
 	schema, name, ok := strings.Cut(*table, ".")
 	if !ok {
 		fail("table must be schema.table")
+	}
+
+	if *lake {
+		emitDuckLake(*root, schema, name, *engine, *view, *dsn, *lsn, *attachOnLogin)
+		return
+	}
+
+	if *published || *seq {
+		p, err := mirror.ReadPublished(*root, schema, name)
+		if err != nil {
+			fail("read the published snapshot: %v (the writer publishes one on "+
+				"every manifest change; omit -published to generate from the manifest)", err)
+		}
+		if line, ok := publishedScalar(p, *seq, *lsn); ok {
+			fmt.Println(line)
+			return
+		}
+		if p.Halted != "" {
+			fail("mirror is halted and must not be served: %s", p.Halted)
+		}
+		var cols map[string]string
+		var order []string
+		if *engine == enginePostgres { // the only output that needs the column types
+			if cols, order, err = columns(*dsn, *root, schema, name); err != nil {
+				fail("%v", err)
+			}
+		}
+		emit(publishedHeader(p), publishedSQL(p, *root, *renderRoot, schema, name), *engine, *view, cols, order)
+		return
 	}
 
 	cols, order, err := columns(*dsn, *root, schema, name)
@@ -67,22 +127,64 @@ func main() {
 	}
 	// The LSN is part of the answer, not decoration: a view of a mirror is only
 	// usable if the reader can decide whether it is fresh enough.
-	fmt.Printf("-- quicksilver mirror %s applied_lsn=%s\n", t.Qualified, t.State.AppliedLSN)
-	if *engine == enginePostgres {
-		if *view == "" {
+	emit(fmt.Sprintf("-- quicksilver mirror %s applied_lsn=%s", t.Qualified, t.State.AppliedLSN),
+		sql, *engine, *view, cols, order)
+}
+
+// publishedScalar is the one-line answers about a published snapshot: its
+// sequence number, which is how a reader notices a new one, and its LSN.
+func publishedScalar(p *mirror.Published, seq, lsn bool) (string, bool) {
+	switch {
+	case seq:
+		return fmt.Sprint(p.Seq), true
+	case lsn:
+		return p.AppliedLSN, true
+	}
+	return "", false
+}
+
+// publishedSQL is the published view with its files named where the reader's
+// engine will find them. The snapshot holds paths relative to the table
+// directory (or, from an older writer, the writer's absolute ones); neither is
+// usable as it stands by a reader that mounts the mirror somewhere else.
+//
+// The default is the path this command was given, which is by definition a
+// path the mirror is readable at here. -root is for the case where the engine
+// that will run the SQL sees it somewhere else again.
+func publishedSQL(p *mirror.Published, mirrorRoot, renderRoot, schema, name string) string {
+	if renderRoot == "" {
+		renderRoot = mirrorRoot
+	}
+	if abs, err := filepath.Abs(renderRoot); err == nil {
+		renderRoot = abs
+	}
+	return p.Render(filepath.Join(renderRoot, schema+"."+name))
+}
+
+func publishedHeader(p *mirror.Published) string {
+	return fmt.Sprintf("-- quicksilver mirror %s applied_lsn=%s snapshot_seq=%d published_at=%s grace_seconds=%g",
+		p.Table, p.AppliedLSN, p.Seq, p.PublishedAt.Format("2006-01-02T15:04:05.000Z07:00"), p.GraceSeconds)
+}
+
+// emit prints one snapshot's SQL in the form asked for, whichever way the SQL
+// was come by.
+func emit(header, sql, engine, view string, cols map[string]string, order []string) {
+	fmt.Println(header)
+	if engine == enginePostgres {
+		if view == "" {
 			fail("-engine postgres emits a view; pass -view <name>")
 		}
-		fmt.Print(PostgresView(*view, sql, cols, order))
+		fmt.Print(PostgresView(view, sql, cols, order))
 		fmt.Fprintln(os.Stderr, pgNullOrderNote)
 		return
 	}
-	if *view != "" {
+	if view != "" {
 		// -view emits statements to run, so it emits the engine settings the
 		// view depends on as well. Without -view the caller is embedding the
 		// SELECT in something of their own and the settings would corrupt it,
 		// so they go to stderr instead — see nullOrderNote.
 		fmt.Println(duckdbPreamble)
-		fmt.Printf("CREATE OR REPLACE VIEW %s AS\n%s;\n", *view, sql)
+		fmt.Printf("CREATE OR REPLACE VIEW %s AS\n%s;\n", view, sql)
 		return
 	}
 	fmt.Println(sql)

@@ -32,16 +32,18 @@ package mirror
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
+	"time"
 
 	"github.com/apache/arrow-go/v18/arrow"
-	"github.com/apache/arrow-go/v18/arrow/array"
-	"github.com/apache/arrow-go/v18/arrow/decimal128"
 
 	"github.com/howlerops/pg_quicksilver/go/internal/changestream"
 )
@@ -105,6 +107,18 @@ type State struct {
 	// schema as if it had always been there, and serves the corruption it
 	// stopped for.
 	Halted string `json:"halted,omitempty"`
+
+	// FileFormat is the writer format version of each data file, by file
+	// name. A file with no entry is legacy: written before versions were
+	// recorded. See format.go.
+	FileFormat map[string]int `json:"file_format,omitempty"`
+
+	// NumericScales records, per unconstrained numeric column, the scale at
+	// which QS_NUMERIC_SCALE was ACCEPTED for it: every value stored was
+	// checked to fit DECIMAL(38,s) exactly, or there was none to check. A
+	// column named by the option and absent here is still served as text. See
+	// numeric_optin.go.
+	NumericScales map[string]int32 `json:"numeric_scales,omitempty"`
 }
 
 type Table struct {
@@ -136,11 +150,26 @@ type Table struct {
 	// index.go: it is the difference between a map the garbage collector walks
 	// entry by entry and one it never looks inside.
 	numericKey bool
+	// decimalKey is whether the primary key is a numeric, whose identity is
+	// its value and not its spelling. See keyMode in index.go.
+	decimalKey bool
+
+	// notNull is the columns the caller says the source declares NOT NULL
+	// now, which a file written now holds as REQUIRED. See nullability.go.
+	notNull map[string]bool
 
 	// partialCols is State.PartialCols keyed by file id, so that the per-key
 	// question "is the file this patch lives in a partial one?" does not have
 	// to render a file name.
 	partialCols map[fileID][]string
+
+	// joins is the join domain each member column belongs to, nil unless a
+	// JoinDomains is attached. joinDicts is the distinct dictionaries among
+	// them, synced in saveState. joinFileCache is DomainComplete's per-file
+	// column sets. See joindomain.go.
+	joins         map[string]joinBinding
+	joinDicts     []*joinDict
+	joinFileCache map[string]fileColSet
 
 	// sawLarge is whether any row of this table has ever carried a column big
 	// enough to be worth not rewriting. Until one does, elide.go costs nothing
@@ -162,6 +191,117 @@ type Table struct {
 	// compacting is the rewrite currently in flight, if any. Only the apply
 	// goroutine touches this field.
 	compacting *Compaction
+
+	// aborting counts rewrites that were abandoned and have not yet finished
+	// and removed their output. See AbortCompaction and Close.
+	aborting sync.WaitGroup
+
+	// detached marks the private copy a background rewrite works from
+	// (rewriteSnapshot). It shares a directory with the real table and nothing
+	// else, and must never write the manifest: its State is a fragment.
+	detached bool
+
+	// cancelled, on a detached copy, is set when the rewrite it serves has been
+	// abandoned. The read loops check it between row groups, so an abandoned
+	// rewrite stops within one row group instead of running to the end of the
+	// table — which mattered once rewrites were limited to one at a time
+	// process-wide: an abandoned rewrite of a large table kept the only slot,
+	// and every other table's compaction waited for work nobody wanted.
+	cancelled *atomic.Bool
+
+	// dead is each data file's dead set, by dvStem, as the manifest in State
+	// describes it. See dvcache.go. Only the apply goroutine touches it.
+	dead map[string]*deadSet
+
+	// deferDead is non-nil while an Apply is in progress, and holds the
+	// positions it has superseded so far, per file, not yet published as
+	// deletion-vector generations. See Apply and markDead.
+	deferDead map[fileID]*deadSet
+
+	// sweptOrphans is whether this process has looked for delta files a
+	// crashed Apply left behind. See removeOrphanDeltas.
+	sweptOrphans bool
+
+	// afterChunk, when set, is called each time Apply has landed a chunk and
+	// published nothing. Tests use it to look at the mirror as a reader would
+	// in the middle of a transaction.
+	afterChunk func()
+
+	// What the idle compaction trigger needs to know and the manifest does not
+	// say: when this table was last written, when its base was last rewritten
+	// and how long that took. None of it is durable, deliberately — after a
+	// restart "just written" is the safe assumption. See CompactIdleSeconds.
+	lastChange    time.Time
+	lastCompacted time.Time
+	lastRewrite   time.Duration
+	seenSeq       int
+	retryAt       time.Time // no rewrite before this; see CompactionFailed
+	clock         func() time.Time
+
+	// pub is the published snapshot and the files waiting out their grace
+	// after leaving the manifest. See publish.go.
+	pub *publisher
+
+	// ahead is set while State describes something no manifest has committed:
+	// from the start of an Apply, or of a Snapshot that keeps the previous
+	// contents readable, until its manifest is written. A Halt raised meanwhile
+	// patches the manifest on disk rather than saving this one.
+	//
+	// broken is what ahead becomes when that Apply or Snapshot fails: memory
+	// is now ahead of the disk for good. The Table refuses to write a manifest
+	// or apply again, and the caller reopens it with New — which a process
+	// that stops on the error does anyway. Halt still works, on the disk.
+	ahead  bool
+	broken bool
+
+	// rebuilding, when set, is why the published snapshot refuses while a
+	// re-snapshot runs. It is never written to the manifest. See Snapshot.
+	rebuilding string
+
+	// wm is what the root's watermark needs to know about this table, and
+	// savedOnce is whether this process has written its manifest yet: the
+	// first Apply always does, changed or not. See watermark.go.
+	wm        markState
+	savedOnce bool
+
+	// fmtPrev is the writer format version of each file the last manifest
+	// named, and freshContents says the files the next one adds were read
+	// from the source rather than made from those. See format.go.
+	fmtPrev       map[string]int
+	freshContents bool
+}
+
+// ErrNeedsReopen is returned by a Table whose Apply or Snapshot failed part-way.
+// Its in-memory manifest describes files and positions no manifest on disk
+// names, so nothing may be saved from it; open the table again with New.
+var ErrNeedsReopen = errors.New("mirror table is ahead of its manifest after a failed write and must be reopened")
+
+// Close releases what a Table holds outside the heap: the timer that unlinks
+// retired files, a rewrite in flight and the mapped key index. The Table must
+// not be used afterwards. Files still inside their grace are collected by the
+// next process to open the table.
+//
+// A rewrite in flight is WAITED for, here and nowhere else — one this Table
+// was still running, and any it abandoned earlier whose goroutine has yet to
+// remove its output. The Table that replaces this one starts from the same
+// manifest and therefore the same sequence number, so its first rewrite
+// writes the very path this one is writing; two writers on one file, or this
+// one's cleanup unlinking the other's output, is the path-reuse hazard of
+// publish.go from a different direction.
+func (t *Table) Close() {
+	if t == nil {
+		return
+	}
+	t.AbortCompaction()
+	t.aborting.Wait()
+	if t.pub != nil {
+		t.pub.stop()
+	}
+	t.forgetWatermark()
+	t.index.close()
+	t.index, t.patch = nil, nil
+	t.resetDead()
+	t.broken = true
 }
 
 func New(root, schema, table, key string, cols map[string]string, order []string) (*Table, error) {
@@ -172,15 +312,37 @@ func New(root, schema, table, key string, cols map[string]string, order []string
 		Order:     order,
 		Dir:       filepath.Join(root, schema+"."+table),
 	}
-	t.numericKey = arrowType(cols[key]) == arrow.PrimitiveTypes.Int64
+	t.numericKey = keyModeOf(cols[key]) == keyInt
+	t.decimalKey = keyModeOf(cols[key]) == keyDecimal
 	for _, sub := range []string{"base", "delta", "dv", "index"} {
 		if err := os.MkdirAll(filepath.Join(t.Dir, sub), 0o755); err != nil {
+			return nil, err
+		}
+	}
+	// The directories are named by nothing but their parents, so those are
+	// what has to be durable for a file written under them to be findable.
+	for _, dir := range []string{t.Dir, root} {
+		if err := syncDir(dir); err != nil {
 			return nil, err
 		}
 	}
 	if b, err := os.ReadFile(t.statePath()); err == nil {
 		_ = json.Unmarshal(b, &t.State)
 	}
+	// The manifest of a table that has been quiet is behind what the table
+	// has applied, by design; the root's watermark says how far (watermark.go).
+	// A watermark that cannot be read speaks for nobody, which errs towards a
+	// re-snapshot.
+	t.wm.disk, t.wm.mem, t.wm.halted = t.State.AppliedLSN, t.State.AppliedLSN, t.State.Halted != ""
+	if w, err := ReadWatermark(root); err == nil {
+		t.State.AppliedLSN = effectiveLSN(t.Qualified, t.State.AppliedLSN, w)
+		t.wm.mem = t.State.AppliedLSN
+	}
+	t.noteFormats()
+	// Decided now, from the manifest just read, and before anything can ask
+	// through a rewrite's detached copy. See numeric_optin.go.
+	t.forgetOptIns()
+	t.primeOptIns()
 	return t, nil
 }
 
@@ -221,7 +383,24 @@ func (t *Table) ensureIndex() error {
 	t.patch = newKeyIndex(0)
 	t.rebuildPartialCols()
 
+	// The base file's keys come from its index file, or from the file itself if
+	// that is missing or is not this base file's (kidx.go). Either way they are
+	// not held as map entries: this map is for the deltas, read back below.
+	//
+	// More than one base file is something nothing writes any more, and keeps
+	// the one map it always had.
+	if len(t.State.BaseFiles) == 1 {
+		x, err := t.baseIndex(t.State.BaseFiles[0])
+		if err != nil {
+			t.index, t.patch = nil, nil
+			return err
+		}
+		t.index = x
+	}
 	for _, base := range t.State.BaseFiles {
+		if len(t.State.BaseFiles) == 1 {
+			break // indexed just above
+		}
 		rel := filepath.Join("base", base)
 		id := baseID(base)
 		// ALWAYS from the file. There used to be a persisted index —
@@ -272,9 +451,21 @@ func (t *Table) ensureIndex() error {
 			target = t.patch
 		}
 		n := 0
-		err := t.forEachRowGroup(filepath.Join(t.Dir, rel), dead, partial,
+		// The dead rows are skipped HERE, not by forEachRowGroup. Handing it
+		// the vector makes it drop them before fn sees the group, and then
+		// first+i is a position among the SURVIVORS: every row after a dead
+		// one was indexed one place too early. Nothing reads wrong at that
+		// point. The next delete or update of such a row marks its
+		// neighbour's position dead instead of its own — the row that should
+		// have gone stays, and a row nobody touched disappears — and it took
+		// only a restart or a Reload with one delete in a delta file to get
+		// there (TestIndexRebuildKeepsDeltaPositions).
+		err := t.forEachRowGroup(filepath.Join(t.Dir, rel), nil, partial,
 			func(rows []map[string]any, first int) error {
 				for i, r := range rows {
+					if dead[first+i] {
+						continue
+					}
 					target.set(t.keyOf(r[t.Key]), loc{File: id, Pos: int32(first + i)})
 				}
 				n = first + len(rows)
@@ -323,11 +514,11 @@ func (t *Table) deadPositions(rel string) (map[int]bool, error) {
 // deadPositionsLatest reads the newest deletion vector on disk for a file,
 // ignoring the manifest.
 //
-// This is for the background compactor, which cannot read t.State.DVGen — the
-// apply goroutine writes it on every batch — and does not need to: seeing MORE
-// rows as dead than its snapshot accounts for is safe there, because every key
-// that moved while the rewrite ran is reconciled against the live index at swap
-// time anyway. An external reader must never do this; see deadPositions.
+// Nothing on the write path uses it any more. The background compactor did,
+// and it was wrong to: the newest vector on disk can belong to an Apply that
+// never committed its manifest. See BeginCompaction, which now captures the
+// dead sets the manifest names. An external reader must never use this either;
+// see deadPositions.
 func (t *Table) deadPositionsLatest(rel string) (map[int]bool, error) {
 	matches := t.dvGlob(rel)
 	if len(matches) == 0 {
@@ -337,14 +528,8 @@ func (t *Table) deadPositionsLatest(rel string) (map[int]bool, error) {
 }
 
 func (t *Table) readDV(path, rel string) (map[int]bool, error) {
-	if path == "" {
-		return nil, ErrStaleManifest
-	}
-	pos, err := readDVFile(path)
+	pos, err := readDVPositions(path)
 	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, ErrStaleManifest
-		}
 		return nil, err
 	}
 	dead := make(map[int]bool, len(pos))
@@ -422,14 +607,16 @@ func dvGenOf(path string) int {
 // data file itself is going away.
 func (t *Table) dropDV(rel string) {
 	for _, m := range t.dvGlob(rel) {
-		_ = os.Remove(m)
+		t.retire(m)
 	}
 	delete(t.State.DVGen, dvStem(rel))
+	t.forgetDead(rel)
 }
 
-// removeDataFile deletes a data file and the deletion vectors that described it.
+// removeDataFile retires a data file and the deletion vectors that described
+// it: they go after the grace period, not now. See retire, publish.go.
 func (t *Table) removeDataFile(rel string) {
-	_ = os.Remove(filepath.Join(t.Dir, rel))
+	t.retire(filepath.Join(t.Dir, rel))
 	t.dropDV(rel)
 	t.dropIndexJSON(filepath.Base(rel))
 }
@@ -445,6 +632,9 @@ func (t *Table) removeDataFile(rel string) {
 // "harmless" is not a good reason to keep several megabytes per table on a
 // volume sized from a formula that does not know about it.
 func (t *Table) dropIndexJSON(name string) {
+	// And the index this version does write for a base file (kidx.go), which
+	// goes when its base file goes.
+	t.dropKidx(name)
 	_ = os.Remove(filepath.Join(t.Dir, "index", trimParquet(filepath.Base(name))+".idx.json"))
 }
 
@@ -452,22 +642,53 @@ func (t *Table) statePath() string { return filepath.Join(t.Dir, "state.json") }
 
 // saveState writes the durable watermark AFTER the data files, so a crash
 // replays the last batch rather than skipping it.
+//
+// "After" means after they are DURABLE, not after they are written. Each data
+// file was fsynced when it was closed; the directories they were created in
+// are synced here (syncOwedDirs, stream.go), and only then is the manifest replaced — temp file, fsync,
+// rename — and the table directory synced so that the rename itself survives.
+// Every one of those can fail, and a failure is returned: the caller must not
+// confirm an LSN on the strength of a manifest that may not exist.
 func (t *Table) saveState() error {
+	if t.detached {
+		return nil
+	}
+	if t.broken {
+		return ErrNeedsReopen
+	}
+	// Two things the manifest records about its own files, brought up to
+	// date here because this is the one place every manifest passes through:
+	// which writer wrote each (format.go), and which opted-in numeric columns
+	// have been shown to fit their decimal (numeric_optin.go; the scan that
+	// shows it runs once, at the first manifest write of a process).
+	t.stampFormats()
+	if !t.savedOnce {
+		t.resolveOptIns()
+	} else {
+		t.primeOptIns()
+	}
 	b, err := json.MarshalIndent(t.State, "", "  ")
 	if err != nil {
 		return err
 	}
-	tmp := t.statePath() + ".tmp"
-	if err := os.WriteFile(tmp, b, 0o644); err != nil {
+	if err := syncOwedDirs(t.Dir); err != nil {
 		return err
 	}
-	f, err := os.Open(tmp)
-	if err != nil {
+	// A join dictionary's new ids are durable before a manifest can name a
+	// file that holds them. See joindomain.go.
+	if err := t.syncJoinDicts(); err != nil {
 		return err
 	}
-	_ = f.Sync()
-	_ = f.Close()
-	return os.Rename(tmp, t.statePath())
+	if err := writeFileAtomic(t.statePath(), b); err != nil {
+		return err
+	}
+	if err := syncDir(t.Dir); err != nil {
+		return err
+	}
+	t.noteManifest(t.State.AppliedLSN, t.State.Halted)
+	t.savedOnce = true
+	// Only now, with the manifest durable, is there something to publish.
+	return t.publish()
 }
 
 // Evolve adopts a new column list. Existing files are untouched — the read path
@@ -490,13 +711,79 @@ func (t *Table) Evolve(cols map[string]string, order []string, missing map[strin
 // Halt records, durably, that this mirror cannot be trusted and why. Recovery
 // is deliberately manual: the reasons a mirror halts are ones where guessing
 // produced the problem in the first place.
+//
+// A halt raised from INSIDE an Apply — a value the column cannot hold, found in
+// the fourth chunk of a large transaction — must not write the manifest in
+// memory: that one already names the delta files of the chunks before it, and
+// saving it would publish a third of a transaction on the way to refusing the
+// rest. So the halt is added to the manifest that is on disk, which still
+// describes the mirror as it was before the transaction began.
+//
+// The same holds AFTER that Apply has returned its error, which is when the
+// sidecar records the halt a second time to be sure it is durable: the memory
+// of a failed Apply is no more committed for the Apply being over. `ahead`
+// covers both, and a Snapshot that has not yet replaced the manifest.
+//
+// Either way the halt is published, and the files the manifest names are left
+// exactly where they are; see publishManifest.
 func (t *Table) Halt(reason string) error {
 	t.State.Halted = reason
-	return t.saveState()
+	if t.detached || !t.ahead {
+		return t.saveState()
+	}
+	var onDisk State
+	if b, err := os.ReadFile(t.statePath()); err == nil {
+		if err := json.Unmarshal(b, &onDisk); err != nil {
+			return err
+		}
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	onDisk.Halted = reason
+	b, err := json.MarshalIndent(onDisk, "", "  ")
+	if err != nil {
+		return err
+	}
+	if err := writeFileAtomic(t.statePath(), b); err != nil {
+		return err
+	}
+	if err := syncDir(t.Dir); err != nil {
+		return err
+	}
+	t.noteManifest(onDisk.AppliedLSN, reason)
+	return t.publishManifest(&onDisk, reason)
 }
 
 // Halted reports the reason this mirror is out of service, or "".
 func (t *Table) Halted() string { return t.State.Halted }
+
+// ClearHalt puts a halted table back in service, durably. The one caller is a
+// rebuild an operator asked for, and it calls this only AFTER Snapshot has
+// replaced the table's contents: Snapshot itself leaves the halt in the
+// manifest, so a crash anywhere before this line restarts with a table that is
+// still halted rather than one that is empty and trusted.
+func (t *Table) ClearHalt() error {
+	t.State.Halted = ""
+	return t.saveState()
+}
+
+// HaltedOnDisk reads a table's halt reason straight from its manifest, without
+// opening the table. Opening one needs the column list, which needs the source;
+// the readiness probe has to be able to say "halted" before the source answers.
+// A table with no manifest, or one that cannot be read, reports "".
+func HaltedOnDisk(root, schema, table string) string {
+	b, err := os.ReadFile(filepath.Join(root, schema+"."+table, "state.json"))
+	if err != nil {
+		return ""
+	}
+	var st struct {
+		Halted string `json:"halted"`
+	}
+	if json.Unmarshal(b, &st) != nil {
+		return ""
+	}
+	return st.Halted
+}
 
 // ---- arrow schema ---------------------------------------------------------
 
@@ -508,47 +795,15 @@ func (t *Table) ArrowSchema() *arrow.Schema { return t.arrowSchemaFor(t.Order) }
 func (t *Table) arrowSchemaFor(cols []string) *arrow.Schema {
 	fields := make([]arrow.Field, 0, len(cols))
 	for _, name := range cols {
+		if isCompanion(name) {
+			fields = append(fields, arrow.Field{Name: name, Type: arrow.PrimitiveTypes.Int64, Nullable: true})
+			continue
+		}
 		fields = append(fields, arrow.Field{
-			Name: name, Type: arrowType(t.Columns[name]), Nullable: true,
+			Name: name, Type: arrowType(t.typeOf(name)), Nullable: !t.required(name),
 		})
 	}
 	return arrow.NewSchema(fields, nil)
-}
-
-func arrowType(pgType string) arrow.DataType {
-	// Temporal types first: see temporal.go for why they were text until
-	// docs/22 made parsing them a fact rather than a guess.
-	if k := temporalOf(pgType); k != notTemporal {
-		return temporalArrowType(k)
-	}
-	s := strings.ToLower(strings.TrimSpace(pgType))
-	switch {
-	case strings.HasPrefix(s, "numeric"), strings.HasPrefix(s, "decimal"):
-		prec, scale := int32(38), int32(9)
-		if i := strings.Index(s, "("); i >= 0 {
-			if j := strings.Index(s, ")"); j > i {
-				parts := strings.SplitN(s[i+1:j], ",", 2)
-				if p, err := strconv.Atoi(strings.TrimSpace(parts[0])); err == nil {
-					prec = int32(p)
-				}
-				if len(parts) == 2 {
-					if sc, err := strconv.Atoi(strings.TrimSpace(parts[1])); err == nil {
-						scale = int32(sc)
-					}
-				}
-			}
-		}
-		return &arrow.Decimal128Type{Precision: prec, Scale: scale}
-	case s == "smallint", s == "int", s == "integer", s == "bigint",
-		s == "int2", s == "int4", s == "int8":
-		return arrow.PrimitiveTypes.Int64
-	case s == "bool", s == "boolean":
-		return arrow.FixedWidthTypes.Boolean
-	case strings.HasPrefix(s, "double"), s == "real":
-		return arrow.PrimitiveTypes.Float64
-	default:
-		return arrow.BinaryTypes.String
-	}
 }
 
 // ---- write path -----------------------------------------------------------
@@ -559,12 +814,29 @@ type ApplyStats struct {
 	AppliedLSN string
 }
 
-// Apply lands a run of whole transactions atomically: every change in every
-// transaction, then applied_lsn advances. There is no state in which half a
-// transaction is visible.
-func (t *Table) Apply(txns []changestream.Transaction) (ApplyStats, error) {
-	upserts := map[rowKey]map[string]any{}
-	order := []rowKey{}
+// ApplyChunkChanges is how many row-changes of a LARGE transaction Apply holds
+// in memory at once. A transaction with more than this is landed in chunks:
+// each chunk is carried forward, written to its own delta file(s) and dropped
+// before the next is read, and the manifest names none of them until the last
+// is down. A batch of ordinary transactions is never split by it — those are
+// already in memory, and one delta file per batch is what the drain-rate
+// numbers in cmd/qs-mirror/tick.go were measured with.
+//
+// So the memory Apply needs for one transaction is
+//
+//	ApplyChunkChanges x (decoded row + its carry-forward) + 1 bit per row of
+//	every file the transaction supersedes rows in
+//
+// whatever the transaction's size. Zero disables chunking.
+var ApplyChunkChanges = 100_000
+
+// applyRun is the state of one Apply call: the chunk being accumulated, and
+// what must happen at the end for all of it to become visible at once.
+type applyRun struct {
+	t *Table
+
+	upserts map[rowKey]map[string]any
+	order   []rowKey
 	// queued is membership of `order`, kept SEPARATELY from upserts.
 	//
 	// It used to be answered by looking the key up in upserts, which is wrong the
@@ -578,9 +850,81 @@ func (t *Table) Apply(txns []changestream.Transaction) (ApplyStats, error) {
 	// in ONE file and both positions are in this one, so every later delete or
 	// update tombstones the copy the index names and leaves the other live
 	// forever. See apply_order_test.go.
-	queued := map[rowKey]bool{}
-	deletes := map[rowKey]bool{}
+	//
+	// ACROSS CHUNKS the same rule is kept by different means. A key written by
+	// an earlier chunk is no longer in these maps; it is in the index, pointing
+	// into that chunk's delta file, exactly as if an earlier batch had written
+	// it. The later change finds it there, marks that position dead and — for
+	// an update — carries its columns forward from that file.
+	queued  map[rowKey]bool
+	deletes map[rowKey]bool
+	n       int // changes accumulated since the last flush
+	// any is whether a single change in the batch was for this table. When
+	// none was there is nothing to write, the manifest included.
+	any bool
+
+	stats ApplyStats
+	// doomed are files a TRUNCATE inside this batch orphaned. They are removed
+	// only after the manifest that no longer names them is durable.
+	doomed []string
+}
+
+func (a *applyRun) reset() {
+	a.upserts, a.order = map[rowKey]map[string]any{}, nil
+	a.queued, a.deletes = map[rowKey]bool{}, map[rowKey]bool{}
+	a.n = 0
+}
+
+// Apply lands a run of whole transactions atomically: every change in every
+// transaction, then applied_lsn advances. There is no state in which half a
+// transaction is visible.
+//
+// "Visible" means named by the manifest, and that is what makes it possible to
+// apply a transaction larger than memory. Delta files are written as the
+// transaction is read and superseded positions are collected, but the manifest
+// on disk goes on naming the files and the deletion-vector generations it
+// named before. Only when everything is down are the new vector generations
+// published and the manifest replaced, once. A crash before that leaves the
+// previous manifest describing a mirror that is entirely still there; the
+// delta files written so far are named by nothing, and removeOrphanDeltas
+// collects them on the first Apply after the restart.
+func (t *Table) Apply(txns []changestream.Transaction) (stats ApplyStats, err error) {
+	if t.broken {
+		return ApplyStats{}, ErrNeedsReopen
+	}
+	t.ahead = true
+	ok := false
+	defer func() {
+		t.deferDead = nil
+		if ok {
+			t.ahead = false
+			return
+		}
+		// Memory is ahead of the manifest in ways that are not worth unwinding
+		// one by one: the caller stops on an Apply error (or keeps the table
+		// only as a halted one), and what it restarts from is the disk. So the
+		// Table says so, rather than trusting every later caller to remember:
+		// see broken. It stays `ahead`, so a Halt recorded now patches the
+		// manifest on disk.
+		t.resetDead()
+		t.broken = true
+	}()
+	stats, err = t.apply(txns)
+	ok = err == nil
+	return stats, err
+}
+
+func (t *Table) apply(txns []changestream.Transaction) (ApplyStats, error) {
+	t.removeOrphanDeltas()
+	a := &applyRun{t: t}
+	a.reset()
 	last := t.State.AppliedLSN
+
+	// Deletion vectors are published once, at the end. markDead publishes a new
+	// generation per call and retires the one two back; called per chunk it
+	// would retire, on the third chunk, the generation the manifest on disk
+	// still names — and a reader would find its vector gone mid-transaction.
+	t.deferDead = map[fileID]*deadSet{}
 
 	// Per-table LSN floor. A transaction this table has already applied is
 	// skipped, and the reason is not idempotence — the mirror is upsert-by-key,
@@ -594,50 +938,150 @@ func (t *Table) Apply(txns []changestream.Transaction) (ApplyStats, error) {
 	// that has never been bootstrapped has no floor and takes everything.
 	floor := changestream.ParseLSN(t.State.AppliedLSN)
 
-	for _, txn := range txns {
+	for i := range txns {
+		txn := &txns[i]
 		if floor > 0 && changestream.ParseLSN(txn.CommitLSN) < floor {
 			continue
 		}
-		for _, c := range txn.Changes {
-			if c.Qualified() != t.Qualified {
-				continue
-			}
-			switch c.Op {
-			case changestream.OpInsert, changestream.OpUpdate:
-				k := t.keyOf(c.Row[t.Key])
-				if !queued[k] {
-					queued[k] = true
-					order = append(order, k)
+		// A spooled transaction is read from disk once per table. One that
+		// never mentions this table need not be read at all.
+		if !txn.Spooled() || txn.Touches(t.Qualified) {
+			chunked := ApplyChunkChanges > 0 && txn.Len() > ApplyChunkChanges
+			err := txn.Each(func(c changestream.Change) error {
+				if c.Qualified() != t.Qualified {
+					return nil
 				}
-				// An earlier change to the same key in this batch is the better
-				// base than anything on disk, so merge onto it. A column absent
-				// from BOTH is filled from the mirror afterwards.
-				if prev, seen := upserts[k]; seen {
-					merged := make(map[string]any, len(t.Order))
-					for name, v := range prev {
-						merged[name] = v
-					}
-					for name, v := range c.Row {
-						merged[name] = v
-					}
-					upserts[k] = merged
-				} else {
-					upserts[k] = c.Row
+				if err := a.add(c); err != nil {
+					return err
 				}
-				delete(deletes, k)
-			case changestream.OpDelete:
-				k := t.keyOf(c.Key[t.Key])
-				deletes[k] = true
-				delete(upserts, k)
-			case changestream.OpTruncate:
-				if err := t.truncate(); err != nil {
-					return ApplyStats{}, err
+				if chunked && a.n >= ApplyChunkChanges {
+					return a.flush()
 				}
-				upserts, order, queued, deletes = map[rowKey]map[string]any{}, nil,
-					map[rowKey]bool{}, map[rowKey]bool{}
+				return nil
+			})
+			if err != nil {
+				return ApplyStats{}, err
 			}
 		}
 		last = txn.CommitLSN
+	}
+	if err := a.flush(); err != nil {
+		return ApplyStats{}, err
+	}
+
+	// Everything is written. Publish: one new generation per vector that
+	// changed, then the manifest that names them and the new delta files.
+	pending := t.deferDead
+	t.deferDead = nil
+	if !a.any && len(pending) == 0 && len(a.doomed) == 0 && t.savedOnce && !applyAlwaysSaves {
+		// Nothing in the batch was for this table, so the manifest on disk
+		// describes it exactly as it is, bar the LSN — and the LSN of a table
+		// nothing happened to is what the root's watermark records, once, for
+		// every such table, before the batch is confirmed (watermark.go). A
+		// manifest and a published snapshot per idle table per tick was 4 syncs
+		// each to say nothing.
+		//
+		// The first Apply of a process still writes: its publish is what
+		// collects the files a previous process retired (publisher.sweep).
+		t.State.AppliedLSN = last
+		t.noteApplied(last)
+		a.stats.AppliedLSN = last
+		return a.stats, nil
+	}
+	if len(pending) > 0 {
+		byFile := make(map[fileID][]int, len(pending))
+		for id, set := range pending {
+			byFile[id] = set.positions()
+		}
+		if err := t.markDead(byFile); err != nil {
+			return ApplyStats{}, err
+		}
+	}
+	t.State.AppliedLSN = last
+	if err := t.saveState(); err != nil {
+		return ApplyStats{}, err
+	}
+	t.noteApplied(last)
+	// Through the grace, not unlinked: the snapshot published a moment ago
+	// names these, and a reader that started on it is entitled to finish.
+	t.discard(a.doomed)
+	a.stats.AppliedLSN = last
+	return a.stats, nil
+}
+
+// add folds one change into the chunk being accumulated.
+func (a *applyRun) add(c changestream.Change) error {
+	t := a.t
+	a.any = true
+	switch c.Op {
+	case changestream.OpInsert, changestream.OpUpdate:
+		k := t.keyOf(c.Row[t.Key])
+		if !a.queued[k] {
+			a.queued[k] = true
+			a.order = append(a.order, k)
+		}
+		// An earlier change to the same key in this batch is the better
+		// base than anything on disk, so merge onto it. A column absent
+		// from BOTH is filled from the mirror afterwards.
+		if prev, seen := a.upserts[k]; seen {
+			merged := make(map[string]any, len(t.Order))
+			for name, v := range prev {
+				merged[name] = v
+			}
+			for name, v := range c.Row {
+				merged[name] = v
+			}
+			a.upserts[k] = merged
+		} else {
+			a.upserts[k] = c.Row
+		}
+		delete(a.deletes, k)
+	case changestream.OpDelete:
+		k := t.keyOf(c.Key[t.Key])
+		a.deletes[k] = true
+		delete(a.upserts, k)
+	case changestream.OpTruncate:
+		a.truncate()
+	}
+	a.n++
+	return nil
+}
+
+// truncate empties the mirror for a TRUNCATE on the source, in memory only.
+//
+// Table.truncate writes the empty manifest at once, which is right for a
+// snapshot and wrong here: the rows the transaction goes on to insert would
+// then appear some time after the table had visibly emptied, which is a state
+// the source never had. So the files are forgotten, not removed, and the
+// manifest is left alone; the one written at the end of Apply names whatever
+// the transaction left, and only then are the old files deleted — the same
+// order Table.truncate keeps, for the same reason.
+//
+// Everything on disk at this moment is doomed, including delta files written
+// by earlier chunks of this same transaction: TRUNCATE supersedes those too.
+func (a *applyRun) truncate() {
+	t := a.t
+	a.doomed = append(a.doomed, t.allFiles()...)
+	t.forgetFiles()
+	// What this transaction goes on to write came from the stream, not from
+	// the files it just emptied: without this the manifest written at the end
+	// of the Apply would see legacy files disappear and new ones appear, take
+	// the one for the other's inputs (stampFormats), and a table with no
+	// legacy file left would stay flagged for a rebuild.
+	t.fmtPrev = map[string]int{}
+	t.deferDead = map[fileID]*deadSet{}
+	a.stats = ApplyStats{}
+	a.reset()
+}
+
+// flush lands the accumulated chunk: delta files written, the index moved, and
+// the positions it supersedes collected. It publishes nothing.
+func (a *applyRun) flush() error {
+	t := a.t
+	upserts, order, deletes := a.upserts, a.order, a.deletes
+	a.reset()
+	if len(upserts) == 0 && len(deletes) == 0 {
+		return nil
 	}
 
 	// Drop large values the mirror can prove it already holds. pgoutput omits an
@@ -647,7 +1091,7 @@ func (t *Table) Apply(txns []changestream.Transaction) (ApplyStats, error) {
 	// change that arrived carrying fewer columns.
 	elided, err := t.elideUnchanged(upserts)
 	if err != nil {
-		return ApplyStats{}, err
+		return err
 	}
 
 	// Which of these changes can be stored as they arrived, as a patch on the
@@ -655,15 +1099,20 @@ func (t *Table) Apply(txns []changestream.Transaction) (ApplyStats, error) {
 	// rows. Decided before carry-forward, because carry-forward is the expansion.
 	asPatch, err := t.classifyPartial(upserts)
 	if err != nil {
-		return ApplyStats{}, err
+		return err
 	}
 
 	// Carry forward anything pgoutput did not resend. A large value that an
 	// update did not change arrives as "unchanged TOAST" — the column is simply
 	// absent — and writing NULL for it destroys the data with no error and no
 	// change in row count. Absent means "keep what is there".
+	//
+	// "What is there" is wherever the index says, and for a key an earlier
+	// chunk of this transaction wrote, that is the earlier chunk's delta file:
+	// closed, on disk, and not yet in any manifest, which does not matter to a
+	// read by position.
 	if err := t.carryForward(upserts, asPatch); err != nil {
-		return ApplyStats{}, err
+		return err
 	}
 
 	// Tombstones, in two kinds. A whole-row write supersedes both the row the
@@ -707,7 +1156,7 @@ func (t *Table) Apply(txns []changestream.Transaction) (ApplyStats, error) {
 
 	if len(superseded) > 0 || len(patchDead) > 0 {
 		if err := t.ensureIndex(); err != nil {
-			return ApplyStats{}, err
+			return err
 		}
 		byFile := map[fileID][]int{}
 		for k := range superseded {
@@ -721,7 +1170,7 @@ func (t *Table) Apply(txns []changestream.Transaction) (ApplyStats, error) {
 			}
 		}
 		if err := t.markDead(byFile); err != nil {
-			return ApplyStats{}, err
+			return err
 		}
 		// A deleted key has no current location. Leaving it in the index would
 		// make a later re-insert of the same key tombstone the wrong row.
@@ -738,17 +1187,45 @@ func (t *Table) Apply(txns []changestream.Transaction) (ApplyStats, error) {
 	}
 	if len(upserts) > 0 {
 		if err := t.writeUpserts(order, upserts, asPatch); err != nil {
-			return ApplyStats{}, err
+			return err
 		}
 		// After the writes, so the locations the hashes attach to are current.
 		t.noteHashes(upserts, asPatch, elided)
 	}
-
-	t.State.AppliedLSN = last
-	if err := t.saveState(); err != nil {
-		return ApplyStats{}, err
+	a.stats.Upserts += len(upserts)
+	a.stats.Deletes += len(deletes)
+	if t.afterChunk != nil {
+		t.afterChunk()
 	}
-	return ApplyStats{Upserts: len(upserts), Deletes: len(deletes), AppliedLSN: last}, nil
+	return nil
+}
+
+// removeOrphanDeltas deletes delta files a crashed Apply left behind, once per
+// process, before this process writes any.
+//
+// A large transaction writes its delta files chunk by chunk and names them in
+// the manifest only at the end, so a crash in between leaves files nothing
+// refers to. They are recognisable without guessing: a delta file's name is a
+// sequence number, the manifest holds the highest one ever committed, and
+// nothing with a higher number can have been written by anything but an Apply
+// (or a delta merge) that did not reach its manifest. The replay usually
+// overwrites them name for name; this is for the ones it does not.
+func (t *Table) removeOrphanDeltas() {
+	if t.sweptOrphans || t.detached {
+		return
+	}
+	t.sweptOrphans = true
+	entries, _ := os.ReadDir(filepath.Join(t.Dir, "delta"))
+	for _, e := range entries {
+		n, err := strconv.Atoi(trimParquet(e.Name()))
+		if err != nil || n <= t.State.Seq || contains(t.State.DeltaFiles, e.Name()) {
+			continue
+		}
+		_ = os.Remove(filepath.Join(t.Dir, "delta", e.Name()))
+		for _, m := range t.dvGlob("delta/" + e.Name()) {
+			_ = os.Remove(m)
+		}
+	}
 }
 
 // carryForward fills columns that a change did not carry, from the row the
@@ -956,23 +1433,34 @@ func (t *Table) writeParquetCols(path string, rows []map[string]any,
 	cols []string, durable bool,
 ) error {
 	// cols == nil means "every column", and it has to be resolved HERE rather
-	// than left to the writer: checkTemporal walks the list it is given, and a
+	// than left to the writer: the check walks the list it is given, and a
 	// nil list checks nothing at all. That is not hypothetical — a whole-row
 	// write passes nil, which is most writes, so the check silently covered
 	// only the column-partial ones until a test caught it.
 	if cols == nil {
 		cols = t.Order
 	}
-	// A value Arrow cannot hold is caught BEFORE anything is written, so the
-	// mirror halts with the file untouched rather than half a batch on disk.
-	if err := t.checkTemporal(rows, cols); err != nil {
-		return err
+	cols = t.fileCols(cols)
+	// A value the column cannot hold is caught BEFORE anything is written, so
+	// the mirror halts with the file untouched rather than half a batch on
+	// disk. The check is the conversion (values.go), so its result is what the
+	// writer is handed and nothing is parsed a second time.
+	vals, err := t.storableRows(t.arrowSchemaFor(cols), cols, rows)
+	if errors.Is(err, errCompanionDropped) {
+		// A join domain tripped part-way through this batch (joindomain.go).
+		// The batch is converted again without the companion columns, so the
+		// file carries none: no row gets a NULL companion for a value it has.
+		cols = t.fileCols(cols)
+		vals, err = t.storableRows(t.arrowSchemaFor(cols), cols, rows)
 	}
-	w, err := t.newParquetWriter(path, cols, durable)
 	if err != nil {
 		return err
 	}
-	if err := w.Append(rows); err != nil {
+	w, err := t.newParquetWriterLaid(path, cols, durable, len(vals))
+	if err != nil {
+		return err
+	}
+	if err := w.appendStorable(vals); err != nil {
 		w.Close()
 		return err
 	}
@@ -981,89 +1469,6 @@ func (t *Table) writeParquetCols(path string, rows []map[string]any,
 
 func (t *Table) writeParquet(path string, rows []map[string]any) error {
 	return t.writeParquetCodec(path, rows, true)
-}
-
-func appendValue(b array.Builder, dt arrow.DataType, v any) {
-	if v == nil {
-		b.AppendNull()
-		return
-	}
-	switch bb := b.(type) {
-	case *array.TimestampBuilder:
-		k := kindTimestamp
-		if tt, ok := dt.(*arrow.TimestampType); ok && tt.TimeZone != "" {
-			k = kindTimestampTZ
-		}
-		appendTemporal(bb.Append, arrow.Timestamp(0), k, v, bb.AppendNull)
-	case *array.Date32Builder:
-		appendTemporal(bb.Append, arrow.Date32(0), kindDate, v, bb.AppendNull)
-	case *array.Time64Builder:
-		appendTemporal(bb.Append, arrow.Time64(0), kindTime, v, bb.AppendNull)
-	case *array.MonthDayNanoIntervalBuilder:
-		// Not appendTemporal: that helper is generic over one integer, and an
-		// interval is three. See interval.go.
-		s, ok := v.(string)
-		if !ok {
-			s = fmt.Sprint(v)
-		}
-		if iv, ok := parseInterval(s); ok {
-			bb.Append(iv)
-		} else {
-			bb.AppendNull()
-		}
-	case *array.Int64Builder:
-		if str, ok := v.(string); ok {
-			if n, err := strconv.ParseInt(strings.TrimSpace(str), 10, 64); err == nil {
-				bb.Append(n)
-			} else {
-				bb.AppendNull()
-			}
-			return
-		}
-		n, err := strconv.ParseInt(strings.TrimSpace(fmt.Sprint(v)), 10, 64)
-		if err != nil {
-			bb.AppendNull()
-			return
-		}
-		bb.Append(n)
-	case *array.Float64Builder:
-		f, err := strconv.ParseFloat(fmt.Sprint(v), 64)
-		if err != nil {
-			bb.AppendNull()
-			return
-		}
-		bb.Append(f)
-	case *array.BooleanBuilder:
-		switch x := v.(type) {
-		case bool:
-			bb.Append(x)
-		default:
-			s := strings.ToLower(fmt.Sprint(v))
-			bb.Append(s == "t" || s == "true" || s == "1")
-		}
-	case *array.Decimal128Builder:
-		d := dt.(*arrow.Decimal128Type)
-		sv, ok := v.(string)
-		if !ok {
-			sv = fmt.Sprint(v)
-		}
-		dec, err := decimal128.FromString(sv, d.Precision, d.Scale)
-		if err != nil {
-			bb.AppendNull()
-			return
-		}
-		bb.Append(dec)
-	case *array.StringBuilder:
-		// pgoutput delivers every value as text, so this is the hot path and
-		// fmt.Sprint on an interface holding a string is pure overhead.
-		if str, ok := v.(string); ok {
-			bb.Append(str)
-			return
-		}
-		bb.Append(fmt.Sprint(v))
-	default:
-		b.AppendNull()
-	}
 }
 
 // markDead marks the previous rows for the given keys dead, wherever they
@@ -1076,21 +1481,53 @@ func appendValue(b array.Builder, dt arrow.DataType, v any) {
 // throughput collapsed as the table grew (docs/18). Marking a position dead is
 // O(1) per key, and the file it lives in is never rewritten.
 //
+// The VECTOR is rewritten, though, and that sentence used to hide a third cost
+// of the same kind: the previous generation was read back from disk into a map
+// and sorted on every call, so a thousand deletes cost 3.5 ms with 7,000 rows
+// already dead in the file and 590 ms with two million. The dead set is now
+// held in memory (dvcache.go) and only the write remains.
+//
 // Each call publishes a NEW deletion-vector generation rather than overwriting
 // the one a reader may be holding; see State.DVGen. The generation two back is
 // removed, which leaves any reader a full write cycle of grace and turns the
 // remaining case into a retry rather than a wrong answer.
 func (t *Table) markDead(byFile map[fileID][]int) error {
+	if t.deferDead != nil {
+		// Inside Apply: collect, and publish once when the whole batch is
+		// written (see Apply). A generation per chunk would retire one the
+		// manifest on disk still names.
+		for id, positions := range byFile {
+			set := t.deferDead[id]
+			if set == nil {
+				set = &deadSet{}
+				t.deferDead[id] = set
+			}
+			for _, p := range positions {
+				set.add(p)
+			}
+		}
+		return nil
+	}
 	for id, positions := range byFile {
 		rel := id.name()
-		existing, err := t.deadPositions(rel)
+		set, err := t.deadSetFor(rel)
 		if err != nil {
 			return err
 		}
+		added := 0
 		for _, p := range positions {
-			existing[p] = true
+			if set.add(p) {
+				added++
+			}
 		}
-		merged := dvSorted(existing)
+		if added == 0 {
+			// Nothing this generation does not already say. A new one would be
+			// the same file under a new name, and would retire a generation
+			// some reader is holding in exchange for nothing.
+			continue
+		}
+		t.lastChange = t.now()
+		merged := set.positions()
 
 		stem := dvStem(rel)
 		gen := t.State.DVGen[stem] + 1
@@ -1098,18 +1535,22 @@ func (t *Table) markDead(byFile map[fileID][]int) error {
 		// goroutine may open the instant it appears, and a truncate-then-write
 		// leaves a window where it parses as nothing — which reads as "nothing
 		// is dead" and undoes every delete in the file.
-		if err := writeDV(t.dvPathGen(rel, gen), merged); err != nil {
+		if err := t.writeDV(t.dvPathGen(rel, gen), merged); err != nil {
+			// The set in memory is now ahead of anything on disk. Drop it, so
+			// the next caller reloads what the manifest actually names.
+			t.forgetDead(rel)
 			return err
 		}
 		if t.State.DVGen == nil {
 			t.State.DVGen = map[string]int{}
 		}
 		t.State.DVGen[stem] = gen
+		set.gen = gen
 		if gen > 2 {
 			// Both encodings, because the generation being retired here may
 			// predate the format change.
 			for _, ext := range dvExts {
-				_ = os.Remove(filepath.Join(t.Dir, "dv",
+				t.retire(filepath.Join(t.Dir, "dv",
 					fmt.Sprintf("%s.%09d.dv%s", stem, gen-2, ext)))
 			}
 		}
@@ -1117,18 +1558,99 @@ func (t *Table) markDead(byFile map[fileID][]int) error {
 	return nil
 }
 
+// truncate empties the mirror, for a TRUNCATE on the source.
+//
+// Two things here are about ordering.
+//
+// A background rewrite in flight is ABORTED first. Its output lives under
+// base/, which is about to be emptied, and it folds in rows the source no
+// longer has; left alone, the next FinishCompaction installed a manifest naming
+// a file this function had deleted, over a table that had since moved on, and
+// the mirror was unreadable from then until someone rebuilt it. The same holds
+// for a rewrite that has finished but not been swapped in.
+//
+// And the EMPTY MANIFEST is written before the files are removed, not after.
+// The old manifest names those files; deleting them first leaves a window in
+// which a crash produces a manifest pointing at nothing. Written first, a
+// crash leaves an empty table at the previous watermark, and replay from there
+// arrives at the TRUNCATE again.
 func (t *Table) truncate() error {
-	for _, sub := range []string{"base", "delta", "dv", "index"} {
-		entries, _ := os.ReadDir(filepath.Join(t.Dir, sub))
-		for _, e := range entries {
-			_ = os.Remove(filepath.Join(t.Dir, sub, e.Name()))
-		}
+	t.forgetFiles()
+	if err := t.saveState(); err != nil {
+		return err
 	}
+	t.removeAllFiles()
+	return nil
+}
+
+// forgetFiles abandons any rewrite in flight and clears every in-memory record
+// of the files the mirror holds. It removes nothing from disk.
+func (t *Table) forgetFiles() {
+	t.AbortCompaction()
 	t.State.BaseFiles, t.State.DeltaFiles = nil, nil
 	t.State.BaseRows, t.State.DeltaRows = 0, 0
 	t.State.PartialCols, t.State.FileRows, t.State.DVGen = nil, nil, nil
+	t.index.close()
 	t.index, t.patch, t.partialCols = nil, nil, nil
-	return nil
+	t.resetDead()
+}
+
+// removeAllFiles deletes every data file, vector and index on disk. An aborted
+// rewrite may still be writing its output under base/; unlinking it is
+// harmless, and AbortCompaction removes it again when the goroutine ends in
+// case it was created after this ran.
+func (t *Table) removeAllFiles() {
+	for _, path := range t.allFiles() {
+		t.discardOne(path)
+	}
+}
+
+// allFiles lists every data file, vector and index on disk right now.
+func (t *Table) allFiles() []string {
+	var out []string
+	for _, sub := range []string{"base", "delta", "dv", "index"} {
+		entries, _ := os.ReadDir(filepath.Join(t.Dir, sub))
+		for _, e := range entries {
+			out = append(out, filepath.Join(t.Dir, sub, e.Name()))
+		}
+	}
+	return out
+}
+
+// discard removes files listed EARLIER (allFiles) now that a manifest which
+// replaces them is durable. Data files and vectors are retired, so they
+// outlive the snapshot that named them by the grace; an index is read by
+// nobody but this process and is unlinked.
+//
+// Anything the manifest names NOW is skipped. The list was taken before the
+// replacement was written, and a name on it can have been written again since
+// (a crash's leftover at the next sequence number is the usual one).
+func (t *Table) discard(paths []string) {
+	keep := map[string]bool{}
+	for _, rel := range t.manifestFiles() {
+		keep[filepath.Join(t.Dir, rel)] = true
+	}
+	for _, b := range t.State.BaseFiles {
+		keep[t.kidxPath(b)] = true
+	}
+	for _, path := range paths {
+		if !keep[path] {
+			t.discardOne(path)
+		}
+	}
+}
+
+func (t *Table) discardOne(path string) {
+	sub := filepath.Base(filepath.Dir(path))
+	// An index is read by nobody but this process. And a file no manifest can
+	// have named — a failed Apply's chunks, swept up here by a rebuild — has no
+	// reader to wait for and a name the next write will take: it is never
+	// handed to the publisher. See the invariant in publish.go.
+	if sub == "index" || t.neverNamed(sub, filepath.Base(path)) {
+		_ = os.Remove(path)
+		return
+	}
+	t.retire(path)
 }
 
 // Compact folds base + deltas into one base file with deletion vectors applied,
@@ -1142,9 +1664,15 @@ func (t *Table) Compact() (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	if err := t.truncate(); err != nil {
+	// The one refusal that is not a halt (nullability.go) is made before the
+	// files these rows came from are removed: after it, they are all there is.
+	if err := t.checkNotNull(rows); err != nil {
 		return 0, err
 	}
+	// Not truncate(): that persists an empty manifest, and these rows are only
+	// in memory until the write below.
+	t.forgetFiles()
+	t.removeAllFiles()
 	t.State.Seq++
 	name := fmt.Sprintf("%06d.parquet", t.State.Seq)
 	if err := t.writeParquet(filepath.Join(t.Dir, "base", name), rows); err != nil {
@@ -1155,21 +1683,27 @@ func (t *Table) Compact() (int, error) {
 	t.State.BaseRows = len(rows)
 	t.State.DeltaRows = 0
 
-	t.index = newKeyIndex(len(rows))
 	// Every patch has just been folded into the whole rows above.
 	t.patch = newKeyIndex(0)
 	t.rebuildPartialCols()
-	id := baseID(name)
+	// The base file's keys go to its index file (kidx.go), not into a map.
+	// Live() returned one row per key, so there are no duplicates to mark.
+	kb := t.newKidxBuilder(name, len(rows), true)
 	for i, r := range rows {
-		k := t.keyOf(r[t.Key])
-		l := loc{File: id, Pos: int32(i)}
+		var h uint64
 		if t.elideWorked {
-			l.Hash, _ = largeHash(r, t.Order)
+			h, _ = largeHash(r, t.Order)
 		}
-		t.index.set(k, l)
+		if err := kb.add(t.keyOf(r[t.Key]), int32(i), h, false); err != nil {
+			kb.abort()
+			return 0, err
+		}
 	}
-	// No index/<stem>.idx.json. See dropIndexJSON.
-	t.dropIndexJSON(name)
+	x, _, _, err := kb.finish()
+	if err != nil {
+		return 0, err
+	}
+	t.index = x
 	return len(rows), t.saveState()
 }
 
@@ -1282,21 +1816,47 @@ func (t *Table) mergeGroup(old []string, cols []string) (int, error) {
 		kept = append(kept, d)
 	}
 
-	var rows []map[string]any
+	// THE ROWS ARE NOT HELD. This used to read every row of every file into one
+	// slice of maps, drop the superseded ones, and write the slice: memory in
+	// proportion to the deltas, which at the churn trigger is a fifth of the
+	// TABLE. On a three-million-row table that was a 500,000-row merge and
+	// 780 MB resident, in a sidecar whose default limit is 256Mi and whose
+	// steady state fits in it.
+	//
+	// So it is two passes over files that do not change. The first reads the
+	// key column alone and records, for each key, which live row is its last.
+	// The second streams whole rows a few thousand at a time straight into the
+	// merged file, keeping exactly those. What is held is the keys — the same
+	// map the dedupe below always built — and one piece of one row group.
+	type source struct {
+		path string
+		dead map[int]bool
+	}
+	var sources []source
 	for _, d := range old {
 		rel := filepath.Join("delta", d)
 		dead, derr := t.deadPositions(rel)
 		if derr != nil {
 			return 0, derr
 		}
-		got, err := t.readParquetCols(filepath.Join(t.Dir, rel), dead, cols)
-		if err != nil {
-			if os.IsNotExist(err) {
-				continue
+		sources = append(sources, source{filepath.Join(t.Dir, rel), dead})
+	}
+	// lastAt is, per key, the ordinal of its last live row among the files in
+	// order; in the second pass it becomes the row's position in the merged
+	// file, stored as -1-position so the two cannot be confused.
+	lastAt := map[rowKey]int{}
+	nRows := 0
+	for _, s := range sources {
+		err := t.forEachRowGroup(s.path, s.dead, []string{t.Key}, func(keys []map[string]any, _ int) error {
+			for _, r := range keys {
+				lastAt[t.keyOf(r[t.Key])] = nRows
+				nRows++
 			}
+			return nil
+		})
+		if err != nil && !os.IsNotExist(err) {
 			return 0, err
 		}
-		rows = append(rows, got...)
 	}
 	// DEDUPE. A merge concatenates the live rows of several files, and if a key
 	// is live in two of them both copies land in the merged file — where
@@ -1323,21 +1883,7 @@ func (t *Table) mergeGroup(old []string, cols []string) (int, error) {
 	// This is deliberately a fix at the MERGE rather than at whatever let a key
 	// be live in two files. A merge that cannot express "this row is dead"
 	// must not create the situation that needs it, however the input arose.
-	lastAt := make(map[rowKey]int, len(rows))
-	for i, r := range rows {
-		lastAt[t.keyOf(r[t.Key])] = i
-	}
-	if len(lastAt) != len(rows) {
-		deduped := make([]map[string]any, 0, len(lastAt))
-		for i, r := range rows {
-			if lastAt[t.keyOf(r[t.Key])] == i {
-				deduped = append(deduped, r)
-			}
-		}
-		rows = deduped
-	}
-
-	if len(rows) == 0 {
+	if len(lastAt) == 0 {
 		// everything in them was superseded; just drop the files, and the
 		// placeholder with them since no file takes their place
 		for _, d := range old {
@@ -1358,7 +1904,42 @@ func (t *Table) mergeGroup(old []string, cols []string) (int, error) {
 	t.State.Seq++
 	name := fmt.Sprintf("%06d.parquet", t.State.Seq)
 	rel := filepath.Join("delta", name)
-	if err := t.writeParquetCols(filepath.Join(t.Dir, rel), rows, cols, false); err != nil {
+	w, err := t.newParquetWriterFor(filepath.Join(t.Dir, rel), cols, false, len(lastAt))
+	if err != nil {
+		return 0, err
+	}
+	ord, written := 0, 0
+	keep := make([]map[string]any, 0, rowChunk)
+	for _, s := range sources {
+		isDead := func(p int) bool { return s.dead[p] }
+		err = t.forEachRows(s.path, isDead, cols, rowChunk, func(rows []map[string]any, _ int) error {
+			keep = keep[:0]
+			for _, r := range rows {
+				k := t.keyOf(r[t.Key])
+				if lastAt[k] == ord {
+					keep = append(keep, r)
+					lastAt[k] = -1 - written
+					written++
+				}
+				ord++
+			}
+			return w.Append(keep)
+		})
+		if err != nil && !os.IsNotExist(err) {
+			break
+		}
+		err = nil
+	}
+	if cerr := w.Close(); err == nil {
+		err = cerr
+	}
+	if err == nil && (ord != nRows || written != len(lastAt)) {
+		err = fmt.Errorf("delta merge: the files changed between passes (%d rows then %d, %d of %d keys written)",
+			nRows, ord, written, len(lastAt))
+	}
+	if err != nil {
+		// No manifest names it, and none will.
+		_ = os.Remove(filepath.Join(t.Dir, rel))
 		return 0, err
 	}
 	// The new file is written before the old ones are removed and before the
@@ -1368,9 +1949,8 @@ func (t *Table) mergeGroup(old []string, cols []string) (int, error) {
 	if cols != nil {
 		target = t.patch
 	}
-	for i, r := range rows {
-		k := t.keyOf(r[t.Key])
-		target.set(k, loc{File: id, Pos: int32(i)})
+	for k, at := range lastAt {
+		target.set(k, loc{File: id, Pos: int32(-1 - at)})
 		// A merge moves keys too, and a rewrite in flight has to know. Patches
 		// never move during a rewrite (they only exist inside its snapshot,
 		// which mergeableDeltas excludes), so this is a whole-row question.
@@ -1389,7 +1969,7 @@ func (t *Table) mergeGroup(old []string, cols []string) (int, error) {
 		}
 	}
 	t.State.DeltaFiles = merged
-	t.noteDeltaFile(name, len(rows), cols)
+	t.noteDeltaFile(name, written, cols)
 	t.recountDeltaRows()
 	if err := t.saveState(); err != nil {
 		return 0, err
@@ -1397,7 +1977,7 @@ func (t *Table) mergeGroup(old []string, cols []string) (int, error) {
 	for _, d := range old {
 		t.removeDataFile(filepath.Join("delta", d))
 	}
-	return len(rows), nil
+	return written, nil
 }
 
 // Compaction policy constants. Both bounds exist because the two costs they
@@ -1432,7 +2012,7 @@ const (
 func (t *Table) ShouldCompact() bool { return t.CompactReason() != "" }
 
 // CompactReason is ShouldCompact with the answer attached: "" for no, otherwise
-// which of the two triggers pulled.
+// which of the three triggers pulled — "churn", "dead-fraction" or "idle".
 //
 // It exists because an A/B of QS_COMPACT_DEAD_FRACTION measured nothing and did
 // not say so. Six runs across three shapes came back with identical compaction
@@ -1445,19 +2025,59 @@ func (t *Table) ShouldCompact() bool { return t.CompactReason() != "" }
 // In production it answers the same question for an operator staring at a
 // rewrite: a base rewrite is the most expensive thing this process does, and
 // "why now" should not require reading this function.
-func (t *Table) CompactReason() string {
-	if len(t.State.DeltaFiles) == 0 {
+//
+// It is meant to be asked on EVERY tick, idle ones included, and is cheap
+// enough to be: the only thing it ever read from disk was the base's deletion
+// vector, and that is now a count held in memory (dvcache.go).
+//
+// The three triggers, in the order they are tried:
+//
+//   - churn: the deltas hold a fifth of the base. Sized by what the rewrite
+//     costs; see compactChurnRatio.
+//   - dead-fraction: a fifth of the base is dead. The same bound for a workload
+//     that deletes without writing, which churn cannot see at all.
+//   - idle: the base carries a vector and nothing has been written for a while.
+//     Sized by what the vector costs READERS; see CompactIdleSeconds.
+//
+// The first two bound how much a busy table carries. Only the third bounds how
+// LONG a quiet one carries it, and it is the one that was missing.
+//
+// This is the three triggers; CompactReason itself (compact_cluster.go) asks
+// them first and then whether the base wants re-clustering.
+func (t *Table) compactReason() string {
+	t.noteActivity()
+	if !t.retryAt.IsZero() && t.now().Before(t.retryAt) {
 		return ""
 	}
-	threshold := t.State.BaseRows / compactChurnRatio
-	if threshold < compactMinRows {
-		threshold = compactMinRows
+	// A column QS_NUMERIC_SCALE was accepted for is still text in files
+	// written before it was; only a rewrite converts them (numeric_optin.go).
+	if t.numericRewriteDue() {
+		return "numeric-opt-in"
 	}
-	if t.State.DeltaRows >= threshold {
-		return "churn"
+	if len(t.State.DeltaFiles) > 0 {
+		threshold := t.State.BaseRows / compactChurnRatio
+		if threshold < compactMinRows {
+			threshold = compactMinRows
+		}
+		if t.State.DeltaRows >= threshold {
+			return "churn"
+		}
 	}
-	if t.baseVectorTooExpensive() {
+	// Everything below is about the base's deletion vector, and does not need a
+	// delta file to exist: a workload of pure deletes writes none, and used to
+	// leave here on the first line with a vector that could only ever grow.
+	dead, err := t.baseDead()
+	if err != nil || dead == 0 {
+		// A vector we cannot read is not a reason to rewrite the table. The
+		// read path will raise ErrStaleManifest and retry, which is a better
+		// answer than a compaction started on a guess.
+		return ""
+	}
+	if t.baseVectorTooExpensive(dead) {
 		return "dead-fraction"
+	}
+	if t.idleWithBaseVector() {
+		return "idle"
 	}
 	return ""
 }
@@ -1487,66 +2107,137 @@ func (t *Table) CompactReason() string {
 // ceiling in any useful sense. What matters is how long the base is allowed to
 // carry a vector at all, and the only thing that removes one is a rewrite.
 //
-// WHY IT IS OFF BY DEFAULT. The same measurement says the penalty is a property
-// of NARROW rows, because the anti-join is per-row while the scan it competes
-// with is per-byte:
+// That is why the fraction is NOT the lever for read cost, and why it is no
+// longer asked to be. The same measurement says the penalty is a property of
+// NARROW rows, because the anti-join is per-row while the scan it competes with
+// is per-byte:
 //
 //	shape       bytes/row   column scan   penalty at 1% dead
 //	narrow              6        1.0 ms       13.9 ms  14.5x
 //	wide               27        1.1 ms        7.8 ms   6.9x
 //	jsonb            1692      238.3 ms        2.0 ms  <0.01x
 //
-// On jsonb the vector is a rounding error, so compacting sooner would buy that
-// shape nothing and cost it a full rewrite.
-//
-// It used to say the rest was an unmeasured throughput change, to be defaulted
-// on once an A/B said what it costs the write path. That A/B has now run —
-// three shapes, six paired runs on a quiet machine — and the answer is not a
-// cost. It is that this trigger BARELY FIRES:
+// so a small fraction would buy the narrow shape a factor of two or three at
+// most and cost every shape a rewrite per few percent of the table — at 1%,
+// twenty times the rewriting the churn trigger settled on. The A/B at 0.01
+// (three shapes, six paired runs) then found the trigger barely fired anyway,
+// because churn was tested first and any workload deleting enough to fill a
+// vector was usually writing enough to clear that bar:
 //
 //	shape      frac=0            frac=0.01
 //	deletes    6 churn           5 churn + 1 dead-fraction
 //	jsonb      3 churn           3 churn
 //	churn      no compaction     no compaction
 //
-// Same total number of rewrites either way. ShouldCompact tests churn first and
-// returns early, so this only gets a say while DeltaRows is below
-// max(BaseRows/5, 25k) — and any workload that deletes enough to fill a vector
-// is usually also writing enough to clear that bar. Sixty seconds of workload
-// across three shapes moved one rewrite slightly earlier.
+// WHAT IT DEFAULTS TO NOW, AND WHY THAT IS NOT A SCHEDULE CHANGE. It used to be
+// off, with the gap named honestly: the case it was designed for is a base that
+// fills with dead rows while its deltas stay small — deletes without
+// accompanying writes — and no shape in bench/scripts/workload_matrix.sh
+// produced that. The purge shape was added to produce it, and did
+// (bench/results/workload_matrix_purge.txt): a 400,000-row base with 100,800
+// dead and zero compactions, count(*) at 15.1 ms against 5.7 ms rewritten.
+// Off, that workload has NO trigger at all: no delta rows means no churn, and
+// CompactReason used to return before even looking when there were no delta
+// files, so a table that only ever deleted kept every row it had ever held and
+// a vector naming most of them.
 //
-// Which means the throughput numbers that A/B produced — drain rate within
-// 0.5%, CPU per row-change identical — are two runs of the same behaviour, and
-// would have read exactly like a knob that is free. The trigger reason is now
-// logged (CompactReason) precisely so that "costs nothing" and "does nothing"
-// stop looking alike.
+// The default is now 1/compactChurnRatio, the SAME fifth the churn trigger
+// uses, above the same compactMinRows floor. That number was chosen for what a rewrite costs — five rows rewritten
+// per row changed, amortised — and a dead base row is a changed row whether or
+// not a replacement was written for it. For any workload that updates, the two
+// reach a fifth together (each update is one dead position and one delta row)
+// and churn is tested first, so nothing about its schedule moves; that is the
+// A/B above, read the other way. Only the delete-only workload gets a rewrite
+// it did not have, at the price already accepted for everything else.
 //
-// So it stays off, for a better reason than before, and the honest gap is
-// named: the case it was designed for is a mirror whose base fills with dead
-// rows while its deltas stay small — deletes without accompanying writes — and
-// no shape in bench/scripts/workload_matrix.sh produces that. Defaulting it on
-// would be trading a measured read win for an unmeasured schedule change on a
-// shape nobody has run.
-var CompactDeadFraction = envFloat("QS_COMPACT_DEAD_FRACTION", 0)
+// A rewrite also cannot retrigger this on its own: the new base holds only live
+// rows, so the fraction restarts from whatever died during the rewrite.
+//
+// Set QS_COMPACT_DEAD_FRACTION=0 to turn it off, or lower to trade rewrites for
+// a shorter vector under sustained deletes.
+var CompactDeadFraction = envFloat("QS_COMPACT_DEAD_FRACTION", 1.0/compactChurnRatio)
 
-func (t *Table) baseVectorTooExpensive() bool {
-	if CompactDeadFraction <= 0 || t.State.BaseRows < compactMinRows {
+func (t *Table) baseVectorTooExpensive(dead int) bool {
+	if CompactDeadFraction <= 0 {
 		return false
 	}
-	dead := 0
-	for _, b := range t.State.BaseFiles {
-		if gen := t.State.DVGen[dvStem(b)]; gen != 0 {
-			d, err := t.readDV(t.dvPathGenAny(filepath.Join("base", b), gen), b)
-			if err != nil {
-				// A vector we cannot read is not a reason to rewrite the table.
-				// The read path will raise ErrStaleManifest and retry, which is
-				// a better answer than a compaction started on a guess.
-				return false
-			}
-			dead += len(d)
-		}
+	// The same floor as churn, for the same reason, and so that the two stay
+	// the same bound: without it a 30,000-row table was rewritten by this
+	// trigger at 6,000 updates when churn would have waited for 25,000.
+	threshold := float64(t.State.BaseRows) * CompactDeadFraction
+	if threshold < compactMinRows {
+		threshold = compactMinRows
 	}
-	return float64(dead) >= float64(t.State.BaseRows)*CompactDeadFraction
+	return float64(dead) >= threshold
+}
+
+// CompactIdleSeconds is how long a table must go unwritten before a base that
+// carries a deletion vector is rewritten to get rid of it. Zero turns it off.
+//
+// This is the trigger the measurements above were asking for. If the cost is
+// the step from no vector to any vector, the quantity to bound is not how many
+// rows are dead but HOW LONG the base carries a vector — and under the two
+// triggers above that was unbounded. A 10M-row mirror that had 8% of its rows
+// updated or deleted and then went quiet sat at 700,000 dead and four deltas,
+// under both thresholds, with
+//
+//	count(*)              3 ms  ->  332 ms
+//	count by status      19 ms  ->  112 ms
+//	sum                  37 ms  ->  127 ms
+//
+// for as long as nobody wrote another 12% of the table. And it could not have
+// fired even with a threshold to cross, because the triggers were only
+// evaluated on a tick that applied something: the moment a mirror has spare
+// capacity to rewrite was exactly the moment it stopped asking whether to.
+//
+// WHY IDLENESS AND NOT A TIMER. A rewrite is O(table), and the comments at the
+// top of this block are about what happens when its trigger scales with
+// anything else. "The vector is N seconds old" scales with the clock: under
+// steady writes it rewrites the table every N seconds forever, each rewrite
+// landing with a fresh vector for the rows that changed while it ran. Idleness
+// cannot do that. A write to the table resets the clock, so under steady writes
+// this never fires and the schedule is exactly the churn trigger's; when writes
+// stop it fires once, the swap lands a base with no vector, and there is
+// nothing left for it to fire on.
+//
+// The price is that a table written continuously and slowly keeps its vector
+// until a fifth of it has changed. That is the existing behaviour, not a new
+// one, and it is the workload where a rewrite would be stale on arrival.
+//
+// Thirty seconds is long enough that a pause between two batches of one job is
+// not mistaken for the end of it, and short against how long a quiet mirror
+// would otherwise serve the slow answer, which was indefinitely.
+var CompactIdleSeconds = envFloat("QS_COMPACT_IDLE_SECONDS", 30)
+
+// CompactIdleBackoff spaces idle rewrites by what a rewrite costs: after one
+// lands, the idle trigger stays quiet for this many times as long as that
+// rewrite took.
+//
+// It is for the workload idleness alone gets wrong — bursts with gaps just
+// longer than CompactIdleSeconds. Each gap looks idle, so each burst would buy
+// a full rewrite, and on a table whose rewrite takes longer than the gap that
+// is a mirror rewriting continuously for a handful of changed rows: the storm
+// again, arrived at by a different road. Thirty seconds says nothing about the
+// table's size; how long the last rewrite took says exactly that. At 10 the
+// idle trigger can keep the background rewriter busy for at most one part in
+// eleven, whatever the table and whatever the bursts.
+var CompactIdleBackoff = envFloat("QS_COMPACT_IDLE_BACKOFF", 10)
+
+// idleWithBaseVector reports whether the idle trigger should pull. The caller
+// has already established that the base carries a vector.
+func (t *Table) idleWithBaseVector() bool {
+	if CompactIdleSeconds <= 0 {
+		return false
+	}
+	now := t.now()
+	if now.Sub(t.lastChange) < time.Duration(CompactIdleSeconds*float64(time.Second)) {
+		return false
+	}
+	if t.lastCompacted.IsZero() {
+		return true
+	}
+	wait := time.Duration(CompactIdleBackoff * float64(t.lastRewrite))
+	return now.Sub(t.lastCompacted) >= wait
 }
 
 // writeJSON writes atomically: temp file, fsync, rename.
@@ -1558,22 +2249,17 @@ func (t *Table) baseVectorTooExpensive() bool {
 // to life. Background compaction reads these vectors on another goroutine while
 // the apply loop writes them, so the window is not theoretical: it resurrected
 // rows deleted 7 rounds before the rewrite even started.
+//
+// The fsync error is returned, and the directory is synced after the rename.
 func writeJSON(path string, v any) error {
 	b, err := json.Marshal(v)
 	if err != nil {
 		return err
 	}
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, b, 0o644); err != nil {
+	if err := writeFileAtomic(path, b); err != nil {
 		return err
 	}
-	f, err := os.Open(tmp)
-	if err != nil {
-		return err
-	}
-	_ = f.Sync()
-	_ = f.Close()
-	return os.Rename(tmp, path)
+	return syncDir(filepath.Dir(path))
 }
 
 func trimParquet(name string) string { return strings.TrimSuffix(name, ".parquet") }

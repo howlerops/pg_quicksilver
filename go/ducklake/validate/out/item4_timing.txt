@@ -1,0 +1,20 @@
+== 39702d4: /var/lib/postgresql/qslake2/item4/base/public.t/base/000021.parquet
+   status: ('status', 'RLE_DICTIONARY, PLAIN, RLE', 'ZSTD', 31, 5608)
+   rows: 2000000
+== head: /var/lib/postgresql/qslake2/item4/head/public.t/base/000021.parquet
+   status: ('status', 'RLE_DICTIONARY, PLAIN, RLE', 'ZSTD', 31, 5608)
+   rows: 2000000
+round 1 39702d4: best-of-10 9.00 ms
+round 1 head: best-of-10 8.68 ms
+round 2 39702d4: best-of-10 8.63 ms
+round 2 head: best-of-10 8.50 ms
+round 3 39702d4: best-of-10 8.70 ms
+round 3 head: best-of-10 10.03 ms
+round 4 39702d4: best-of-10 14.05 ms
+round 4 head: best-of-10 8.83 ms
+round 5 39702d4: best-of-10 8.67 ms
+round 5 head: best-of-10 8.71 ms
+
+39702d4: best 8.63 ms, median of rounds 8.70 ms, rounds [9.0, 8.63, 8.7, 14.05, 8.67]
+head: best 8.50 ms, median of rounds 8.71 ms, rounds [8.68, 8.5, 10.03, 8.83, 8.71]
+ratio head/39702d4 of medians: 1.001

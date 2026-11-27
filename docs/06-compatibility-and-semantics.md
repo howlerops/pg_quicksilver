@@ -97,7 +97,7 @@ for C.
 
 **Design rule:** mirroring is **opt-in per table** (`tables:` / `exclude:` in the plugin
 parameters) and the plugin must **refuse to mirror tables whose types it cannot faithfully
-represent**, loudly, at admission time. A table that is silently mirrored with lossy types
+represent**, loudly, in `.status.pluginStatus` (the operator does not ask the plugin at admission). A table that is silently mirrored with lossy types
 is worse than one that isn't mirrored at all.
 
 ---

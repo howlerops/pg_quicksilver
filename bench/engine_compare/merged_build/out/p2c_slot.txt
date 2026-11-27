@@ -1,0 +1,21 @@
+ready_after_s 13.276971540
+19:54:41 restart=4/65DF0D00 confirmed=4/8B7FDA79 head=4/8CA828B0 retained_MB=621 unconfirmed_MB=19 active=true  readyz=200
+mirror applied_lsn: 4/8B7FDA78
+junk in publication: 0
+19:55:03 restart=4/8CA69E30 confirmed=4/8CA98949 head=4/B7833AF8 retained_MB=686 unconfirmed_MB=686 active=true  readyz=200
+19:55:27 restart=4/8CA69E30 confirmed=4/8CA98949 head=4/E25CE160 retained_MB=1371 unconfirmed_MB=1371 active=true  readyz=200
+19:55:51 restart=4/8CA69E30 confirmed=4/8CA98949 head=5/DE336F8 retained_MB=2068 unconfirmed_MB=2068 active=true  readyz=200
+19:56:15 restart=4/8CA69E30 confirmed=4/8CA98949 head=5/38BCDD48 retained_MB=2753 unconfirmed_MB=2753 active=true  readyz=200
+19:56:40 restart=4/8CA69E30 confirmed=4/8CA98949 head=5/6498DA20 retained_MB=3455 unconfirmed_MB=3455 active=true  readyz=200
+19:57:04 restart=5/8F72C930 confirmed=5/8F72C968 head=5/8F72E0B0 retained_MB=0 unconfirmed_MB=0 active=false  readyz=200
+--- sidecar log (no slow-tick lines)
+time=2026-11-25T19:55:52.085Z level=WARN msg="the stream is delivering nothing while this mirror's slot keeps growing, so this is NOT an idle source: readiness will fail once the freshness SLO is exceeded" slot=qs_bench_bench_1 unconfirmed_bytes=2207086263 retained_bytes=2207277520 check="does synchronized_standby_slots name a slot that exists? A missing one makes logical decoding wait forever with no error to any client (docs/15)"
+time=2026-11-25T19:56:07.085Z level=WARN msg="the stream is delivering nothing while this mirror's slot keeps growing, so this is NOT an idle source: readiness will fail once the freshness SLO is exceeded" slot=qs_bench_bench_1 unconfirmed_bytes=2886947839 retained_bytes=2887139096 check="does synchronized_standby_slots name a slot that exists? A missing one makes logical decoding wait forever with no error to any client (docs/15)"
+time=2026-11-25T19:56:22.285Z level=WARN msg="the stream is delivering nothing while this mirror's slot keeps growing, so this is NOT an idle source: readiness will fail once the freshness SLO is exceeded" slot=qs_bench_bench_1 unconfirmed_bytes=3377886903 retained_bytes=3378078160 check="does synchronized_standby_slots name a slot that exists? A missing one makes logical decoding wait forever with no error to any client (docs/15)"
+time=2026-11-25T19:56:37.299Z level=WARN msg="the stream is delivering nothing while this mirror's slot keeps growing, so this is NOT an idle source: readiness will fail once the freshness SLO is exceeded" slot=qs_bench_bench_1 unconfirmed_bytes=3622785239 retained_bytes=3622976496 check="does synchronized_standby_slots name a slot that exists? A missing one makes logical decoding wait forever with no error to any client (docs/15)"
+time=2026-11-25T19:56:52.484Z level=ERROR msg="this mirror is too far behind to be safe: dropping its own slot" slot=qs_bench_bench_1 retained_bytes=4341883656 limit_bytes=4294967296 why="a logical slot pins every WAL segment the consumer has not confirmed, so a mirror that cannot keep up fills the PRIMARY's disk. The mirror will rebuild from a fresh snapshot; the primary keeps serving. Set max_slot_wal_keep_size so PostgreSQL enforces this without us."
+time=2026-11-25T19:56:52.516Z level=WARN msg="dropped this mirror's replication slot to protect the primary; the next start will rebuild from a fresh snapshot" slot=qs_bench_bench_1
+time=2026-11-25T19:56:52.516Z level=ERROR msg="mirror stopped" err="this mirror's replication slot was holding more WAL than the primary can afford" retry_in=1s
+time=2026-11-25T19:56:53.580Z level=INFO msg="new replication slot; bootstrapping by snapshot" at=5/8F72C968
+qs_bench_bench_1 restart=5/8F72C930 active=false
+P2C_DONE

@@ -1,0 +1,1 @@
+f_primary: 120 ALTER TABLE ... ADD COLUMN x1..x120 on the primary in 26.777271860 s, errors=0

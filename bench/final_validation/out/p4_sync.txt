@@ -1,0 +1,6 @@
+sidecar stopped (pid 23460)
+cgroup before: usage 0 max 0
+sidecar pid 19776: start to ready 49.8 s
+VmHWM 321492 kB VmRSS 266072 kB
+cgroup after ready: usage 866914304 max 1073745920 failcnt 30369
+readyz: {"ready":true,"reason":"lag 0.1s within SLO 30.0s","applied_lsn":"2/DB15878","head_lsn":"2/9AA6DF20","lag_bytes":2364901032,"lag_seconds":0.077063467,"compactio

@@ -142,15 +142,49 @@ func setDefault(m map[string]string, k, v string) {
 // gate (internal/health), which is what actually removes a stale node from the
 // endpoint.
 type Status struct {
-	Mode          string   `json:"mode"`
-	Ingest        string   `json:"ingest"`
-	Tables        []string `json:"tables,omitempty"`
-	FreshnessSLO  string   `json:"freshnessSLO"`
+	Mode         string   `json:"mode"`
+	Ingest       string   `json:"ingest"`
+	Tables       []string `json:"tables,omitempty"`
+	FreshnessSLO string   `json:"freshnessSLO"`
+	// Slot is the configured name. Each mirroring Pod's actual slot is this
+	// plus its own Pod name: <slot>_<pod>, sanitised.
 	Slot          string   `json:"slot"`
 	Publication   string   `json:"publication"`
 	MajorVersion  int      `json:"postgresMajorVersion,omitempty"`
 	MirroringPods []string `json:"mirroringPods,omitempty"`
-	Message       string   `json:"message,omitempty"`
+	// State is "valid" or "invalid configuration". It is set on every status
+	// write, so a Cluster that was fixed stops saying it is invalid.
+	State string `json:"state"`
+	// ConfigErrors is why the configuration is invalid. Empty when it is valid.
+	// The operator does not check plugins at admission, so this is the only
+	// place a user sees a misspelled parameter or a missing acknowledgement.
+	ConfigErrors []ConfigError `json:"configErrors,omitempty"`
+	Message      string        `json:"message,omitempty"`
+}
+
+// ConfigError is one problem Validate found, in a form a user can act on.
+type ConfigError struct {
+	Parameter string `json:"parameter"`
+	Value     string `json:"value,omitempty"`
+	Message   string `json:"message"`
+}
+
+const (
+	StateValid         = "valid"
+	StateInvalidConfig = "invalid configuration"
+)
+
+// configErrors converts Validate's output to the status form.
+func configErrors(faults []*operator.ValidationError) []ConfigError {
+	out := make([]ConfigError, 0, len(faults))
+	for _, f := range faults {
+		name := ""
+		if n := len(f.GetPathComponents()); n > 0 {
+			name = f.GetPathComponents()[n-1]
+		}
+		out = append(out, ConfigError{Parameter: name, Value: f.GetValue(), Message: f.GetMessage()})
+	}
+	return out
 }
 
 func (OperatorImpl) SetStatusInCluster(
@@ -175,9 +209,19 @@ func (OperatorImpl) SetStatusInCluster(
 		Publication:  cfg.Publication,
 		MajorVersion: major,
 	}
-	if cfg.Mode == ModeOff {
+	faults := Validate(cluster, PluginParameters(cluster))
+	switch {
+	case len(faults) > 0:
+		st.State = StateInvalidConfig
+		st.ConfigErrors = configErrors(faults)
+		st.Message = "configuration is invalid: Quicksilver adds no mirror to any instance Pod it builds, " +
+			"and leaves running instance Pods as they are (they keep their mirror and are not rolled). " +
+			"An instance Pod that is deleted is rebuilt without the mirror. Fix the parameters in configErrors."
+	case cfg.Mode == ModeOff:
+		st.State = StateValid
 		st.Message = "mode: off — no mirror is being built"
-	} else {
+	default:
+		st.State = StateValid
 		st.MirroringPods = mirroringPods(cluster)
 		if cfg.Mode == ModeTakeover {
 			// This used to say the -ro service "is served by the columnar

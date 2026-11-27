@@ -1,0 +1,24 @@
+{
+ "default_checkpoint_threshold_setting": "16.0 MiB",
+ "default_checkpoint_threshold": {
+  "txns": 5,
+  "total_s": 25.095617571000275,
+  "statements_s_median": 0.10658909299991137,
+  "commit_s_median": 4.881764517000192,
+  "commit_s_max": 5.778857610999694,
+  "wal_bytes_before_close": 0,
+  "close_s": 0.06705490099921008,
+  "file_bytes": 1510223872
+ },
+ "checkpoint_threshold_4GB_setting": "3.7 GiB",
+ "checkpoint_threshold_4GB": {
+  "txns": 200,
+  "total_s": 27.61272000900044,
+  "statements_s_median": 0.1153672500004177,
+  "commit_s_median": 0.017478548999861232,
+  "commit_s_max": 0.4879330049998316,
+  "wal_bytes_before_close": 96023967,
+  "close_s": 4.2978570509994825,
+  "file_bytes": 1513893888
+ }
+}

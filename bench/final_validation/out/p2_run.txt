@@ -1,0 +1,58 @@
+mirror5 sidecar stopped
+mirror6 pid 16699
+mirror6 ready
+fv_app may read ex and public
+--- superuser
+exit 0
+  ],
+  [
+   "reads no mirrored table",
+   143
+  ],
+  [
+   "cheap on the heap",
+   32
+  ],
+  [
+   "mirror is not fresh enough",
+   2
+  ],
+  [
+   "mirror failed at execution; answered from the heap",
+   1
+  ],
+  [
+   "reads a relation with no usable mirror",
+   1
+  ]
+ ],
+ "server": "PostgreSQL 17.12 (Ubuntu 17.12-1.pgdg24.04+1) on x86_64-pc-linux-gnu, compiled by gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0, 64-bit",
+ "settings": []
+}
+--- ordinary role fv_app
+exit 0
+ "heap_reasons": [
+  [
+   "reads no mirrored table",
+   757
+  ],
+  [
+   "construct not on the allowlist",
+   75
+  ],
+  [
+   "cheap on the heap",
+   32
+  ],
+  [
+   "reads a relation with no usable mirror",
+   1
+  ],
+  [
+   "mirror is not fresh enough",
+   1
+  ]
+ ],
+ "server": "PostgreSQL 17.12 (Ubuntu 17.12-1.pgdg24.04+1) on x86_64-pc-linux-gnu, compiled by gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0, 64-bit",
+ "settings": []
+}

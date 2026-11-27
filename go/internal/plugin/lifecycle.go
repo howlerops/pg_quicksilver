@@ -3,15 +3,18 @@ package plugin
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 
+	apiv1 "github.com/cloudnative-pg/api/pkg/api/v1"
 	"github.com/cloudnative-pg/cnpg-i-machinery/pkg/pluginhelper/decoder"
 	"github.com/cloudnative-pg/cnpg-i-machinery/pkg/pluginhelper/object"
 	"github.com/cloudnative-pg/cnpg-i/pkg/lifecycle"
+	"github.com/cloudnative-pg/cnpg-i/pkg/operator"
 )
 
 // MirrorContainerName is the injected sidecar's container name. It is also the
@@ -96,6 +99,16 @@ func (LifecycleImpl) LifecycleHook(
 		return &lifecycle.OperatorLifecycleResponse{}, nil
 	}
 
+	// The operator never asks plugins to validate at admission (see
+	// Validate's callers in docs/16), so an invalid configuration arrives
+	// here as an ordinary Cluster. It must not reach MirrorSidecar: a
+	// misspelled parameter would be ignored, and mode: takeover without the
+	// acknowledgement would inject the readiness gate that takes replicas out
+	// of -ro. Decide per operation, see invalidConfigResponse.
+	if faults := Validate(cluster, PluginParameters(cluster)); len(faults) > 0 {
+		return invalidConfigResponse(req.GetOperationType().GetType(), cluster, pod.Name, faults)
+	}
+
 	mutated := pod.DeepCopy()
 	sidecar := MirrorSidecar(cluster.Name, cfg)
 	if err := object.InjectPluginSidecarInitContainer(mutated, sidecar, true); err != nil {
@@ -109,10 +122,86 @@ func (LifecycleImpl) LifecycleHook(
 	return &lifecycle.OperatorLifecycleResponse{JsonPatch: patch}, nil
 }
 
+// invalidConfigResponse is what LifecycleHook does for a Pod when the Cluster's
+// Quicksilver configuration fails Validate. The discriminator is whether the
+// Pod already exists, read from cluster.status.instancesStatus.
+//
+// Why the status and not the Cluster as a whole: status.instances,
+// status.instanceNames and the PVC-derived lists are filled from PVCs, so an
+// instance whose PVC exists but whose Pod does not yet is already listed there
+// (pkg/reconciler/persistentvolumeclaim/status.go:216-229 in 1.30). A
+// Cluster-level "has instances" test therefore misreads a fresh Cluster as a
+// running one. instancesStatus is built from the Pods the operator listed in
+// this reconcile (ListStatusPods, api/v1/base_funcs.go:59, with terminating Pods
+// skipped), so it is the operator's own record of which Pods exist. It is
+// written in updateResourceStatus, before the instance creation and the
+// rollout checks of the same reconcile.
+//
+// The two callers that reach EVALUATE for a Pod are then told apart:
+//
+//   - A Pod that is NOT in instancesStatus is being built (first instance,
+//     replacement, or a replica being joined). Its evaluated spec is the one the
+//     operator will create, so an empty patch builds it WITHOUT the mirror.
+//     PostgreSQL starts, the reconcile completes, and the status says why.
+//
+//   - A Pod that IS in instancesStatus is being compared with the spec the
+//     operator stored when it built that Pod: the rollout check
+//     (1.30 internal/controller/cluster_upgrade.go checkPodSpecIsOutdated;
+//     1.26 the same check at :380). An error there is logged and skipped by
+//     isPodNeedingRollout (1.30 cluster_upgrade.go:415-420; 1.26 :342-346), so
+//     the running instance is not rolled. An empty patch here would evaluate the
+//     Pod without the mirror it runs with, and every instance would be rolled to
+//     drop it, the primary included.
+//
+// PATCH and UPDATE get an empty patch always. The operator patches instance Pods
+// for role labels on failover and switchover (pkg/reconciler/instance/metadata.go:65,
+// through the extended client), and an error there would block the failover.
+//
+// The one thing this never does is inject the sidecar, so mode: takeover
+// without its acknowledgement cannot reach the readiness gate.
+func invalidConfigResponse(
+	op lifecycle.OperatorOperationType_Type,
+	cluster *apiv1.Cluster,
+	podName string,
+	faults []*operator.ValidationError,
+) (*lifecycle.OperatorLifecycleResponse, error) {
+	switch op {
+	case lifecycle.OperatorOperationType_TYPE_CREATE, lifecycle.OperatorOperationType_TYPE_EVALUATE:
+		if podIsListed(cluster, podName) {
+			return nil, fmt.Errorf("quicksilver: not re-evaluating running instance %s of cluster %s/%s, "+
+				"its configuration is invalid: %s", podName, cluster.Namespace, cluster.Name, describeFaults(faults))
+		}
+		return &lifecycle.OperatorLifecycleResponse{}, nil
+	default:
+		return &lifecycle.OperatorLifecycleResponse{}, nil
+	}
+}
+
+// podIsListed reports whether the operator's status lists the named Pod as an
+// existing, non-terminating instance.
+func podIsListed(cluster *apiv1.Cluster, podName string) bool {
+	for _, names := range cluster.Status.InstancesStatus {
+		if slices.Contains(names, podName) {
+			return true
+		}
+	}
+	return false
+}
+
+// describeFaults renders validation errors as one line for an error message.
+func describeFaults(faults []*operator.ValidationError) string {
+	parts := make([]string, 0, len(faults))
+	for _, f := range faults {
+		name := strings.Join(f.GetPathComponents(), ".")
+		parts = append(parts, fmt.Sprintf("%s (%s): %s", name, f.GetValue(), f.GetMessage()))
+	}
+	return strings.Join(parts, "; ")
+}
+
 // MirrorSidecar builds the container spec. Exported so the tests can assert on
 // it directly rather than through a JSON patch.
 func MirrorSidecar(clusterName string, cfg Config) *corev1.Container {
-	return &corev1.Container{
+	c := &corev1.Container{
 		Name:  MirrorContainerName,
 		Image: cfg.SidecarImage,
 		Env: []corev1.EnvVar{
@@ -120,6 +209,10 @@ func MirrorSidecar(clusterName string, cfg Config) *corev1.Container {
 			{Name: "QS_MODE", Value: string(cfg.Mode)},
 			{Name: "QS_INGEST", Value: string(cfg.Ingest)},
 			{Name: "QS_TABLES", Value: strings.Join(cfg.Tables, ",")},
+			// The same on every Pod, so it is not the slot: the sidecar derives
+			// its own from this and QS_POD_NAME below. Both are load-bearing —
+			// without the Pod name two sidecars share one slot and the second
+			// silently misses rows. TestSidecarGetsWhatASlotPerPodNeeds.
 			{Name: "QS_SLOT", Value: cfg.SlotName},
 			{Name: "QS_PUBLICATION", Value: cfg.Publication},
 			{Name: "QS_MIRROR_PATH", Value: cfg.MirrorPath},
@@ -129,6 +222,12 @@ func MirrorSidecar(clusterName string, cfg Config) *corev1.Container {
 			// killed. See sidecarResources for the measured cliff this is
 			// sized to stay clear of.
 			{Name: "GOMEMLIMIT", Value: goMemLimit(sidecarMemory(cfg))},
+			// Always set, in the sidecar's own spelling, so that what a Pod
+			// runs with can be read off its spec rather than inferred from an
+			// absence.
+			{Name: "QS_DUCKLAKE", Value: onOff(cfg.DuckLake)},
+			{Name: "QS_SERVE_WITH_HALTED_TABLES", Value: onOff(cfg.ServeWithHaltedTables)},
+			{Name: "QS_EXTENSION", Value: extensionSetting(cfg)},
 			{
 				Name: "QS_POD_NAME",
 				ValueFrom: &corev1.EnvVarSource{
@@ -205,6 +304,13 @@ func MirrorSidecar(clusterName string, cfg Config) *corev1.Container {
 			Capabilities:             &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}},
 		},
 	}
+	// Only when asked for: unset, the sidecar's own default (5m) applies, and
+	// that default is the sidecar's to change.
+	if cfg.DuckLake && cfg.DuckLakeRetention > 0 {
+		c.Env = append(c.Env, corev1.EnvVar{Name: "QS_DUCKLAKE_RETENTION", Value: cfg.DuckLakeRetention.String()})
+	}
+	c.Env = append(c.Env, switchEnv(cfg)...)
+	return c
 }
 
 // HealthPort is where the sidecar serves /readyz, /healthz and /metrics.
@@ -230,6 +336,22 @@ func MirrorSidecar(clusterName string, cfg Config) *corev1.Container {
 const HealthPort = 9188
 
 func boolPtr(b bool) *bool { return &b }
+
+func onOff(b bool) string {
+	if b {
+		return "on"
+	}
+	return "off"
+}
+
+// extensionSetting falls back to auto for a value Validate would have refused:
+// an already-admitted Cluster must still get a Pod.
+func extensionSetting(cfg Config) string {
+	if cfg.Extension == ExtensionOff {
+		return ExtensionOff
+	}
+	return ExtensionAuto
+}
 
 // sidecarResources sets the mirror sidecar's memory request AND limit to the
 // same value, and derives GOMEMLIMIT from it.

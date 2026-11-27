@@ -5,7 +5,7 @@
 # — it is the same commands CI ran, in an image, so any session with a working
 # Docker can produce the same evidence.
 #
-# THE EXPENSIVE LAYER IS DELIBERATE. pg_duckdb v1.1.1 plus this repository's
+# THE EXPENSIVE LAYER IS DELIBERATE. pg_duckdb v1.2.2 plus this repository's
 # confinement patch is not packaged anywhere, and building it compiles DuckDB
 # too: about an hour on four cores, once. It is its own stage so Docker caches
 # it, and so `--target base` skips it entirely for the sections that do not need
@@ -68,20 +68,21 @@ RUN mkdir -p /var/lib/postgresql && chown -R postgres:postgres /var/lib/postgres
 WORKDIR /repo
 
 # ---------------------------------------------------------------- pg_duckdb
-# v1.1.1 is 7b0db3737a1ab2dfb182b742322426e3c4b500af. The submodule is DuckDB
-# v1.4.3 and is cloned shallow: the Makefile passes OVERRIDE_GIT_DESCRIBE, so
-# DuckDB does not need the history.
+# v1.2.2 is 4e921ffbe4a16b3caec6cf24ca0151fa9d88032d. The submodule is DuckDB
+# 2.0 (8d78114) and is cloned shallow: the Makefile passes OVERRIDE_GIT_DESCRIBE,
+# so DuckDB does not need the history.
 FROM base AS pgduckdb
 
 RUN apt-get update -qq && apt-get install -y -qq --no-install-recommends \
       cmake ninja-build ccache libssl-dev liblz4-dev libcurl4-openssl-dev zlib1g-dev \
  && rm -rf /var/lib/apt/lists/*
 
-COPY bench/patches/pg_duckdb-allowed-directories.patch /tmp/qs.patch
+COPY bench/patches/pg_duckdb-1.2.2-allowed-directories.patch /tmp/qs.patch
 
-RUN git clone --depth 1 --branch v1.1.1 --recurse-submodules --shallow-submodules \
+RUN git clone --depth 1 --branch v1.2.2 --recurse-submodules --shallow-submodules \
       https://github.com/duckdb/pg_duckdb /tmp/pg_duckdb \
  && cd /tmp/pg_duckdb \
+ && test "$(git rev-parse HEAD)" = 4e921ffbe4a16b3caec6cf24ca0151fa9d88032d \
  && git apply --verbose /tmp/qs.patch \
  && PG_CONFIG=/usr/lib/postgresql/17/bin/pg_config make -j"$(nproc)" \
  # `install: install-duckdb` puts libduckdb.so in place with a plain install(1),
@@ -96,11 +97,11 @@ FROM base AS testbed
 
 COPY --from=pgduckdb /out/ /
 
-# The GUC, not the file. A stock pg_duckdb would pass a file check and then fail
-# much later as "permission denied" on the mirror, which reads exactly like the
-# bug the patch exists to fix. grep -a on the binary, never `strings | grep -q`:
-# under pipefail that pipeline reports failure on success.
-RUN grep -qa duckdb.allowed_directories "$(pg_config --pkglibdir)/pg_duckdb.so" \
- && echo "pg_duckdb carries duckdb.allowed_directories"
+# The patch's own message, not the GUC: stock 1.2.2 has duckdb.allowed_directories
+# too, so a check for the GUC would pass on the package this build replaces.
+# grep -a on the binary, never `strings | grep -q`: under pipefail that pipeline
+# reports failure on success.
+RUN grep -qa "writes to local files are disabled by configuration" "$(pg_config --pkglibdir)/pg_duckdb.so" \
+ && echo "pg_duckdb carries the confinement patch"
 
 CMD ["/bin/bash"]

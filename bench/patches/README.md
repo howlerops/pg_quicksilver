@@ -1,69 +1,128 @@
 # Patches
 
-## `pg_duckdb-allowed-directories.patch`
+## pg_duckdb 1.2.2
 
-Against `pg_duckdb` **v1.1.1**. Adds a `duckdb.allowed_directories` GUC that *confines*
-unprivileged backends to named directories instead of disabling the local filesystem
-outright.
+`pg_duckdb-1.2.2-allowed-directories.patch` is a `git diff` against the `v1.2.2` tag
+of [duckdb/pg_duckdb](https://github.com/duckdb/pg_duckdb). It lets a role that is
+**not** a member of both `pg_read_server_files` and `pg_write_server_files` read local
+files, and only those under `duckdb.allowed_directories`. Built and tested as described
+in the verification section below.
 
-**Why:** [docs/11 Result 7](../../docs/11-measured-results.md) found that stock `pg_duckdb`
-gates local file reads on `AllowRawFileAccess()` — membership of **both**
-`pg_read_server_files` and `pg_write_server_files`. That is all-or-nothing: the only way to
-let an application role read a Parquet mirror is to also let it `COPY FROM '/etc/passwd'`
-and write arbitrary server files. A superuser-owned view does not help, because the check
-runs against the *current* user at plan time. That blocked Quicksilver's entire serving path.
+### Why the stock build blocks an unprivileged role
 
-**What it does:** when `duckdb.allowed_directories` is set, an unprivileged backend keeps
-`LocalFileSystem` but DuckDB is configured with `allowed_directories`, then
-`enable_external_access=false`, then `lock_configuration=true`.
+Source: pg_duckdb `v1.2.2` (`4e921ff`), whose DuckDB submodule is `8d78114`
+(DuckDB 2.0, reported as `v2.0.0-1168-g8d78114e90a`).
 
-**The non-obvious part** — DuckDB's `CanAccessFile()` begins:
+1. `AllowRawFileAccess()` (`src/pg/permissions.cpp:13`) is true only when the current
+   user is a member of **both** `pg_write_server_files` and `pg_read_server_files`.
+2. `DisabledFileSystems()` (`src/pgduckdb_duckdb.cpp:321`) returns `LocalFileSystem`
+   for every other user. `DuckDBManager::RefreshConnectionState()` (line 343) runs
+   `SET disabled_filesystems='LocalFileSystem'` on the DuckDB instance before each
+   query (line 357). This is the setting that flips.
+3. DuckDB's virtual file system then refuses every local path, whatever else is set:
+   `File system LocalFileSystem has been disabled by configuration`
+   (`third_party/duckdb/src/common/virtual_file_system.cpp:483`).
 
-```cpp
-if (options.enable_external_access) {
-    return true;   // allowlist never consulted
-}
-```
+`duckdb.allowed_directories` takes no part in step 3. pg_duckdb only applies it once,
+when the DuckDB instance is created (`SET allowed_directories=[...]`, around line 260),
+and DuckDB checks it only while `enable_external_access` is off. The file system has
+already been refused by then. So the stock setting is inert for an unprivileged role,
+and the only way round it is to grant both `pg_*_server_files` roles.
 
-So `enable_external_access=false` *switches the allowlist on* rather than denying
-everything, precisely because `allowed_directories` is non-empty. Setting one without the
-other is useless in both directions: allowlist alone is ignored, and `false` alone blocks
-the mirror too. Both orderings were measured; see the commit history.
+### What DuckDB 2.0.1 gives us natively
 
-**Two implementation constraints, both learned by failing first:**
+Measured with the python `duckdb` 2.0.1 wheel, with
+`allowed_directories=[<dir>/]`, `enable_external_access=false` and
+`lock_configuration=true`, in that order (`bench/patches/README.md` records the
+results; the probe was run from a scratch directory):
 
-1. `lock_configuration=true` must be applied **last** — after extension loading and secret
-   setup, since nothing can be `SET` afterwards.
-2. It must run **once per DuckDB instance**. `RefreshConnectionState()` runs on every query
-   against a cached instance, so the second call tries to `SET allowed_directories` against
-   its own lock and throws *"Cannot change configuration option … the configuration has been
-   locked"*. Guarded with a `filesystem_confined` member, mirroring `secrets_valid`.
+| case | result |
+|---|---|
+| read a file inside the directory | allowed |
+| `/etc/passwd` | denied: `Cannot access file ... file system operations are disabled by configuration` |
+| `dir/../outside/file` | denied (paths are canonicalised first) |
+| symlink inside the directory pointing outside | denied |
+| `https://...` | denied |
+| `ATTACH` a database file outside | denied |
+| `COPY ... TO` a file outside | denied |
+| `COPY ... TO` a file **inside** the directory | **allowed** |
+| `SET allowed_directories`, `SET enable_external_access=true`, `SET lock_configuration=false` | denied: `the configuration has been locked` |
 
-**Verified by** `bench/scripts/run_s5_confinement.py` — mirror readable, everything outside
-the directory denied (including path traversal and HTTP), confinement not widenable.
-No measurable query-performance cost.
+So DuckDB enforces every read confinement the goal needs, but **not** write confinement:
+`CanAccessFile()` (`src/main/config.cpp:1132`) does not look at the open mode, and
+`access_mode=read_only` does not stop a `COPY ... TO` of an external file.
 
-**How to build it.** The recipe lives in the `serving` job of
-[`.github/workflows/ci.yml`](../../.github/workflows/ci.yml), because a recipe that only
-exists in prose is a recipe nobody can check:
+### What the patch does
 
-```sh
-git clone --depth 1 --branch v1.1.1 --recurse-submodules --shallow-submodules \
-  https://github.com/duckdb/pg_duckdb /tmp/pg_duckdb
-cd /tmp/pg_duckdb
-git apply /path/to/pg_duckdb-allowed-directories.patch
-PG_CONFIG=/usr/lib/postgresql/17/bin/pg_config make -j"$(nproc)"
-sudo PG_CONFIG=/usr/lib/postgresql/17/bin/pg_config make install
-```
+- `DisabledFileSystems()` no longer adds `LocalFileSystem` for a role that lacks both
+  roles when `duckdb.allowed_directories` is set. That role keeps the local file system.
+- The reads are confined by DuckDB itself. `RefreshConnectionState()` runs
+  `SET enable_external_access=false`, then `SET lock_configuration=true`, which makes
+  every later `SET` fail. Nothing in the role's session can widen the allowlist, turn
+  external access back on, or unlock.
+- Writes are refused by `src/pgduckdb_confined_fs.cpp`, a `LocalFileSystem` subclass
+  registered as a DuckDB sub-system before the CA certificate file system. It keeps the
+  name `LocalFileSystem`, so `duckdb.disabled_filesystems` still disables it. Once the
+  instance is confined it throws on every open for writing, memory mapping for writing,
+  create, remove and move. Reads pass through unchanged.
+- `duckdb.allowed_directories` stays `PGC_SUSET`, which is what this needs: a role that
+  is not a superuser cannot `SET` it, and nothing it can do changes it afterwards.
+- The session's `TimeZone` still reaches DuckDB on a confined instance. pg_duckdb's GUC
+  hook (`DuckAssignTimezone_Cpp`, `src/pgduckdb_guc.cpp`) runs `SET TimeZone` on each
+  change, and the lock would refuse it. The hook adds `TimeZone` to DuckDB's
+  `allowed_configs` for that one statement and removes it on return or error. Nothing
+  else is exempted, and DuckDB SQL (`duckdb.query`, `duckdb.raw_query`) cannot reach the
+  exemption: `SET TimeZone` through them is still refused for an ordinary role.
+- It defines the read-only GUC `duckdb.confined_file_access` (`PGC_INTERNAL`, always `on`).
+  The routing extension (`ext/pg_quicksilver`) reads it with `GetConfigOption()` to recognise
+  this build. Stock 1.2.2 does not define it, so the extension never routes an ordinary role
+  on the stock build. `docs/40-the-router-moves-inside.md`, "Ordinary roles", has the rest.
 
-It compiles DuckDB (v1.4.3, the bundled submodule) as well, so it is about an hour the
-first time. CI caches the result on this patch's hash: change the patch and it rebuilds,
-change anything else and it does not.
+Three consequences, all deliberate:
 
-`bench/scripts/serving_pg17.sh` checks for the **GUC**, not the file — `grep -a
-duckdb.allowed_directories` over `pg_duckdb.so`. A stock build would pass a file check and
-then fail much later as "permission denied" on the mirror, which reads exactly like the bug
-this patch exists to fix.
+- Confinement is per DuckDB instance, and an instance is per backend. A backend that
+  first confines a role keeps that confinement, so a superuser who later runs in the
+  same backend gets the locked, confined instance too. Fail closed.
+- Once confined, the backend no longer refreshes its DuckDB configuration. A new
+  extension installed later is not loaded into an already-confined backend, and
+  `duckdb.disabled_filesystems` is not reapplied. A new connection picks both up.
+- A confined role cannot write temporary files either, so a query that has to spill to
+  disk fails rather than writing one.
 
-**Status:** prototype, not upstreamed. Intended as the basis for an upstream PR — see
-[docs/12](../../docs/12-s5-serving-path.md) for what would need adding first.
+### Verification
+
+Built from the `v1.2.2` tag on PostgreSQL 17.12 (Ubuntu), DuckDB 2.0, 4 vCPU. Run with
+`bench/scripts/serving_pg17.sh` (`PG_BIN`, `PG_LIBDIR` select the build; `STOCK=1` for the
+stock package):
+
+- Patched: `PASS`. An unprivileged role (no server-file roles) reads 196000 rows through
+  PostgreSQL, agreeing with the heap (count and sum). Denied, each with the refusal
+  observed: `/etc/passwd`, `PGDATA` files, path traversal, a symlink to `/etc/passwd`, a
+  symlink to `PGDATA`, `https://`, `ATTACH` of a database file outside, `COPY TO` a file in
+  the mirror (`Cannot write ... writes to local files are disabled`), `COPY TO` outside,
+  DuckDB-level `SET allowed_directories` and `enable_external_access` (`locked`), and
+  the PostgreSQL-level `SET duckdb.*` (`permission denied to set parameter`).
+- Stock 1.2.2 (the Debian package): the mirror read FAILS with
+  `File system LocalFileSystem has been disabled by configuration`, and every denial in the
+  list is refused for that same reason. The denials prove nothing on stock beyond that
+  refusal, which is the point: stock refuses all local reads, not only the ones outside the
+  directory.
+
+Routing extension regression (`make installcheck` of `ext/pg_quicksilver`, routing off):
+on the patched build and on the stock control the same seven of twelve tests fail, and the
+same 33 lines report `mirror is not fresh enough` where the expected output is `routed`.
+That is the environment (the sidecar reports ready, but routing does not see it as fresh),
+not the patch. The one difference attributable to the patch is in `unprivileged.out`: the
+expected text is stock's `LocalFileSystem has been disabled by configuration`, and the
+patched build says `Cannot access file "/etc/passwd" - file system operations are disabled
+by configuration`. Both are denials; the expected output has not been changed.
+
+---
+
+## Is the patch still needed on pg_duckdb 1.2.2?
+
+Yes, and it is now the 1.2.2 patch above. The stock 1.2.2 package keeps the local
+file system disabled for any role that lacks both server-file roles, so the mirror
+cannot be read without them. The v1.1.1 patch that stood here before is retired: the
+`serving` job builds the 1.2.2 patch instead, and so does the `postgres` image target
+when it is asked to.

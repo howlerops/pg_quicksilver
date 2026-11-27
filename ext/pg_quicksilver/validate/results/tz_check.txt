@@ -1,0 +1,5 @@
+zones 499
+admitted 240 (hour also 40)
+denied 259
+  denied, PostgreSQL rejects the zone: 2
+  denied, differs: 257

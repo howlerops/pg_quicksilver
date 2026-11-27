@@ -1,0 +1,31 @@
+1:/tmp/qsb/scripts_merged/bench.py:10:import os as _os; M = _os.environ.get("QS_M"); BIN = _os.environ.get("QS_BIN")
+8:/tmp/qsb/scripts_merged/bench.py:84:        c.execute("SET threads = 2")
+9:/tmp/qsb/scripts_merged/bench.py:96:                p = subprocess.run([f"{BIN}/qs-query", "-mirror", f"{M}", "-table", f"public.{t}"],
+10:/tmp/qsb/scripts_merged/qs_catchup.py:2:Q="/tmp/qsb"; tag=sys.argv[1]; M=os.environ["QS_M"]
+11:/tmp/qsb/scripts_merged/qs_catchup.py:12:        st=json.load(open(f"{M}/public.orders/state.json"))
+12:/tmp/qsb/scripts_merged/live_lag.py:2:import os; M=os.environ["QS_M"]
+15:/tmp/qsb/scripts_merged/live_lag.py:20:                if L(json.load(open(f"{M}/public.orders/state.json"))["applied_lsn"])>before: break
+17:/tmp/qsb/scripts_merged/qs_start.sh:5: QS_SLOT=qs_bench QS_PUBLICATION=qs_bench QS_MIRROR_PATH=$QS_M QS_FRESHNESS_SLO=15s \
+18:/tmp/qsb/scripts_merged/qs_start.sh:8: setsid nohup taskset -c 2-3 $QS_BIN/qs-mirror >> $Q/results_merged/qs_mirror_$tag.log 2>&1 &
+server started
+server started
+mason_dev_bench_app|f|reserved
+qs_bench|f|reserved
+DROP PUBLICATION
+NOTICE:  drop cascades to 3 other objects
+DETAIL:  drop cascades to table wl.picks
+drop cascades to table wl.payload_new
+drop cascades to table wl.new_orders
+DROP SCHEMA
+DROP TABLE
+CHECKPOINT
+load_wall_s 148.206935109
+(3 rows)
+
+Time: 71.218 ms
+Time: 4.233 ms
+ 0010d878-8d3b-4143-8135-285fa9599f5e
+
+10000000
+f
+PREP_DONE

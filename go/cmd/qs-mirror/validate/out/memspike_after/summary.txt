@@ -1,0 +1,20 @@
+samples=606 rss_mb p50=498 p95=981 max=2138 final_hwm_mb=2146
+per-minute peak RSS (MB): 17:50=513 17:51=818 17:52=1028 17:53=427 17:54=559 17:55=981 17:56=1665 17:57=600 17:58=1033 17:59=2138 18:00=343
+peaks >= 1000 MB, with the sidecar events in the 3 s before and 1 s after:
+  17:52:47 rss=1018 17:52:45.169 merged deltas public.wide_text; 17:52:45.428 merged deltas public.ev_uuid; 17:52:45.429 compaction started public.wide_text; 17:52:45.457 merged deltas public.lookup; 17:52:45.647 merged deltas public.ledger; 17:52:46.510 merged deltas public.ev_uuid; 17:52:46.538 merged deltas public.lookup; 17:52:46.844 merged deltas public.ledger; 17:52:47.403 merged deltas public.ev_uuid; 17:52:47.464 merged deltas public.lookup; 17:52:47.761 merged deltas public.ledger; 17:52:47.971 merged deltas public.wide_text
+  17:56:17 rss=1447 17:56:14.941 merged deltas public.ledger; 17:56:15.023 compaction started public.wide_text; 17:56:15.387 merged deltas public.ev_uuid; 17:56:15.679 merged deltas public.lookup; 17:56:16.172 merged deltas public.ledger; 17:56:16.592 merged deltas public.ev_uuid; 17:56:16.877 merged deltas public.lookup; 17:56:17.460 merged deltas public.ledger; 17:56:17.883 merged deltas public.ev_uuid
+  17:58:59 rss=1033 17:58:56.830 merged deltas public.wide_text; 17:58:56.993 compaction started public.wide_text; 17:58:57.491 merged deltas public.ledger; 17:58:57.656 merged deltas public.lookup; 17:58:57.868 merged deltas public.ev_uuid; 17:58:58.678 merged deltas public.ledger; 17:58:58.861 merged deltas public.lookup; 17:58:59.224 merged deltas public.ev_uuid; 17:58:59.876 merged deltas during compaction public.wide_text
+event counts:
+    1004 merged deltas
+      11 compaction started
+       4 snapshot complete
+       4 key index built
+       3 merged deltas during compaction
+       1 memory sizing
+       1 quicksilver mirror starting
+       1 pprof listening
+       1 ducklake publishing on
+       1 slot janitor on: when this instance is the primary it drops this cluster's Quicksilver slots that nothing will consume again
+       1 pg_quicksilver is not installed in this database; no mirror relation is registered (CREATE EXTENSION pg_quicksilver on the primary to route reads; this is looked at again every minute)
+       1 new replication slot; bootstrapping by snapshot
+       1 schema evolved at a DDL barrier

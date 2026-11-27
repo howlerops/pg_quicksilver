@@ -1,0 +1,53 @@
+=== 19:20:57 initial sync, new build
+ready_after_s 66.228270833
+peak RSS so far (new): 1394 MB
+time=2026-11-25T19:20:57.413Z level=INFO msg="quicksilver mirror starting" cluster=bench pod=bench-1 mode=shadow ingest=logical tables="[public.orders public.customers]" slo=15s slot=qs_bench_bench_1 
+time=2026-11-25T19:20:57.649Z level=INFO msg="new replication slot; bootstrapping by snapshot" at=2/D3FA4848
+time=2026-11-25T19:21:50.378Z level=INFO msg="snapshot complete" table=public.orders rows=10000000 seconds=52.728731272
+time=2026-11-25T19:21:51.995Z level=INFO msg="snapshot complete" table=public.customers rows=500000 seconds=1.616718332
+time=2026-11-25T19:21:52.480Z level=INFO msg="key index built" table=public.customers keys=500000 seconds=0.483170967
+time=2026-11-25T19:22:03.463Z level=INFO msg="key index built" table=public.orders keys=10000000 seconds=10.983410236
+=== 19:22:03 pg A
+pg A warm count_by_status {'ok': True, 'best_ms': 1116.06, 'median_ms': 1190.69}
+pg A warm revenue_by_month_join {'ok': True, 'best_ms': 11852.27, 'median_ms': 12289.93}
+pg A warm pk_lookup {'ok': True, 'best_ms': 0.12, 'median_ms': 0.36}
+pg A warm count_star {'ok': True, 'best_ms': 454.37, 'median_ms': 492.94}
+pg A warm sum_amount {'ok': True, 'best_ms': 906.47, 'median_ms': 958.52}
+pg A warm month_filter_agg {'ok': True, 'best_ms': 120.12, 'median_ms': 149.0}
+=== 19:23:35 qs A warm, new
+qs A warm count_by_status {'ok': True, 'best_ms': 31.73, 'median_ms': 32.61}
+qs A warm revenue_by_month_join {'ok': True, 'best_ms': 2789.08, 'median_ms': 2863.6}
+qs A warm pk_lookup {'ok': True, 'best_ms': 439.87, 'median_ms': 510.14}
+qs A warm count_star {'ok': True, 'best_ms': 3.55, 'median_ms': 3.94}
+qs A warm sum_amount {'ok': True, 'best_ms': 59.41, 'median_ms': 61.88}
+qs A warm month_filter_agg {'ok': True, 'best_ms': 15.4, 'median_ms': 15.85}
+peak RSS at stop (new): 1395 MB
+808M
+=== 19:24:00 initial sync, old build
+ready_after_s 87.768990686
+peak RSS so far (old): 3223 MB
+time=2026-11-25T19:24:02.501Z level=INFO msg="quicksilver mirror starting" cluster=bench pod=bench-1 mode=shadow ingest=logical tables="[public.orders public.customers]" slo=15s
+time=2026-11-25T19:24:02.554Z level=INFO msg="new replication slot; bootstrapping by snapshot" at=2/D3FE0DA8
+time=2026-11-25T19:25:13.592Z level=INFO msg="snapshot complete" table=public.orders rows=10000000 seconds=71.037947093
+time=2026-11-25T19:25:15.477Z level=INFO msg="snapshot complete" table=public.customers rows=500000 seconds=1.8850935720000002
+time=2026-11-25T19:25:16.071Z level=INFO msg="key index built" table=public.customers keys=500000 seconds=0.592469079
+time=2026-11-25T19:25:28.223Z level=INFO msg="key index built" table=public.orders keys=10000000 seconds=12.152352904
+=== 19:25:28 qs A warm, old
+qs A warm count_by_status {'ok': True, 'best_ms': 32.0, 'median_ms': 35.11}
+qs A warm revenue_by_month_join {'ok': True, 'best_ms': 2698.86, 'median_ms': 2704.93}
+qs A warm pk_lookup {'ok': True, 'best_ms': 417.54, 'median_ms': 438.98}
+qs A warm count_star {'ok': True, 'best_ms': 3.48, 'median_ms': 3.58}
+qs A warm sum_amount {'ok': True, 'best_ms': 61.09, 'median_ms': 64.19}
+qs A warm month_filter_agg {'ok': True, 'best_ms': 16.87, 'median_ms': 17.52}
+peak RSS at stop (old): 3223 MB
+808M
+=== 19:25:53 workload
+{'lsn_start': '2/D3FE0DE0', 't_start': 1795634753.641592, 'lsn_before_last_txn': '3/AA219C90', 't_last_commit': 1795634798.3683121, 'lsn_end': '3/AA7DD848', 'totals': {'status_updates': 500000, 'payload_updates': 100000, 'deletes': 100000, 'inserts': 100000}, 'workload_s': 44.726720094680786, 'wal_bytes': 3598699112, 'marker_insert_id': '00d47341-2b8d-47f2-8ad5-8c13a8992c9e'}
+=== 19:26:38 pg B
+pg B warm count_by_status {'ok': True, 'best_ms': 1204.07, 'median_ms': 1390.24}
+pg B warm revenue_by_month_join {'ok': True, 'best_ms': 12483.26, 'median_ms': 13010.25}
+pg B warm pk_lookup {'ok': True, 'best_ms': 0.09, 'median_ms': 0.14}
+pg B warm count_star {'ok': True, 'best_ms': 2337.34, 'median_ms': 2442.23}
+pg B warm sum_amount {'ok': True, 'best_ms': 974.03, 'median_ms': 1050.3}
+pg B warm month_filter_agg {'ok': True, 'best_ms': 139.45, 'median_ms': 148.4}
+=== 19:28:32 drain, new build

@@ -1,0 +1,92 @@
+{
+ "engine": "pg",
+ "state": "C",
+ "mode": "warm",
+ "queries": {
+  "count_by_status": {
+   "sql": "SELECT status, count(*) FROM orders GROUP BY status ORDER BY status",
+   "ok": true,
+   "ms": [
+    660.5817039999238,
+    687.9142269999647,
+    618.8892899999701,
+    709.5125779997034,
+    691.5945399996417
+   ],
+   "best_ms": 618.8892899999701,
+   "median_ms": 687.9142269999647,
+   "rows": 8
+  },
+  "revenue_by_month_join": {
+   "sql": "SELECT date_trunc('month', o.created_at) AS month, date_trunc('year', c.created_at) AS signup_year, sum(o.amount) AS revenue FROM orders o JOIN customers c ON c.id = o.customer_id GROUP BY 1, 2 ORDER BY 1, 2",
+   "ok": true,
+   "ms": [
+    9009.575436999512,
+    9009.633335999752,
+    9309.370551000029,
+    9232.368289000078,
+    9325.3693810002
+   ],
+   "best_ms": 9009.575436999512,
+   "median_ms": 9232.368289000078,
+   "rows": 75
+  },
+  "pk_lookup": {
+   "sql": "SELECT * FROM orders WHERE id = '001022db-a952-4fd7-955c-8f459a6dd91d'",
+   "ok": true,
+   "ms": [
+    0.5571339997914038,
+    0.2968560002045706,
+    0.20624500029953197,
+    0.17798400040192064,
+    0.2572940002210089
+   ],
+   "best_ms": 0.17798400040192064,
+   "median_ms": 0.2572940002210089,
+   "rows": 1
+  },
+  "count_star": {
+   "sql": "SELECT count(*) FROM orders",
+   "ok": true,
+   "ms": [
+    1505.67517699983,
+    1436.5808050006308,
+    1369.8243799999545,
+    1436.1916540001403,
+    1399.1252279993205
+   ],
+   "best_ms": 1369.8243799999545,
+   "median_ms": 1436.1916540001403,
+   "rows": 1
+  },
+  "sum_amount": {
+   "sql": "SELECT sum(amount) FROM orders",
+   "ok": true,
+   "ms": [
+    542.3080649998155,
+    547.5105579998854,
+    534.2799390000437,
+    541.8844040004842,
+    539.4123510004647
+   ],
+   "best_ms": 534.2799390000437,
+   "median_ms": 541.8844040004842,
+   "rows": 1
+  },
+  "month_filter_agg": {
+   "sql": "SELECT count(*), sum(amount) FROM orders WHERE created_at >= timestamptz '2025-06-01 00:00:00+00' AND created_at < timestamptz '2025-07-01 00:00:00+00'",
+   "ok": true,
+   "ms": [
+    72.88500699996803,
+    72.03257099990878,
+    70.36674200026027,
+    69.959263999408,
+    67.98295499993401
+   ],
+   "best_ms": 67.98295499993401,
+   "median_ms": 70.36674200026027,
+   "rows": 1
+  }
+ },
+ "at": "2026-11-25T01:27:32.228425"
+}

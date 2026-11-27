@@ -1,0 +1,12 @@
+{
+ "one_batch_statement_s": {
+  "status_update": 0.0976025429999936,
+  "payload_update": 0.11344899599998826,
+  "delete": 0.03324088899989874,
+  "insert": 0.014346851000027527,
+  "rollback": 0.003840122000383417
+ },
+ "bulk_one_txn_s": 5.505329270999937,
+ "close_checkpoint_s": 0.06773790599982021,
+ "file_bytes": 1513369600
+}

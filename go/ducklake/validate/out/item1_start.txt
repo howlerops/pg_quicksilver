@@ -1,0 +1,1 @@
+-rw-r--r-- 1 root root 4096 Nov 26 16:52 /var/lib/postgresql/qslake2/mirror/item1/_ducklake/catalog.sqlite

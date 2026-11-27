@@ -15,6 +15,10 @@ or from a checkout, which is what the tests and the e2e scripts use:
 helm install quicksilver charts/quicksilver --namespace cnpg-system
 ```
 
+`0.0.3` is the newest published version. The chart in the repository is
+`0.0.4`: it adds the PostgreSQL operand image for [routed reads](#routing-reads-the-operand-image),
+and it and its three images are published together when `v0.0.4` is tagged.
+
 **Do not install `0.0.2`.** In `0.0.2` the injected mirror sidecar binds
 `:9187`, the port CloudNativePG's instance manager needs. It is a native
 sidecar, so it starts first, wins the port, and the instance manager exits
@@ -117,8 +121,10 @@ log says why.
 | Key | Default | Notes |
 |---|---|---|
 | `operatorNamespace` | `cnpg-system` | must match where CNPG runs |
-| `image.plugin` | `ghcr.io/howlerops/pg_quicksilver-plugin:0.0.3` | |
-| `image.mirror` | `ghcr.io/howlerops/pg_quicksilver-mirror:0.0.3` | the sidecar the plugin injects |
+| `image.plugin` | `ghcr.io/howlerops/pg_quicksilver-plugin:0.0.4` | |
+| `image.mirror` | `ghcr.io/howlerops/pg_quicksilver-mirror:0.0.4` | the sidecar the plugin injects, unless a Cluster sets `sidecarImage` |
+| `image.postgres` | `ghcr.io/howlerops/pg_quicksilver-postgres:17-0.0.4` | the operand image for Clusters that route reads. **Nothing this chart installs runs it**: it goes in a Cluster's `spec.imageName`. It is a value so that the notes print it and the release publishes all three at one version |
+| `image.pullSecrets` | `[]` | for the plugin image only; see below |
 | `service.port` | `9090` | also published as the `cnpg.io/pluginPort` annotation |
 | `certManager.enabled` | `true` | issues both halves from a self-signed CA |
 | `certManager.issuerRef` | `{}` | set to reuse an existing Issuer or ClusterIssuer |
@@ -126,7 +132,34 @@ log says why.
 
 ## Using it
 
-Installing the chart does nothing on its own. A Cluster opts in:
+Installing the chart does nothing on its own. A Cluster opts in, and every
+plugin parameter is set there, on the Cluster, not in this chart's values:
+
+| Parameter | Default | |
+|---|---|---|
+| `tables` | required | `schema.table,…`, unquoted lowercase, single-column primary key |
+| `mode` | `shadow` | `off`, `shadow`, `takeover` (needs `acknowledgeOLTPRegression: "true"`) |
+| `freshnessSLO` | `30s` | in `takeover`, a mirror behind this leaves `-ro` |
+| `sidecarMemory` | `1Gi` | request and limit; 110 bytes per live row, measured at 3M rows, see below |
+| `sidecarImage` | this chart's `image.mirror` | |
+| `ducklake` | `"false"` | also publish every table as a DuckLake table; required for routing |
+| `ducklakeRetention` | the sidecar's 5m | at least `10s`, and only with `ducklake` |
+| `serveWithHaltedTables` | `"false"` | keep the Pod ready with one table halted; safe with the extension |
+| `extension` | `auto` | `off` stops the sidecar touching `pg_quicksilver` |
+| `slotJanitor` | on | `off` (`QS_SLOT_JANITOR`): stop dropping the slots of Pods that are gone. Off lets their WAL pile up |
+| `slotJanitorAfter` | `6h` | `QS_SLOT_JANITOR_AFTER`: inactivity before a slot of a gone Pod is dropped; at least `1m` |
+| `autoRebuildLegacy` | `"false"` | `QS_AUTO_REBUILD_LEGACY`: re-snapshot a table holding data from an older writer, instead of only reporting it |
+| `bloomColumns` | the sidecar's default | `QS_BLOOM_COLUMNS`: `schema.table=col,col;…`, `-` for none, `off` for all |
+| `clusterBy` | the sidecar's default | `QS_CLUSTER_BY`: `schema.table=column,…`, `none` for no clustering |
+| `numericScale` | unset | `QS_NUMERIC_SCALE`: a scale `0`–`38` for every unconstrained `numeric`, or `schema.table.column=scale,…` |
+| `database`, `credentialsSecret`, `slotName`, `publication`, `mirrorPath`, `ingest` | | [docs/16](https://github.com/howlerops/pg_quicksilver/blob/main/docs/16-deploying.md#enabling-it-on-a-cluster) |
+
+They are strings: `ducklake: "true"`, with the quotes. An unknown parameter or
+a value of the wrong kind is not refused by the API server, because the operator does
+not ask a plugin at admission. It is reported as `state: invalid configuration` with
+`configErrors` in `.status.pluginStatus` (see [docs/16](https://github.com/howlerops/pg_quicksilver/blob/main/docs/16-deploying.md#what-the-plugin-refuses-and-what-it-does-instead)), and no mirror is built from it. `slotName` is a prefix:
+each instance Pod's sidecar has a replication slot of its own,
+`<slotName>_<pod name>`.
 
 ```yaml
 spec:
@@ -135,6 +168,65 @@ spec:
       parameters:
         tables: public.events
 ```
+
+### Routing reads: the operand image
+
+Mirroring needs nothing in PostgreSQL and keeps the stock CloudNativePG image.
+Routing reads to the mirror from inside PostgreSQL does, and four things have
+to agree. Each one fails quietly without the others.
+
+```yaml
+spec:
+  instances: 3
+  # 1. The operand image: CloudNativePG's PostgreSQL 17 with pg_duckdb 1.2.0,
+  #    pg_quicksilver and DuckDB's ducklake and sqlite extensions.
+  imageName: ghcr.io/howlerops/pg_quicksilver-postgres:17-0.0.4
+  postgresql:
+    # 2. Both, pg_duckdb FIRST. The other way round PostgreSQL does not start.
+    shared_preload_libraries: ["pg_duckdb", "pg_quicksilver"]
+    parameters:
+      max_slot_wal_keep_size: 4GB
+      # 3. Where that image keeps DuckDB's extensions. Without it pg_duckdb
+      #    looks under PGDATA, finds nothing, and downloads them, or cannot.
+      duckdb.extension_directory: /usr/lib/quicksilver/duckdb-extensions
+  plugins:
+    - name: quicksilver.howlerops.io
+      parameters:
+        tables: public.events,public.orders
+        ducklake: "true"                # 4. the lake is what gets routed to
+        serveWithHaltedTables: "true"
+```
+
+and once, in the mirrored database on the primary (or in
+`bootstrap.initdb.postInitApplicationSQL`):
+
+```sql
+CREATE EXTENSION pg_duckdb;
+CREATE EXTENSION pg_quicksilver;
+ALTER DATABASE app SET quicksilver.route = 'shadow';   -- records what would move; then 'auto'
+```
+
+[`examples/cluster-routed.yaml`](https://github.com/howlerops/pg_quicksilver/blob/main/examples/cluster-routed.yaml)
+is the whole Cluster with the reason for each line.
+
+- **The tag starts with `17`.** CloudNativePG reads the PostgreSQL version from
+  the front of the image tag. If you retag the image for your own registry,
+  keep that: `:0.0.4` would be read as PostgreSQL 0, and `:latest` is refused.
+- **One volume.** The mirror is beside PGDATA at
+  `/var/lib/postgresql/data/quicksilver` and the lake under it at
+  `_ducklake`. The lake is hard links to the mirror's files, so it cannot be
+  on another filesystem, and the sidecar refuses to start if it is.
+- **Only superuser sessions are routed.** Stock pg_duckdb gives nobody else a
+  DuckDB that can read local files; every other role is answered from the
+  heap, correctly. What it would take to change that is not validated and is
+  listed at the end of the example.
+- **A key lookup stays on the heap**, as does anything cheap, anything on the
+  primary, and anything the mirror has not caught up with. `EXPLAIN` says
+  which and why: `Quicksilver: mirror`, or `Quicksilver: heap (cheap on the
+  heap)`.
+- **Upgrading from 0.0.3.** That release used one slot named `slotName` for
+  every sidecar. The new sidecars never touch it, so drop
+  `quicksilver_<cluster>` by hand once they are running.
 
 ### Set `max_slot_wal_keep_size`. This is not optional.
 
@@ -178,7 +270,7 @@ grows fastest. Set the PostgreSQL parameter.
     - name: quicksilver.howlerops.io
       parameters:
         tables: public.events
-        sidecarMemory: 2Gi      # ~90 bytes of RSS per live row
+        sidecarMemory: 320Mi    # 110 bytes per live row at the peak; this is 3M rows, the size measured
 ```
 
 The sidecar's heap is dominated by one structure — the key index, one entry per
@@ -194,11 +286,22 @@ That is 42 bytes per live row of live heap, and roughly twice that resident.
 The mirror weighed 120 MB on disk and the sidecar peaked at 1,854 MB, so
 **sizing from the mirror's size on disk is wrong by an order of magnitude.**
 
-| rows | `sidecarMemory` |
+That profile is the steady state. The limit has to hold the peak. The one
+sizing rule, measured at **3M rows only**: a table of 3M narrow rows with a
+UUID key, through the initial snapshot, a 200,000-change backlog drain and a
+base rewrite, peaked at 251 MiB resident (about 88 bytes per row). Every phase
+completed at 256Mi, 384Mi, 512Mi and 1Gi. Budget **110 bytes per live row**,
+which is 1.25 times that peak.
+
+| rows (measured) | `sidecarMemory` |
 |---|---|
-| 1M | `256Mi` (the default) |
-| 5M | `512Mi` |
-| 20M | `2Gi` |
+| 3M | `320Mi` |
+
+The default is `1Gi`, above that. The rule is not extrapolated: above 3M rows,
+or for wide rows, it has not been measured. An older measurement at 10.5M rows
+(`bench/engine_compare/merged_build/out/p2_summary.txt`, 2,972 and 3,040 MB, 290
+bytes per row, during a catch-up of 3.5 GB of WAL) is not reproduced by this one,
+so for a larger mirror measure it on your own row shape before choosing a limit.
 
 **`kubectl top` after a restart is now a usable second opinion**, because the
 key index is built *before* `/readyz` passes. RSS at readiness is the RSS the

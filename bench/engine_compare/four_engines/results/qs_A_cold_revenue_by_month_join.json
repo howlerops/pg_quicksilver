@@ -1,0 +1,19 @@
+{
+ "engine": "qs",
+ "state": "A",
+ "mode": "cold",
+ "queries": {
+  "revenue_by_month_join": {
+   "sql": "SELECT date_trunc('month', o.created_at) AS month, date_trunc('year', c.created_at) AS signup_year, sum(o.amount) AS revenue FROM orders o JOIN customers c ON c.id = o.customer_id GROUP BY 1, 2 ORDER BY 1, 2",
+   "ok": true,
+   "ms": [
+    1425.7372219999525
+   ],
+   "best_ms": 1425.7372219999525,
+   "median_ms": 1425.7372219999525,
+   "rows": 75
+  }
+ },
+ "at": "2026-11-25T00:46:33.515207",
+ "qs_viewgen_plus_create_view_s": 0.051758727000105864
+}

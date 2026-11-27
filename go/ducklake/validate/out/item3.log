@@ -1,0 +1,138 @@
+time=2026-11-26T17:12:53.260Z level=INFO msg="memory sizing" limit_bytes=0 limit_source=none max_tick_changes=250000 max_pending_changes=1000000 gomemlimit_set=false gomemlimit_bytes=9223372036854775807
+time=2026-11-26T17:12:53.261Z level=INFO msg="quicksilver mirror starting" cluster=qs2 pod=item3 mode=shadow ingest=logical tables=[public.orders] slo=15s slot=qs2_item3_item3 configured_slot=qs2_item3
+time=2026-11-26T17:12:53.272Z level=INFO msg="ducklake publishing on" catalog=/var/lib/postgresql/qslake2/mirror/item3/_ducklake/catalog.sqlite format=1.1 retention=5m0s attach="ATTACH 'ducklake:sqlite:/var/lib/postgresql/qslake2/mirror/item3/_ducklake/catalog.sqlite' AS \"lake\" (READ_ONLY);"
+time=2026-11-26T17:12:53.272Z level=INFO msg="slot janitor on: when this instance is the primary it drops this cluster's Quicksilver slots that nothing will consume again" slots="qs2_item3 and qs2_item3_*" interval=1m0s wal_limit_bytes=4294967296 inactive_limit=6h0m0s off="QS_SLOT_JANITOR=off"
+time=2026-11-26T17:12:54.914Z level=INFO msg="pg_quicksilver registry brought to the mirrored tables" schema=quicksilver_mirror created=[public.orders] unchanged=0 dropped=[] lake=/var/lib/postgresql/qslake2/mirror/item3/_ducklake/catalog.sqlite
+time=2026-11-26T17:12:54.925Z level=INFO msg="new replication slot; bootstrapping by snapshot" at=0/70A9C28
+time=2026-11-26T17:12:55.424Z level=INFO msg="snapshot complete" table=public.orders rows=200000 seconds=0.499118067
+time=2026-11-26T17:12:55.428Z level=INFO msg="key index built" table=public.orders keys=200000 seconds=0.003288453
+time=2026-11-26T17:13:35.800Z level=INFO msg="merged deltas" table=public.orders rows=513 seconds=0.099172519
+time=2026-11-26T17:13:36.544Z level=INFO msg="merged deltas" table=public.orders rows=1563 seconds=0.101108498
+time=2026-11-26T17:13:37.196Z level=INFO msg="merged deltas" table=public.orders rows=2053 seconds=0.052077084
+time=2026-11-26T17:13:37.919Z level=INFO msg="merged deltas" table=public.orders rows=2613 seconds=0.060094867
+time=2026-11-26T17:13:38.605Z level=INFO msg="merged deltas" table=public.orders rows=3103 seconds=0.044978205
+time=2026-11-26T17:13:39.261Z level=INFO msg="merged deltas" table=public.orders rows=3562 seconds=0.068733285
+time=2026-11-26T17:13:40.031Z level=INFO msg="merged deltas" table=public.orders rows=4052 seconds=0.042261615
+time=2026-11-26T17:13:40.948Z level=INFO msg="merged deltas" table=public.orders rows=4542 seconds=0.224665432
+time=2026-11-26T17:13:40.948Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=256 merge_deltas_ms=224 apply_ms=31
+time=2026-11-26T17:13:41.652Z level=INFO msg="merged deltas" table=public.orders rows=5032 seconds=0.109940761
+time=2026-11-26T17:13:42.377Z level=INFO msg="merged deltas" table=public.orders rows=5545 seconds=0.065255814
+time=2026-11-26T17:13:43.149Z level=INFO msg="merged deltas" table=public.orders rows=6035 seconds=0.090323122
+time=2026-11-26T17:13:43.911Z level=INFO msg="merged deltas" table=public.orders rows=6522 seconds=0.115206425
+time=2026-11-26T17:13:44.756Z level=INFO msg="merged deltas" table=public.orders rows=7012 seconds=0.067485672
+time=2026-11-26T17:13:45.501Z level=INFO msg="merged deltas" table=public.orders rows=7433 seconds=0.077650943
+time=2026-11-26T17:13:46.230Z level=INFO msg="merged deltas" table=public.orders rows=7923 seconds=0.071654104
+time=2026-11-26T17:13:46.945Z level=INFO msg="merged deltas" table=public.orders rows=8413 seconds=0.115425675
+time=2026-11-26T17:13:47.652Z level=INFO msg="merged deltas" table=public.orders rows=8879 seconds=0.088417238
+time=2026-11-26T17:13:48.477Z level=INFO msg="merged deltas" table=public.orders rows=9322 seconds=0.223775529
+time=2026-11-26T17:13:48.477Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=264 merge_deltas_ms=223 apply_ms=38 head_lsn_ms=1
+time=2026-11-26T17:13:49.201Z level=INFO msg="merged deltas" table=public.orders rows=9777 seconds=0.074278423
+time=2026-11-26T17:13:50.070Z level=INFO msg="merged deltas" table=public.orders rows=10364 seconds=0.085746329
+time=2026-11-26T17:13:50.899Z level=INFO msg="merged deltas" table=public.orders rows=10850 seconds=0.109028364
+time=2026-11-26T17:13:51.770Z level=INFO msg="merged deltas" table=public.orders rows=11340 seconds=0.093230694
+time=2026-11-26T17:13:52.522Z level=INFO msg="merged deltas" table=public.orders rows=11830 seconds=0.098276677
+time=2026-11-26T17:13:53.393Z level=INFO msg="merged deltas" table=public.orders rows=12317 seconds=0.159507379
+time=2026-11-26T17:13:53.393Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=210 merge_deltas_ms=159 apply_ms=49
+time=2026-11-26T17:13:54.126Z level=INFO msg="merged deltas" table=public.orders rows=12746 seconds=0.08980928
+time=2026-11-26T17:13:54.858Z level=INFO msg="merged deltas" table=public.orders rows=13236 seconds=0.085924499
+time=2026-11-26T17:13:55.701Z level=INFO msg="merged deltas" table=public.orders rows=13726 seconds=0.141774661
+time=2026-11-26T17:13:56.478Z level=INFO msg="merged deltas" table=public.orders rows=14046 seconds=0.243344775
+time=2026-11-26T17:13:56.479Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=276 merge_deltas_ms=243 apply_ms=31
+time=2026-11-26T17:13:57.512Z level=INFO msg="merged deltas" table=public.orders rows=14536 seconds=0.404519307
+time=2026-11-26T17:13:57.512Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=436 merge_deltas_ms=404 apply_ms=24 is_primary_ms=4 head_lsn_ms=2
+time=2026-11-26T17:13:58.294Z level=INFO msg="merged deltas" table=public.orders rows=15093 seconds=0.198050222
+time=2026-11-26T17:13:58.294Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=258 merge_deltas_ms=198 apply_ms=56 is_primary_ms=3
+time=2026-11-26T17:13:59.174Z level=INFO msg="merged deltas" table=public.orders rows=15793 seconds=0.176613725
+time=2026-11-26T17:13:59.913Z level=INFO msg="merged deltas" table=public.orders rows=16340 seconds=0.132828386
+time=2026-11-26T17:14:00.838Z level=INFO msg="merged deltas" table=public.orders rows=16900 seconds=0.303104719
+time=2026-11-26T17:14:00.838Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=352 merge_deltas_ms=303 apply_ms=43 head_lsn_ms=5
+time=2026-11-26T17:14:01.672Z level=INFO msg="merged deltas" table=public.orders rows=17344 seconds=0.298754875
+time=2026-11-26T17:14:01.672Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=305 merge_deltas_ms=298 apply_ms=6
+time=2026-11-26T17:14:02.511Z level=INFO msg="merged deltas" table=public.orders rows=17928 seconds=0.122986182
+time=2026-11-26T17:14:03.243Z level=INFO msg="merged deltas" table=public.orders rows=18530 seconds=0.158522703
+time=2026-11-26T17:14:04.387Z level=INFO msg="merged deltas" table=public.orders rows=19002 seconds=0.371642332
+time=2026-11-26T17:14:04.387Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=420 merge_deltas_ms=371 apply_ms=33 is_primary_ms=13 head_lsn_ms=2
+time=2026-11-26T17:14:05.215Z level=INFO msg="merged deltas" table=public.orders rows=19488 seconds=0.16274543
+time=2026-11-26T17:14:06.024Z level=INFO msg="merged deltas" table=public.orders rows=20118 seconds=0.154827986
+time=2026-11-26T17:14:06.024Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=210 merge_deltas_ms=154 apply_ms=49 head_lsn_ms=5
+time=2026-11-26T17:14:06.930Z level=INFO msg="merged deltas" table=public.orders rows=20560 seconds=0.362484391
+time=2026-11-26T17:14:06.930Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=379 merge_deltas_ms=362 apply_ms=15
+time=2026-11-26T17:14:07.951Z level=INFO msg="merged deltas" table=public.orders rows=21050 seconds=0.185445594
+time=2026-11-26T17:14:07.951Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=282 merge_deltas_ms=185 apply_ms=91 head_lsn_ms=5
+time=2026-11-26T17:14:09.049Z level=INFO msg="merged deltas" table=public.orders rows=21669 seconds=0.356926725
+time=2026-11-26T17:14:09.049Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=422 merge_deltas_ms=356 apply_ms=53 head_lsn_ms=11
+time=2026-11-26T17:14:10.022Z level=INFO msg="merged deltas" table=public.orders rows=22135 seconds=0.136235866
+time=2026-11-26T17:14:10.022Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=223 merge_deltas_ms=136 apply_ms=81 is_primary_ms=4
+time=2026-11-26T17:14:10.876Z level=INFO msg="merged deltas" table=public.orders rows=22765 seconds=0.180062198
+time=2026-11-26T17:14:10.876Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=257 merge_deltas_ms=180 apply_ms=76
+time=2026-11-26T17:14:41.035Z level=INFO msg="compaction started" table=public.orders why=idle base_rows=200000 delta_rows=23605
+2026/11/26 17:14:41 INFO rewrite clustering table=public.orders column=id why="row-group ranges overlap on 0.0% of pairs over 4 groups (customer_id 100.0%, amount 100.0%, status 100.0%)"
+2026/11/26 17:14:42 INFO clustered rewrite table=public.orders column=id rows=206456 delta_rows=23605 unordered=0 scan_seconds=0.07232083 buckets=3 spill_seconds=0.16945211 load_seconds=0.090208411 sorted=false seconds=1.701434302
+time=2026-11-26T17:14:42.898Z level=INFO msg=compacted table=public.orders rows=206456 seconds=1.855335584
+time=2026-11-26T17:15:07.529Z level=INFO msg="merged deltas" table=public.orders rows=513 seconds=0.024247081
+time=2026-11-26T17:15:08.198Z level=INFO msg="merged deltas" table=public.orders rows=1423 seconds=0.014592649
+time=2026-11-26T17:15:08.947Z level=INFO msg="merged deltas" table=public.orders rows=1913 seconds=0.045655591
+time=2026-11-26T17:15:09.566Z level=INFO msg="merged deltas" table=public.orders rows=2473 seconds=0.031389834
+time=2026-11-26T17:15:10.310Z level=INFO msg="merged deltas" table=public.orders rows=3033 seconds=0.042784701
+time=2026-11-26T17:15:11.044Z level=INFO msg="merged deltas" table=public.orders rows=3489 seconds=0.06287171
+time=2026-11-26T17:15:11.787Z level=INFO msg="merged deltas" table=public.orders rows=3976 seconds=0.035527796
+time=2026-11-26T17:15:12.530Z level=INFO msg="merged deltas" table=public.orders rows=4466 seconds=0.055991146
+time=2026-11-26T17:15:13.512Z level=INFO msg="merged deltas" table=public.orders rows=4956 seconds=0.055766817
+time=2026-11-26T17:15:14.404Z level=INFO msg="merged deltas" table=public.orders rows=5399 seconds=0.152412926
+time=2026-11-26T17:15:15.120Z level=INFO msg="merged deltas" table=public.orders rows=5889 seconds=0.048569248
+time=2026-11-26T17:15:15.816Z level=INFO msg="merged deltas" table=public.orders rows=6446 seconds=0.070415138
+time=2026-11-26T17:15:16.743Z level=INFO msg="merged deltas" table=public.orders rows=6936 seconds=0.076204563
+time=2026-11-26T17:15:17.619Z level=INFO msg="merged deltas" table=public.orders rows=7357 seconds=0.098761115
+time=2026-11-26T17:15:18.575Z level=INFO msg="merged deltas" table=public.orders rows=7847 seconds=0.190988933
+time=2026-11-26T17:15:18.575Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=259 merge_deltas_ms=191 apply_ms=67
+time=2026-11-26T17:15:19.546Z level=INFO msg="merged deltas" table=public.orders rows=8334 seconds=0.24738172
+time=2026-11-26T17:15:19.546Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=294 merge_deltas_ms=247 apply_ms=46
+time=2026-11-26T17:15:20.384Z level=INFO msg="merged deltas" table=public.orders rows=8870 seconds=0.14828442
+time=2026-11-26T17:15:21.219Z level=INFO msg="merged deltas" table=public.orders rows=9354 seconds=0.184021571
+time=2026-11-26T17:15:21.219Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=227 merge_deltas_ms=184 apply_ms=42
+time=2026-11-26T17:15:22.038Z level=INFO msg="merged deltas" table=public.orders rows=9838 seconds=0.230212554
+time=2026-11-26T17:15:22.038Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=289 merge_deltas_ms=230 apply_ms=58
+time=2026-11-26T17:15:22.692Z level=INFO msg="merged deltas" table=public.orders rows=10285 seconds=0.112652376
+time=2026-11-26T17:15:23.571Z level=INFO msg="merged deltas" table=public.orders rows=10841 seconds=0.126806712
+time=2026-11-26T17:15:24.320Z level=INFO msg="merged deltas" table=public.orders rows=11331 seconds=0.086996756
+time=2026-11-26T17:15:25.063Z level=INFO msg="merged deltas" table=public.orders rows=11821 seconds=0.126423863
+time=2026-11-26T17:15:25.886Z level=INFO msg="merged deltas" table=public.orders rows=12308 seconds=0.125816119
+time=2026-11-26T17:15:26.717Z level=INFO msg="merged deltas" table=public.orders rows=12740 seconds=0.12899368
+time=2026-11-26T17:15:27.509Z level=INFO msg="merged deltas" table=public.orders rows=13230 seconds=0.116746749
+time=2026-11-26T17:15:28.486Z level=INFO msg="merged deltas" table=public.orders rows=13720 seconds=0.140001654
+time=2026-11-26T17:15:29.143Z level=INFO msg="merged deltas" table=public.orders rows=14040 seconds=0.099849654
+time=2026-11-26T17:15:29.998Z level=INFO msg="merged deltas" table=public.orders rows=14530 seconds=0.248257684
+time=2026-11-26T17:15:29.998Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=295 merge_deltas_ms=248 apply_ms=44 head_lsn_ms=1
+time=2026-11-26T17:15:30.891Z level=INFO msg="merged deltas" table=public.orders rows=15017 seconds=0.226945589
+time=2026-11-26T17:15:30.891Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=293 merge_deltas_ms=226 apply_ms=65
+time=2026-11-26T17:15:31.635Z level=INFO msg="merged deltas" table=public.orders rows=15577 seconds=0.086633142
+time=2026-11-26T17:15:32.545Z level=INFO msg="merged deltas" table=public.orders rows=16137 seconds=0.225597861
+time=2026-11-26T17:15:32.545Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=264 merge_deltas_ms=225 apply_ms=34 head_lsn_ms=3
+time=2026-11-26T17:15:33.363Z level=INFO msg="merged deltas" table=public.orders rows=16617 seconds=0.181044963
+time=2026-11-26T17:15:33.363Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=207 merge_deltas_ms=181 apply_ms=25
+time=2026-11-26T17:15:34.259Z level=INFO msg="merged deltas" table=public.orders rows=17096 seconds=0.24772817
+time=2026-11-26T17:15:34.259Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=270 merge_deltas_ms=247 apply_ms=22
+time=2026-11-26T17:15:34.990Z level=INFO msg="merged deltas" table=public.orders rows=17621 seconds=0.139537075
+time=2026-11-26T17:15:35.706Z level=INFO msg="merged deltas" table=public.orders rows=18135 seconds=0.202304102
+time=2026-11-26T17:15:35.706Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=212 merge_deltas_ms=202 apply_ms=6 head_lsn_ms=3
+time=2026-11-26T17:15:36.513Z level=INFO msg="merged deltas" table=public.orders rows=18582 seconds=0.261374692
+time=2026-11-26T17:15:36.513Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=299 merge_deltas_ms=261 apply_ms=33 head_lsn_ms=3
+time=2026-11-26T17:15:37.354Z level=INFO msg="merged deltas" table=public.orders rows=19069 seconds=0.233594821
+time=2026-11-26T17:15:37.354Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=261 merge_deltas_ms=233 head_lsn_ms=17 apply_ms=6 is_primary_ms=3
+time=2026-11-26T17:15:38.362Z level=INFO msg="merged deltas" table=public.orders rows=19625 seconds=0.310236383
+time=2026-11-26T17:15:38.362Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=333 merge_deltas_ms=310 apply_ms=20 head_lsn_ms=2
+time=2026-11-26T17:15:39.306Z level=INFO msg="merged deltas" table=public.orders rows=20185 seconds=0.158253135
+time=2026-11-26T17:15:40.294Z level=INFO msg="merged deltas" table=public.orders rows=20767 seconds=0.203100763
+time=2026-11-26T17:15:40.294Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=234 merge_deltas_ms=203 apply_ms=30
+time=2026-11-26T17:15:41.450Z level=INFO msg="merged deltas" table=public.orders rows=21257 seconds=0.511482068
+time=2026-11-26T17:15:41.450Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=549 merge_deltas_ms=511 apply_ms=37
+time=2026-11-26T17:15:42.268Z level=INFO msg="merged deltas" table=public.orders rows=21803 seconds=0.167472527
+time=2026-11-26T17:15:42.268Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=224 merge_deltas_ms=167 apply_ms=53 is_primary_ms=2
+time=2026-11-26T17:15:43.170Z level=INFO msg="merged deltas" table=public.orders rows=22555 seconds=0.300799826
+time=2026-11-26T17:15:43.170Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=309 merge_deltas_ms=300 apply_ms=7
+time=2026-11-26T17:15:44.068Z level=INFO msg="merged deltas" table=public.orders rows=23105 seconds=0.192219001
+time=2026-11-26T17:15:44.068Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=248 merge_deltas_ms=192 apply_ms=52 head_lsn_ms=3
+time=2026-11-26T17:15:44.530Z level=INFO msg="merged deltas" table=public.orders rows=23555 seconds=0.100006143
+time=2026-11-26T17:16:14.635Z level=INFO msg="compaction started" table=public.orders why=idle base_rows=206456 delta_rows=24185
+2026/11/26 17:16:15 INFO clustered rewrite table=public.orders column=id rows=213624 delta_rows=24185 unordered=0 scan_seconds=0.012751605 buckets=3 spill_seconds=0.07929995 load_seconds=0.020817169 sorted=false seconds=0.62808409
+time=2026-11-26T17:16:15.444Z level=INFO msg=compacted table=public.orders rows=213624 seconds=0.803226272

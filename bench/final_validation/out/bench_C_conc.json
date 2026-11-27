@@ -1,0 +1,43 @@
+{
+ "state": "C",
+ "clients": 10,
+ "rounds": 3,
+ "results": {
+  "count_by_status/heap": {
+   "runs_s": [
+    6.586089497999637,
+    6.604942766000022,
+    6.551528642001358
+   ],
+   "median_s": 6.586089497999637,
+   "answers_different": 0
+  },
+  "count_by_status/routed": {
+   "runs_s": [
+    0.27629102600258193,
+    0.26015235100203427,
+    0.24812191800083383
+   ],
+   "median_s": 0.26015235100203427,
+   "answers_different": 0
+  },
+  "revenue_by_month_join/heap": {
+   "runs_s": [
+    46.342366766999476,
+    41.042214061002596,
+    43.655277399000624
+   ],
+   "median_s": 43.655277399000624,
+   "answers_different": 0
+  },
+  "revenue_by_month_join/routed": {
+   "runs_s": [
+    42.388767509997706,
+    43.492487562998576,
+    43.44115355000031
+   ],
+   "median_s": 43.44115355000031,
+   "answers_different": 0
+  }
+ }
+}

@@ -19,6 +19,8 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -41,6 +43,19 @@ type Snapshot struct {
 	// though nothing gates on it: an operator watching a mirror fall behind
 	// wants to see this climbing long before the guard fires (slotguard.go).
 	SlotRetainedBytes int64 `json:"slot_retained_bytes"`
+
+	// HaltedTables maps each table that is out of service to the reason its
+	// manifest records. The other tables on this Pod are still mirrored.
+	HaltedTables map[string]string `json:"halted_tables,omitempty"`
+
+	// ReplayHeld says the sidecar holds committed changes back until the local
+	// standby replays them (QS_GATE_ON_REPLAY). ReplayLSN is the standby's
+	// replay position and NeedLSN the commit end the oldest held change waits
+	// for; HeldTransactions counts them.
+	ReplayHeld       bool   `json:"replay_held,omitempty"`
+	ReplayLSN        string `json:"replay_lsn,omitempty"`
+	NeedLSN          string `json:"need_lsn,omitempty"`
+	HeldTransactions int    `json:"held_transactions,omitempty"`
 }
 
 type Health struct {
@@ -55,6 +70,7 @@ type Health struct {
 	diverged     bool
 	verifiedAt   time.Time
 	slotRetained int64
+	extra        []func() string
 
 	// bootstrapped is false until the mirror has a complete copy of the source
 	// to serve from. Without it a freshly-started node is READY: lag is
@@ -63,6 +79,26 @@ type Health struct {
 	// mistake as the idle-vs-stale one, inverted — there, no data arriving was
 	// read as staleness; here, no data having ARRIVED YET is read as freshness.
 	bootstrapped bool
+
+	// halted is table -> reason for every table this Pod has stopped mirroring.
+	// It is filled from the manifests before anything connects to the source,
+	// so a restarted Pod says "halted" and not "still bootstrapping".
+	halted map[string]string
+	// serveWithHalted keeps the Pod READY while some table is halted. Off by
+	// default: a reader behind the Service cannot tell a Pod that mirrors three
+	// tables from one that mirrors two, so the default is that it never meets
+	// the second kind. See SetServeWithHalted.
+	serveWithHalted bool
+	// tables is how many tables this Pod is configured to mirror, so that
+	// "some are halted" can be told from "all are". 0 means not told.
+	tables int
+
+	// The hold on committed changes the local standby has not replayed yet
+	// (see RecordReplayHold). Held is false when nothing is held.
+	replayHeld bool
+	replayLSN  string
+	needLSN    string
+	heldTxns   int
 }
 
 func New(slo time.Duration) *Health {
@@ -87,6 +123,23 @@ func (h *Health) RecordApply(appliedLSN, headLSN string, backlog int) {
 	}
 }
 
+// RecordReplayHold says committed changes are held back because the local
+// standby has replayed only through replayLSN, and the oldest of them ends at
+// needLSN. While it holds, the mirror is not caught up: the lag keeps growing
+// from the last time it was, and readiness says why (readyApartFromHalts).
+func (h *Health) RecordReplayHold(replayLSN, needLSN string, held int) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.replayHeld, h.replayLSN, h.needLSN, h.heldTxns = true, replayLSN, needLSN, held
+}
+
+// ClearReplayHold says the standby has replayed what was held, or nothing was.
+func (h *Health) ClearReplayHold() {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.replayHeld, h.replayLSN, h.needLSN, h.heldTxns = false, "", "", 0
+}
+
 // RecordCaughtUp marks the mirror current. Call on every empty poll — it is
 // what keeps an idle database from being reported as stale.
 func (h *Health) RecordCaughtUp() {
@@ -105,6 +158,88 @@ func (h *Health) RecordBootstrapped() {
 	h.caughtUpAt = time.Now()
 }
 
+// SetHalted records that a table is out of service and why. It reports whether
+// that was news, so a caller polling the tables can log a halt exactly once.
+func (h *Health) SetHalted(table, reason string) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.halted == nil {
+		h.halted = map[string]string{}
+	}
+	old, known := h.halted[table]
+	h.halted[table] = reason
+	return !known || old != reason
+}
+
+// ClearHalted records that a table is back in service (it was rebuilt).
+func (h *Health) ClearHalted(table string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	delete(h.halted, table)
+}
+
+// SetServeWithHalted chooses what one halted table does to the Pod. false (the
+// default): the Pod is unready while any table is halted. true: the Pod stays
+// ready on the strength of the healthy tables, and the halted one is refused
+// table by table instead (Table.ViewSQL will not produce a view for it).
+func (h *Health) SetServeWithHalted(on bool) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.serveWithHalted = on
+}
+
+// SetTables records how many tables this Pod mirrors. With every one of them
+// halted there is nothing to serve, and SetServeWithHalted does not apply.
+func (h *Health) SetTables(n int) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.tables = n
+}
+
+// maxHaltReason bounds one table's reason in the probe body and in a metric
+// label. A halt reason quotes the offending value, and that can be a jsonb
+// document; the kubelet keeps only the start of a probe body in the Pod's
+// events, and a label of unbounded size is a cardinality problem besides.
+const maxHaltReason = 160
+
+// maxHaltedListed bounds how many tables the reason line names.
+const maxHaltedListed = 5
+
+func truncateReason(s string) string {
+	s = strings.Join(strings.Fields(s), " ") // one line
+	r := []rune(s)
+	if len(r) <= maxHaltReason {
+		return s
+	}
+	return string(r[:maxHaltReason]) + "…"
+}
+
+// HaltedReason renders the halted tables as one line: sorted, each with its
+// reason, so two probes of the same state read identically. "" when none.
+func HaltedReason(halted map[string]string) string {
+	if len(halted) == 0 {
+		return ""
+	}
+	names := make([]string, 0, len(halted))
+	for t := range halted {
+		names = append(names, t)
+	}
+	sort.Strings(names)
+	parts := make([]string, 0, len(names))
+	for i, t := range names {
+		if i == maxHaltedListed {
+			parts = append(parts, fmt.Sprintf("and %d more", len(names)-i))
+			break
+		}
+		parts = append(parts, fmt.Sprintf("%s (%s)", t, truncateReason(halted[t])))
+	}
+	noun := "table is"
+	if len(names) > 1 {
+		noun = "tables are"
+	}
+	return fmt.Sprintf("%d %s halted and not mirrored: %s", len(names), noun, strings.Join(parts, "; "))
+}
+
 func (h *Health) RecordVerification(diverged bool) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -120,6 +255,14 @@ func (h *Health) Snapshot() Snapshot {
 		CompactionBacklog: h.backlog, Diverged: h.diverged,
 		Bootstrapped:      h.bootstrapped,
 		SlotRetainedBytes: h.slotRetained,
+		ReplayHeld:        h.replayHeld, ReplayLSN: h.replayLSN, NeedLSN: h.needLSN,
+		HeldTransactions: h.heldTxns,
+	}
+	if len(h.halted) > 0 {
+		s.HaltedTables = make(map[string]string, len(h.halted))
+		for t, r := range h.halted {
+			s.HaltedTables[t] = r
+		}
 	}
 	if !h.verifiedAt.IsZero() {
 		s.VerifiedAgo = time.Since(h.verifiedAt).Seconds()
@@ -129,6 +272,34 @@ func (h *Health) Snapshot() Snapshot {
 
 func (h *Health) Ready() (bool, string) {
 	s := h.Snapshot()
+	h.mu.Lock()
+	serve, tables := h.serveWithHalted, h.tables
+	h.mu.Unlock()
+	halted := HaltedReason(s.HaltedTables)
+	// First, because it is the one condition here that does not pass by
+	// itself: bootstrapping ends and lag recovers, a halt waits for an
+	// operator. Reporting either of those instead sends them to the wrong
+	// place — this used to read "mirror diverged" and, after a restart,
+	// "still bootstrapping".
+	if halted != "" && tables > 0 && len(s.HaltedTables) >= tables {
+		// The switch keeps the HEALTHY tables in service. There are none.
+		return false, halted + ". Every table is halted, so nothing is mirrored and the " +
+			"replication slot has been dropped. " +
+			"To rebuild a halted table, create a file named REBUILD in its mirror directory"
+	}
+	if halted != "" && !serve {
+		return false, halted + ". The other tables are still mirrored; " +
+			"this Pod is unready because QS_SERVE_WITH_HALTED_TABLES is not set. " +
+			"To rebuild a halted table, create a file named REBUILD in its mirror directory and restart the sidecar"
+	}
+	ok, why := h.readyApartFromHalts(s)
+	if ok && halted != "" {
+		why += "; DEGRADED, serving the other tables (QS_SERVE_WITH_HALTED_TABLES): " + halted
+	}
+	return ok, why
+}
+
+func (h *Health) readyApartFromHalts(s Snapshot) (bool, string) {
 	if !s.Bootstrapped {
 		return false, "still bootstrapping — no complete copy of the source yet"
 	}
@@ -136,14 +307,43 @@ func (h *Health) Ready() (bool, string) {
 		return false, "mirror diverged from source — verification failed"
 	}
 	if s.LagSeconds > h.slo.Seconds() {
+		if s.ReplayHeld {
+			// Not a stall and not a fault: the standby has not replayed the
+			// commits this mirror is holding back, and it will not show them
+			// until it has. Say so, with the two positions, so that nobody
+			// goes looking for a hung sidecar.
+			return false, fmt.Sprintf("waiting for local replay: %d change(s) held back until "+
+				"the standby replays through %s; standby replay is at %s, lag %.1fs exceeds freshnessSLO %.1fs",
+				s.HeldTransactions, s.NeedLSN, s.ReplayLSN, s.LagSeconds, h.slo.Seconds())
+		}
 		return false, fmt.Sprintf("lag %.1fs exceeds freshnessSLO %.1fs",
 			s.LagSeconds, h.slo.Seconds())
+	}
+	if s.ReplayHeld {
+		return true, fmt.Sprintf("lag %.1fs within SLO %.1fs; waiting for local replay: %d change(s) held "+
+			"back until the standby replays through %s (replay is at %s)",
+			s.LagSeconds, h.slo.Seconds(), s.HeldTransactions, s.NeedLSN, s.ReplayLSN)
 	}
 	return true, fmt.Sprintf("lag %.1fs within SLO %.1fs", s.LagSeconds, h.slo.Seconds())
 }
 
+// AddMetrics appends another component's Prometheus text to /metrics. The
+// DuckLake publisher reports through it.
+func (h *Health) AddMetrics(fn func() string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.extra = append(h.extra, fn)
+}
+
 func (h *Health) Metrics() string {
 	s := h.Snapshot()
+	h.mu.Lock()
+	extra := append([]func() string(nil), h.extra...)
+	h.mu.Unlock()
+	var more strings.Builder
+	for _, fn := range extra {
+		more.WriteString(fn())
+	}
 	ok, _ := h.Ready()
 	ready := 0
 	if ok {
@@ -157,13 +357,28 @@ func (h *Health) Metrics() string {
 	if s.Bootstrapped {
 		boot = 1
 	}
+	var hb strings.Builder
+	hb.WriteString("# HELP quicksilver_halted_tables Tables this Pod has stopped mirroring until an operator rebuilds them.\n" +
+		"# TYPE quicksilver_halted_tables gauge\n")
+	fmt.Fprintf(&hb, "quicksilver_halted_tables %d\n", len(s.HaltedTables))
+	hb.WriteString("# HELP quicksilver_table_halted 1 for each halted table, with the recorded reason.\n" +
+		"# TYPE quicksilver_table_halted gauge\n")
+	names := make([]string, 0, len(s.HaltedTables))
+	for t := range s.HaltedTables {
+		names = append(names, t)
+	}
+	sort.Strings(names)
+	for _, t := range names {
+		fmt.Fprintf(&hb, "quicksilver_table_halted{table=\"%s\",reason=\"%s\"} 1\n",
+			labelEscape(t), labelEscape(truncateReason(s.HaltedTables[t])))
+	}
 	return fmt.Sprintf(`# HELP quicksilver_lag_seconds Seconds since the mirror was last caught up.
 # TYPE quicksilver_lag_seconds gauge
 quicksilver_lag_seconds %.3f
 # HELP quicksilver_lag_bytes WAL bytes between source head and applied_lsn.
 # TYPE quicksilver_lag_bytes gauge
 quicksilver_lag_bytes %d
-# HELP quicksilver_ready 1 if the mirror is inside its freshness SLO.
+# HELP quicksilver_ready 1 if the readiness probe passes.
 # TYPE quicksilver_ready gauge
 quicksilver_ready %d
 # HELP quicksilver_compaction_backlog Delta files awaiting compaction.
@@ -178,7 +393,13 @@ quicksilver_bootstrapped %d
 # HELP quicksilver_slot_retained_bytes WAL this mirror's slot pins on the PRIMARY
 # TYPE quicksilver_slot_retained_bytes gauge
 quicksilver_slot_retained_bytes %d
-`, s.LagSeconds, s.LagBytes, ready, s.CompactionBacklog, diverged, boot, s.SlotRetainedBytes)
+`, s.LagSeconds, s.LagBytes, ready, s.CompactionBacklog, diverged, boot, s.SlotRetainedBytes) + hb.String() + more.String()
+}
+
+// labelEscape escapes a Prometheus label value. A halt reason quotes column
+// names and values, so it routinely contains double quotes.
+func labelEscape(s string) string {
+	return strings.NewReplacer(`\`, `\\`, `"`, `\"`, "\n", `\n`).Replace(s)
 }
 
 // Serve exposes /readyz (the Kubernetes readiness probe), /healthz (liveness —

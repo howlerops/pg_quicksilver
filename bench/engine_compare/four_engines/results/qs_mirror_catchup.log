@@ -1,0 +1,8 @@
+time=2026-11-25T00:55:01.143Z level=INFO msg="quicksilver mirror starting" cluster=bench pod=bench-1 mode=shadow ingest=logical tables="[public.orders public.customers]" slo=15s
+time=2026-11-25T00:55:01.180Z level=INFO msg="resuming from the existing slot" slot=qs_bench
+time=2026-11-25T00:55:01.613Z level=INFO msg="key index built" table=public.customers keys=500000 seconds=0.432970834
+time=2026-11-25T00:55:11.318Z level=INFO msg="key index built" table=public.orders keys=10000000 seconds=9.70410314
+time=2026-11-25T00:55:13.681Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=2135 apply_ms=2135
+time=2026-11-25T00:55:15.979Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=2296 apply_ms=2295
+time=2026-11-25T00:55:18.388Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=2408 apply_ms=2408
+time=2026-11-25T00:55:18.958Z level=WARN msg="slow tick: the apply loop overran its interval, which is what a latency tail is made of" total_ms=568 apply_ms=567

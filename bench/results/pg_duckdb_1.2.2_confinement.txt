@@ -1,0 +1,46 @@
+# pg_duckdb 1.2.2 + allowed-directories patch, private PostgreSQL 17.12, port 5690
+# command: bash bench/scripts/pg_duckdb_confinement_check.sh /var/lib/postgresql/qspgd/pg17/usr/lib/postgresql/17/bin 5690
+# extension: pg_duckdb 1.2.2, DuckDB v2.0.1
+# settings: duckdb.postgres_role=duckdb_users duckdb.allowed_directories=/var/lib/postgresql/qspgd/lake/ (enable_external_access not set: the patch turns it off itself)
+
+NOTICE:  role "app" has already been granted membership in role "duckdb_users" by role "postgres"
+== pg_duckdb confinement check: role=app member-of=duckdb_users port=5690
+== lake=/var/lib/postgresql/qspgd/lake outside=/var/lib/postgresql/qspgd/outside
+CASE a | expect SUCCEED | observed SUCCEED | ok | rows: 1
+CASE b | expect DENIED | observed DENIED | ok | ERROR:  (PGDuckDB/CreatePlan) Prepared query returned an error: Permission Error: Cannot access file "/var/lib/postgresql/qspgd/outside/s.parquet" - file system operations are disabled by configuration
+CASE c | expect DENIED | observed DENIED | ok | ERROR:  (PGDuckDB/CreatePlan) Prepared query returned an error: Permission Error: Cannot access file "/etc/passwd" - file system operations are disabled by configuration
+CASE d | expect DENIED | observed DENIED | ok | ERROR:  (PGDuckDB/CreatePlan) Prepared query returned an error: Permission Error: Cannot access file "/var/lib/postgresql/qspgd/lake/../outside/s.parquet" - file system operations are disabled by configuration
+CASE e | expect DENIED | observed DENIED | ok | ERROR:  (PGDuckDB/CreatePlan) Prepared query returned an error: Permission Error: Cannot access file "/var/lib/postgresql/qspgd/lake/link_out.parquet" - file system operations are disabled by configuration
+CASE f | expect DENIED | observed DENIED | ok | ERROR:  (PGDuckDB/pgduckdb_raw_query_cpp) Permission Error: Cannot write "/var/lib/postgresql/qspgd/lake/new.parquet": writes to local files are disabled by configuration
+CASE g | expect DENIED | observed DENIED | ok | ERROR:  (PGDuckDB/pgduckdb_raw_query_cpp) Permission Error: Cannot access file "/var/lib/postgresql/qspgd/outside/new.parquet" - file system operations are disabled by configuration
+CASE h | expect DENIED | observed DENIED | ok | ERROR:  (PGDuckDB/pgduckdb_raw_query_cpp) Permission Error: Cannot access file "/var/lib/postgresql/qspgd/outside/x.duckdb" - file system operations are disabled by configuration
+CASE i | expect DENIED | observed DENIED | ok | ERROR:  (PGDuckDB/CreatePlan) Prepared query returned an error: Permission Error: Cannot access file "http://127.0.0.1:9/x.parquet" - file system operations are disabled by configuration
+CASE j1 | expect DENIED | observed DENIED | ok | ERROR:  permission denied to set parameter "duckdb.allowed_directories"
+CASE j2 | expect DENIED | observed DENIED | ok | ERROR:  (PGDuckDB/pgduckdb_raw_query_cpp) Invalid Input Error: Cannot change configuration option "allowed_directories" - the configuration has been locked
+CASE j3 | expect DENIED | observed DENIED | ok | ERROR:  (PGDuckDB/pgduckdb_raw_query_cpp) Invalid Input Error: Cannot change configuration option "enable_external_access" - the configuration has been locked
+CASE j4 | expect DENIED | observed DENIED | ok | ERROR:  (PGDuckDB/pgduckdb_raw_query_cpp) Invalid Input Error: Cannot change configuration option "lock_configuration" - the configuration has been locked
+CASE k | expect SUCCEED | observed SUCCEED | ok | rows: 1
+== RESULT: PASS (every case matches its expectation)
+# exit=0
+
+# ---- STOCK pg_duckdb 1.2.2 (package pg-duckdb 1.2.2-1PGSTY~noble, pg_duckdb.so and libduckdb.so swapped into the private tree, LD_LIBRARY_PATH set to that lib dir, same server, same settings) ----
+# the reported DuckDB version is the same v2.0.1 as the patched build: the package's libduckdb.so is byte-identical to the one this run loaded
+
+NOTICE:  role "app" has already been granted membership in role "duckdb_users" by role "postgres"
+== pg_duckdb confinement check: role=app member-of=duckdb_users port=5690
+== lake=/var/lib/postgresql/qspgd/lake outside=/var/lib/postgresql/qspgd/outside
+CASE a | expect SUCCEED | observed DENIED | MISMATCH | ERROR:  (PGDuckDB/CreatePlan) Prepared query returned an error: Permission Error: File system LocalFileSystem has been disabled by configuration
+CASE b | expect DENIED | observed DENIED | ok | ERROR:  (PGDuckDB/CreatePlan) Prepared query returned an error: Permission Error: File system LocalFileSystem has been disabled by configuration
+CASE c | expect DENIED | observed DENIED | ok | ERROR:  (PGDuckDB/CreatePlan) Prepared query returned an error: Permission Error: File system LocalFileSystem has been disabled by configuration
+CASE d | expect DENIED | observed DENIED | ok | ERROR:  (PGDuckDB/CreatePlan) Prepared query returned an error: Permission Error: File system LocalFileSystem has been disabled by configuration
+CASE e | expect DENIED | observed DENIED | ok | ERROR:  (PGDuckDB/CreatePlan) Prepared query returned an error: Permission Error: File system LocalFileSystem has been disabled by configuration
+CASE f | expect DENIED | observed DENIED | ok | ERROR:  (PGDuckDB/pgduckdb_raw_query_cpp) Permission Error: File system LocalFileSystem has been disabled by configuration
+CASE g | expect DENIED | observed DENIED | ok | ERROR:  (PGDuckDB/pgduckdb_raw_query_cpp) Permission Error: File system LocalFileSystem has been disabled by configuration
+CASE h | expect DENIED | observed DENIED | ok | ERROR:  (PGDuckDB/pgduckdb_raw_query_cpp) Permission Error: File system LocalFileSystem has been disabled by configuration
+CASE i | expect DENIED | observed DENIED | ok | ERROR:  (PGDuckDB/CreatePlan) Prepared query returned an error: Extension Autoloading Error: An error occurred while trying to automatically install the required extension 'httpfs:
+CASE j1 | expect DENIED | observed DENIED | ok | ERROR:  permission denied to set parameter "duckdb.allowed_directories"
+CASE j2 | expect DENIED | observed DENIED | ok | ERROR:  (PGDuckDB/pgduckdb_raw_query_cpp) Permission Error: File system LocalFileSystem has been disabled by configuration
+CASE j3 | expect DENIED | observed ERROR | MISMATCH | ERROR:  (PGDuckDB/pgduckdb_raw_query_cpp) Invalid Input Error: Cannot enable external access while database is running
+CASE j4 | expect DENIED | observed SUCCEED | MISMATCH | rows: NOTICE:  result: Success	
+CASE k | expect SUCCEED | observed SUCCEED | ok | rows: 1
+== RESULT: FAIL (at least one case does not match its expectation)

@@ -1,0 +1,18 @@
+{
+ "engine": "mason",
+ "state": "A",
+ "mode": "cold",
+ "queries": {
+  "count_by_status": {
+   "sql": "SELECT status, count(*) FROM orders GROUP BY status ORDER BY status",
+   "ok": true,
+   "ms": [
+    66.40780799989443
+   ],
+   "best_ms": 66.40780799989443,
+   "median_ms": 66.40780799989443,
+   "rows": 6
+  }
+ },
+ "at": "2026-11-25T00:49:03.105595"
+}

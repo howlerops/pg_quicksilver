@@ -1,0 +1,19 @@
+{
+ "engine": "qs",
+ "state": "B",
+ "mode": "cold",
+ "queries": {
+  "count_by_status": {
+   "sql": "SELECT status, count(*) FROM orders GROUP BY status ORDER BY status",
+   "ok": true,
+   "ms": [
+    201.68746600029408
+   ],
+   "best_ms": 201.68746600029408,
+   "median_ms": 201.68746600029408,
+   "rows": 7
+  }
+ },
+ "at": "2026-11-25T00:56:46.882258",
+ "qs_viewgen_plus_create_view_s": 0.057747411000036664
+}

@@ -1,0 +1,19 @@
+{
+ "engine": "qs",
+ "state": "A",
+ "mode": "cold",
+ "queries": {
+  "count_star": {
+   "sql": "SELECT count(*) FROM orders",
+   "ok": true,
+   "ms": [
+    6.969723000111117
+   ],
+   "best_ms": 6.969723000111117,
+   "median_ms": 6.969723000111117,
+   "rows": 1
+  }
+ },
+ "at": "2026-11-25T00:46:36.104777",
+ "qs_viewgen_plus_create_view_s": 0.058201681000355165
+}

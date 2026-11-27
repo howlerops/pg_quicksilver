@@ -1,0 +1,18 @@
+{
+ "engine": "mason",
+ "state": "A",
+ "mode": "cold",
+ "queries": {
+  "pk_lookup": {
+   "sql": "SELECT * FROM orders WHERE id = '001022db-a952-4fd7-955c-8f459a6dd91d'",
+   "ok": true,
+   "ms": [
+    1768.4594350002953
+   ],
+   "best_ms": 1768.4594350002953,
+   "median_ms": 1768.4594350002953,
+   "rows": 1
+  }
+ },
+ "at": "2026-11-25T00:46:59.320106"
+}

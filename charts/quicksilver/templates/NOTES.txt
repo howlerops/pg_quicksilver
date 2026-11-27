@@ -1,0 +1,52 @@
+The Quicksilver plugin is installed in {{ .Values.operatorNamespace }} and registered with
+CloudNativePG as {{ include "quicksilver.pluginName" . }}.
+
+Nothing changes until a Cluster names it. CloudNativePG 1.26 or newer is required.
+
+The operator does not ask a plugin at admission, so a Cluster with a bad parameter is
+created anyway. The plugin says so in the Cluster's status:
+
+  kubectl get cluster <name> -o jsonpath='{.status.pluginStatus[?(@.name=="{{ include "quicksilver.pluginName" . }}")].status}'
+
+1. Mirror only (the stock PostgreSQL image stays):
+
+     spec:
+       instances: 3
+       plugins:
+         - name: {{ include "quicksilver.pluginName" . }}
+           parameters:
+             tables: public.events
+
+   Each instance Pod gets the sidecar {{ .Values.image.mirror }}
+
+2. Mirror, DuckLake and routed reads (needs the operand image):
+
+     spec:
+       instances: 3
+       imageName: {{ .Values.image.postgres }}
+       postgresql:
+         shared_preload_libraries: ["pg_duckdb", "pg_quicksilver"]   # in this order
+         parameters:
+           duckdb.extension_directory: /usr/lib/quicksilver/duckdb-extensions
+       plugins:
+         - name: {{ include "quicksilver.pluginName" . }}
+           parameters:
+             tables: public.events
+             ducklake: "true"
+             serveWithHaltedTables: "true"
+
+   and, once, in the mirrored database on the primary:
+
+     CREATE EXTENSION pg_duckdb;  CREATE EXTENSION pg_quicksilver;
+     ALTER DATABASE app SET quicksilver.route = 'shadow';   -- then 'auto'
+
+   examples/cluster-routed.yaml in the repository is the whole Cluster.
+
+Set max_slot_wal_keep_size on every Cluster that names the plugin: a mirror that
+cannot keep up otherwise fills the primary's disk.
+
+Check a mirror:
+
+  kubectl exec <replica-pod> -c quicksilver-mirror -- /qs-verify \
+    -dsn "host=<cluster>-rw user=postgres password=... dbname=app" \
+    -mirror /var/lib/postgresql/data/quicksilver -table public.events

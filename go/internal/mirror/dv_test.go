@@ -73,10 +73,10 @@ func TestJSONDeletionVectorsStillApply(t *testing.T) {
 
 	// And the view has to read it with the reader that matches, not the one the
 	// current format uses.
-	if sub := dvSubquery(legacy); !strings.Contains(sub, "read_json") {
+	if sub := dvSubquery(legacy, legacy); !strings.Contains(sub, "read_json") {
 		t.Fatalf("the view would read a JSON vector with the wrong reader: %s", sub)
 	}
-	if sub := dvSubquery(tbl.dvPathGen(rel, 5)); !strings.Contains(sub, "read_parquet") {
+	if sub := dvSubquery(tbl.dvPathGen(rel, 5), "x"); !strings.Contains(sub, "read_parquet") {
 		t.Fatalf("the view would read a Parquet vector with the wrong reader: %s", sub)
 	}
 }
@@ -89,6 +89,7 @@ func TestNewestVectorWinsAcrossEncodings(t *testing.T) {
 	dir := t.TempDir()
 	_ = os.MkdirAll(filepath.Join(dir, "dv"), 0o755)
 	tbl := &Table{Dir: dir}
+	tbl.publisher().grace = 0 // dropDV retires; this is about what it finds
 	rel := "base/000001.parquet"
 
 	b, _ := json.Marshal([]int{1})

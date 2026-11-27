@@ -1,0 +1,19 @@
+{
+ "engine": "qs",
+ "state": "B",
+ "mode": "cold",
+ "queries": {
+  "sum_amount": {
+   "sql": "SELECT sum(amount) FROM orders",
+   "ok": true,
+   "ms": [
+    157.5931520001177
+   ],
+   "best_ms": 157.5931520001177,
+   "median_ms": 157.5931520001177,
+   "rows": 1
+  }
+ },
+ "at": "2026-11-25T00:56:50.959379",
+ "qs_viewgen_plus_create_view_s": 0.06283619099986026
+}

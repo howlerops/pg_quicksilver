@@ -1,0 +1,19 @@
+config	protocol	round	transactions	median_us	p95_us
+not loaded	prepared	1	846069	13	54
+not loaded	simple	1	627534	23	68
+off	prepared	1	918247	13	53
+auto	prepared	1	913408	13	54
+off	simple	1	678092	24	59
+auto	simple	1	611267	26	63
+not loaded	prepared	2	878825	13	56
+not loaded	simple	2	678866	23	61
+off	prepared	2	847117	14	57
+auto	prepared	2	871926	13	55
+off	simple	2	681170	23	56
+auto	simple	2	625968	26	58
+not loaded	prepared	3	1082745	13	48
+not loaded	simple	3	724639	23	41
+off	prepared	3	1312446	13	20
+auto	prepared	3	1362401	13	19
+off	simple	3	697452	23	45
+auto	simple	3	642915	26	47

@@ -33,7 +33,7 @@
 # again in the summary, so a run that skipped something cannot be read as a run
 # that covered it.
 set -uo pipefail
-cd "$(dirname "$0")/../.."
+cd "$(dirname "$0")/../.." || exit 1
 
 FULL=${FULL:-0}
 ONLY=${ONLY:-}
@@ -123,7 +123,11 @@ run cluster       600 bash bench/scripts/setup_cluster.sh
 
 # ---- 1. no database required -------------------------------------------------
 run unit          900 go -C go test ./... -count=1
-run race          900 go -C go test ./internal/mirror ./cmd/qs-mirror -race -count=1
+# The full mirror suite under the race detector is longer than go test's default
+# ten minutes, which made this section fail with "test timed out" while nothing
+# was wrong. CI bounds it the same way (ci.yml, race-mirror and race). The outer
+# limit is longer than the go one, so a hang still ends as go's own message.
+run race         2700 go -C go test ./internal/mirror ./cmd/qs-mirror -race -count=1 -timeout 40m
 run vet           300 go -C go vet ./...
 
 # The escape hatches have to keep working, or they are not escape hatches. Each

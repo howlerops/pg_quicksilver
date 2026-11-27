@@ -1,0 +1,18 @@
+{
+ "engine": "pg",
+ "state": "A",
+ "mode": "cold",
+ "queries": {
+  "count_star": {
+   "sql": "SELECT count(*) FROM orders",
+   "ok": true,
+   "ms": [
+    681.7078240001138
+   ],
+   "best_ms": 681.7078240001138,
+   "median_ms": 681.7078240001138,
+   "rows": 1
+  }
+ },
+ "at": "2026-11-25T00:46:25.712116"
+}

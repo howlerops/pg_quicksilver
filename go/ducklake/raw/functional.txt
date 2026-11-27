@@ -1,0 +1,66 @@
+=== mode=sql: publish after every apply
+  initial load                       snap=2 +1 -0 dv=0 46.3ms rows=20000 OK
+  apply 1                            snap=3 +1 -0 dv=1 47.0ms rows=20000 OK
+  apply 2                            snap=4 +1 -0 dv=2 43.5ms rows=20000 OK
+  apply 3                            snap=5 +1 -0 dv=3 56.2ms rows=20000 OK
+  apply 4                            snap=6 +1 -0 dv=4 62.2ms rows=20000 OK
+  apply 5                            snap=7 +1 -0 dv=5 88.1ms rows=20000 OK
+  apply 6                            snap=8 +1 -0 dv=6 108.2ms rows=20000 OK
+  apply 7                            snap=9 +1 -0 dv=7 104.0ms rows=20000 OK
+  apply 8                            snap=10 +1 -0 dv=6 87.5ms rows=20000 OK
+  apply 9                            snap=11 +1 -0 dv=9 109.1ms rows=20000 OK
+  apply 10                           snap=12 +1 -0 dv=9 110.1ms rows=20000 OK
+  apply 11                           snap=13 +1 -0 dv=11 144.5ms rows=20000 OK
+  apply 12                           snap=14 +1 -0 dv=11 153.9ms rows=20000 OK
+  apply 13                           snap=15 +1 -0 dv=12 118.0ms rows=20000 OK
+  apply 14                           snap=16 +1 -0 dv=14 139.9ms rows=20000 OK
+  apply 15                           snap=17 +1 -0 dv=13 142.7ms rows=20000 OK
+  apply 16 merge_deltas              snap=18 +2 -8 dv=6 178.6ms rows=20000 OK
+  apply 17                           snap=19 +1 -0 dv=10 138.4ms rows=20000 OK
+  apply 18                           snap=20 +1 -0 dv=11 158.7ms rows=20000 OK
+  apply 19                           snap=21 +1 -0 dv=10 134.2ms rows=20000 OK
+  apply 20                           snap=22 +1 -0 dv=13 185.3ms rows=20000 OK
+  unchanged manifest: no snapshot
+  files a reader is given: 22; files the manifest names: 14
+  ADD COLUMN region DEFAULT 'emea'    snap=23
+    region values: [('emea', 20000)]
+  apply after evolve                 snap=24 +1 -0 dv=12 138.9ms rows=20000 OK
+    region values: [('emea', 19760), ('x', 240)]
+  base rewrite (compact)             snap=25 +1 -15 dv=0 146.3ms rows=20000 OK
+  time travel: 23/23 snapshots reproduce the manifest they were published from
+  snapshots in catalog: 26 for 23 published manifests (+ create schema/table)
+  patch file: manifest names column-partial patch files ['000026.parquet']; a DuckLake data file is whole rows
+=== mode=catalog: publish after every apply
+  initial load                       snap=2 +1 -0 dv=0 59.6ms rows=20000 OK
+  apply 1                            snap=3 +1 -0 dv=1 45.2ms rows=20000 OK
+  apply 2                            snap=4 +1 -0 dv=2 65.1ms rows=20000 OK
+  apply 3                            snap=5 +1 -0 dv=3 65.0ms rows=20000 OK
+  apply 4                            snap=6 +1 -0 dv=4 69.3ms rows=20000 OK
+  apply 5                            snap=7 +1 -0 dv=5 56.1ms rows=20000 OK
+  apply 6                            snap=8 +1 -0 dv=6 69.9ms rows=20000 OK
+  apply 7                            snap=9 +1 -0 dv=7 88.0ms rows=20000 OK
+  apply 8                            snap=10 +1 -0 dv=6 66.2ms rows=20000 OK
+  apply 9                            snap=11 +1 -0 dv=9 80.8ms rows=20000 OK
+  apply 10                           snap=12 +1 -0 dv=9 88.5ms rows=20000 OK
+  apply 11                           snap=13 +1 -0 dv=11 91.4ms rows=20000 OK
+  apply 12                           snap=14 +1 -0 dv=11 95.2ms rows=20000 OK
+  apply 13                           snap=15 +1 -0 dv=12 95.0ms rows=20000 OK
+  apply 14                           snap=16 +1 -0 dv=14 105.9ms rows=20000 OK
+  apply 15                           snap=17 +1 -0 dv=13 102.1ms rows=20000 OK
+  apply 16 merge_deltas              snap=18 +2 -8 dv=6 102.1ms rows=20000 OK
+  apply 17                           snap=19 +1 -0 dv=10 82.1ms rows=20000 OK
+  apply 18                           snap=20 +1 -0 dv=11 82.8ms rows=20000 OK
+  apply 19                           snap=21 +1 -0 dv=10 85.0ms rows=20000 OK
+  apply 20                           snap=22 +1 -0 dv=13 100.3ms rows=20000 OK
+  unchanged manifest: no snapshot
+  files a reader is given: 14; files the manifest names: 14
+  ADD COLUMN region DEFAULT 'emea'    snap=23
+    region values: [('emea', 20000)]
+  apply after evolve                 snap=24 +1 -0 dv=12 134.3ms rows=20000 OK
+    region values: [('emea', 19760), ('x', 240)]
+  base rewrite (compact)             snap=25 +1 -15 dv=0 44.7ms rows=20000 OK
+  time travel: 23/23 snapshots reproduce the manifest they were published from
+  snapshots in catalog: 26 for 23 published manifests (+ create schema/table)
+  patch file: manifest names column-partial patch files ['000026.parquet']; a DuckLake data file is whole rows
+=== with QS_PARTIAL_DELTAS=0 the same change is a whole row and publishes
+  OK [('patched', 50)]

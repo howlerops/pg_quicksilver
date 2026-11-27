@@ -28,6 +28,7 @@ package mirror
 
 import (
 	"fmt"
+	"math/bits"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -121,10 +122,19 @@ func (a loc) sameRow(b loc) bool { return a.File == b.File && a.Pos == b.Pos }
 // both have to land on the same key; when the column is an integer type they
 // land on `num`, and the string half stays empty — which is what keeps a
 // several-million-entry map free of pointers.
+//
+// A UUID is the other key people actually use, and as text it was the worst
+// case this file had: 36 bytes on the heap per key behind a pointer the
+// collector follows, 190 bytes a key all told and 169 ms of every GC cycle at
+// four million of them. It is 128 bits, so it is held as 128 bits — the high
+// half in `num`, the low half in `lo` — and indexed in a map as pointer-free as
+// the integer one.
 type rowKey struct {
-	num   int64
-	str   string
-	isNum bool
+	num    int64
+	lo     uint64
+	str    string
+	isNum  bool
+	isUUID bool
 }
 
 // String renders the key as PostgreSQL would print it. Used for the persisted
@@ -133,103 +143,556 @@ func (k rowKey) String() string {
 	if k.isNum {
 		return strconv.FormatInt(k.num, 10)
 	}
+	if k.isUUID {
+		return formatUUID(uint64(k.num), k.lo)
+	}
 	return k.str
 }
 
-// keyOf converts a raw key value — text from pgoutput, an int64 from Parquet —
-// into the table's key form.
-func (t *Table) keyOf(v any) rowKey { return keyFor(t.numericKey, v) }
+const hexDigits = "0123456789abcdef"
+
+// parseUUID reads a UUID in exactly the form PostgreSQL prints one: 36 bytes,
+// lowercase hex, hyphens after the 8th, 12th, 16th and 20th digit.
+//
+// EXACTLY that form, and the strictness is what makes the compact key safe to
+// use without knowing the column's type. PostgreSQL accepts braces, upper case
+// and no hyphens on input and prints none of them for a `uuid` column, so a
+// uuid key always parses. A `text` key can hold any of those spellings, and
+// there 'A0…' and 'a0…' are DIFFERENT keys — so anything that is not already
+// canonical is refused here and stays a string, and formatUUID gives back
+// byte for byte what was parsed.
+func parseUUID(s string) (hi, lo uint64, ok bool) {
+	if len(s) != 36 || s[8] != '-' || s[13] != '-' || s[18] != '-' || s[23] != '-' {
+		return 0, 0, false
+	}
+	n := 0
+	for i := 0; i < 36; i++ {
+		c := s[i]
+		var d uint64
+		switch {
+		case c >= '0' && c <= '9':
+			d = uint64(c - '0')
+		case c >= 'a' && c <= 'f':
+			d = uint64(c-'a') + 10
+		case c == '-' && (i == 8 || i == 13 || i == 18 || i == 23):
+			continue
+		default:
+			return 0, 0, false
+		}
+		if n < 16 {
+			hi = hi<<4 | d
+		} else {
+			lo = lo<<4 | d
+		}
+		n++
+	}
+	return hi, lo, true
+}
+
+func formatUUID(hi, lo uint64) string {
+	var b [36]byte
+	j := 0
+	for i := 0; i < 32; i++ {
+		if i == 8 || i == 12 || i == 16 || i == 20 {
+			b[j] = '-'
+			j++
+		}
+		w, sh := hi, uint(60-4*i)
+		if i >= 16 {
+			w, sh = lo, uint(60-4*(i-16))
+		}
+		b[j] = hexDigits[(w>>sh)&0xf]
+		j++
+	}
+	return string(b[:])
+}
+
+// keyMode is which identity a table's primary key has, decided once from the
+// column's declared type.
+//
+//	keyText     the bytes PostgreSQL prints (a uuid among them, held as 128 bits)
+//	keyInt      an int64
+//	keyDecimal  the numeric VALUE, as canonNumeric spells it
+//
+// The third exists because a PostgreSQL numeric key is unique by value and not
+// by display scale: the source cannot hold both 1.5 and 1.50, but it prints
+// whichever was stored, and a file an earlier binary wrote as DECIMAL(38,9)
+// gives the same key back as 1.500000000. Comparing those as text left an old
+// row beside every update of such a key. So the key of a numeric column is its
+// value in one spelling, whatever spelling arrives, and it is made HERE, in
+// keyFor, which is the only place a rowKey is made from a value: the index and
+// its file on disk, the delta maps, the merge's dedupe, carry-forward and both
+// rewrites all take their keys from it. The rows themselves keep the spelling
+// they were written with; only their identity is canonical.
+type keyMode uint8
+
+const (
+	keyText keyMode = iota
+	keyInt
+	keyDecimal
+)
+
+// keyModeOf is the key identity of a column of this PostgreSQL type.
+func keyModeOf(pgType string) keyMode {
+	if isIntegerType(arrowType(pgType)) {
+		return keyInt
+	}
+	if _, _, _, isNumeric := numericSpec(pgType); isNumeric {
+		return keyDecimal
+	}
+	return keyText
+}
+
+func (t *Table) keyMode() keyMode {
+	switch {
+	case t.numericKey:
+		return keyInt
+	case t.decimalKey:
+		return keyDecimal
+	}
+	return keyText
+}
+
+// keyOf converts a raw key value — text from pgoutput, an int64, a decimal or a
+// 16-byte uuid from Parquet — into the table's key form.
+func (t *Table) keyOf(v any) rowKey { return keyFor(t.keyMode(), v) }
 
 // keyFor is keyOf without a Table, so the background compactor can build keys
-// from a flag captured before it started rather than reading a live field.
-func keyFor(numeric bool, v any) rowKey {
+// from a mode captured before it started rather than reading a live field.
+func keyFor(mode keyMode, v any) rowKey {
 	switch x := v.(type) {
 	case nil:
 		return rowKey{}
 	case int64:
-		if numeric {
+		if mode == keyInt {
 			return rowKey{num: x, isNum: true}
 		}
+		// The decimal text of an integer is already canonical.
 		return rowKey{str: strconv.FormatInt(x, 10)}
 	case int32:
-		return keyFor(numeric, int64(x))
+		return keyFor(mode, int64(x))
 	case int:
-		return keyFor(numeric, int64(x))
+		return keyFor(mode, int64(x))
 	case string:
-		return keyStringFor(numeric, x)
+		return keyStringFor(mode, x)
+	case uuidValue:
+		// A uuid from a file that stores it as 16 bytes. The same key as its
+		// text, which is how it arrives from pgoutput and from an older file.
+		hi, lo := x.halves()
+		return rowKey{num: int64(hi), lo: lo, isUUID: true}
+	case decimalValue:
+		return keyStringFor(mode, x.String())
+	case float64:
+		// As PostgreSQL prints it, which is how the same key arrives from
+		// pgoutput: fmt's 1e+06 is not the text of 1000000.
+		return keyStringFor(mode, pgFloat(x, 64))
+	case float32:
+		return keyStringFor(mode, pgFloat(float64(x), 32))
 	default:
-		return keyStringFor(numeric, fmt.Sprint(x))
+		return keyStringFor(mode, fmt.Sprint(x))
 	}
 }
 
 // keyOfString is keyOf for a value already known to be text.
 //
-// A numeric key column whose text will not parse falls back to the string form
+// An integer key column whose text will not parse falls back to the string form
 // rather than erroring. That is a value PostgreSQL could not have stored in an
 // integer column, so it should not arise; if it somehow does, a key that fails
 // to match is visible as a divergence, whereas a panic in the apply loop takes
-// the mirror down.
-func (t *Table) keyOfString(s string) rowKey { return keyStringFor(t.numericKey, s) }
+// the mirror down. A numeric column's text that is not a number is kept as it
+// is, for the same reason.
+func (t *Table) keyOfString(s string) rowKey { return keyStringFor(t.keyMode(), s) }
 
-func keyStringFor(numeric bool, s string) rowKey {
-	if numeric {
+func keyStringFor(mode keyMode, s string) rowKey {
+	switch mode {
+	case keyInt:
 		if n, err := strconv.ParseInt(s, 10, 64); err == nil {
 			return rowKey{num: n, isNum: true}
 		}
+	case keyDecimal:
+		// Never a uuid, and never an int64: one form per table is what lets
+		// the file on disk hold every key.
+		return rowKey{str: canonNumeric(s)}
+	}
+	if hi, lo, ok := parseUUID(s); ok {
+		return rowKey{num: int64(hi), lo: lo, isUUID: true}
 	}
 	return rowKey{str: s}
 }
 
-// keyIndex maps keys to locations, with the integer keys held separately so
-// that the common case is a map the garbage collector never has to walk.
-type keyIndex struct {
-	nums map[int64]loc
-	strs map[string]loc
+// canonNumericMaxShift bounds the zeros an exponent may make canonNumeric
+// write. PostgreSQL's numeric holds at most 131072 digits before the point and
+// 16383 after it, so nothing the source can store is refused.
+const canonNumericMaxShift = 1 << 18
+
+// canonNumeric is the one spelling of a numeric value: no plus sign, no leading
+// zeros, no trailing fractional zeros, no exponent, zero as "0" whatever its
+// sign or scale. NaN and the infinities, which PostgreSQL's numeric has, are
+// "NaN", "Infinity" and "-Infinity". Text that is not a number comes back
+// unchanged.
+//
+//	1.50  1.500000000  +1.5  01.5  15e-1  0.15E1   ->  1.5
+//	7.0   7.  007  7e0  0.7e+1                      ->  7
+//	-0  0.00  -0.0  0e5                             ->  0
+func canonNumeric(s string) string {
+	// The common key is a plain integer, already canonical: no allocation.
+	if n := len(s); n > 0 && n < 40 && (s[0] != '0' || n == 1) {
+		plain := true
+		for i := 0; i < n; i++ {
+			if s[i] < '0' || s[i] > '9' {
+				plain = false
+				break
+			}
+		}
+		if plain {
+			return s
+		}
+	}
+	in := strings.TrimSpace(s)
+	neg := false
+	if in != "" && (in[0] == '+' || in[0] == '-') {
+		neg = in[0] == '-'
+		in = in[1:]
+	}
+	switch strings.ToLower(in) {
+	case "nan":
+		return "NaN" // PostgreSQL has one NaN, and it has no sign
+	case "infinity", "inf":
+		if neg {
+			return "-Infinity"
+		}
+		return "Infinity"
+	}
+	mant, exp := in, 0
+	if i := strings.IndexAny(in, "eE"); i >= 0 {
+		e, err := strconv.Atoi(in[i+1:])
+		if err != nil || e > canonNumericMaxShift || e < -canonNumericMaxShift {
+			return s
+		}
+		mant, exp = in[:i], e
+	}
+	ip, fp := mant, ""
+	if i := strings.IndexByte(mant, '.'); i >= 0 {
+		ip, fp = mant[:i], mant[i+1:]
+	}
+	if ip == "" && fp == "" {
+		return s
+	}
+	for i := 0; i < len(ip); i++ {
+		if ip[i] < '0' || ip[i] > '9' {
+			return s
+		}
+	}
+	for i := 0; i < len(fp); i++ {
+		if fp[i] < '0' || fp[i] > '9' {
+			return s
+		}
+	}
+	// Every digit, and where the point falls among them. Zeros that carry no
+	// value go first, so that an exponent on zero is not a shift at all.
+	point := len(ip) + exp
+	digits := ip + fp
+	lead := 0
+	for lead < len(digits) && digits[lead] == '0' {
+		lead++
+	}
+	digits, point = digits[lead:], point-lead
+	digits = strings.TrimRight(digits, "0")
+	if digits == "" {
+		return "0"
+	}
+	var b strings.Builder
+	if neg {
+		b.WriteByte('-')
+	}
+	switch {
+	case point <= 0:
+		b.WriteString("0.")
+		b.WriteString(strings.Repeat("0", -point))
+		b.WriteString(digits)
+	case point >= len(digits):
+		b.WriteString(digits)
+		b.WriteString(strings.Repeat("0", point-len(digits)))
+	default:
+		b.WriteString(digits[:point])
+		b.WriteByte('.')
+		b.WriteString(digits[point:])
+	}
+	return b.String()
 }
 
-func newKeyIndex(hint int) *keyIndex {
-	return &keyIndex{nums: make(map[int64]loc, hint)}
+// keyIndex maps keys to locations, with the integer and UUID keys held
+// separately so that the common cases are maps the garbage collector never has
+// to walk. Only a key that is neither falls through to the string map.
+//
+// A table's keys are all of one form, so only one of the three is ever built,
+// and it is built on the first set rather than in newKeyIndex: the hint is the
+// table's row count, and spending it on the integer map of a table keyed by
+// UUID bought several hundred megabytes of empty buckets and left the map that
+// was actually filled to grow from nothing.
+//
+// The maps are no longer the whole index. When `disk` is set, the keys of the
+// base file are in a sorted file (kidx.go) — integers, uuids, and keys of any
+// other type as their exact bytes — and the maps hold only what is NOT there:
+// every key whose current row is in a delta file, and a key that is not of the
+// table's kind at all. The rule that keeps the two from disagreeing is one
+// invariant:
+//
+//	a key is in a map  =>  none of its records in the file is live
+//
+// and "live" is one bit per base position, `gone`. Deleting a key, or moving it
+// to a delta, sets the bit; nothing ever clears one, because a base position
+// that stopped being a key's current row never becomes it again — the next
+// rewrite makes a new file with a new index. So the answer to "where is this
+// key" is the map if it is there, and otherwise the file's record for it unless
+// its bit is set, which are exactly the answers the one big map gave.
+//
+// `gone` is seeded from the deletion vector the manifest names and thereafter
+// kept by set and del themselves, rather than read from the table's dead set on
+// every lookup. The two say the same thing for the base file, but markDead and
+// the index are updated at different moments of an Apply (and of a swap), and
+// an index whose answers depend on which of the two ran first is one every
+// caller would have to be re-read against. It costs a bit per row: 1.25 MB at
+// ten million.
+type keyIndex struct {
+	nums  map[int64]loc
+	uuids map[[2]uint64]loc
+	strs  map[string]loc
+	hint  int
+
+	disk *diskIndex
+	gone []uint64 // one bit per base position: this row is not its key's current one
+	live int      // records of the file whose bit is clear
+	// hashOv holds the digest of a base row where it differs from the one in
+	// the file: learned, or forgotten, since the file was written (elide.go).
+	// Only a patched or elided row gets one, so it is bounded by the deltas.
+	hashOv map[int32]uint64
+	// deadExtras is how many rows of the base file were dead and of a key form
+	// the file does not hold, so that seedGone does not count them against it.
+	deadExtras int
+}
+
+func newKeyIndex(hint int) *keyIndex { return &keyIndex{hint: hint} }
+
+// attach puts a base file's index underneath the maps. Every record starts
+// live; seedGone and markGone say otherwise.
+func (x *keyIndex) attach(d *diskIndex) {
+	x.disk = d
+	x.gone = make([]uint64, (d.rows+63)/64)
+	x.live = d.n
+}
+
+// close releases the mapping. The index must not be used afterwards.
+func (x *keyIndex) close() {
+	if x == nil || x.disk == nil {
+		return
+	}
+	x.disk.close()
+}
+
+func (x *keyIndex) isGone(p int32) bool {
+	w := int(p) >> 6
+	return w < len(x.gone) && x.gone[w]&(1<<(uint(p)&63)) != 0
+}
+
+// setGone marks a base position and reports whether it was clear.
+func (x *keyIndex) setGone(p int) bool {
+	w := p >> 6
+	if w >= len(x.gone) {
+		return false
+	}
+	bit := uint64(1) << (uint(p) & 63)
+	if x.gone[w]&bit != 0 {
+		return false
+	}
+	x.gone[w] |= bit
+	return true
+}
+
+// seedGone applies the base file's dead set as the manifest names it.
+func (x *keyIndex) seedGone(d *deadSet) {
+	if x.disk == nil || d == nil {
+		return
+	}
+	n := 0
+	for w, word := range d.words {
+		for word != 0 {
+			if x.setGone(w<<6 | bits.TrailingZeros64(word)) {
+				n++
+			}
+			word &= word - 1
+		}
+	}
+	x.live -= n - x.deadExtras
+	x.deadExtras = 0
+}
+
+// markGone marks positions of records in the file as not live.
+func (x *keyIndex) markGone(positions []int) {
+	if x.disk == nil {
+		return
+	}
+	for _, p := range positions {
+		if x.setGone(p) {
+			x.live--
+		}
+	}
+}
+
+// diskLive finds the key's live record in the file, if it has one.
+//
+// A key can have more than one record — a rewrite folds in both copies of a row
+// it caught mid-supersede — and at most one of them is live. If the dead set
+// has not said which, the highest position is the newest, as it always was.
+func (x *keyIndex) diskLive(k rowKey) (i int, pos int32, ok bool) {
+	d := x.disk
+	if d == nil {
+		return 0, 0, false
+	}
+	kk, text, held := kidxKeyOf(d.kind, k)
+	if !held {
+		return 0, 0, false
+	}
+	for j := d.lowerBound(kk); j < d.n && d.keyAt(j) == kk; j++ {
+		// For a key of any length kk is a hash, and the record is this key's
+		// only if the key in the heap is these bytes.
+		if !d.holds(j, text) {
+			continue
+		}
+		if p := d.posAt(j); !x.isGone(p) {
+			i, pos, ok = j, p, true
+		}
+	}
+	return i, pos, ok
+}
+
+func (x *keyIndex) diskLoc(i int, pos int32) loc {
+	l := loc{File: x.disk.file, Pos: pos, Hash: x.disk.hashAt(i)}
+	if len(x.hashOv) > 0 {
+		if h, ok := x.hashOv[pos]; ok {
+			l.Hash = h
+		}
+	}
+	return l
 }
 
 func (x *keyIndex) get(k rowKey) (loc, bool) {
-	if k.isNum {
-		l, ok := x.nums[k.num]
+	// Reading a nil map is defined and finds nothing, which is the answer.
+	var l loc
+	var ok bool
+	switch {
+	case k.isNum:
+		l, ok = x.nums[k.num]
+	case k.isUUID:
+		l, ok = x.uuids[[2]uint64{uint64(k.num), k.lo}]
+	default:
+		l, ok = x.strs[k.str]
+	}
+	if ok || x.disk == nil {
 		return l, ok
 	}
-	if x.strs == nil {
-		return loc{}, false
+	if i, pos, ok := x.diskLive(k); ok {
+		return x.diskLoc(i, pos), true
 	}
-	l, ok := x.strs[k.str]
-	return l, ok
+	return loc{}, false
 }
 
 func (x *keyIndex) set(k rowKey, l loc) {
-	if k.isNum {
+	// A key already in a map has no live record in the file (the invariant
+	// above), so there is nothing to look for there: this is every write after
+	// a key's first since the last rewrite, and every digest noted on a row
+	// that was just written.
+	if x.disk != nil && !x.memHas(k) {
+		if i, pos, ok := x.diskLive(k); ok {
+			if l.File == x.disk.file && l.Pos == pos {
+				// The same row, with something new known about it.
+				if x.diskLoc(i, pos).Hash != l.Hash {
+					if x.hashOv == nil {
+						x.hashOv = map[int32]uint64{}
+					}
+					x.hashOv[pos] = l.Hash
+				}
+				return
+			}
+			// The key's current row is somewhere else now.
+			x.setGone(int(pos))
+			x.live--
+			delete(x.hashOv, pos)
+		}
+	}
+	x.memSet(k, l)
+}
+
+func (x *keyIndex) memHas(k rowKey) bool {
+	var ok bool
+	switch {
+	case k.isNum:
+		_, ok = x.nums[k.num]
+	case k.isUUID:
+		_, ok = x.uuids[[2]uint64{uint64(k.num), k.lo}]
+	default:
+		_, ok = x.strs[k.str]
+	}
+	return ok
+}
+
+func (x *keyIndex) memSet(k rowKey, l loc) {
+	switch {
+	case k.isNum:
+		if x.nums == nil {
+			x.nums = make(map[int64]loc, x.hint)
+		}
 		x.nums[k.num] = l
-		return
+	case k.isUUID:
+		if x.uuids == nil {
+			x.uuids = make(map[[2]uint64]loc, x.hint)
+		}
+		x.uuids[[2]uint64{uint64(k.num), k.lo}] = l
+	default:
+		if x.strs == nil {
+			x.strs = make(map[string]loc, x.hint)
+		}
+		x.strs[k.str] = l
 	}
-	if x.strs == nil {
-		x.strs = map[string]loc{}
-	}
-	x.strs[k.str] = l
 }
 
 func (x *keyIndex) del(k rowKey) {
-	if k.isNum {
+	inMem := x.disk != nil && x.memHas(k)
+	switch {
+	case k.isNum:
 		delete(x.nums, k.num)
-		return
+	case k.isUUID:
+		delete(x.uuids, [2]uint64{uint64(k.num), k.lo})
+	default:
+		delete(x.strs, k.str)
 	}
-	delete(x.strs, k.str)
+	if x.disk != nil && !inMem {
+		if _, pos, ok := x.diskLive(k); ok {
+			x.setGone(int(pos))
+			x.live--
+			delete(x.hashOv, pos)
+		}
+	}
 }
 
-func (x *keyIndex) len() int { return len(x.nums) + len(x.strs) }
+func (x *keyIndex) len() int { return len(x.nums) + len(x.uuids) + len(x.strs) + x.live }
 
 func (x *keyIndex) each(fn func(rowKey, loc)) {
 	for n, l := range x.nums {
 		fn(rowKey{num: n, isNum: true}, l)
 	}
+	for u, l := range x.uuids {
+		fn(rowKey{num: int64(u[0]), lo: u[1], isUUID: true}, l)
+	}
 	for s, l := range x.strs {
 		fn(rowKey{str: s}, l)
+	}
+	if d := x.disk; d != nil {
+		for i := 0; i < d.n; i++ {
+			if p := d.posAt(i); !x.isGone(p) {
+				fn(d.rowKeyAt(i), x.diskLoc(i, p))
+			}
+		}
 	}
 }
 
@@ -242,9 +705,23 @@ func (x *keyIndex) deleteWhere(pred func(loc) bool) {
 			delete(x.nums, n)
 		}
 	}
+	for u, l := range x.uuids {
+		if pred(l) {
+			delete(x.uuids, u)
+		}
+	}
 	for s, l := range x.strs {
 		if pred(l) {
 			delete(x.strs, s)
+		}
+	}
+	if d := x.disk; d != nil {
+		for i := 0; i < d.n; i++ {
+			if p := d.posAt(i); !x.isGone(p) && pred(x.diskLoc(i, p)) {
+				x.setGone(int(p))
+				x.live--
+				delete(x.hashOv, p)
+			}
 		}
 	}
 }

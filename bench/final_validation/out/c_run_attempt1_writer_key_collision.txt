@@ -1,0 +1,15 @@
+before: sidecar pid 31052
+kill -9 sidecar pid 31052 at 21:47:48 while writer 2482 runs; writer rounds so far: 0
+pid 31052 gone
+restart at 21:47:52
+restarted sidecar pid 4783
+ready
+writer exit 1 rounds committed: 0
+== c
+qs-verify: 12 MATCH, 0 other
+tables 12 different 0
+lake_vs_heap exit 0
+different 0
+  [agg_status] kind=qualifying routed_to_mirror=True
+  [agg_events_amount] kind=qualifying routed_to_mirror=True
+  [agg_accounts] kind=qualifying routed_to_mirror=True

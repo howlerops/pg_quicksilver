@@ -22,8 +22,8 @@ package mirror
 // WHAT CANNOT BE REPRESENTED. PostgreSQL's temporal range is wider than an
 // Arrow timestamp's, and it has two values that are not instants at all:
 //
-//   - `infinity` and `-infinity`. These round-trip exactly, as the largest and
-//     smallest int64, which is how PostgreSQL stores them too.
+//   - `infinity` and `-infinity`. These round-trip exactly, as the integers
+//     DuckDB uses for them (see posInfinity below).
 //   - years before 1 AD (`0044-03-15 ... BC`) and beyond year 294247. These do
 //     not, and the mirror HALTS rather than storing something else. A halt is
 //     durable, says which table, column and value caused it, and is recovered by
@@ -47,14 +47,52 @@ import (
 // which is what every mirror written before this did.
 var TemporalTypes = os.Getenv("QS_TEMPORAL_TYPES") != "0"
 
-// PostgreSQL's infinity, stored the way PostgreSQL stores it: the extremes of
-// the integer domain. Arrow has no notion of an infinite instant, so these are
-// ordinary values to every engine — which is the correct behaviour, because
-// they sort and compare exactly as they should.
+// PostgreSQL's infinities, stored the way DUCKDB stores them, so that the
+// engine reading the file and the one that wrote the value agree on what it
+// is: +infinity is the largest integer of the domain, and -infinity is its
+// NEGATION — one above the smallest.
+//
+// -infinity used to be the smallest integer itself, which is how PostgreSQL
+// holds it and not how DuckDB does: DuckDB read math.MinInt64 microseconds as
+// an ordinary instant in 290309 BC and math.MinInt32 days as a date in
+// 5877642 BC. Eleven statements of bench/exactness returned that date. The
+// alternative was to refuse infinities like any other unrepresentable value;
+// they are stored instead because they ARE representable, exactly, in the one
+// engine the view is written for, and `valid_until = 'infinity'` is too
+// ordinary a row to halt a table over.
+//
+// The old sentinels are still READ as -infinity (arrayValue), because files
+// holding them are not rewritten on upgrade, and a view over such a file maps
+// them for the engine (serve.go).
 const (
-	posInfinity int64 = math.MaxInt64
-	negInfinity int64 = math.MinInt64
+	posInfinity       int64 = math.MaxInt64
+	negInfinity       int64 = -math.MaxInt64
+	legacyNegInfinity int64 = math.MinInt64
 )
+
+// A date is stored in 32 bits, so its infinities are the extremes of THAT
+// domain. Neither collides with a real date — PostgreSQL's last one,
+// 5874897-12-31, is day 2,145,031,948.
+const (
+	posInfinityDate       int64 = math.MaxInt32
+	negInfinityDate       int64 = -math.MaxInt32
+	legacyNegInfinityDate int64 = math.MinInt32
+)
+
+// dateDays turns what parseTemporal returns for a date into what a Date32
+// column stores, or says that it does not fit.
+func dateDays(n int64) (int64, bool) {
+	switch n {
+	case posInfinity:
+		return posInfinityDate, true
+	case negInfinity, legacyNegInfinity:
+		if legacyTypes {
+			return legacyNegInfinityDate, true
+		}
+		return negInfinityDate, true
+	}
+	return n, n > negInfinityDate && n < posInfinityDate
+}
 
 // temporalKind is which of the four shapes a column is, or none.
 type temporalKind int
@@ -82,6 +120,13 @@ func temporalOf(pgType string) temporalKind {
 	if !TemporalTypes {
 		return notTemporal
 	}
+	return declaredTemporal(pgType)
+}
+
+// declaredTemporal is what kind of temporal a declared type is, whether or not
+// it is stored as one. Use it for what the column IS (a role, such as the
+// time a filter prunes on), and temporalOf for how it is STORED.
+func declaredTemporal(pgType string) temporalKind {
 	s := strings.ToLower(strings.TrimSpace(pgType))
 	if i := strings.Index(s, "("); i >= 0 { // timestamp(3) with time zone
 		if j := strings.Index(s, ")"); j > i {
@@ -165,6 +210,9 @@ func parseTemporal(k temporalKind, s string) (int64, bool) {
 	case "infinity":
 		return posInfinity, true
 	case "-infinity":
+		if legacyTypes {
+			return legacyNegInfinity, true
+		}
 		return negInfinity, true
 	}
 	switch k {
@@ -216,8 +264,8 @@ func microsOf(t time.Time) (int64, bool) {
 	// nudged by a microsecond rather than lied about.
 	if us == posInfinity {
 		us--
-	} else if us == negInfinity {
-		us++
+	} else if us <= negInfinity {
+		us = negInfinity + 1
 	}
 	return us, true
 }
@@ -229,7 +277,7 @@ func renderTemporal(k temporalKind, v int64) string {
 	switch v {
 	case posInfinity:
 		return "infinity"
-	case negInfinity:
+	case negInfinity, legacyNegInfinity:
 		return "-infinity"
 	}
 	switch k {
@@ -241,6 +289,12 @@ func renderTemporal(k temporalKind, v int64) string {
 	case kindTimestamp:
 		return time.UnixMicro(v).UTC().Format("2006-01-02 15:04:05.999999")
 	case kindDate:
+		switch v {
+		case posInfinityDate:
+			return "infinity"
+		case negInfinityDate, legacyNegInfinityDate:
+			return "-infinity"
+		}
 		return time.Unix(v*86400, 0).UTC().Format("2006-01-02")
 	case kindTime:
 		d := time.Duration(v) * time.Microsecond
@@ -264,114 +318,4 @@ func unrepresentable(table, col, pgType, value string) string {
 		"else would be silently wrong. Rebuild the mirror with "+
 		"QS_TEMPORAL_TYPES=0 to store temporal columns as text instead",
 		table, col, pgType, value)
-}
-
-// appendTemporal is the one shape all four builders share: parse, or refuse.
-//
-// A value that will not parse appends NULL here and is caught by checkTemporal
-// before the file is written — the two exist separately because the builder has
-// no way to report an error, and losing the reason is how a halt becomes a
-// blank column.
-func appendTemporal[T ~int32 | ~int64](
-	add func(T), _ T, k temporalKind, v any, null func(),
-) {
-	s, ok := v.(string)
-	if !ok {
-		s = fmt.Sprint(v)
-	}
-	n, ok := parseTemporal(k, s)
-	if !ok {
-		null()
-		return
-	}
-	add(T(n))
-}
-
-// temporalKinds classifies a column list once, and says whether any of it is
-// temporal at all — which for most tables is the whole answer and costs one
-// pass rather than one per row.
-func (t *Table) temporalKinds(cols []string) ([]temporalKind, bool) {
-	if !TemporalTypes {
-		return nil, false
-	}
-	kinds := make([]temporalKind, len(cols))
-	any := false
-	for i, c := range cols {
-		kinds[i] = temporalOf(t.Columns[c])
-		if kinds[i] != notTemporal {
-			any = true
-		}
-	}
-	return kinds, any
-}
-
-// checkOne is the per-value half, shared by both shapes of the check.
-func (t *Table) checkOne(k temporalKind, col string, v any) error {
-	if k == notTemporal || v == nil {
-		return nil
-	}
-	s, ok := v.(string)
-	if !ok {
-		s = fmt.Sprint(v)
-	}
-	// An interval is three numbers, not one, so it validates through its own
-	// parser. Routing it into parseTemporal would refuse every interval and
-	// halt the mirror on the first one.
-	if k == kindInterval {
-		if _, ok := parseInterval(s); ok {
-			return nil
-		}
-	} else if _, ok := parseTemporal(k, s); ok {
-		return nil
-	}
-	reason := unrepresentable(t.Qualified, col, t.Columns[col], s)
-	_ = t.Halt(reason)
-	return fmt.Errorf("%s", reason)
-}
-
-// checkTemporalValues is the column-ordered form, for the snapshot's path.
-//
-// It exists because the check has to cover EVERY way into the writer. It used
-// to be called from writeParquetCols only, and the snapshot does not go through
-// there — so bootstrap, the one path that loads data written before the mirror
-// existed and therefore the one most likely to meet a date from 44 BC, was the
-// path that never looked.
-func (t *Table) checkTemporalValues(vals []any, cols []string) error {
-	kinds, any := t.temporalKinds(cols)
-	if !any {
-		return nil
-	}
-	for i, c := range cols {
-		if i >= len(vals) {
-			break
-		}
-		if err := t.checkOne(kinds[i], c, vals[i]); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-// checkTemporal refuses a batch containing a temporal value Arrow cannot hold.
-//
-// It runs before the writer rather than inside it because the writer cannot
-// report which value was the problem, and "which value" is the only part an
-// operator can act on.
-func (t *Table) checkTemporal(rows []map[string]any, cols []string) error {
-	kinds, any := t.temporalKinds(cols)
-	if !any {
-		return nil
-	}
-	for _, r := range rows {
-		for i, c := range cols {
-			v, present := r[c]
-			if !present {
-				continue
-			}
-			if err := t.checkOne(kinds[i], c, v); err != nil {
-				return err
-			}
-		}
-	}
-	return nil
 }

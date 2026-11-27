@@ -14,6 +14,7 @@ import (
 
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/arrow/array"
+	"github.com/apache/arrow-go/v18/arrow/extensions"
 	"github.com/apache/arrow-go/v18/arrow/memory"
 	"github.com/apache/arrow-go/v18/parquet/file"
 	"github.com/apache/arrow-go/v18/parquet/pqarrow"
@@ -63,29 +64,57 @@ func arrayValue(a arrow.Array, i int) any {
 		return nil
 	}
 	switch v := a.(type) {
-	// Temporal arrays render back to exactly the text PostgreSQL would print,
-	// because that text is what the checksum compares against the source.
+	// Temporal and decimal arrays come back as typed wrappers, not strings. A
+	// wrapper prints as exactly the text PostgreSQL would print — that text is
+	// what the checksum compares against the source — but a compaction can
+	// append it to the next file without formatting and re-parsing it, which
+	// was half the cost of a rewrite. See values.go.
+	//
+	// -infinity is normalised here: a file written before temporal.go changed
+	// its sentinel holds the type's minimum, and everything past this point —
+	// the checksum, the next file — sees one -infinity, not two.
 	case *array.Timestamp:
-		k := kindTimestamp
-		if tt, ok := v.DataType().(*arrow.TimestampType); ok && tt.TimeZone != "" {
-			k = kindTimestampTZ
+		n := int64(v.Value(i))
+		if n == legacyNegInfinity {
+			n = negInfinity
 		}
-		return renderTemporal(k, int64(v.Value(i)))
+		return temporalValue{k: temporalKindOf(v.DataType()), v: n}
 	case *array.Date32:
-		return renderTemporal(kindDate, int64(v.Value(i)))
+		n := int64(v.Value(i))
+		if n == legacyNegInfinityDate {
+			n = negInfinityDate
+		}
+		return temporalValue{k: kindDate, v: n}
 	case *array.Time64:
-		return renderTemporal(kindTime, int64(v.Value(i)))
+		return temporalValue{k: kindTime, v: int64(v.Value(i))}
+	// Every integer width comes back as an int64, which is what a key, a
+	// comparison and the writer all take; the builder narrows it again.
 	case *array.Int64:
 		return v.Value(i)
+	case *array.Int32:
+		return int64(v.Value(i))
+	case *array.Int16:
+		return int64(v.Value(i))
 	case *array.Float64:
 		return v.Value(i)
+	case *array.Float32:
+		return v.Value(i)
+	case *extensions.UUIDArray:
+		return uuidValue(v.Value(i))
+	case *array.FixedSizeBinary:
+		if b := v.Value(i); len(b) == 16 {
+			return uuidValue(b)
+		}
+		return binaryValue(v.Value(i))
+	case *array.Binary:
+		return binaryValue(v.Value(i))
 	case *array.Boolean:
 		return v.Value(i)
 	case *array.String:
 		return v.Value(i)
 	case *array.Decimal128:
 		dt := v.DataType().(*arrow.Decimal128Type)
-		return v.Value(i).ToString(dt.Scale)
+		return decimalValue{num: v.Value(i), prec: dt.Precision, scale: dt.Scale}
 	default:
 		return v.ValueStr(i)
 	}
@@ -166,7 +195,15 @@ func (t *Table) Reload() error {
 		return err
 	}
 	t.State = st
+	if w, err := ReadWatermark(filepath.Dir(t.Dir)); err == nil {
+		t.State.AppliedLSN = effectiveLSN(t.Qualified, st.AppliedLSN, w)
+	}
+	t.index.close()
 	t.index, t.patch, t.partialCols = nil, nil, nil
+	t.resetDead()
+	t.noteFormats()
+	t.forgetOptIns()
+	t.primeOptIns()
 	return nil
 }
 
@@ -202,11 +239,18 @@ func (t *Table) ReadLiveWithRetry(reset func(), fn func(map[string]any) error) e
 // verification tool that cannot run at the size it is verifying is worse than
 // none: it turns "too big to check" into "wrong".
 func (t *Table) ForEachLive(fn func(map[string]any) error) error {
+	return t.forEachLive(false, fn)
+}
+
+// forEachLive is ForEachLive. With withCompanions the rows also carry each join
+// domain's companion columns, read from the files and from patches; the public
+// walk never does. Only the tests and the companion checks ask for it.
+func (t *Table) forEachLive(withCompanions bool, fn func(map[string]any) error) error {
 	// Patches are folded in first, then merged onto the whole rows as those
 	// stream past. A patch always stands on a row in a BASE file (partial.go),
 	// so this is one pass over small files plus one pass over the table — not a
 	// seek into a delta per row, which would cost a row group every time.
-	overlay, err := t.patchOverlay()
+	overlay, err := t.patchOverlay(withCompanions)
 	if err != nil {
 		return err
 	}
@@ -236,7 +280,8 @@ func (t *Table) ForEachLive(fn func(map[string]any) error) error {
 		// readParquet's only contribution was to append them all back into one
 		// slice. qs-verify's own comment claimed both sides stream; its
 		// accumulator did, and this did not.
-		err := t.forEachRowGroup(filepath.Join(t.Dir, rel), dead, nil,
+		want, fill := t.liveCols(withCompanions)
+		err := t.forEachRowsDead(filepath.Join(t.Dir, rel), dead, want, fill,
 			func(rows []map[string]any, _ int) error {
 				for _, r := range rows {
 					if overlay != nil {
@@ -244,6 +289,10 @@ func (t *Table) ForEachLive(fn func(map[string]any) error) error {
 							applyPatch(r, p)
 						}
 					}
+					// Rows leave this package as they always have: decimals
+					// and temporals as the text PostgreSQL prints, not as
+					// the wrappers the writer prefers (values.go).
+					plainRow(r)
 					if err := fn(r); err != nil {
 						return err
 					}
@@ -293,6 +342,23 @@ func renderValue(v any) string {
 		return "false"
 	case string:
 		return normalizeNumeric(x)
+	// The forms a value read back from Parquet takes, spelled out so that none
+	// of them pays for fmt's reflection. Each produces the text the default
+	// branch would.
+	case int64:
+		return strconv.FormatInt(x, 10)
+	case float64:
+		return pgFloat(x, 64)
+	case float32:
+		return pgFloat(float64(x), 32)
+	case uuidValue:
+		return x.String()
+	case binaryValue:
+		return x.String()
+	case decimalValue:
+		return normalizeNumeric(x.String())
+	case temporalValue:
+		return normalizeNumeric(x.String())
 	default:
 		return normalizeNumeric(fmt.Sprint(x))
 	}
@@ -410,6 +476,7 @@ func (t *Table) readRowsAt(rel string, positions []int, cols []string) (map[int]
 		}
 	}
 
+	coerce := t.coercions(schema, colIdx, colName)
 	out := make(map[int]map[string]any, len(positions))
 	for g, ps := range byGroup {
 		tbl, err := ar.ReadRowGroups(context.Background(), colIdx, []int{g})
@@ -424,7 +491,11 @@ func (t *Table) readRowsAt(rel string, positions []int, cols []string) (map[int]
 			}
 			m := make(map[string]any, len(colName))
 			for ci := range colName {
-				m[colName[ci]] = chunkedValue(tbl.Column(ci).Data(), local)
+				v := chunkedValue(tbl.Column(ci).Data(), local)
+				if coerce != nil && coerce[ci] != nil && v != nil {
+					v = coerce[ci](v)
+				}
+				m[colName[ci]] = v
 			}
 			out[p] = m
 		}

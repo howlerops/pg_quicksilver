@@ -143,7 +143,15 @@ func (g *slotGuard) check(ctx context.Context, log *slog.Logger) (retained, unco
 
 // dropSlot removes the slot once the stream that held it is gone. It is called
 // on the way out, from the supervisor's side of the failure.
-func dropSlot(ctx context.Context, o options, slot string, log *slog.Logger) {
+//
+// It takes no slot name, on purpose. It terminates whatever backend holds the
+// slot before dropping it, and that is only safe for a slot no other sidecar
+// can be attached to — which is true of this Pod's derived slot and of nothing
+// else. Given a name, it could be handed the shared prefix and kill another
+// Pod's stream; so the only slot it can reach is o.slot, which loadOptions
+// derives from the Pod's name (slotname.go).
+func dropSlot(ctx context.Context, o options, log *slog.Logger) {
+	slot := o.slot
 	conn, err := pgx.Connect(ctx, o.primaryDSN())
 	if err != nil {
 		log.Error("could not connect to drop the runaway slot; the primary is "+
@@ -152,6 +160,14 @@ func dropSlot(ctx context.Context, o options, slot string, log *slog.Logger) {
 		return
 	}
 	defer conn.Close(ctx)
+
+	// Nothing to drop is the normal case on every retry after the first, and
+	// it must not cost thirty seconds of failed attempts and an ERROR line.
+	var n int
+	if err := conn.QueryRow(ctx,
+		"SELECT count(*) FROM pg_replication_slots WHERE slot_name = $1", slot).Scan(&n); err == nil && n == 0 {
+		return
+	}
 	// Terminate whatever still holds it, then drop. A slot with an active
 	// walsender cannot be dropped, and the walsender belongs to the connection
 	// that just died — which PostgreSQL may not have noticed yet.
@@ -184,3 +200,59 @@ func dropSlot(ctx context.Context, o options, slot string, log *slog.Logger) {
 // near zero, while a stream that has stopped passes a segment as soon as
 // anything is written and keeps going.
 var stuckSlotBytes = envInt("QS_STUCK_SLOT_BYTES", 16<<20)
+
+// idleConfirmInterval is how often a mirror with nothing to apply may confirm a
+// position the server reports as holding nothing for it (see the idle branch of
+// pump). Each one costs a state.json fsync per table, and the slot only needs
+// to stay well inside a WAL segment or two of the head, so seconds is plenty.
+var idleConfirmInterval = envDuration("QS_IDLE_CONFIRM_INTERVAL", 5*time.Second)
+
+// releaseOwnSlot drops this Pod's slot from the LOCAL server, for the two cases
+// where this sidecar has stopped consuming it and nothing else ever will.
+//
+// The first is promotion. A slot created with FAILOVER is synchronised to the
+// standbys, so the Pod that becomes the primary finds its own slot there,
+// inactive — and it stands down, so it never streams from it again. While
+// every Pod shared one slot that did not matter: whichever replica held the
+// slot kept consuming it. With a slot per Pod, each failover or switchover
+// left one behind pinning WAL on the new primary, and the slot guard could not
+// see it because the guard runs inside the pump this node no longer runs.
+//
+// The cost is that this Pod bootstraps from a snapshot the next time it is a
+// replica. That is the price of the alternative being a full disk on the
+// primary, and the resume check would have re-snapshotted it anyway once the
+// slot had been left behind long enough to be invalidated.
+//
+// Unlike dropSlot it goes through the local socket: this node IS the primary,
+// and the -rw Service can still be pointing at the old one for a moment after
+// a promotion. A slot that is not there is not an error.
+func releaseOwnSlot(ctx context.Context, o options, log *slog.Logger, why string) {
+	conn, err := pgx.Connect(ctx, o.localDSN())
+	if err != nil {
+		log.Warn("could not connect locally to release this Pod's replication slot; "+
+			"if it exists it is pinning WAL", "slot", o.slot, "err", err)
+		return
+	}
+	defer conn.Close(ctx)
+	var n int
+	if err := conn.QueryRow(ctx,
+		"SELECT count(*) FROM pg_replication_slots WHERE slot_name = $1", o.slot).Scan(&n); err != nil {
+		log.Warn("could not look for this Pod's replication slot", "slot", o.slot, "err", err)
+		return
+	}
+	if n == 0 {
+		return
+	}
+	var derr error
+	for i := 0; i < 5; i++ {
+		if _, derr = conn.Exec(ctx, `SELECT pg_drop_replication_slot($1)`, o.slot); derr == nil {
+			log.Warn("dropped this Pod's replication slot; the mirror will rebuild "+
+				"from a snapshot when this node is next a replica",
+				"slot", o.slot, "why", why)
+			return
+		}
+		sleep(ctx, time.Second)
+	}
+	log.Error("could not drop this Pod's replication slot; it is pinning WAL on "+
+		"the primary and needs manual attention", "slot", o.slot, "err", derr)
+}

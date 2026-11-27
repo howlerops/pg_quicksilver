@@ -1,0 +1,35 @@
+--- rebuild a 200k base (reload, forces a churn compaction)
+state: {"applied_lsn":"0/19B5E570","base_files":["000046.parquet"],"delta_files":null,"seq":46,"base_rows":200000,"delta_rows":0}
+--- small churn at 18:57:58: 5000 updates + 2000 deletes (below the churn and dead-fraction triggers)
+UPDATE 5000
+DELETE 2000
+applied; last write at 18:57:59
+state: {"applied_lsn":"0/19D7EAC8","base_files":["000046.parquet"],"delta_files":["000047.parquet"],"seq":47,"base_rows":200000,"delta_rows":5001,"file_rows":{"000047.parquet":5001},"dv_gen":{"000046":1}}
+000046.000000001.dv.parquet
+view sql bytes 1255 | reads dv: True | files: 3
+SAME SELECT count(*) FROM items -> [(198000,)] 
+SAME SELECT sum(amount)::text FROM items -> [('99131611716.40',)] 
+SAME SELECT status, count(*), count(note), sum(qty)::text FROM items GROUP BY status ORDER BY status -> [('paid', 198000, 133666, '19798101000')] 
+SAME SELECT count(*) FROM items WHERE note='churn-e' -> [(5000,)] 
+SAME SELECT count(DISTINCT id) FROM items -> [(198000,)] 
+VIEW_ANSWERS_MATCH
+--- waiting 50 s
+30:time=2026-11-25T18:57:12.567Z level=INFO msg="compaction started" table=public.items why=churn base_rows=307897 delta_rows=153994
+35:time=2026-11-25T18:57:55.713Z level=INFO msg="compaction started" table=public.items why=churn base_rows=0 delta_rows=200000
+38:time=2026-11-25T18:58:29.352Z level=INFO msg="compaction started" table=public.items why=idle base_rows=200000 delta_rows=5001
+new 'compaction started' lines since churn: 1
+state: {"applied_lsn":"0/19D7EAC8","base_files":["000048.parquet"],"delta_files":null,"seq":48,"base_rows":198000,"delta_rows":0,"dv_gen":{"000046":1}}
+view sql bytes 750 | reads dv: False | files: 1
+SAME SELECT count(*) FROM items -> [(198000,)] 
+SAME SELECT sum(amount)::text FROM items -> [('99131611716.40',)] 
+SAME SELECT status, count(*), count(note), sum(qty)::text FROM items GROUP BY status ORDER BY status -> [('paid', 198000, 133666, '19798101000')] 
+SAME SELECT count(*) FROM items WHERE note='churn-e' -> [(5000,)] 
+SAME SELECT count(DISTINCT id) FROM items -> [(198000,)] 
+VIEW_ANSWERS_MATCH
+applied_lsn=0/19D7EAC8
+mirror 198000 rows (checksum 1c50e1cad7693d8a)
+source 198000 rows (checksum 1c50e1cad7693d8a)
+MATCH
+--- waiting 65 s more, expecting no second rewrite
+at 18:59:57: new 'compaction started' lines since churn: 1
+readyz=200

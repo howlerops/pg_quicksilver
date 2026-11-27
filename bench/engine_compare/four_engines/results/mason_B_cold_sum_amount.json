@@ -1,0 +1,18 @@
+{
+ "engine": "mason",
+ "state": "B",
+ "mode": "cold",
+ "queries": {
+  "sum_amount": {
+   "sql": "SELECT sum(amount) FROM orders",
+   "ok": true,
+   "ms": [
+    68.79906199992547
+   ],
+   "best_ms": 68.79906199992547,
+   "median_ms": 68.79906199992547,
+   "rows": 1
+  }
+ },
+ "at": "2026-11-25T01:01:25.937507"
+}

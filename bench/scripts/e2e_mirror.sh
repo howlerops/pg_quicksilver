@@ -28,6 +28,8 @@ source "$(dirname "$0")/lib_lsn.sh"
 source "$(dirname "$0")/lib_syncslots.sh"
 HEALTH=127.0.0.1:9199
 DB=app
+source "$(dirname "$0")/lib_slotname.sh"
+SLOT=$(qs_pod_slot qs_e2e e2e-2)   # what the sidecar derives from QS_SLOT and QS_POD_NAME
 FAIL=0
 
 say()  { printf '\n== %s ==\n' "$*"; }
@@ -236,7 +238,7 @@ curl -sf "http://$HEALTH/readyz" >/dev/null \
 say "5c. recovery: clearing the halt rebuilds from a fresh snapshot"
 kill $MIRROR_PID 2>/dev/null; wait $MIRROR_PID 2>/dev/null
 rm -rf $MIRROR; install -d -o postgres -g postgres $MIRROR
-psq 5443 "SELECT pg_drop_replication_slot('qs_e2e') FROM pg_replication_slots WHERE slot_name='qs_e2e'" >/dev/null
+psq 5443 "SELECT pg_drop_replication_slot('$SLOT') FROM pg_replication_slots WHERE slot_name='$SLOT'" >/dev/null
 su postgres -c "QS_CLUSTER=e2e QS_MODE=shadow QS_INGEST=logical \
   QS_TABLES=public.events QS_SLOT=qs_e2e QS_PUBLICATION=qs_e2e \
   QS_MIRROR_PATH=$MIRROR QS_FRESHNESS_SLO=15s \
@@ -369,9 +371,12 @@ say "6e. two tables in one sidecar"
 psq 5443 "CREATE TABLE IF NOT EXISTS orders(id bigint primary key, total numeric(12,2), placed timestamptz)" >/dev/null
 psq 5443 "INSERT INTO orders SELECT g,(g%97)/7.0,now() FROM generate_series(1,5000) g ON CONFLICT DO NOTHING" >/dev/null
 pkill -x qs-mirror; sleep 2
-# A new table joining an existing publication needs the slot's publication
-# refreshed; the sidecar owns that, so dropping the publication makes it rebuild.
-psq 5443 "DROP PUBLICATION IF EXISTS qs_e2e" >/dev/null 2>&1
+# Nothing is dropped here. The sidecar's ensurePublication runs ALTER
+# PUBLICATION ... SET TABLE on every start, which adds orders to the publication
+# that already exists. Dropping it was wrong: the slot's restart point is older
+# than the drop, so the walsender decodes WAL in which the publication does not
+# exist and fails with `publication "qs_e2e" does not exist` for good, and the
+# mirror never receives a change to orders.
 start_sidecar $BASE/mirror.log "public.events,public.orders"
 wait_ready 120 || { tail -20 $BASE/mirror.log; bad "no readiness with two tables"; }
 psq 5443 "INSERT INTO orders SELECT g,(g%97)/7.0,now() FROM generate_series(5001,6000) g" >/dev/null

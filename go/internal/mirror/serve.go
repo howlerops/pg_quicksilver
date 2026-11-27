@@ -22,11 +22,13 @@ package mirror
 // and which produces exactly what ForEachLive produces in this process.
 //
 // The SQL is a SNAPSHOT of a manifest, exactly like the in-process read path.
-// A compaction that lands mid-query deletes files the query names, and the
-// engine will say so; the caller re-asks for the SQL and re-runs, which is the
-// same ErrStaleManifest contract read.go documents. Publishing a view that
-// "never goes stale" would mean either pinning files forever or answering from
-// a mixture of two manifests, and the second is the bug round five was about.
+// Publishing a view that "never goes stale" would mean either pinning files
+// forever or answering from a mixture of two manifests, and the second is the
+// bug round five was about. What a reader gets instead is in publish.go: the
+// writer publishes this SQL after every manifest change, with a sequence number
+// to notice the change by, and the files a snapshot names outlive it by a grace
+// period so the query already running on it finishes. Past that the engine
+// says a file is missing, and the reader picks up the current snapshot.
 
 import (
 	"encoding/json"
@@ -38,36 +40,108 @@ import (
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/parquet"
 	"github.com/apache/arrow-go/v18/parquet/file"
+	"github.com/apache/arrow-go/v18/parquet/metadata"
 	"github.com/apache/arrow-go/v18/parquet/schema"
 )
 
-// sqlType is the engine type a column reads back as, so that a file predating
-// an ADD COLUMN can be given a correctly typed literal instead of erroring.
+// sqlType is the engine type a column reads back as: what every branch of the
+// view is cast to, whatever the file under it holds, and what a file
+// predating an ADD COLUMN is given a typed literal of.
+//
+// It is the right-hand column of the table in types.go: every column reads
+// as the type it is stored as. That includes a numeric stored as text (no
+// declared precision, or more than 38 digits), which reads as VARCHAR, the
+// digits PostgreSQL printed. It used to be cast to DOUBLE here, which turned
+// 1e400 into inf and dropped the digits of anything past the seventeenth,
+// with no error; and the DuckLake of the same mirror published the column as
+// VARCHAR, so the two surfaces disagreed.
 func sqlType(pgType string) string {
 	if k := temporalOf(pgType); k != notTemporal {
 		return temporalSQLType(k)
 	}
-	switch dt := arrowType(pgType).(type) {
+	dt := arrowType(pgType)
+	switch d := dt.(type) {
 	case *arrow.Decimal128Type:
-		return fmt.Sprintf("DECIMAL(%d,%d)", dt.Precision, dt.Scale)
-	default:
-		switch arrowType(pgType) {
-		case arrow.PrimitiveTypes.Int64:
-			return "BIGINT"
-		case arrow.PrimitiveTypes.Float64:
-			return "DOUBLE"
-		case arrow.FixedWidthTypes.Boolean:
-			return "BOOLEAN"
-		}
+		return fmt.Sprintf("DECIMAL(%d,%d)", d.Precision, d.Scale)
+	case *arrow.StringType:
 		return "VARCHAR"
 	}
+	switch dt.ID() {
+	case arrow.INT16:
+		return "SMALLINT"
+	case arrow.INT32:
+		return "INTEGER"
+	case arrow.INT64:
+		return "BIGINT"
+	case arrow.FLOAT32:
+		return "FLOAT"
+	case arrow.FLOAT64:
+		return "DOUBLE"
+	case arrow.BOOL:
+		return "BOOLEAN"
+	case arrow.BINARY:
+		return "BLOB"
+	case arrow.EXTENSION:
+		return "UUID"
+	}
+	return "VARCHAR"
+}
+
+// parquetSQLType is the engine type a Parquet column reads as, from its
+// footer: the same vocabulary as sqlType, so that the two can be compared.
+func parquetSQLType(c *schema.Column) string {
+	switch lt := c.LogicalType().(type) {
+	case schema.DecimalLogicalType:
+		return fmt.Sprintf("DECIMAL(%d,%d)", lt.Precision(), lt.Scale())
+	case schema.DateLogicalType:
+		return "DATE"
+	case schema.TimeLogicalType:
+		return "TIME"
+	case schema.TimestampLogicalType:
+		if lt.IsAdjustedToUTC() {
+			return "TIMESTAMP WITH TIME ZONE"
+		}
+		return "TIMESTAMP"
+	case schema.UUIDLogicalType:
+		return "UUID"
+	case schema.StringLogicalType:
+		return "VARCHAR"
+	case schema.IntLogicalType:
+		if lt.BitWidth() == 16 && lt.IsSigned() {
+			return "SMALLINT"
+		}
+	}
+	switch c.PhysicalType() {
+	case parquet.Types.Boolean:
+		return "BOOLEAN"
+	case parquet.Types.Int32:
+		return "INTEGER"
+	case parquet.Types.Int64:
+		return "BIGINT"
+	case parquet.Types.Float:
+		return "FLOAT"
+	case parquet.Types.Double:
+		return "DOUBLE"
+	case parquet.Types.ByteArray, parquet.Types.FixedLenByteArray:
+		return "BLOB"
+	}
+	return "VARCHAR"
 }
 
 func sqlString(s string) string { return "'" + strings.ReplaceAll(s, "'", "''") + "'" }
 
 func sqlIdent(s string) string { return `"` + strings.ReplaceAll(s, `"`, `""`) + `"` }
 
-// fileColumns reads a Parquet file's column names from its footer.
+// fileColumns reads a Parquet file's columns from its footer.
+//
+// The map says which columns the file HAS, keyed by name, as it always did.
+// It also says how the file holds them, under keys no column can have (a
+// PostgreSQL identifier cannot contain a NUL): fileTypeKey(name, T) is present
+// when the column reads as engine type T, and legacyInfKey(name) when a
+// temporal column holds the -infinity sentinel the writer used before
+// temporal.go changed it. They travel in the same map because the map is what
+// the footer cache holds, and a second cache would be a second thing to
+// invalidate when a path is reused.
 func fileColumns(path string) (map[string]bool, error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -80,18 +154,157 @@ func fileColumns(path string) (map[string]bool, error) {
 	}
 	defer rdr.Close()
 	out := map[string]bool{}
-	schema := rdr.MetaData().Schema
-	for i := 0; i < schema.NumColumns(); i++ {
-		out[schema.Column(i).Name()] = true
+	md := rdr.MetaData()
+	for i := 0; i < md.Schema.NumColumns(); i++ {
+		c := md.Schema.Column(i)
+		out[c.Name()] = true
+		typ := parquetSQLType(c)
+		out[fileTypeKey(c.Name(), typ)] = true
+		if hasLegacyNegInfinity(md, i, typ) {
+			out[legacyInfKey(c.Name())] = true
+		}
 	}
 	return out, nil
 }
 
+func fileTypeKey(col, sqlType string) string { return "\x00type\x00" + col + "\x00" + sqlType }
+
+func legacyInfKey(col string) string { return "\x00neginf\x00" + col }
+
+// HoldsLegacyNegInfinity reports whether column col of a Parquet file can
+// hold -infinity as the release before temporal.go stored it: the smallest
+// integer of the type, which an engine reads as a finite date in 5877642 BC
+// (290309 BC for a timestamp). ViewSQL maps such a column per file; a reader
+// handed the file itself, which is what a DuckLake is, cannot.
+func HoldsLegacyNegInfinity(md *metadata.FileMetaData, col int) bool {
+	return hasLegacyNegInfinity(md, col, parquetSQLType(md.Schema.Column(col)))
+}
+
+// hasLegacyNegInfinity reports whether a temporal column of this file holds
+// the old -infinity sentinel, the type's minimum, in any row group. The
+// minimum of the domain is the minimum of any chunk that holds it, so the
+// footer's statistics answer this without reading a page; a chunk with no
+// statistics is assumed to.
+func hasLegacyNegInfinity(md *metadata.FileMetaData, col int, typ string) bool {
+	if typ != "DATE" && typ != "TIMESTAMP" && typ != "TIMESTAMP WITH TIME ZONE" {
+		return false
+	}
+	for g := 0; g < md.NumRowGroups(); g++ {
+		cc, err := md.RowGroup(g).ColumnChunk(col)
+		if err != nil {
+			return true
+		}
+		st, err := cc.Statistics()
+		if err != nil || st == nil || !st.HasMinMax() {
+			if cc.NumValues() > 0 && (st == nil || st.NullCount() < cc.NumValues()) {
+				return true
+			}
+			continue
+		}
+		switch x := st.(type) {
+		case *metadata.Int64Statistics:
+			if x.Min() == legacyNegInfinity {
+				return true
+			}
+		case *metadata.Int32Statistics:
+			if int64(x.Min()) == legacyNegInfinityDate {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// columnExpr is how one branch of the view selects a column the file has.
+//
+// A table's files do not all hold a column the same way: a mirror written
+// before types.go has every integer as BIGINT, a uuid as text, an
+// unconstrained numeric as DECIMAL(38,9), and none of those files is
+// rewritten on upgrade. A UNION ALL over a VARCHAR branch and a UUID one
+// either fails to plan or quietly makes every branch VARCHAR, so each branch
+// is brought to the DECLARED type here. When the file already holds it the
+// column is named bare — no cast for the engine to see through before it
+// pushes a filter into the scan.
+func (t *Table) columnExpr(c string, have map[string]bool) string {
+	id := sqlIdent(c)
+	pg := t.typeOf(c)
+	want := sqlType(pg)
+	var expr string
+	switch {
+	case have[fileTypeKey(c, want)]:
+		expr = id
+	case want == "BLOB" && have[fileTypeKey(c, "VARCHAR")]:
+		// PostgreSQL's hex form, `\x` and two digits a byte. A plain cast
+		// would read the backslash as the engine's own escape syntax.
+		expr = fmt.Sprintf("from_hex(substr(%s, 3))", id)
+	case want == "VARCHAR" && isTextNumeric(pg) && hasDecimal(c, have):
+		// An unconstrained numeric an older file holds as DECIMAL(38,9). The
+		// decimal lost the display scale the source had (1.50 was stored as
+		// 1.500000000), so the padding is dropped, exactly as the Go read
+		// path and the next rewrite drop it (normalizeNumeric): one value,
+		// one spelling, whichever file it is read from.
+		v := fmt.Sprintf("CAST(%s AS VARCHAR)", id)
+		expr = fmt.Sprintf("CASE WHEN contains(%s, '.') THEN rtrim(rtrim(%s, '0'), '.') ELSE %s END", v, v, v)
+	default:
+		expr = fmt.Sprintf("CAST(%s AS %s)", id, want)
+	}
+	if have[legacyInfKey(c)] {
+		// The file predates the change of -infinity's sentinel and holds the
+		// type's minimum, which the engine reads as a finite date in 5877642
+		// BC (290309 BC for a timestamp). Only a file whose statistics say it
+		// holds one pays for this.
+		lit := "TIMESTAMP '290309-12-22 (BC) 00:00:00'"
+		if want == "DATE" {
+			lit = "DATE '5877642-06-25 (BC)'"
+		}
+		expr = fmt.Sprintf("CASE WHEN %s < %s THEN CAST('-infinity' AS %s) ELSE %s END",
+			expr, lit, want, expr)
+	}
+	if expr == id {
+		return id
+	}
+	return expr + " AS " + id
+}
+
+// isTextNumeric is a numeric column stored as the text PostgreSQL prints.
+func isTextNumeric(pgType string) bool {
+	_, _, _, isNumeric := numericSpec(pgType)
+	return isNumeric && arrowType(pgType).ID() == arrow.STRING
+}
+
+// hasDecimal reports whether the file holds column c as some DECIMAL.
+func hasDecimal(c string, have map[string]bool) bool {
+	prefix := fileTypeKey(c, "DECIMAL(")
+	for k := range have {
+		if strings.HasPrefix(k, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+// literalExpr is a typed literal for a column a file does not have.
+func (t *Table) literalExpr(c string) string {
+	want := sqlType(t.typeOf(c))
+	mv, ok := t.State.MissingVals[c]
+	switch {
+	case !ok:
+		return fmt.Sprintf("CAST(NULL AS %s) AS %s", want, sqlIdent(c))
+	case want == "BLOB" && strings.HasPrefix(mv, `\x`):
+		return fmt.Sprintf("from_hex(%s) AS %s", sqlString(mv[2:]), sqlIdent(c))
+	}
+	return fmt.Sprintf("CAST(%s AS %s) AS %s", sqlString(mv), want, sqlIdent(c))
+}
+
 // branch is one file's contribution: its columns projected to `want`, with the
 // deletion vector the manifest names applied.
-func (t *Table) branch(rel string, want []string) (string, error) {
+//
+// named is how the file's path is written into the SQL: absolute for a view
+// evaluated where this process runs, relative to the table directory for the
+// one that is published (see Published.Render).
+func (t *Table) branch(rel string, want []string, named func(abs string) string) (string, error) {
 	abs := filepath.Join(t.Dir, rel)
-	have, err := fileColumns(abs)
+	have, err := t.columnsOf(abs)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return "", ErrStaleManifest
@@ -101,30 +314,13 @@ func (t *Table) branch(rel string, want []string) (string, error) {
 	sel := make([]string, 0, len(want))
 	for _, c := range want {
 		if have[c] {
-			// A temporal column is CAST rather than named. Files written before
-			// temporal.go hold it as text, and a UNION ALL that mixes a VARCHAR
-			// branch with a TIMESTAMP one either fails to plan or silently
-			// degrades every branch to VARCHAR. The cast is a no-op the engine
-			// elides when the types already agree, and a migration when they do
-			// not.
-			if k := temporalOf(t.Columns[c]); k != notTemporal {
-				sel = append(sel, fmt.Sprintf("CAST(%s AS %s) AS %s",
-					sqlIdent(c), temporalSQLType(k), sqlIdent(c)))
-				continue
-			}
-			sel = append(sel, sqlIdent(c))
+			sel = append(sel, t.columnExpr(c, have))
 			continue
 		}
 		// This file predates an ADD COLUMN. NULL is right only when the column
 		// was added without a default; otherwise PostgreSQL reads these rows
 		// back as attmissingval and so must the view.
-		if mv, ok := t.State.MissingVals[c]; ok {
-			sel = append(sel, fmt.Sprintf("CAST(%s AS %s) AS %s",
-				sqlString(mv), sqlType(t.Columns[c]), sqlIdent(c)))
-		} else {
-			sel = append(sel, fmt.Sprintf("CAST(NULL AS %s) AS %s",
-				sqlType(t.Columns[c]), sqlIdent(c)))
-		}
+		sel = append(sel, t.literalExpr(c))
 	}
 
 	// file_row_number is asked for ONLY where a deletion vector needs it.
@@ -141,7 +337,7 @@ func (t *Table) branch(rel string, want []string) (string, error) {
 		opts = ", file_row_number = true"
 	}
 	q := fmt.Sprintf("SELECT %s FROM read_parquet(%s%s)",
-		strings.Join(sel, ", "), sqlString(abs), opts)
+		strings.Join(sel, ", "), sqlString(named(abs)), opts)
 
 	if gen != 0 {
 		dv := t.dvPathGenAny(rel, gen)
@@ -151,7 +347,7 @@ func (t *Table) branch(rel string, want []string) (string, error) {
 			// row it retired.
 			return "", ErrStaleManifest
 		}
-		q += " WHERE file_row_number NOT IN " + dvSubquery(dv)
+		q += " WHERE file_row_number NOT IN " + dvSubquery(dv, named(dv))
 	}
 	return q, nil
 }
@@ -161,6 +357,21 @@ func (t *Table) branch(rel string, want []string) (string, error) {
 // It reflects the manifest as loaded, so a caller outside the apply goroutine
 // should Reload before asking, and should re-ask on ErrStaleManifest.
 func (t *Table) ViewSQL() (string, error) {
+	return t.viewSQL(func(abs string) string { return abs })
+}
+
+// relativeViewSQL is ViewSQL with every file named relative to the table
+// directory, which is the form that is published.
+func (t *Table) relativeViewSQL() (string, error) {
+	return t.viewSQL(func(abs string) string {
+		if rel, err := filepath.Rel(t.Dir, abs); err == nil {
+			return filepath.ToSlash(rel)
+		}
+		return abs
+	})
+}
+
+func (t *Table) viewSQL(named func(abs string) string) (string, error) {
 	if h := t.Halted(); h != "" {
 		return "", fmt.Errorf("mirror is halted and must not be served: %s", h)
 	}
@@ -168,11 +379,11 @@ func (t *Table) ViewSQL() (string, error) {
 	// Whole rows: the base files plus every delta that is not a patch file.
 	var whole []string
 	for _, b := range t.State.BaseFiles {
-		q, err := t.branch(filepath.Join("base", b), t.Order)
+		q, err := t.branch(filepath.Join("base", b), t.Order, named)
 		if err != nil {
 			return "", err
 		}
-		whole = append(whole, q)
+		whole = append(whole, padBranch(q))
 	}
 	// Patch files, grouped by the columns they carry. A key has at most one
 	// live patch (partial.go), so the groups are disjoint and each becomes one
@@ -184,11 +395,11 @@ func (t *Table) ViewSQL() (string, error) {
 		rel := filepath.Join("delta", d)
 		cols := t.State.PartialCols[d]
 		if cols == nil {
-			q, err := t.branch(rel, t.Order)
+			q, err := t.branch(rel, t.Order, named)
 			if err != nil {
 				return "", err
 			}
-			whole = append(whole, q)
+			whole = append(whole, padBranch(q))
 			continue
 		}
 		sig := strings.Join(cols, "\x00")
@@ -196,7 +407,7 @@ func (t *Table) ViewSQL() (string, error) {
 			sigs = append(sigs, sig)
 			patchCols[sig] = cols
 		}
-		q, err := t.branch(rel, cols)
+		q, err := t.branch(rel, cols, named)
 		if err != nil {
 			return "", err
 		}
@@ -209,7 +420,7 @@ func (t *Table) ViewSQL() (string, error) {
 		sel := make([]string, len(t.Order))
 		for i, c := range t.Order {
 			sel[i] = fmt.Sprintf("CAST(NULL AS %s) AS %s",
-				sqlType(t.Columns[c]), sqlIdent(c))
+				sqlType(t.typeOf(c)), sqlIdent(c))
 		}
 		return "SELECT " + strings.Join(sel, ", ") + " WHERE false", nil
 	}
@@ -275,10 +486,21 @@ func ColumnsFromFiles(root, schema, table string) (map[string]string, []string, 
 			candidates = append(candidates, filepath.Join(dir, "delta", d))
 		}
 	}
-	for _, path := range candidates {
+	// NEWEST first. A mirror that has been upgraded holds a column one way in
+	// its old files and another in its new ones (types.go), and the newest
+	// file is the one written the way the current writer writes: its types
+	// are the ones every other branch of the view can be cast to.
+	for i := len(candidates) - 1; i >= 0; i-- {
+		path := candidates[i]
 		cols, order, err := schemaOf(path)
 		if err == nil {
-			return cols, order, nil
+			// A join domain's hidden companions are not the table's columns.
+			for c := range cols {
+				if isCompanion(c) {
+					delete(cols, c)
+				}
+			}
+			return cols, fileSchemaCols(order), nil
 		}
 	}
 	return nil, nil, fmt.Errorf("no readable whole-row file in %s", dir)
@@ -304,19 +526,38 @@ func schemaOf(path string) (map[string]string, []string, error) {
 		order = append(order, name)
 		// Back to a Postgres type name, which is all arrowType needs to agree
 		// with what the writer used. Numerics keep their precision and scale so
-		// that a round trip does not quietly widen them.
-		switch lt := c.LogicalType().(type) {
-		case *schema.DecimalLogicalType:
-			cols[name] = fmt.Sprintf("numeric(%d,%d)", lt.Precision(), lt.Scale())
+		// that a round trip does not quietly widen them. A numeric stored as
+		// text comes back as text: the file does not say it was ever a number.
+		typ := parquetSQLType(c)
+		switch typ {
+		case "SMALLINT":
+			cols[name] = "smallint"
+		case "INTEGER":
+			cols[name] = "integer"
+		case "BIGINT":
+			cols[name] = "bigint"
+		case "FLOAT":
+			cols[name] = "real"
+		case "DOUBLE":
+			cols[name] = "double precision"
+		case "BOOLEAN":
+			cols[name] = "boolean"
+		case "UUID":
+			cols[name] = "uuid"
+		case "BLOB":
+			cols[name] = "bytea"
+		case "DATE":
+			cols[name] = "date"
+		case "TIME":
+			cols[name] = "time without time zone"
+		case "TIMESTAMP":
+			cols[name] = "timestamp without time zone"
+		case "TIMESTAMP WITH TIME ZONE":
+			cols[name] = "timestamp with time zone"
 		default:
-			switch c.PhysicalType() {
-			case parquet.Types.Int64:
-				cols[name] = "bigint"
-			case parquet.Types.Double:
-				cols[name] = "double precision"
-			case parquet.Types.Boolean:
-				cols[name] = "boolean"
-			default:
+			if strings.HasPrefix(typ, "DECIMAL(") {
+				cols[name] = "numeric" + strings.TrimPrefix(typ, "DECIMAL")
+			} else {
 				cols[name] = "text"
 			}
 		}
@@ -331,10 +572,29 @@ func schemaOf(path string) (map[string]string, []string, error) {
 // describe. The Parquet form is not only faster to parse — 0.6 ms against
 // 95.7 ms for 1.56M positions — it is also a plain column, so the engine reads
 // it as a column rather than unnesting one enormous list value.
-func dvSubquery(path string) string {
+//
+// path decides the encoding; named is how it is written into the SQL.
+func dvSubquery(path, named string) string {
 	if strings.HasSuffix(path, ".json") {
 		return fmt.Sprintf("(SELECT unnest(v) FROM read_json(%s, "+
-			"columns = {'v': 'BIGINT[]'}, format = 'unstructured'))", sqlString(path))
+			"columns = {'v': 'BIGINT[]'}, format = 'unstructured'))", sqlString(named))
 	}
-	return fmt.Sprintf("(SELECT p FROM read_parquet(%s))", sqlString(path))
+	return fmt.Sprintf("(SELECT p FROM read_parquet(%s))", sqlString(named))
 }
+
+// padBranch puts a constant in front of a whole-row branch's columns.
+//
+// A UNION ALL has to keep at least one column per branch even when the query
+// above it wants none, and the engine keeps the FIRST. For count(*) that made
+// every branch read the table's first column — usually the primary key, and on
+// a UUID-keyed 10M-row mirror 228 MB of it, 810 ms of a 1,190 ms count(*).
+// With a constant in that position the scan reads nothing it was not asked
+// for: the same count measured 250 ms. The outer SELECT names the table's own
+// columns, so the pad never reaches a reader.
+func padBranch(q string) string {
+	return "SELECT 0::TINYINT AS " + padColumn + ", " + strings.TrimPrefix(q, "SELECT ")
+}
+
+// padColumn is not a name a mirrored table can have: ViewSQL would otherwise
+// have to rename it around a collision.
+const padColumn = `"__qs_pad"`

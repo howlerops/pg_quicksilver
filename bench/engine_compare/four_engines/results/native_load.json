@@ -1,0 +1,44 @@
+{
+ "customers_s": 0.3706425920001948,
+ "orders_s": 11.315705237999964,
+ "checkpoint_s": 0.02258867199998349,
+ "total_s": 11.914178066999966,
+ "rows": 10000000,
+ "file_bytes": 959459328,
+ "peak_rss_kb": 1209980,
+ "schema": [
+  [
+   "id",
+   "UUID"
+  ],
+  [
+   "tenant_id",
+   "INTEGER"
+  ],
+  [
+   "customer_id",
+   "UUID"
+  ],
+  [
+   "status",
+   "VARCHAR"
+  ],
+  [
+   "amount",
+   "DECIMAL(12,2)"
+  ],
+  [
+   "created_at",
+   "TIMESTAMP WITH TIME ZONE"
+  ],
+  [
+   "payload",
+   "VARCHAR"
+  ],
+  [
+   "note",
+   "VARCHAR"
+  ]
+ ],
+ "duckdb": "2.0.1"
+}

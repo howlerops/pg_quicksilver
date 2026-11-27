@@ -1,0 +1,11 @@
+[ok] before: routed under the strict default, equal to the heap (1000000, Decimal('499995162.92'))
+     sidecar stopped (SIGTERM)
+[ok] strict, after ONE write: answered by the heap (mirror is not fresh enough: public.orders: mirror is at 0/1066A530, this node is at 0/1066A828 (760 WAL bytes behind; quicksilver.max_lag = 0 routes only a mirror that has caught), equal to the heap: True
+[ok] max_lag = 1MB, after one write: answered by the mirror with the mirror's older answer (1000000, Decimal('499995162.92')); the heap says (1000000, Decimal('499995163.92')) (this is what the setting asks for)
+[ok] max_lag = 1MB, 9765544 WAL bytes behind: answered by the heap (public.orders: mirror is 9765544 WAL bytes behind, over 1048576), equal to the heap: True
+[ok] read your writes, min_applied_lsn = 0/10FBA978, max_lag = 1GB, freshness_wait = 0: the heap answers in 69 ms (public.orders: mirror is at 0/1066A530, quicksilver.min_applied_lsn asks for 0/10FBA978), with the write: True
+[ok]   ... freshness_wait = 500ms, sidecar still down: waits 567 ms, then the heap answers, with the write: True
+[ok]   ... freshness_wait = 60s, sidecar started at the same moment: waited 1.1 s and was answered by the mirror, with the write: True
+[ok] after the restart: strict routing resumed 0.0 s after the sidecar was ready, equal to the heap (1000000, Decimal('499995368.91'))
+[ok]   ... and the max_lag = 1MB session is routed again, equal to the heap
+all ok
