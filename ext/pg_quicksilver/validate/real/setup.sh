@@ -25,7 +25,13 @@ for so in pg_duckdb pg_quicksilver; do
   [ -f "${PG_LIBDIR:-$($PG/pg_config --pkglibdir)}/$so.so" ] || die "$so is not installed for $PG"
 done
 "$HERE/teardown.sh"
-mkdir -p "$BASE" /tmp/qs_regress; chown postgres:postgres "$BASE" /tmp/qs_regress    # /tmp/qs_regress: where errors.sql keeps a mirror it can break
+mkdir -p "$BASE"; chown postgres:postgres "$BASE"
+# /tmp/qs_regress: where errors.sql keeps a mirror it can break, and where the
+# tests' \o redirections write. psql's \o runs as the user that runs pg_regress
+# (the CI runner, not postgres), so the directory must be writable by it: 1777,
+# and emptied, so a file a previous run left behind (owned by postgres, from a
+# server-side COPY) cannot block the \o of this one.
+rm -rf /tmp/qs_regress; mkdir -p /tmp/qs_regress; chmod 1777 /tmp/qs_regress
 case "$LOCALE" in
   icu-en-US) loc="--locale=C.UTF-8 --locale-provider=icu --icu-locale=en-US" ;;
   C) loc="--locale=C.UTF-8 --locale-provider=builtin --builtin-locale=C" ;;

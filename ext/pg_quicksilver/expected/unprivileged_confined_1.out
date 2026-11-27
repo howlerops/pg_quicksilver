@@ -75,8 +75,12 @@ SELECT count(*) FROM quicksilver.mirrors;
 SET ROLE quicksilver_mirror_reader;
 SET SESSION AUTHORIZATION quicksilver_mirror_reader;
 SELECT current_user, session_user;
--- the routed statement's plan names no internal role
-EXPLAIN (VERBOSE, COSTS OFF) SELECT count(*), sum(amount), min(id), max(id) FROM public.orders WHERE customer_id = 1;
+-- the routed statement's plan names no internal role. Not VERBOSE: VERBOSE
+-- prints a "Query Identifier", a hash of object OIDs that changes whenever the
+-- extension's SQL script creates an object (the extension always computes query
+-- ids, so compute_query_id cannot hide it). The routed node and the heap plan
+-- are what this asserts on.
+EXPLAIN (COSTS OFF) SELECT count(*), sum(amount), min(id), max(id) FROM public.orders WHERE customer_id = 1;
 SELECT usename FROM pg_stat_activity WHERE pid = pg_backend_pid();
 -- ---------------------------------------------------------------- 5. a mirror that fails: the user is unchanged afterwards
 \c - postgres

@@ -92,7 +92,7 @@ SELECT b FROM qt.stale ORDER BY id;
 SELECT side, reason, right(detail, 12) AS detail_ends FROM quicksilver.last_decision();
  side |            reason            | detail_ends  
 ------+------------------------------+--------------
- heap | the mirror could not plan it | 1: SELECT b 
+ heap | the mirror could not plan it | (remembered)
 (1 row)
 
 -- republishing is DDL on the mirror, which forgets it
