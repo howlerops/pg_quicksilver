@@ -472,6 +472,16 @@ func (s *Streaming) receive(ctx context.Context) {
 			return
 		}
 
+		// The server ending the stream with an error arrives as a message, not as
+		// an error from ReceiveMessage, and the non-data case below skips
+		// messages. Skipping this one left the receiver reading a connection the
+		// walsender had already closed, while the pump went on reporting the
+		// mirror as ready: a publication dropped under a slot ("publication does
+		// not exist") stopped the stream without a word. It is the stream's error.
+		if e, isErr := raw.(*pgproto3.ErrorResponse); isErr {
+			s.setErr(pgconn.ErrorResponseToPgError(e))
+			return
+		}
 		cd, ok := raw.(*pgproto3.CopyData)
 		if !ok || len(cd.Data) == 0 {
 			continue

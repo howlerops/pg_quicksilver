@@ -9,6 +9,7 @@ import (
 	"context"
 	"encoding/binary"
 	"fmt"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -300,6 +301,30 @@ func TestConfirmConcurrentWithReceive(t *testing.T) {
 func keepalive(walEnd uint64) pgproto3.BackendMessage {
 	b := u64(u64([]byte{pglogrepl.PrimaryKeepaliveMessageByteID}, walEnd), 0)
 	return &pgproto3.CopyData{Data: append(b, 0)}
+}
+
+// The server ends a replication stream with an ErrorResponse message. That
+// must be the stream's error, and it must reach the pump through Transactions.
+// It used to be skipped like any non-data message: the receiver went on reading
+// a connection the walsender had closed, and the mirror reported itself ready.
+func TestServerErrorEndsTheStream(t *testing.T) {
+	s, f := startFake(t, 5, time.Hour)
+	ctx := context.Background()
+	waitFor(t, "the receiver to block in a read", func() bool { return f.inIO.Load() == 1 })
+
+	stop := feed(f, []pgproto3.BackendMessage{&pgproto3.ErrorResponse{
+		Severity: "ERROR",
+		Code:     "42704",
+		Message:  `publication "qs_e2e" does not exist`,
+	}})
+	defer stop()
+	waitFor(t, "the stream to report the server's error", func() bool {
+		_, err := s.Transactions(ctx)
+		return err != nil
+	})
+	if _, err := s.Transactions(ctx); err == nil || !strings.Contains(err.Error(), "does not exist") {
+		t.Fatalf("Transactions after a server error: err = %v, want the server's message", err)
+	}
 }
 
 // The bug: a caught-up mirror never confirmed a position while the primary

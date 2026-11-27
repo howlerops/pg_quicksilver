@@ -371,9 +371,12 @@ say "6e. two tables in one sidecar"
 psq 5443 "CREATE TABLE IF NOT EXISTS orders(id bigint primary key, total numeric(12,2), placed timestamptz)" >/dev/null
 psq 5443 "INSERT INTO orders SELECT g,(g%97)/7.0,now() FROM generate_series(1,5000) g ON CONFLICT DO NOTHING" >/dev/null
 pkill -x qs-mirror; sleep 2
-# A new table joining an existing publication needs the slot's publication
-# refreshed; the sidecar owns that, so dropping the publication makes it rebuild.
-psq 5443 "DROP PUBLICATION IF EXISTS qs_e2e" >/dev/null 2>&1
+# Nothing is dropped here. The sidecar's ensurePublication runs ALTER
+# PUBLICATION ... SET TABLE on every start, which adds orders to the publication
+# that already exists. Dropping it was wrong: the slot's restart point is older
+# than the drop, so the walsender decodes WAL in which the publication does not
+# exist and fails with `publication "qs_e2e" does not exist` for good, and the
+# mirror never receives a change to orders.
 start_sidecar $BASE/mirror.log "public.events,public.orders"
 wait_ready 120 || { tail -20 $BASE/mirror.log; bad "no readiness with two tables"; }
 psq 5443 "INSERT INTO orders SELECT g,(g%97)/7.0,now() FROM generate_series(5001,6000) g" >/dev/null
