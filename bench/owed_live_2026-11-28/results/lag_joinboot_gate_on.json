@@ -1,0 +1,9 @@
+{
+ "label": "joinboot_gate_on",
+ "commits": 1105,
+ "seen": 1105,
+ "median_ms": 25.9,
+ "p95_ms": 58.3,
+ "max_ms": 118.8,
+ "min_ms": -262.7
+}

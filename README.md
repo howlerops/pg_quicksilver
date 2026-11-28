@@ -17,6 +17,28 @@ sidecar publishing a DuckLake that the routing extension reads from inside Postg
 10,000,000 orders and 500,000 customers, best of five warm runs, every answer checked equal
 to the heap's. Full table, earlier runs and caveats: **[METRICS.md §0](METRICS.md)**.
 
+### Re-measured 2026-11-28, at 1,000,000 orders
+
+The 10M run was not repeated: on the shared disk the cluster would not fit (1M orders are 352 MB, and a
+standby doubles that). Same bench layout (500,000 customers, 24 months), join domains bootstrapped on, UTC,
+on a shared 4-core host under load 2 to 15: median of five warm runs, every answer checked equal to the heap's.
+
+| query | heap (standby) | routed through the extension | heap ÷ routed |
+|---|---:|---:|---:|
+| revenue by month, join to customers | 916.6 ms | 162.4 ms | **5.6×** |
+| `GROUP BY status` | 133.5 ms | 22.7 ms | **5.9×** |
+| `sum(amount)` | 105.8 ms | 18.1 ms | **5.9×** |
+| `count(*)` | 67.6 ms | 10.7 ms | **6.3×** |
+| one month, count and sum | 12.3 ms | 10.8 ms | 1.1× (the router keeps it on the heap) |
+
+Full table, New York, the runs without join domains and the caveats: **[METRICS.md §0.2](METRICS.md)**.
+Also measured there: a `kill -9` of the sidecar in a replay hold (three runs, no loss, no duplicate), and a
+promotion with a second standby repointed at the new primary.
+
+**Known issue:** with `quicksilver.max_lag` above 0, a promoted node keeps answering from its frozen mirror
+until the lag exceeds that many bytes. Under the default `max_lag = 0` it stops routing at once. Reproduction
+and the suggested fix are in METRICS §0.2, part C.
+
 ### Fresh after the load, 10M orders
 
 | query | heap (standby) | routed through the extension | DuckDB reading the lake directly | heap ÷ routed |
