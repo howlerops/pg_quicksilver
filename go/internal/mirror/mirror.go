@@ -200,6 +200,11 @@ type Table struct {
 	// aborting counts rewrites that were abandoned and have not yet finished
 	// and removed their output. See AbortCompaction and Close.
 	aborting sync.WaitGroup
+	// abortPending counts abandoned rewrites whose output is not yet removed.
+	// Their names come from State.Seq, which Reload can move back, so until
+	// the cleanup has run no new rewrite may take a name it will remove
+	// (BeginCompaction refuses, and Compact waits). See AbortCompaction.
+	abortPending atomic.Int32
 
 	// detached marks the private copy a background rewrite works from
 	// (rewriteSnapshot). It shares a directory with the real table and nothing
@@ -1662,6 +1667,8 @@ func (t *Table) discardOne(path string) {
 // and rebuilds the key->position index. Query cost is a function of how far
 // behind this runs, so compaction backlog is a first-class metric.
 func (t *Table) Compact() (int, error) {
+	t.aborting.Wait() // see abortPending
+
 	if len(t.State.BaseFiles) == 0 && len(t.State.DeltaFiles) == 0 {
 		return 0, nil
 	}

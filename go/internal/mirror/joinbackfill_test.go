@@ -38,6 +38,9 @@ func TestBackfillDueUntilEveryFileHasItsCompanion(t *testing.T) {
 
 	// Domain added to the existing mirror.
 	jd := domainsFor(t, root, dmSpec, 0)
+	// One live Table per directory: close the first pair before reopening.
+	cust.Close()
+	ord.Close()
 	cust, ord = openDomainTables(t, root, jd)
 	if !ord.BackfillDue() || !cust.BackfillDue() {
 		t.Fatal("a table whose files predate its domain is not due for a backfill")
@@ -60,7 +63,11 @@ func TestBackfillDueUntilEveryFileHasItsCompanion(t *testing.T) {
 		t.Fatal("BeginCompaction refused a due table with nothing else running")
 	}
 	ord.AbortCompaction()
-	_, ord = openDomainTables(t, root, jd)
+	// A restart closes the Table (which waits for an abandoned rewrite's
+	// cleanup) before the directory is opened again.
+	ord.Close()
+	cust.Close()
+	cust, ord = openDomainTables(t, root, jd)
 	if !ord.BackfillDue() || completeOf(t, ord, "customer_id") {
 		t.Fatal("an abandoned backfill counted as complete after restart")
 	}
@@ -106,4 +113,76 @@ func TestBackfillNeverDueWithoutDomains(t *testing.T) {
 	if ord.BackfillDue() {
 		t.Fatal("a table with no domain attached is due for a backfill")
 	}
+}
+
+// An abandoned rewrite, then a successful one in the same process, on the same
+// Table: the abandoned rewrite's name was taken from State.Seq, which the next
+// rewrite increments, so its cleanup cannot remove the next rewrite's file.
+func TestAbandonedRewriteThenSuccessfulOneInProcess(t *testing.T) {
+	root := t.TempDir()
+	var lsn lsnSeq
+	_, ord := openDomainTables(t, root, nil)
+	var ids []string
+	var ops []changestream.Change
+	for i := 0; i < 60; i++ {
+		ids = append(ids, dmUUID(i))
+		ops = append(ops, oiIns(i+1, ids[i]))
+	}
+	applyTxn(t, ord, &lsn, ops...)
+	if _, err := ord.Compact(); err != nil {
+		t.Fatal(err)
+	}
+	ord.Close()
+
+	jd := domainsFor(t, root, dmSpec, 0)
+	_, ord = openDomainTables(t, root, jd)
+	if c := ord.BeginCompaction(); c == nil {
+		t.Fatal("BeginCompaction refused")
+	}
+	ord.AbortCompaction()
+	if _, err := ord.Compact(); err != nil {
+		t.Fatalf("rewrite after an abandoned one: %v", err)
+	}
+	if ord.BackfillDue() {
+		t.Fatal("still due after the rewrite that followed an abandoned one")
+	}
+	ord.Close()
+}
+
+// The same, but across a restart: the abandoned rewrite's Table is closed, and
+// the directory is reopened, so the next rewrite reuses the name the abandoned
+// one had. The close waits for the abandoned rewrite's cleanup.
+func TestAbandonedRewriteThenRestart(t *testing.T) {
+	root := t.TempDir()
+	var lsn lsnSeq
+	_, ord := openDomainTables(t, root, nil)
+	var ops []changestream.Change
+	for i := 0; i < 60; i++ {
+		ops = append(ops, oiIns(i+1, dmUUID(i)))
+	}
+	applyTxn(t, ord, &lsn, ops...)
+	if _, err := ord.Compact(); err != nil {
+		t.Fatal(err)
+	}
+	ord.Close()
+
+	jd := domainsFor(t, root, dmSpec, 0)
+	_, ord = openDomainTables(t, root, jd)
+	if c := ord.BeginCompaction(); c == nil {
+		t.Fatal("BeginCompaction refused")
+	}
+	ord.AbortCompaction()
+	ord.Close()
+
+	_, ord = openDomainTables(t, root, jd)
+	if !ord.BackfillDue() {
+		t.Fatal("an abandoned backfill counted as complete after restart")
+	}
+	if _, err := ord.Compact(); err != nil {
+		t.Fatalf("rewrite after restart: %v", err)
+	}
+	if ord.BackfillDue() {
+		t.Fatal("still due after the rewrite after restart")
+	}
+	ord.Close()
 }

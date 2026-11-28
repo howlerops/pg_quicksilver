@@ -100,7 +100,9 @@ func (c *Compaction) Done() bool {
 // BeginCompaction snapshots the current file set and starts rewriting it on
 // another goroutine. Returns nil if a compaction is already running.
 func (t *Table) BeginCompaction() *Compaction {
-	if t.compacting != nil {
+	if t.compacting != nil || t.abortPending.Load() > 0 {
+		// An abandoned rewrite's output is still being removed. Its name
+		// must not be taken again yet; the caller asks again on its next tick.
 		return nil
 	}
 	t.State.Seq++
@@ -413,8 +415,10 @@ func (t *Table) AbortCompaction() {
 	// Counted, so that Close can wait: this unlinks a PATH, later, and the
 	// Table that replaces a closed one may be writing that path by then.
 	t.aborting.Add(1)
+	t.abortPending.Add(1)
 	go func() {
 		defer t.aborting.Done()
+		defer t.abortPending.Add(-1)
 		<-c.done
 		_ = os.Remove(filepath.Join(t.Dir, "base", c.name))
 		c.index.close()
