@@ -409,6 +409,8 @@ typedef struct QsMirror
 	Query	   *subquery;		/* SELECT <heap columns> [, companions] FROM mirror, rewritten */
 	uint64		key;			/* qs_mirror_key of the registry it was built under */
 	uint64		epoch;			/* qs_relcache_epoch when it was built began: a watched relation changed since, it is built again */
+	bool		subq_hashed;	/* subq_hash is the hash of subquery's text, computed once (qs_fp_mirror) */
+	uint64		subq_hash;
 } QsMirror;
 
 /* One row of quicksilver.join_domains (all of them are kept, in qs_cache_cxt). */
@@ -1507,6 +1509,7 @@ qs_build_mirror_body(QsMirror *m)
 	}
 	old = MemoryContextSwitchTo(qs_cache_cxt);
 	m->subquery = copyObject(q);
+	m->subq_hashed = false;
 	m->joins = NIL;
 	foreach(lc, joinx)
 	{
@@ -2281,10 +2284,20 @@ qs_fp_mirror(QsMirror *m)
 	}
 	if (m->subquery != NULL)
 	{
-		char	   *s = nodeToString(m->subquery);
+		/*
+		 * The subquery is the entry's own copy, fixed when the entry is built, and serializing it is
+		 * O(its width) on every decision: a wide table (a thousand columns after a DDL storm) made
+		 * each routed statement cost hundreds of milliseconds in an assert build. Hashed once.
+		 */
+		if (!m->subq_hashed)
+		{
+			char	   *s = nodeToString(m->subquery);
 
-		h = qs_fp_str(h, s);
-		pfree(s);
+			m->subq_hash = qs_fp_str(QS_FP_INIT, s);
+			m->subq_hashed = true;
+			pfree(s);
+		}
+		h = qs_fp_bytes(h, &m->subq_hash, sizeof(uint64));
 	}
 	else
 		h = qs_fp_str(h, NULL);
@@ -2447,6 +2460,7 @@ qs_copy_mirror(QsMirror *dst, QsMirror *src)
 		dst->joins = lappend(dst->joins, c);
 	}
 	dst->subquery = src->subquery ? copyObject(src->subquery) : NULL;
+	dst->subq_hashed = false;
 	dst->key = src->key;
 	dst->epoch = src->epoch;
 	MemoryContextSwitchTo(old);
