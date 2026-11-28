@@ -180,13 +180,13 @@ caveats).
 
 ## Two traps that will cost you an hour each
 
-**1. CloudNativePG 1.26 is a floor.** On 1.25 the operator builds an instance
+**1. CloudNativePG 1.27 is the floor (1.26 is the rollout floor).** On 1.25 the operator builds an instance
 Pod's expected spec *without consulting plugins*, so the sidecar is absent from
 both sides of the comparison that decides whether to replace a Pod — and `mode`,
 `freshnessSLO`, `sidecarImage` and `tables` never reach a running instance. A
 Pod created fresh still gets the parameters it was created with, so it looks
 like it works until the first time you change your mind. `cluster_e2e.sh`
-installs 1.26.0 and refuses to run below it. Full account: docs/37.
+installs 1.27.0 and refuses to run below it. Full account: docs/37.
 
 **2. `CAP_SYS_RESOURCE`.** Without it runc cannot set a pod sandbox's
 `oom_score_adj` to −998, no pod sandbox can be created at all, and the failure

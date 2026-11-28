@@ -380,8 +380,36 @@ collect() {
 # that are only SQL against a PostgreSQL it can actually start. A cluster is
 # the only place they mean anything; a typo in one of them should not cost a
 # forty-minute run to find.
+# The settings the plugin's EnrichConfiguration writes (go/internal/plugin/
+# postgres.go), read back from the server. Each must be in force on every
+# replica. A value the operator dropped shows up in production only later: a
+# slot that is not synchronised after a failover (docs/15) is a full re-snapshot,
+# and a replica read cancelled by a vacuum is hot_standby_feedback (docs/30).
+# max_replication_slots is intended to be at least instances + 4 (the plugin
+# raises it, and never lowers an operator value).
+enriched_settings_in_force() {
+  local p r v need
+  # The selftest runs these sections against a PostgreSQL nobody enriched.
+  [ "${E2E_ENRICHED_CHECK:-1}" = 1 ] || return 0
+  p=$(primary)
+  need=$(( $(kc get cluster "$CLUSTER" -o jsonpath='{.spec.instances}' 2>/dev/null) + 4 ))
+  v=$(sql "$p" "SHOW wal_level")
+  if [ "$v" = logical ]; then ok "primary: wal_level=logical"; else bad "primary: wal_level=$v, want logical"; fi
+  for r in $(replicas); do
+    v=$(sql "$r" "SHOW sync_replication_slots")
+    if [ "$v" = on ]; then ok "$r: sync_replication_slots=on"
+    else bad "$r: sync_replication_slots=$v, want on: failover slots are not synchronised, so a failover re-snapshots every mirror"; fi
+    v=$(sql "$r" "SHOW hot_standby_feedback")
+    if [ "$v" = on ]; then ok "$r: hot_standby_feedback=on"; else bad "$r: hot_standby_feedback=$v, want on"; fi
+    v=$(sql "$r" "SHOW max_replication_slots")
+    if [ "$v" -ge "$need" ] 2>/dev/null; then ok "$r: max_replication_slots=$v, at least $need"
+    else bad "$r: max_replication_slots=$v, want at least $need (instances + 4)"; fi
+  done
+}
+
 section_slots() {
   say "4. each replica has a slot of its OWN"
+  enriched_settings_in_force
   # A slot is one cursor. Two sidecars sharing one meant the second silently
   # missed every row written while the first held it, with nothing in either
   # log; this is the first place two sidecars have ever run against one primary.
@@ -521,8 +549,7 @@ version_at_least() {
 # ORDINARY role is given with routing asked for.
 #
 # The derived one is duckdb.allowed_directories, written from EnrichConfiguration,
-# which CloudNativePG calls from 1.27: 1.26, the CI pin, never does, so on that
-# operator it is NOT RUN, not a pass. docs/16 says so.
+# which CloudNativePG applies from 1.27, the floor this script enforces.
 #
 # The CI operand image is built with the STOCK pg_duckdb (PG_DUCKDB_BUILD
 # defaults to package in deploy/Dockerfile). A stock build never routes an
@@ -533,7 +560,9 @@ routing_settings() {
   local p r val mirror="${PARAMS[mirrorPath]:-/var/lib/postgresql/data/quicksilver}" confined out
   p=$(primary)
 
-  if version_at_least "$opver" 1.27; then
+  # The floor is 1.27, the first operator that applies it. Not in the selftest,
+  # which has no operator (E2E_ENRICHED_CHECK=0).
+  if [ "${E2E_ENRICHED_CHECK:-1}" = 1 ]; then
     for r in $(replicas); do
       val=$(sql "$r" "SHOW duckdb.allowed_directories")
       case ",$val," in
@@ -541,8 +570,6 @@ routing_settings() {
         *) bad "$r: duckdb.allowed_directories=$val does not name the mirror $mirror: the lake is not attached here" ;;
       esac
     done
-  else
-    notrun "duckdb.allowed_directories is derived by the plugin's EnrichConfiguration, which CloudNativePG $opver does not call (1.27 is the first that does): not asserted on this operator"
   fi
 
   confined=$(sql "$p" "SHOW duckdb.confined_file_access" 2>/dev/null || true)
@@ -776,6 +803,7 @@ print(max(1, int(n * {"ms": 0.001, "s": 1, "m": 60, "h": 3600}[u])))' "$JANITOR_
 
 section_switchover() {
   say "8. a switchover: both mirrors match afterwards and no slot is orphaned"
+  enriched_settings_in_force
   local old target; old=$(primary); target=$(replicas | head -1)
   [ -n "$target" ] || { bad "no replica to promote"; return; }
   echo "  $old -> $target"
@@ -814,6 +842,10 @@ section_switchover() {
     bad "after the switchover the Quicksilver slots are not exactly one active slot per replica (above): an orphan pins WAL on the new primary"
   fi
   janitor_check "a switchover"
+  # After the switchover the OLD primary is a replica again, and every replica
+  # must still have the enriched settings: the promoted one is the one whose
+  # slot synchronisation the failover guarantee depends on.
+  enriched_settings_in_force
   # Not asserted, because nobody has claimed it: whether the router still
   # routes on -ro straight after a switchover. Printed, so that the first time
   # it does not, the log already has it.
@@ -822,6 +854,7 @@ section_switchover() {
 
 section_scale_down() {
   say "9. scaling 3 -> 2 leaves no inactive slot retaining WAL"
+  enriched_settings_in_force
   local before after gone orphan
   before=$(instances)
   kc patch cluster "$CLUSTER" --type merge -p '{"spec":{"instances":2}}' >/dev/null || { bad "could not scale the Cluster"; return; }
@@ -883,8 +916,13 @@ kubectl -n cert-manager rollout status deploy/cert-manager-webhook --timeout=300
   || skip "cert-manager webhook never became ready"
 ok "cert-manager ready"
 
-# CloudNativePG 1.26 is a FLOOR, not a preference, and this is where it was
-# found. On 1.25.1 the roll section could never pass, for a structural reason:
+# CloudNativePG 1.27.0 is the FLOOR. Below it the plugin's PostgreSQL
+# parameters are never applied: EnrichConfiguration (pkg/postgres/plugin/config.go)
+# is first called by the instance manager in 1.27.0
+# (pkg/management/postgres/configuration.go:454); the 1.26.3 release, the last 1.26
+# patch, has no such call. The whole 1.26 floor history follows, because it is
+# why the roll section needs the operator at all. On 1.25.1 the roll section could
+# never pass, for a structural reason:
 #
 #   1.25  specs.PodWithExistingStorage() builds the target Pod with no plugin
 #         client at all, and writes that UN-PATCHED spec into the
@@ -900,7 +938,7 @@ ok "cert-manager ready"
 # go/fidelity builds against the version in its go.mod (1.30) and its rollout
 # test passes there, which is exactly how this hid: the unit test proved a
 # property of an operator this script did not install.
-CNPG_VERSION=${CNPG_VERSION:-1.26.0}
+CNPG_VERSION=${CNPG_VERSION:-1.27.0}
 if ! kubectl get crd clusters.postgresql.cnpg.io >/dev/null 2>&1; then
   kubectl apply --server-side -f \
     "https://raw.githubusercontent.com/cloudnative-pg/cloudnative-pg/release-${CNPG_VERSION%.*}/releases/cnpg-${CNPG_VERSION}.yaml" >/dev/null \
@@ -915,11 +953,10 @@ kubectl -n "$CNPG_NS" rollout status deploy/cnpg-controller-manager --timeout=30
 opimg=$(kubectl -n "$CNPG_NS" get deploy cnpg-controller-manager \
   -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null)
 opver=${opimg##*:}
-case "${opver#v}" in
-  1.25.*|1.24.*|1.23.*|1.22.*|1.21.*|1.2[0-5])
-    skip "CloudNativePG $opver is below the 1.26 floor: it builds the target Pod without the plugin, so a plugin parameter change can never roll an instance and the roll and takeover sections cannot pass. See docs/37." ;;
-esac
-ok "CloudNativePG ready in $CNPG_NS (operator $opver, floor is 1.26)"
+if ! version_at_least "${opver#v}" 1.27; then
+  skip "CloudNativePG $opver is below the 1.27 floor: below 1.27 the plugin's PostgreSQL parameters are never applied (synchronised failover slots, hot_standby_feedback, and the routing directory), and below 1.26 a plugin parameter change cannot roll an instance either. See docs/16 and docs/37."
+fi
+ok "CloudNativePG ready in $CNPG_NS (operator $opver, floor is 1.27)"
 
 kubectl create namespace "$NS" >/dev/null 2>&1
 kubectl create namespace "$CNPG_NS" >/dev/null 2>&1

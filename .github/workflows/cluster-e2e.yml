@@ -143,7 +143,14 @@ permissions:
   contents: read
   packages: read
 
-# ONE cluster at a time, repo-wide, and the newest commit wins.
+# ONE cluster at a time per CloudNativePG entry of the matrix below, and the
+# newest commit wins. The floor entry and the newest entry each have a kind
+# cluster of their own, on their own runner, and their own group: they must not
+# cancel each other, which a shared group with cancel-in-progress would do.
+#
+# The group used to be ONE for the whole repository. The text that follows is
+# the history of that choice; the group itself moved to the job (below), where
+# the matrix can name it.
 #
 # The push trigger above makes it easy to have several of these in flight at
 # once — a branch push and a fast-forward of main are two commits seconds apart,
@@ -174,14 +181,32 @@ permissions:
 # The one exception is a pull request, which is keyed on its number: the
 # newest push to a pull request cancels that pull request's older run and
 # nobody else's. Everything else still shares the one group.
-concurrency:
-  group: ${{ github.event_name == 'pull_request' && format('cluster-e2e-pr-{0}', github.event.pull_request.number) || 'cluster-e2e' }}
-  cancel-in-progress: true
-
 jobs:
   cluster:
-    name: three instances, on a real cluster
+    name: three instances, on a real cluster (cnpg ${{ matrix.cnpg }})
     runs-on: ubuntu-latest
+    # Two entries, and fail-fast off so that a failure on the floor does not
+    # hide the newest operator's answer, or the reverse.
+    #   floor   the first CloudNativePG that applies plugin parameters
+    #           (cluster_e2e.sh enforces it; below it the script skips).
+    #   newest  the newest 1.30 patch release, which go/fidelity does not pin.
+    # Both manifests exist: release-1.27/releases/cnpg-1.27.0.yaml and
+    # release-1.30/releases/cnpg-1.30.2.yaml. The versions are strings, as the
+    # manifest URL needs them.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - cnpg: "1.27.0"
+            slot: floor
+          - cnpg: "1.30.2"
+            slot: newest
+    # One group per matrix entry, so the two cannot cancel each other, and a
+    # pull request's newest push still cancels only that pull request's older
+    # run. The standing cluster (below) is used by the newest entry only.
+    concurrency:
+      group: ${{ github.event_name == 'pull_request' && format('cluster-e2e-pr-{0}-{1}', github.event.pull_request.number, matrix.slot) || format('cluster-e2e-{0}', matrix.slot) }}
+      cancel-in-progress: true
     # The full run is about forty-five minutes on a four-core runner: ten for
     # the images, five for the operators, thirty for the sections. Every wait
     # in the script is bounded, so a run that fails does so well inside this;
@@ -254,10 +279,14 @@ jobs:
       # Never for a pull request. A standing cluster outlives the run and is
       # shared; a pull request's code is the thing under test, not yet trusted
       # with either. The secret is not even read for that event.
+      #
+      # The standing cluster is the NEWEST entry's only. It is one cluster with
+      # one operator, so the floor entry cannot share it, and the floor always
+      # gets a kind cluster of its own, whatever the secret says.
       - name: use the standing cluster, if one is configured
         id: kube
         env:
-          KUBECONFIG_SECRET: ${{ github.event_name != 'pull_request' && secrets.KUBECONFIG || '' }}
+          KUBECONFIG_SECRET: ${{ matrix.slot == 'newest' && github.event_name != 'pull_request' && secrets.KUBECONFIG || '' }}
         run: |
           if [ -n "$KUBECONFIG_SECRET" ]; then
             mkdir -p "$HOME/.kube"
@@ -273,7 +302,7 @@ jobs:
       - uses: helm/kind-action@v1
         if: steps.kube.outputs.standing != 'true'
         with:
-          cluster_name: qs
+          cluster_name: qs-${{ matrix.slot }}
           wait: 120s
 
       # Skipped in source mode, where there is no version to pull and this step
@@ -384,7 +413,7 @@ jobs:
           docker tag localhost/qs/pg_quicksilver-mirror:dev \
                      localhost/qs/pg_quicksilver-mirror:dev-rolled
 
-          kind load docker-image --name qs \
+          kind load docker-image --name qs-${{ matrix.slot }} \
             localhost/qs/pg_quicksilver-plugin:dev \
             localhost/qs/pg_quicksilver-mirror:dev \
             localhost/qs/pg_quicksilver-mirror:dev-rolled \
@@ -431,6 +460,9 @@ jobs:
         timeout-minutes: 70
         env:
           KUBECONFIG: /home/runner/.kube/config
+          # The CloudNativePG this entry installs (the script installs it only
+          # when no operator is running; then it asserts the running version).
+          CNPG_VERSION: ${{ matrix.cnpg }}
           # In source mode the images are already on the node, so there is
           # nothing to pull and no secret to pull it with: LOCAL_IMAGES=1 makes
           # the script say so in its own output rather than quietly proving
@@ -485,7 +517,7 @@ jobs:
         if: failure() || cancelled()
         uses: actions/upload-artifact@v4
         with:
-          name: cluster-e2e-${{ steps.mode.outputs.images }}-${{ github.run_id }}-${{ github.run_attempt }}
+          name: cluster-e2e-${{ matrix.slot }}-${{ steps.mode.outputs.images }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: /tmp/qs-cluster-e2e/
           if-no-files-found: warn
           retention-days: 14

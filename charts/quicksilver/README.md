@@ -104,7 +104,7 @@ log says why.
 
 ## Requirements
 
-- **CloudNativePG 1.26 or newer.** This is a hard floor, and below it the
+- **CloudNativePG 1.27.0 or newer.** This is the floor. Below 1.27 the plugin's PostgreSQL parameters are never applied (the failover settings, `hot_standby_feedback`, the routing directory; docs/16), and below 1.26 the
   failure is silent: 1.25 builds an instance Pod's expected spec without
   consulting plugins, so the injected sidecar is absent from both sides of the
   comparison that decides whether to replace a Pod. Changing `mode`,

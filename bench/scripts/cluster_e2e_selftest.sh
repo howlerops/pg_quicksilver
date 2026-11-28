@@ -174,7 +174,9 @@ export SHIM REAL HEALTH MIRROR
 export PATH="$SHIM:$PATH"
 
 # ---------------------------------------------------------------- the sections
-export E2E_LIB=1 SCOPE=full CLUSTER=app NS=selftest ARTIFACTS="$SHIM/artifacts"
+# The operator's settings are not this PostgreSQL's: section 4 would otherwise
+# assert the plugin's enriched parameters on a server nobody enriched.
+export E2E_LIB=1 SCOPE=full CLUSTER=app NS=selftest ARTIFACTS="$SHIM/artifacts" E2E_ENRICHED_CHECK=0
 # shellcheck source=bench/scripts/cluster_e2e.sh
 . "$REPO/bench/scripts/cluster_e2e.sh"
 TIMEOUT=120

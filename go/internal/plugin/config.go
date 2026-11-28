@@ -460,21 +460,10 @@ func Validate(cluster *apiv1.Cluster, params map[string]string) []*operator.Vali
 		}
 	}
 
-	// duckdb.allowed_directories is derived when routing is on (routing.go),
-	// unless the user set it. A user's value that does not name the mirror
-	// would leave the lake unattached on every node, silently: refuse it here.
-	if routingEnabled(cfg) {
-		if raw, conflict := userAllowedDirectoriesConflict(cluster, cfg); conflict {
-			errs = append(errs, &operator.ValidationError{
-				PathComponents: []string{"spec", "postgresql", "parameters", gucDuckDBAllowedDirectories},
-				Value:          raw,
-				Message: fmt.Sprintf("does not include the mirror path %s, where the lake's catalog is, "+
-					"so the lake is not attached on any node and routing answers from the heap. Add %s to the "+
-					"list, or remove the parameter and Quicksilver will set it",
-					cfg.MirrorPath, lakeDirectory(cfg.MirrorPath)),
-			})
-		}
-	}
+	// A user's duckdb.allowed_directories that misses the mirror is NOT an
+	// error here: it is a routing warning (routing.go). The mirror does not
+	// depend on routing, and a routing mistake must not take the mirror away
+	// from new Pods.
 
 	return errs
 }

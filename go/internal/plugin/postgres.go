@@ -69,7 +69,12 @@ func (PostgresImpl) EnrichConfiguration(
 
 	need := int(cluster.Spec.Instances) + slotHeadroom
 	raise(configs, "max_replication_slots", need)
-	raise(configs, "max_wal_senders", need)
+	// Each mirroring standby is a logical walsender on the primary, and each
+	// standby is also a physical one: two per standby, not one. CloudNativePG 1.26
+	// does not set max_wal_senders, so PostgreSQL's default of 10 applies, which
+	// covers six instances exactly. The old value, instances+4, was short from
+	// seven.
+	raise(configs, "max_wal_senders", 2*int(cluster.Spec.Instances)+slotHeadroom)
 
 	// PostgreSQL 17 slot synchronisation. `failover` is set per slot by the
 	// sidecar when it creates one; these two are cluster-wide.

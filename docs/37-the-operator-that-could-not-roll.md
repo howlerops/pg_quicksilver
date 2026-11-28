@@ -99,9 +99,12 @@ sufficient, because an operator has to call it.
 
 ## What changed
 
-- **The floor is CloudNativePG 1.26.** Below it, plugin parameters never reach
-  running instances.
-- `cluster_e2e.sh` installs 1.26.0 by default and, before anything else, reads
+- **The floor is CloudNativePG 1.27.0.** Below 1.26, plugin parameters never
+  reach running instances (this document). Below 1.27, they reach the instance
+  Pod but are never applied to `postgresql.conf`: `EnrichConfiguration` first
+  exists in 1.27.0 and the last 1.26 patch, 1.26.3, lacks it. docs/16 has the
+  table of what that silently cost.
+- `cluster_e2e.sh` installs 1.27.0 by default, CI runs 1.27.0 and 1.30.2, and, before anything else, reads
   the *running* operator's image tag and refuses to continue below the floor —
   checked against what is deployed rather than what was requested, because a
   standing cluster may already have an older operator and the install step is

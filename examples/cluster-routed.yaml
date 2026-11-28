@@ -100,7 +100,7 @@ spec:
         ducklake: "true"
         # With this, the plugin ALSO writes duckdb.allowed_directories, the
         # mirror's directory (routing.go). Nothing for it below. That is set
-        # from CloudNativePG 1.27; on 1.26 it is not applied at all, and the
+        # from CloudNativePG 1.27, the floor; on 1.26 it is not applied at all, and the
         # plugin's status says what is missing.
         # How long a lake snapshot stays readable after a newer one replaced
         # it; a routed statement that runs longer than this loses its files.

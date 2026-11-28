@@ -3,6 +3,7 @@ package plugin
 import (
 	"context"
 	"encoding/json"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -97,40 +98,44 @@ func TestAllowedDirectoriesCover(t *testing.T) {
 	}
 }
 
-func TestUserAllowedDirectoriesThatMissTheMirrorAreInvalid(t *testing.T) {
+func TestUserAllowedDirectoriesThatMissTheMirrorIsAWarningNotAnError(t *testing.T) {
 	c := newCluster(routedParams())
 	c.Spec.PostgresConfiguration.Parameters = map[string]string{"duckdb.allowed_directories": "/elsewhere/"}
-	errs := Validate(c, PluginParameters(c))
+
+	// The mirror must not depend on routing: no validation error, so the
+	// instance Pods are still built with the mirror.
+	for _, e := range Validate(c, PluginParameters(c)) {
+		t.Errorf("a routing setting made the configuration invalid: %s", e.GetMessage())
+	}
+
+	ws := routingWarnings(c, ParseConfig(c.Name, PluginParameters(c)))
 	found := false
-	for _, e := range errs {
-		comps := e.GetPathComponents()
-		if len(comps) > 0 && comps[len(comps)-1] == "duckdb.allowed_directories" {
+	for _, w := range ws {
+		if w.Parameter == "duckdb.allowed_directories" {
 			found = true
-			if !strings.Contains(e.GetMessage(), "/var/lib/postgresql/data/quicksilver/") {
-				t.Errorf("the message does not name the mirror path: %s", e.GetMessage())
+			if !strings.Contains(w.Message, "/var/lib/postgresql/data/quicksilver/") ||
+				!strings.Contains(w.Message, "mirror itself is unaffected") {
+				t.Errorf("the warning does not say what is wrong and what is not: %s", w.Message)
 			}
 		}
 	}
 	if !found {
-		t.Fatalf("a user allowed_directories that misses the mirror was not reported: %v", errs)
+		t.Fatalf("a user allowed_directories that misses the mirror was not warned about: %v", ws)
 	}
 
 	// One that covers the mirror is fine.
 	c.Spec.PostgresConfiguration.Parameters["duckdb.allowed_directories"] = "/var/lib/postgresql/data/"
-	for _, e := range Validate(c, PluginParameters(c)) {
-		if comps := e.GetPathComponents(); len(comps) > 0 && comps[len(comps)-1] == "duckdb.allowed_directories" {
-			t.Errorf("a covering value was refused: %s", e.GetMessage())
+	for _, w := range routingWarnings(c, ParseConfig(c.Name, PluginParameters(c))) {
+		if w.Parameter == "duckdb.allowed_directories" {
+			t.Errorf("a covering value was warned about: %s", w.Message)
 		}
 	}
 
-	// The conflict is only a conflict where routing is on.
-	c.Spec.PostgresConfiguration.Parameters["duckdb.allowed_directories"] = "/elsewhere/"
+	// Without a lake there is nothing to route, so nothing to warn about.
 	off := newCluster(map[string]string{"tables": "public.events"})
-	off.Spec.PostgresConfiguration.Parameters = c.Spec.PostgresConfiguration.Parameters
-	for _, e := range Validate(off, PluginParameters(off)) {
-		if comps := e.GetPathComponents(); len(comps) > 0 && comps[len(comps)-1] == "duckdb.allowed_directories" {
-			t.Errorf("without a lake the setting is not checked, but it was: %s", e.GetMessage())
-		}
+	off.Spec.PostgresConfiguration.Parameters = map[string]string{"duckdb.allowed_directories": "/elsewhere/"}
+	if ws := routingWarnings(off, ParseConfig(off.Name, PluginParameters(off))); len(ws) != 0 {
+		t.Errorf("without a lake the setting is not routing's business, got %v", ws)
 	}
 }
 
@@ -207,5 +212,19 @@ func TestStatusPublishesWarningsAlongsideValidState(t *testing.T) {
 	}
 	if len(st.ConfigWarnings) != 1 || st.ConfigWarnings[0].Parameter != "sidecarImage" {
 		t.Errorf("configWarnings = %+v, want the one sidecarImage warning", st.ConfigWarnings)
+	}
+}
+
+// Each mirroring standby is a logical and a physical walsender, so the plugin's
+// walsender count must cover two per standby, not one.
+func TestWalSendersCoverTwoPerStandby(t *testing.T) {
+	for _, n := range []int{3, 7, 8} {
+		c := newCluster(map[string]string{"tables": "public.events"})
+		c.Spec.Instances = n
+		got := enrich(t, c, map[string]string{})
+		want := 2*n + slotHeadroom
+		if got["max_wal_senders"] != strconv.Itoa(want) {
+			t.Errorf("%d instances: max_wal_senders = %q, want %d", n, got["max_wal_senders"], want)
+		}
 	}
 }

@@ -124,6 +124,16 @@ func routingWarnings(cluster *apiv1.Cluster, cfg Config) []ConfigError {
 			Message:   "pg_duckdb must come before pg_quicksilver: pg_quicksilver calls into pg_duckdb when it loads",
 		})
 	}
+	if raw, conflict := userAllowedDirectoriesConflict(cluster, cfg); conflict {
+		out = append(out, ConfigError{
+			Parameter: gucDuckDBAllowedDirectories,
+			Value:     raw,
+			Message: "does not include the mirror directory " + lakeDirectory(cfg.MirrorPath) +
+				", so the lake is not attached on any node and routed reads come from the heap. " +
+				"The mirror itself is unaffected. Add that directory to the list, or remove the parameter " +
+				"and Quicksilver will set it",
+		})
+	}
 	if strings.TrimSpace(cluster.Spec.PostgresConfiguration.Parameters[gucDuckDBExtensionDirectory]) == "" {
 		out = append(out, ConfigError{
 			Parameter: gucDuckDBExtensionDirectory,
