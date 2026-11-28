@@ -1793,3 +1793,53 @@ qs_registry_lockable, qs_decide):
   validation of this is in the section on the registry digest below.
 
 A heap-only reader takes no lock on the view and makes no cycle.
+
+### Cached routed plans
+
+A statement with no parameters is routed from a generic plan: the plan cache
+keeps it and a later transaction reuses it without locking the mirror view. A
+statement with parameters is never routed from a generic plan (the heap's plan
+is kept there, `prepared.sql`), so the cached routed plans are the parameterless
+ones. What protects them, and the evidence (`sql/cachedplan.sql` on the
+primary; `validate/real/hardening/cached_plan.py` and `cached_plan_lake.py`):
+
+- **The view's change invalidates the plan.** The view's OID is in the plan's
+  `relationOids`. `CREATE OR REPLACE VIEW` with the same columns: the next EXECUTE
+  is planned again and returns the new view's rows. A column of another type, or
+  `DROP VIEW`: the next EXECUTE is planned again and answers from the heap, with
+  "reads a relation with no usable mirror". A view that is created again answers
+  from the heap until it is registered again (a view of the same name is a
+  different relation to the registry).
+- **A change during a running EXECUTE does not reach it.** The plan's DuckDB text
+  is fixed when it is made and does not name the view, so a running statement
+  finishes with the answer it started with. A `CREATE OR REPLACE`, a `DROP VIEW`,
+  or a retyping of the view that lands while a 3M-row routed scan is running
+  returned the old mirror's rows, whole, in every run (50 each on the primary and
+  on the standby). No view lock is taken for the reuse, and none is needed for that.
+- **The same DDL on a standby** arrives by replay; the next EXECUTE there gives the
+  same answers as on the primary (`cached_plan.py`, the sequential part).
+- **The session is checked at the plan's start.** `qs_begin_scan` checks the route
+  mode (`quicksilver.route = heap` answers from the heap), the role (a role without
+  privilege on the heap table gets "permission denied", as the heap would), and the
+  freshness of the mirror (`qs_gate`): with `quicksilver.min_applied_lsn` above the
+  mirror's position the cached plan answers from the heap, and it answers from the
+  mirror again when the setting is reset. A registry change plans the statement
+  again, and so does not test this path; `min_applied_lsn` does.
+- **A change in the data under the view, with the view unchanged.** A mirror whose
+  source no longer has a column it reads falls back to the heap ("mirror failed at
+  execution"), with the heap's rows. On the sidecar's lake: inserts and deletes
+  applied by the sidecar, and an `ADD COLUMN` and a `DROP COLUMN`, were answered
+  by the cached plan with the heap's rows (`cached_plan_lake.py`), and an EXECUTE
+  started during the `ADD COLUMN` did not fail.
+- **A plan made while the mirror is behind is the heap's.** The planner gates the
+  freshness of a statement it is making (`qs_decide`), and a plan made in a stale
+  moment is the heap's plan, which stays cached until something invalidates it.
+  This answers correctly, but it does not return to the mirror by itself. It was
+  observed after a registry change made the statement be planned again while the
+  mirror was behind; it was not changed.
+- **TimeZone** for date_trunc: `sql/datetrunc.sql` prepares the statement and runs
+  it across TimeZone changes; it passes in the suite.
+
+Not covered: a promotion of the standby while a cached routed plan is held (the
+freshness gate above is what the promotion section relies on; it was not run
+through a promotion here), and a DuckLake rebuild (REBUILD) under a cached plan.
