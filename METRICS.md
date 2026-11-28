@@ -197,7 +197,7 @@ bootstrapped with the registry from the start the rewrite is used. The join-doma
 complete only once a complete manifest is published (`go/cmd/qs-mirror/extension.go`, the completeness
 comment), and an existing mirror's files have no companion column, so it is not complete. Not established
 whether it converges later; enable join domains at bootstrap.
-**Update (code, not yet measured live):** it now converges on its own. When a
+**Update (2026-11-28, measured live):** it now converges on its own. When a
 domain is attached to a table whose files lack the companion, `compactReason`
 returns `join-domain` (`mirror.JoinBackfillReason`, `go/internal/mirror/joinbackfill.go`)
 and the ordinary base rewrite runs in the background, one at a time, writing every
@@ -205,8 +205,79 @@ live row with companions; the sidecar logs `join domain configured but incomplet
 at start and `join domain backfill started ... "X of Y files"`. Completeness is
 still derived from the files, so an interrupted backfill is due again after a
 restart. Tests: `TestBackfillDueUntilEveryFileHasItsCompanion`,
-`TestBackfillNeverDueWithoutDomains`. The 1M-row restart timing and join
-comparison are not run (see the report in the commit message). (2) In the first attempt the second sidecar
+`TestBackfillNeverDueWithoutDomains`, `TestAbortedRewriteNameIsNotReusedBeforeItsCleanup`.
+
+**Live, 1,000,000 orders and 500,000 customers, a mirror built WITHOUT domains, then restarted with
+`QS_JOIN_DOMAINS`** (one shared 4-core host under other agents' load; single runs per phase;
+`scratchpad` runs `b_results.json` and `b_kill_results.json`):
+
+| | run 1 | run 2 (with kill -9 mid-backfill) |
+|---|---|---|
+| mirror without domains: sidecar ready / both tables MATCH | 7.3 s / +7.8 s | 7.8 s / +10.8 s |
+| peak RSS (VmHWM) without domains | 248 MB | 249 MB |
+| restart with domains: `join domain configured but incomplete` | yes, `0 of 1 files` per table | yes |
+| orders base rewrite (`why=join-domain`): 1,000,000 rows | 5.4 s | 6.6 s (killed at 3 s, resumed, completed) |
+| customers base rewrite: 500,000 rows | 1.6 s | 1.8 s |
+| `EXPLAIN` shows `Join keys: 1 rewritten to companions` | 7.1 s after start | 14.3 s after the restart |
+| peak RSS during the backfill | 305 MB | 330 MB |
+| both tables MATCH after the backfill | +7.9 s | +9.2 s |
+| headline, best / median, heap then routed, before -> after | 603.6/846.9 ms heap, 133.6/148.5 ms routed -> 616.0/711.8 ms heap, 118.5/159.2 ms routed | 645.3/678.4 ms heap, 180.5/217.5 ms routed -> 602.8/615.7 ms heap, 87.1/105.3 ms routed |
+| answer | identical (md5 `c0328ed1`) before and after | identical |
+
+The kill -9 landed in the orders rewrite (the log has `join domain backfill started` at 03.66 and no
+`compacted` line before the kill at 07); the restarted sidecar started the rewrite again from the old
+manifest and completed it. At 1M the routed headline speed-up from the join domains is not separable from
+the run-to-run spread (the two runs disagree in direction).
+
+**Live, 10,000,000 orders and 1,000,000 customers** (`c10m`: 10M orders over 24 months, 1M customers, the
+`setup_a` layout scaled up; the standby is a physical replica, so disk holds the cluster twice). Each mirror
+is bootstrapped with its own setting. Sidecar ready after 46.8 s without domains (mirror 1,042 MB, peak RSS
+312 MB, both tables MATCH 59 s after ready) and 50.9 s with domains (mirror 1,083 MB, peak RSS 441 MB, both
+MATCH 58 s after ready; `Join keys: 1 rewritten to companions`). Five warm runs, best and median, bench_a.py,
+every answer's md5 equal between heap and routed, and equal between the two mirrors:
+
+| query | TZ | join domains | heap best / median (ms) | routed best / median (ms) | heap ÷ routed (median) | answer |
+|---|---|---|---:|---:|---:|---|
+| revenue by month, join to customers | UTC | no | 4928.6 / 5477.2 | 1185.1 / 1271.1 | 4.3× | identical |
+| revenue by month, join to customers | UTC | yes | 5172.6 / 5828.8 | 438.7 / 457.4 | 12.7× | identical |
+| revenue by month, join to customers | America/New_York | no | 5622.4 / 5905.6 | 892.6 / 974.0 | 6.1× | identical |
+| revenue by month, join to customers | America/New_York | yes | 5227.5 / 5641.3 | 1256.2 / 1666.2 | 3.4× | identical |
+| GROUP BY status | UTC | no | 651.8 / 733.8 | 35.8 / 37.0 | 19.8× | identical |
+| GROUP BY status | UTC | yes | 584.0 / 610.5 | 37.0 / 39.6 | 15.4× | identical |
+| GROUP BY status | America/New_York | no | 592.2 / 641.5 | 38.7 / 39.8 | 16.1× | identical |
+| GROUP BY status | America/New_York | yes | 828.0 / 977.4 | 74.0 / 79.7 | 12.3× | identical |
+| sum(amount) | UTC | no | 419.6 / 455.7 | 23.7 / 24.6 | 18.5× | identical |
+| sum(amount) | UTC | yes | 523.3 / 526.6 | 26.5 / 30.7 | 17.2× | identical |
+| sum(amount) | America/New_York | no | 473.1 / 508.6 | 22.0 / 23.0 | 22.1× | identical |
+| sum(amount) | America/New_York | yes | 657.7 / 831.9 | 41.2 / 44.0 | 18.9× | identical |
+| count(*) | UTC | no | 239.7 / 260.2 | 8.0 / 9.3 | 28.1× | identical |
+| count(*) | UTC | yes | 222.1 / 238.2 | 5.2 / 5.4 | 43.9× | identical |
+| count(*) | America/New_York | no | 223.9 / 233.2 | 5.7 / 5.9 | 39.5× | identical |
+| count(*) | America/New_York | yes | 314.4 / 347.5 | 5.4 / 5.5 | 63.1× | identical |
+| one month (June 2025), count and sum | UTC | no | 61.0 / 67.7 | 15.8 / 16.5 | 4.1× | identical |
+| one month (June 2025), count and sum | UTC | yes | 60.2 / 64.9 | 14.8 / 16.5 | 3.9× | identical |
+| one month (June 2025), count and sum | America/New_York | no | 54.9 / 60.3 | 14.4 / 16.0 | 3.8× | identical |
+| one month (June 2025), count and sum | America/New_York | yes | 110.9 / 125.3 | 23.6 / 28.6 | 4.4× | identical |
+
+Read with care: single runs of five on a shared host. The UTC headline's routed median went from 1,271 ms to
+457 ms with the domains; under America/New_York the routed headline was slower with the domains (974 ms
+to 1,666 ms), and the heap numbers of that phase moved by up to 40% in the same direction, which points at
+machine load rather than the join. Whether the domains help the headline under New York is not established.
+The routed counts and sums do not use the domains and move with the load in the same way.
+
+**Killed in a replay hold (scenario A, 20 moments, 200k orders):** a replay hold with 10,000 small transactions
+(two tables) before the first kill, +600 per iteration, and one 150,000-row transaction in iteration 5,
+streamed by the walsender (`logical_decoding_work_mem` 64kB). Each iteration: a random 0.5 to 6 s into the
+hold, `kill -9` of the sidecar, restart still paused, resume, and verification of both tables after the
+mirror has applied what the primary had (`qs-verify` MATCH and the count, distinct and md5 of the ids on the
+primary and the standby heap). **0 mismatches in 20 iterations** (`a_results.json`). In iteration 5 the first
+`qs-verify` ran while the mirror was still applying the 150,000-row transaction and reported DIVERGED with
+the rows only in the source; the next run, five seconds later, was MATCH. The mirror was behind, and the final
+state matched. The loop's count checks cannot say whether a routed read in that window came from the
+mirror or the heap, so that window is not separately verified. A
+first run of the loop verified too early (it took a routed count as "caught up") and is kept as
+`a_results_run1_premature_verify.json`; its mismatch is that measurement's, not the sidecar's.
+(2) In the first attempt the second sidecar (2) In the first attempt the second sidecar
 of §C wrote its lake path into the registry of the shared cluster; the first standby's lake fell outside its
 `duckdb.allowed_directories` and it never routed. Two sidecars on one cluster must see the same mirror path
 (per-node mount namespaces, as `joinpods_setup.sh` does).
