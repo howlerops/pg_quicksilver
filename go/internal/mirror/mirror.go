@@ -170,6 +170,11 @@ type Table struct {
 	joins         map[string]joinBinding
 	joinDicts     []*joinDict
 	joinFileCache map[string]fileColSet
+	// backfillSig/backfillDue cache BackfillDue for one manifest file list
+	// (joinbackfill.go); backfillValid says the cache holds an answer.
+	backfillSig   string
+	backfillDue   bool
+	backfillValid bool
 
 	// sawLarge is whether any row of this table has ever carried a column big
 	// enough to be worth not rewriting. Until one does, elide.go costs nothing
@@ -2053,6 +2058,13 @@ func (t *Table) compactReason() string {
 	// written before it was; only a rewrite converts them (numeric_optin.go).
 	if t.numericRewriteDue() {
 		return "numeric-opt-in"
+	}
+	// A join domain added after the files were written: one base rewrite
+	// gives every file its companion (joinbackfill.go). Before churn, because
+	// the rewrite it asks for is the same one and the domain stays slow until
+	// it has run.
+	if t.BackfillDue() {
+		return JoinBackfillReason
 	}
 	if len(t.State.DeltaFiles) > 0 {
 		threshold := t.State.BaseRows / compactChurnRatio
