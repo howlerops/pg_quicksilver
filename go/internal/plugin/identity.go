@@ -38,10 +38,18 @@ func (IdentityImpl) GetPluginMetadata(
 func (IdentityImpl) GetPluginCapabilities(
 	context.Context, *identity.GetPluginCapabilitiesRequest,
 ) (*identity.GetPluginCapabilitiesResponse, error) {
+	// Deliberately NOT advertised:
+	//   TYPE_POSTGRES. The instance manager never calls this plugin for
+	//   EnrichConfiguration, so advertising it promised a parameter write that
+	//   never happened (postgres.go).
+	//   TYPE_INSTANCE_SIDECAR_INJECTION. Advertising it would put this plugin in
+	//   every instance reconcile's list (api/v1 GetInstanceEnabledPluginNames).
+	//   CloudNativePG 1.27.0 then dials a socket in the Pod and fails the whole
+	//   reconcile, promotion included, when it is missing (instance_controller.go
+	//   WithPlugins). 1.30 filters on the sockets present; 1.27 does not.
 	services := []identity.PluginCapability_Service_Type{
 		identity.PluginCapability_Service_TYPE_OPERATOR_SERVICE,
 		identity.PluginCapability_Service_TYPE_LIFECYCLE_SERVICE,
-		identity.PluginCapability_Service_TYPE_POSTGRES,
 	}
 	caps := make([]*identity.PluginCapability, 0, len(services))
 	for _, s := range services {

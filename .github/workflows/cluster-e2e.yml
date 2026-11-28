@@ -187,17 +187,19 @@ jobs:
     runs-on: ubuntu-latest
     # Two entries, and fail-fast off so that a failure on the floor does not
     # hide the newest operator's answer, or the reverse.
-    #   floor   the first CloudNativePG that applies plugin parameters
-    #           (cluster_e2e.sh enforces it; below it the script skips).
+    #   floor   CloudNativePG 1.26.0, the roll floor (docs/37); cluster_e2e.sh
+    #           skips below it.
     #   newest  the newest 1.30 patch release, which go/fidelity does not pin.
-    # Both manifests exist: release-1.27/releases/cnpg-1.27.0.yaml and
+    # Both manifests exist: release-1.26/releases/cnpg-1.26.0.yaml and
     # release-1.30/releases/cnpg-1.30.2.yaml. The versions are strings, as the
-    # manifest URL needs them.
+    # manifest URL needs them. The plugin applies no PostgreSQL parameters on
+    # either: the settings the mirror needs are in the Cluster spec, and the
+    # script asserts they are in force on both.
     strategy:
       fail-fast: false
       matrix:
         include:
-          - cnpg: "1.27.0"
+          - cnpg: "1.26.0"
             slot: floor
           - cnpg: "1.30.2"
             slot: newest

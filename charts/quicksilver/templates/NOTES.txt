@@ -1,7 +1,7 @@
 The Quicksilver plugin is installed in {{ .Values.operatorNamespace }} and registered with
 CloudNativePG as {{ include "quicksilver.pluginName" . }}.
 
-Nothing changes until a Cluster names it. CloudNativePG 1.27.0 or newer is required; below it the plugin's PostgreSQL parameters are not applied.
+Nothing changes until a Cluster names it. CloudNativePG 1.26 or newer is required. The mirror needs sync_replication_slots and hot_standby_feedback set to on, and max_wal_senders, in the Cluster's postgresql.parameters: the plugin reports them when they are missing.
 
 The operator does not ask a plugin at admission, so a Cluster with a bad parameter is
 created anyway. The plugin says so in the Cluster's status:

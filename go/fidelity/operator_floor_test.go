@@ -26,10 +26,10 @@ import (
 // This test is the tie: both versions must be at or above the floor, so the
 // property the unit tests demonstrate is a property of something that gets
 // installed.
-const operatorFloorMinor = 27 // CloudNativePG 1.27: the first that applies plugin parameters
+const operatorFloorMinor = 26 // CloudNativePG 1.26: the roll floor (docs/37)
 
 func TestTheDeployedOperatorMeetsTheRolloutFloor(t *testing.T) {
-	t.Run("cluster_e2e.sh installs 1.27 or newer", func(t *testing.T) {
+	t.Run("cluster_e2e.sh installs 1.26 or newer", func(t *testing.T) {
 		src, err := os.ReadFile("../../bench/scripts/cluster_e2e.sh")
 		if err != nil {
 			t.Fatalf("cannot read the cluster harness: %v", err)
@@ -49,7 +49,7 @@ func TestTheDeployedOperatorMeetsTheRolloutFloor(t *testing.T) {
 		}
 	})
 
-	t.Run("go.mod is 1.27 or newer", func(t *testing.T) {
+	t.Run("go.mod is 1.26 or newer", func(t *testing.T) {
 		src, err := os.ReadFile("go.mod")
 		if err != nil {
 			t.Fatalf("cannot read go.mod: %v", err)
@@ -101,8 +101,8 @@ func TestTheDeployedOperatorMeetsTheRolloutFloor(t *testing.T) {
 				t.Errorf("cannot read %s: %v", f, err)
 				continue
 			}
-			if !strings.Contains(string(src), "1.27") {
-				t.Errorf("%s does not mention the CloudNativePG 1.27 requirement, so someone "+
+			if !strings.Contains(string(src), "1.26") {
+				t.Errorf("%s does not mention the CloudNativePG 1.26 requirement, so someone "+
 					"installing this on 1.25 would find that mode and freshnessSLO silently "+
 					"never take effect", f)
 			}

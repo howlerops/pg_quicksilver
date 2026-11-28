@@ -75,6 +75,19 @@ spec:
       # mirroring Pod has a slot of its own, so this bounds each of them.
       max_slot_wal_keep_size: 4GB
 
+      # REQUIRED for the mirror (docs/16, "The PostgreSQL settings"). The plugin
+      # cannot write these, so it reports them in .status.pluginStatus when they
+      # are missing or wrong. wal_level is left at CloudNativePG's default, logical.
+      # Failover slots resume the mirror after a failover instead of rebuilding it.
+      sync_replication_slots: "on"
+      hot_standby_feedback: "on"
+      # Two per standby (each mirroring replica is a logical and a physical
+      # walsender) plus headroom: 2 x instances + 4. This is 10 for three instances.
+      max_wal_senders: "10"
+      # One slot per mirroring replica plus headroom: instances + 4. The default
+      # of 32 covers that up to 28 instances.
+      max_replication_slots: "32"
+
       # (3) Where the operand image keeps DuckDB's extensions. pg_duckdb's
       # default is $PGDATA/pg_duckdb/extensions, which is on the volume and
       # therefore empty: it would fetch them from extensions.duckdb.org the
@@ -83,6 +96,9 @@ spec:
       # fetched. The path is fixed by the image; it is also on the image as
       # the label io.howlerops.quicksilver.duckdb-extension-directory.
       duckdb.extension_directory: /usr/lib/quicksilver/duckdb-extensions
+      # Required with ducklake: the mirror directory, with its trailing slash.
+      # The plugin reports it missing or elsewhere; it does not write it.
+      duckdb.allowed_directories: /var/lib/postgresql/data/quicksilver/
 
   plugins:
     - name: quicksilver.howlerops.io
@@ -98,10 +114,10 @@ spec:
         # routing: the mirror relation is a view over the lake table, which
         # is the one thing that survives a compaction unchanged.
         ducklake: "true"
-        # With this, the plugin ALSO writes duckdb.allowed_directories, the
-        # mirror's directory (routing.go). Nothing for it below. That is set
-        # from CloudNativePG 1.27, the floor; on 1.26 it is not applied at all, and the
-        # plugin's status says what is missing.
+        # With this, the plugin requires duckdb.allowed_directories to name the
+        # mirror's directory (set in postgresql.parameters above) and reports it
+        # when it does not. Routing reads come from the heap until it does; the
+        # mirror is built either way.
         # How long a lake snapshot stays readable after a newer one replaced
         # it; a routed statement that runs longer than this loses its files.
         ducklakeRetention: 5m

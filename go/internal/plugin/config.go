@@ -1,8 +1,7 @@
 // Package plugin implements the CNPG-I services that make Quicksilver
 // deployable: the operator-side validation, mutation and status hooks, the
 // lifecycle hook that injects the mirror sidecar into instance Pods, and the
-// EnrichConfiguration hook that turns on the PostgreSQL settings the mirror
-// needs.
+// checks that report the PostgreSQL settings the mirror needs (postgres.go).
 //
 // Everything this package refuses to do is as important as what it does. Two
 // measured findings from the study are encoded here as hard gates rather than
@@ -447,8 +446,8 @@ func Validate(cluster *apiv1.Cluster, params map[string]string) []*operator.Vali
 				"REPLICATION and SELECT on the mirrored tables")
 	}
 
-	// A wal_level the user pinned themselves wins over our EnrichConfiguration,
-	// so a conflict has to be a rejection and not a silent override. Getting
+	// A wal_level the user pinned themselves must be logical: the mirror needs
+	// logical decoding, so a conflict is a rejection. Getting
 	// this wrong produces a cluster that looks configured and never streams.
 	if cfg.Ingest == IngestLogical && cfg.Mode != ModeOff {
 		if wl, ok := cluster.Spec.PostgresConfiguration.Parameters["wal_level"]; ok && wl != "logical" {
@@ -457,6 +456,22 @@ func Validate(cluster *apiv1.Cluster, params map[string]string) []*operator.Vali
 				Value:          wl,
 				Message:        "ingest: logical requires wal_level=logical; remove this parameter and Quicksilver will set it",
 			})
+		}
+	}
+
+	// max_replication_slots below one slot per instance plus headroom: the
+	// mirror's slot cannot be created, so the mirror cannot be built. This is
+	// the one required setting whose wrong value is an error (postgres.go).
+	if cfg.Ingest == IngestLogical && cfg.Mode != ModeOff {
+		if v, ok := intParam(cluster.Spec.PostgresConfiguration.Parameters, "max_replication_slots"); ok {
+			if need := int(cluster.Spec.Instances) + slotHeadroom; v < need {
+				errs = append(errs, &operator.ValidationError{
+					PathComponents: []string{"spec", "postgresql", "parameters", "max_replication_slots"},
+					Value:          strconv.Itoa(v),
+					Message: "is below " + strconv.Itoa(need) + " (instances + 4): the mirror cannot create " +
+						"its slots, so it cannot be built; raise it",
+				})
+			}
 		}
 	}
 

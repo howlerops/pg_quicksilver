@@ -8,73 +8,37 @@ import (
 	"testing"
 
 	apiv1 "github.com/cloudnative-pg/api/pkg/api/v1"
+	"github.com/cloudnative-pg/cnpg-i/pkg/identity"
 	"github.com/cloudnative-pg/cnpg-i/pkg/operator"
-	"github.com/cloudnative-pg/cnpg-i/pkg/postgres"
 )
 
-// enrich runs EnrichConfiguration on a Cluster with the operator's own values.
-func enrich(t *testing.T, c *apiv1.Cluster, configs map[string]string) map[string]string {
-	t.Helper()
-	res, err := PostgresImpl{}.EnrichConfiguration(context.Background(),
-		&postgres.EnrichConfigurationRequest{
-			ClusterDefinition: clusterJSON(t, c),
-			Configs:           configs,
-			OperationType:     &postgres.OperationType{Type: postgres.OperationType_TYPE_RECONCILE},
-		})
-	if err != nil {
-		t.Fatal(err)
-	}
-	return res.GetConfigs()
-}
-
 func routedParams() map[string]string {
-	return map[string]string{"tables": "public.events", "ducklake": "true"}
+	return map[string]string{"tables": "public.events", "ducklake": "true", "sidecarImage": "ghcr.io/howlerops/pg_quicksilver-mirror:0.0.4"}
 }
 
-func TestRoutingDerivesAllowedDirectoriesFromMirrorPath(t *testing.T) {
-	got := enrich(t, newCluster(routedParams()), map[string]string{})
-	if got["duckdb.allowed_directories"] != "/var/lib/postgresql/data/quicksilver/" {
-		t.Errorf("duckdb.allowed_directories = %q, want the mirror directory with a trailing slash",
-			got["duckdb.allowed_directories"])
-	}
-
-	p := routedParams()
-	p["mirrorPath"] = "/data/mirror/"
-	got = enrich(t, newCluster(p), map[string]string{})
-	if got["duckdb.allowed_directories"] != "/data/mirror/" {
-		t.Errorf("a custom mirrorPath gave %q, want /data/mirror/", got["duckdb.allowed_directories"])
-	}
-}
-
-// Nothing is derived without a lake, when the extension is off, or with no
-// mirror: the setting would be a directory nothing reads, and an extension
-// that is switched off must not touch PostgreSQL.
-func TestRoutingDerivesNothingWithoutALake(t *testing.T) {
-	cases := map[string]map[string]string{
-		"no ducklake":   {"tables": "public.events"},
-		"extension off": {"tables": "public.events", "ducklake": "true", "extension": "off"},
-		"mode off":      {"mode": "off", "ducklake": "true"},
-	}
-	for name, p := range cases {
-		got := enrich(t, newCluster(p), map[string]string{})
-		if _, ok := got["duckdb.allowed_directories"]; ok {
-			t.Errorf("%s: duckdb.allowed_directories = %q, want it unset", name, got["duckdb.allowed_directories"])
-		}
-	}
-}
-
-// A value the user set is the user's. Enrichment must not replace it, even one
-// that does not name the mirror: Validate reports that, and the operator's
-// settings are the user's to change.
-func TestRoutingNeverOverridesAUserValue(t *testing.T) {
+// requiredCluster is a routed Cluster with every required setting in place.
+func requiredCluster() *apiv1.Cluster {
 	c := newCluster(routedParams())
+	c.Spec.Instances = 3
 	c.Spec.PostgresConfiguration.Parameters = map[string]string{
-		"duckdb.allowed_directories": "/elsewhere/",
+		"sync_replication_slots":     "on",
+		"hot_standby_feedback":       "on",
+		"max_replication_slots":      "32",
+		"max_wal_senders":            "10",
+		"duckdb.allowed_directories": "/var/lib/postgresql/data/quicksilver/",
+		"duckdb.extension_directory": "/usr/lib/quicksilver/duckdb-extensions",
 	}
-	got := enrich(t, c, map[string]string{"duckdb.allowed_directories": "/elsewhere/"})
-	if got["duckdb.allowed_directories"] != "/elsewhere/" {
-		t.Errorf("a user value was replaced: %q", got["duckdb.allowed_directories"])
+	c.Spec.PostgresConfiguration.AdditionalLibraries = []string{"pg_duckdb", "pg_quicksilver"}
+	return c
+}
+
+// warnedParams is the set of Parameter names in configWarnings.
+func warnedParams(c *apiv1.Cluster) map[string]string {
+	out := map[string]string{}
+	for _, w := range configWarnings(c, ParseConfig(c.Name, PluginParameters(c))) {
+		out[w.Parameter] = w.Message
 	}
+	return out
 }
 
 func TestAllowedDirectoriesCover(t *testing.T) {
@@ -98,44 +62,79 @@ func TestAllowedDirectoriesCover(t *testing.T) {
 	}
 }
 
-func TestUserAllowedDirectoriesThatMissTheMirrorIsAWarningNotAnError(t *testing.T) {
-	c := newCluster(routedParams())
-	c.Spec.PostgresConfiguration.Parameters = map[string]string{"duckdb.allowed_directories": "/elsewhere/"}
-
-	// The mirror must not depend on routing: no validation error, so the
-	// instance Pods are still built with the mirror.
-	for _, e := range Validate(c, PluginParameters(c)) {
-		t.Errorf("a routing setting made the configuration invalid: %s", e.GetMessage())
+// A complete, required configuration has no warnings about the settings.
+func TestRequiredSettingsCleanWhenPresent(t *testing.T) {
+	if w := warnedParams(requiredCluster()); len(w) != 0 {
+		t.Errorf("a complete configuration is warned about: %v", w)
 	}
+}
 
-	ws := routingWarnings(c, ParseConfig(c.Name, PluginParameters(c)))
+// Each required setting that is missing is named in the status, and one that is
+// set to the wrong value too. The plugin writes none of them.
+func TestRequiredSettingsMissingOrWrongAreReported(t *testing.T) {
+	c := requiredCluster()
+	c.Spec.PostgresConfiguration.Parameters["sync_replication_slots"] = "off"
+	delete(c.Spec.PostgresConfiguration.Parameters, "hot_standby_feedback")
+	delete(c.Spec.PostgresConfiguration.Parameters, "duckdb.allowed_directories")
+	w := warnedParams(c)
+	for _, name := range []string{"sync_replication_slots", "hot_standby_feedback", "duckdb.allowed_directories"} {
+		if _, ok := w[name]; !ok {
+			t.Errorf("%s is missing or wrong and was not reported: %v", name, w)
+		}
+	}
+	if !strings.Contains(w["sync_replication_slots"], "must be \"on\"") {
+		t.Errorf("the sync_replication_slots warning does not say what to set: %s", w["sync_replication_slots"])
+	}
+}
+
+// Without the mirror's slot count, the cluster needs the operator default raised.
+func TestMaxReplicationSlotsAbsentAboveTheDefaultIsReported(t *testing.T) {
+	c := requiredCluster()
+	c.Spec.Instances = 30 // needs 34 slots; PostgreSQL and CloudNativePG default to 32
+	delete(c.Spec.PostgresConfiguration.Parameters, "max_replication_slots")
+	if _, ok := warnedParams(c)["max_replication_slots"]; !ok {
+		t.Error("30 instances with no max_replication_slots, above the default of 32, was not reported")
+	}
+}
+
+// A max_replication_slots SET below what the mirror needs is an invalid
+// configuration: the mirror cannot create its slots.
+func TestMaxReplicationSlotsSetTooLowIsInvalid(t *testing.T) {
+	c := requiredCluster()
+	c.Spec.PostgresConfiguration.Parameters["max_replication_slots"] = "5"
 	found := false
-	for _, w := range ws {
-		if w.Parameter == "duckdb.allowed_directories" {
+	for _, e := range Validate(c, PluginParameters(c)) {
+		comps := e.GetPathComponents()
+		if len(comps) > 0 && comps[len(comps)-1] == "max_replication_slots" {
 			found = true
-			if !strings.Contains(w.Message, "/var/lib/postgresql/data/quicksilver/") ||
-				!strings.Contains(w.Message, "mirror itself is unaffected") {
-				t.Errorf("the warning does not say what is wrong and what is not: %s", w.Message)
-			}
 		}
 	}
 	if !found {
-		t.Fatalf("a user allowed_directories that misses the mirror was not warned about: %v", ws)
+		t.Error("max_replication_slots below instances + 4 was not an error")
+	}
+}
+
+// A user's duckdb.allowed_directories that misses the mirror is a routing
+// warning, never a configuration error: the mirror does not depend on routing.
+func TestUserAllowedDirectoriesThatMissTheMirrorIsAWarningNotAnError(t *testing.T) {
+	c := requiredCluster()
+	c.Spec.PostgresConfiguration.Parameters["duckdb.allowed_directories"] = "/elsewhere/"
+	for _, e := range Validate(c, PluginParameters(c)) {
+		t.Errorf("a routing setting made the configuration invalid: %s", e.GetMessage())
+	}
+	msg, ok := warnedParams(c)["duckdb.allowed_directories"]
+	if !ok {
+		t.Fatal("a user allowed_directories that misses the mirror was not warned about")
+	}
+	if !strings.Contains(msg, "/var/lib/postgresql/data/quicksilver/") || !strings.Contains(msg, "mirror itself is unaffected") {
+		t.Errorf("the warning does not say what is wrong and what is not: %s", msg)
 	}
 
-	// One that covers the mirror is fine.
-	c.Spec.PostgresConfiguration.Parameters["duckdb.allowed_directories"] = "/var/lib/postgresql/data/"
-	for _, w := range routingWarnings(c, ParseConfig(c.Name, PluginParameters(c))) {
-		if w.Parameter == "duckdb.allowed_directories" {
-			t.Errorf("a covering value was warned about: %s", w.Message)
-		}
-	}
-
-	// Without a lake there is nothing to route, so nothing to warn about.
+	// Without a lake there is no routing to warn about.
 	off := newCluster(map[string]string{"tables": "public.events"})
 	off.Spec.PostgresConfiguration.Parameters = map[string]string{"duckdb.allowed_directories": "/elsewhere/"}
-	if ws := routingWarnings(off, ParseConfig(off.Name, PluginParameters(off))); len(ws) != 0 {
-		t.Errorf("without a lake the setting is not routing's business, got %v", ws)
+	if _, ok := warnedParams(off)["duckdb.allowed_directories"]; ok {
+		t.Error("without a lake the setting is not routing's business, but it was warned about")
 	}
 }
 
@@ -167,12 +166,15 @@ func TestSidecarImageWithAMutableTagIsWarnedNotRefused(t *testing.T) {
 func TestRoutingWarningsNameWhatIsMissing(t *testing.T) {
 	c := newCluster(routedParams())
 	ws := routingWarnings(c, ParseConfig(c.Name, PluginParameters(c)))
-	if len(ws) != 2 {
-		t.Fatalf("no preload and no extension directory should give two warnings, got %v", ws)
+	if len(ws) != 3 {
+		t.Fatalf("no preload, no extension directory and no allowed_directories should give three warnings, got %v", ws)
 	}
 
 	c.Spec.PostgresConfiguration.AdditionalLibraries = []string{"pg_quicksilver", "pg_duckdb"}
-	c.Spec.PostgresConfiguration.Parameters = map[string]string{"duckdb.extension_directory": "/usr/lib/x"}
+	c.Spec.PostgresConfiguration.Parameters = map[string]string{
+		"duckdb.extension_directory": "/usr/lib/x",
+		"duckdb.allowed_directories": "/var/lib/postgresql/data/quicksilver/",
+	}
 	ws = routingWarnings(c, ParseConfig(c.Name, PluginParameters(c)))
 	if len(ws) != 1 || !strings.Contains(ws[0].Message, "must come before") {
 		t.Fatalf("the wrong order should be the one warning, got %v", ws)
@@ -180,10 +182,9 @@ func TestRoutingWarningsNameWhatIsMissing(t *testing.T) {
 
 	c.Spec.PostgresConfiguration.AdditionalLibraries = []string{"pg_duckdb", "pg_quicksilver"}
 	if ws = routingWarnings(c, ParseConfig(c.Name, PluginParameters(c))); len(ws) != 0 {
-		t.Errorf("a complete configuration has no warnings, got %v", ws)
+		t.Errorf("a complete configuration has no routing warnings, got %v", ws)
 	}
 
-	// Routing off: none of this applies.
 	off := newCluster(map[string]string{"tables": "public.events"})
 	if ws = routingWarnings(off, ParseConfig(off.Name, PluginParameters(off))); len(ws) != 0 {
 		t.Errorf("without a lake there is nothing to warn about, got %v", ws)
@@ -197,7 +198,7 @@ func TestStatusPublishesWarningsAlongsideValidState(t *testing.T) {
 	p["sidecarImage"] = "ghcr.io/howlerops/pg_quicksilver-mirror:latest"
 	c := newCluster(p)
 	c.Spec.PostgresConfiguration.AdditionalLibraries = []string{"pg_duckdb", "pg_quicksilver"}
-	c.Spec.PostgresConfiguration.Parameters = map[string]string{"duckdb.extension_directory": "/usr/lib/x"}
+
 	res, err := OperatorImpl{}.SetStatusInCluster(context.Background(),
 		&operator.SetStatusInClusterRequest{Cluster: clusterJSON(t, c)})
 	if err != nil {
@@ -210,21 +211,52 @@ func TestStatusPublishesWarningsAlongsideValidState(t *testing.T) {
 	if st.State != StateValid {
 		t.Errorf("state = %q, want valid", st.State)
 	}
-	if len(st.ConfigWarnings) != 1 || st.ConfigWarnings[0].Parameter != "sidecarImage" {
-		t.Errorf("configWarnings = %+v, want the one sidecarImage warning", st.ConfigWarnings)
+	sawSidecar := false
+	for _, w := range st.ConfigWarnings {
+		if w.Parameter == "sidecarImage" {
+			sawSidecar = true
+		}
+	}
+	if !sawSidecar {
+		t.Errorf("configWarnings = %+v, want the sidecarImage warning", st.ConfigWarnings)
 	}
 }
 
-// Each mirroring standby is a logical and a physical walsender, so the plugin's
-// walsender count must cover two per standby, not one.
-func TestWalSendersCoverTwoPerStandby(t *testing.T) {
+// Each mirroring standby is a logical and a physical walsender, so the required
+// walsender count is two per standby, not one. Nothing is written for it: it is
+// reported when the spec does not carry it.
+func TestWalSendersRequiredTwoPerStandby(t *testing.T) {
 	for _, n := range []int{3, 7, 8} {
-		c := newCluster(map[string]string{"tables": "public.events"})
+		c := requiredCluster()
 		c.Spec.Instances = n
-		got := enrich(t, c, map[string]string{})
-		want := 2*n + slotHeadroom
-		if got["max_wal_senders"] != strconv.Itoa(want) {
-			t.Errorf("%d instances: max_wal_senders = %q, want %d", n, got["max_wal_senders"], want)
+		c.Spec.PostgresConfiguration.Parameters["max_wal_senders"] = strconv.Itoa(2*n + slotHeadroom - 1)
+		if _, ok := warnedParams(c)["max_wal_senders"]; !ok {
+			t.Errorf("%d instances with max_wal_senders=%d (need %d) was not reported",
+				n, 2*n+slotHeadroom-1, 2*n+slotHeadroom)
+		}
+		c.Spec.PostgresConfiguration.Parameters["max_wal_senders"] = strconv.Itoa(2*n + slotHeadroom)
+		if _, ok := warnedParams(c)["max_wal_senders"]; ok {
+			t.Errorf("%d instances with the required max_wal_senders was reported", n)
+		}
+	}
+}
+
+// The plugin must not advertise what the operator would then call. Neither the
+// postgres service nor instance-side sidecar injection: the instance manager
+// only dials plugins that advertise the latter, and in 1.27.0 a missing socket
+// fails the whole instance reconcile, promotion included (identity.go).
+func TestPluginDoesNotAdvertiseInstanceSideServices(t *testing.T) {
+	res, err := IdentityImpl{}.GetPluginCapabilities(context.Background(),
+		&identity.GetPluginCapabilitiesRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range res.GetCapabilities() {
+		switch c.GetService().GetType() {
+		case identity.PluginCapability_Service_TYPE_POSTGRES:
+			t.Error("the plugin advertises the postgres service, which the instance manager never calls")
+		case identity.PluginCapability_Service_TYPE_INSTANCE_SIDECAR_INJECTION:
+			t.Error("the plugin advertises instance sidecar injection, which puts it in every instance reconcile")
 		}
 	}
 }

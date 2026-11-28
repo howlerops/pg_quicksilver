@@ -380,19 +380,25 @@ collect() {
 # that are only SQL against a PostgreSQL it can actually start. A cluster is
 # the only place they mean anything; a typo in one of them should not cost a
 # forty-minute run to find.
-# The settings the plugin's EnrichConfiguration writes (go/internal/plugin/
-# postgres.go), read back from the server. Each must be in force on every
-# replica. A value the operator dropped shows up in production only later: a
-# slot that is not synchronised after a failover (docs/15) is a full re-snapshot,
-# and a replica read cancelled by a vacuum is hot_standby_feedback (docs/30).
-# max_replication_slots is intended to be at least instances + 4 (the plugin
-# raises it, and never lowers an operator value).
+# The settings the Cluster must carry for the mirror (docs/16, "The PostgreSQL
+# settings"), read back from the server. The plugin does not write them: it
+# reports them, and this checks that the spec the script wrote is what the server
+# runs. A value the operator dropped shows up in production only later: a slot
+# that is not synchronised after a failover (docs/15) is a full re-snapshot, and
+# a replica read cancelled by a vacuum is hot_standby_feedback (docs/30).
+# max_replication_slots and max_wal_senders must be at least what the mirror
+# needs: instances + 4, and two per standby plus headroom.
 enriched_settings_in_force() {
-  local p r v need
+  local p r v need st
   # The selftest runs these sections against a PostgreSQL nobody enriched.
   [ "${E2E_ENRICHED_CHECK:-1}" = 1 ] || return 0
   p=$(primary)
   need=$(( $(kc get cluster "$CLUSTER" -o jsonpath='{.spec.instances}' 2>/dev/null) + 4 ))
+  # The plugin names what the spec lacks. It must name none of these now.
+  st=$(kc get cluster "$CLUSTER" -o jsonpath='{.status.pluginStatus[?(@.name=="quicksilver.howlerops.io")].status}' 2>/dev/null)
+  for v in sync_replication_slots hot_standby_feedback max_wal_senders duckdb.allowed_directories; do
+    case "$st" in *"\"parameter\":\"$v\""*) bad "the plugin reports $v missing or wrong in the spec: $st" ;; esac
+  done
   v=$(sql "$p" "SHOW wal_level")
   if [ "$v" = logical ]; then ok "primary: wal_level=logical"; else bad "primary: wal_level=$v, want logical"; fi
   for r in $(replicas); do
@@ -404,6 +410,9 @@ enriched_settings_in_force() {
     v=$(sql "$r" "SHOW max_replication_slots")
     if [ "$v" -ge "$need" ] 2>/dev/null; then ok "$r: max_replication_slots=$v, at least $need"
     else bad "$r: max_replication_slots=$v, want at least $need (instances + 4)"; fi
+    v=$(sql "$r" "SHOW max_wal_senders")
+    if [ "$v" -ge $(( 2 * (need - 4) + 4 )) ] 2>/dev/null; then ok "$r: max_wal_senders=$v"
+    else bad "$r: max_wal_senders=$v, want at least 2 per standby plus headroom"; fi
   done
 }
 
@@ -548,8 +557,9 @@ version_at_least() {
 # The settings routing needs that the PLUGIN derives (routing.go), and what an
 # ORDINARY role is given with routing asked for.
 #
-# The derived one is duckdb.allowed_directories, written from EnrichConfiguration,
-# which CloudNativePG applies from 1.27, the floor this script enforces.
+# duckdb.allowed_directories is in the Cluster's spec (the e2e writes it, and the
+# plugin reports it when it is missing). Nothing here depends on the operator
+# version: the plugin writes no PostgreSQL parameters on any version.
 #
 # The CI operand image is built with the STOCK pg_duckdb (PG_DUCKDB_BUILD
 # defaults to package in deploy/Dockerfile). A stock build never routes an
@@ -560,8 +570,7 @@ routing_settings() {
   local p r val mirror="${PARAMS[mirrorPath]:-/var/lib/postgresql/data/quicksilver}" confined out
   p=$(primary)
 
-  # The floor is 1.27, the first operator that applies it. Not in the selftest,
-  # which has no operator (E2E_ENRICHED_CHECK=0).
+  # Not in the selftest, which has no operator (E2E_ENRICHED_CHECK=0).
   if [ "${E2E_ENRICHED_CHECK:-1}" = 1 ]; then
     for r in $(replicas); do
       val=$(sql "$r" "SHOW duckdb.allowed_directories")
@@ -916,13 +925,12 @@ kubectl -n cert-manager rollout status deploy/cert-manager-webhook --timeout=300
   || skip "cert-manager webhook never became ready"
 ok "cert-manager ready"
 
-# CloudNativePG 1.27.0 is the FLOOR. Below it the plugin's PostgreSQL
-# parameters are never applied: EnrichConfiguration (pkg/postgres/plugin/config.go)
-# is first called by the instance manager in 1.27.0
-# (pkg/management/postgres/configuration.go:454); the 1.26.3 release, the last 1.26
-# patch, has no such call. The whole 1.26 floor history follows, because it is
-# why the roll section needs the operator at all. On 1.25.1 the roll section could
-# never pass, for a structural reason:
+# CloudNativePG 1.26 is the FLOOR. The plugin does not write PostgreSQL
+# parameters: the operator asks it for none (the instance manager dials only
+# plugins that advertise instance sidecar injection, and this one does not;
+# docs/16). The settings the mirror needs are in the Cluster's spec, and this
+# script checks they are in force. The 1.26 floor is the roll behaviour below.
+# On 1.25.1 the roll section could never pass, for a structural reason:
 #
 #   1.25  specs.PodWithExistingStorage() builds the target Pod with no plugin
 #         client at all, and writes that UN-PATCHED spec into the
@@ -938,7 +946,7 @@ ok "cert-manager ready"
 # go/fidelity builds against the version in its go.mod (1.30) and its rollout
 # test passes there, which is exactly how this hid: the unit test proved a
 # property of an operator this script did not install.
-CNPG_VERSION=${CNPG_VERSION:-1.27.0}
+CNPG_VERSION=${CNPG_VERSION:-1.26.0}
 if ! kubectl get crd clusters.postgresql.cnpg.io >/dev/null 2>&1; then
   kubectl apply --server-side -f \
     "https://raw.githubusercontent.com/cloudnative-pg/cloudnative-pg/release-${CNPG_VERSION%.*}/releases/cnpg-${CNPG_VERSION}.yaml" >/dev/null \
@@ -953,10 +961,10 @@ kubectl -n "$CNPG_NS" rollout status deploy/cnpg-controller-manager --timeout=30
 opimg=$(kubectl -n "$CNPG_NS" get deploy cnpg-controller-manager \
   -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null)
 opver=${opimg##*:}
-if ! version_at_least "${opver#v}" 1.27; then
-  skip "CloudNativePG $opver is below the 1.27 floor: below 1.27 the plugin's PostgreSQL parameters are never applied (synchronised failover slots, hot_standby_feedback, and the routing directory), and below 1.26 a plugin parameter change cannot roll an instance either. See docs/16 and docs/37."
+if ! version_at_least "${opver#v}" 1.26; then
+  skip "CloudNativePG $opver is below the 1.26 floor: a plugin parameter change cannot roll an instance there. See docs/37."
 fi
-ok "CloudNativePG ready in $CNPG_NS (operator $opver, floor is 1.27)"
+ok "CloudNativePG ready in $CNPG_NS (operator $opver, floor is 1.26)"
 
 kubectl create namespace "$NS" >/dev/null 2>&1
 kubectl create namespace "$CNPG_NS" >/dev/null 2>&1
@@ -1161,6 +1169,13 @@ if [ "$SCOPE" = full ]; then
       - pg_quicksilver
     parameters:
       max_slot_wal_keep_size: "1GB"
+      # Required, and the plugin reports them missing (docs/16, "The PostgreSQL
+      # settings"): it cannot write these, CloudNativePG never asks it to.
+      sync_replication_slots: "on"
+      hot_standby_feedback: "on"
+      max_wal_senders: "10"
+      # Required for routing: the mirror directory (routing.go).
+      duckdb.allowed_directories: "/var/lib/postgresql/data/quicksilver/"
       # Where the operand image keeps DuckDB's ducklake and sqlite extensions.
       # Without it pg_duckdb looks under PGDATA, finds nothing, and fetches.
       duckdb.extension_directory: "$DUCKDB_EXT_DIR"
@@ -1179,6 +1194,11 @@ else
   postgresql:
     parameters:
       max_slot_wal_keep_size: "1GB"
+      # Required, and the plugin reports them missing (docs/16, "The PostgreSQL
+      # settings"): it cannot write these, CloudNativePG never asks it to.
+      sync_replication_slots: "on"
+      hot_standby_feedback: "on"
+      max_wal_senders: "10"
 YAML
 )
   EXT_SQL=""

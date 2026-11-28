@@ -20,7 +20,6 @@ import (
 	"github.com/cloudnative-pg/cnpg-i/pkg/identity"
 	"github.com/cloudnative-pg/cnpg-i/pkg/lifecycle"
 	"github.com/cloudnative-pg/cnpg-i/pkg/operator"
-	"github.com/cloudnative-pg/cnpg-i/pkg/postgres"
 )
 
 func clusterJSON(t *testing.T, c *apiv1.Cluster) []byte {
@@ -97,7 +96,6 @@ func TestIdentityCapabilitiesMatchRegisteredServices(t *testing.T) {
 	want := []identity.PluginCapability_Service_Type{
 		identity.PluginCapability_Service_TYPE_OPERATOR_SERVICE,
 		identity.PluginCapability_Service_TYPE_LIFECYCLE_SERVICE,
-		identity.PluginCapability_Service_TYPE_POSTGRES,
 	}
 	for _, w := range want {
 		if !got[w] {
@@ -333,80 +331,6 @@ func TestLifecycleIgnoresNonPods(t *testing.T) {
 	}
 	if len(res.GetJsonPatch()) != 0 {
 		t.Errorf("patched a Service: %s", res.GetJsonPatch())
-	}
-}
-
-func TestEnrichConfiguration(t *testing.T) {
-	c := newCluster(map[string]string{"tables": "public.events"})
-	res, err := PostgresImpl{}.EnrichConfiguration(context.Background(),
-		&postgres.EnrichConfigurationRequest{
-			ClusterDefinition: clusterJSON(t, c),
-			Configs:           map[string]string{"shared_buffers": "256MB"},
-			OperationType:     &postgres.OperationType{Type: postgres.OperationType_TYPE_RECONCILE},
-		})
-	if err != nil {
-		t.Fatal(err)
-	}
-	got := res.GetConfigs()
-	if got["wal_level"] != "logical" {
-		t.Errorf("wal_level = %q, want logical", got["wal_level"])
-	}
-	if got["shared_buffers"] != "256MB" {
-		t.Error("enrichment dropped an existing parameter")
-	}
-	if got["sync_replication_slots"] != "on" {
-		t.Errorf("sync_replication_slots = %q on a PG17 cluster, want on", got["sync_replication_slots"])
-	}
-	// The one that must NOT be set here: it names a physical slot that will not
-	// exist on the new primary after a promotion, and logical decoding then
-	// blocks indefinitely with no error to the client (docs/15).
-	if _, ok := got["synchronized_standby_slots"]; ok {
-		t.Errorf("synchronized_standby_slots was set statically (%q); after a failover "+
-			"it names a slot that does not exist and decoding hangs silently",
-			got["synchronized_standby_slots"])
-	}
-	if got["max_replication_slots"] != "7" { // 3 instances + 4 headroom
-		t.Errorf("max_replication_slots = %q, want 7", got["max_replication_slots"])
-	}
-}
-
-func TestEnrichConfigurationDoesNotLowerExistingLimits(t *testing.T) {
-	c := newCluster(map[string]string{"tables": "public.events"})
-	res, err := PostgresImpl{}.EnrichConfiguration(context.Background(),
-		&postgres.EnrichConfigurationRequest{
-			ClusterDefinition: clusterJSON(t, c),
-			Configs:           map[string]string{"max_replication_slots": "50"},
-		})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if res.GetConfigs()["max_replication_slots"] != "50" {
-		t.Errorf("an operator-chosen higher limit was lowered to %q",
-			res.GetConfigs()["max_replication_slots"])
-	}
-}
-
-func TestEnrichConfigurationLeavesClusterAloneWhenOff(t *testing.T) {
-	for _, params := range []map[string]string{
-		{"mode": "off"},
-		nil,
-	} {
-		c := newCluster(params)
-		if params == nil {
-			c.Spec.Plugins = nil
-		}
-		res, err := PostgresImpl{}.EnrichConfiguration(context.Background(),
-			&postgres.EnrichConfigurationRequest{
-				ClusterDefinition: clusterJSON(t, c),
-				Configs:           map[string]string{"shared_buffers": "256MB"},
-			})
-		if err != nil {
-			t.Fatal(err)
-		}
-		if _, ok := res.GetConfigs()["wal_level"]; ok {
-			t.Errorf("params=%v: wal_level was forced on a cluster that builds no mirror; "+
-				"that is a +70%% WAL bill for nothing", params)
-		}
 	}
 }
 

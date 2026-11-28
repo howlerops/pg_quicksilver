@@ -40,9 +40,19 @@ spec:
 
   postgresql:
     parameters:
-      # Do NOT pin wal_level here. Quicksilver sets it to logical through
-      # EnrichConfiguration, and a conflicting value is reported as an invalid
-      # configuration in .status.pluginStatus rather than silently overridden.
+      # REQUIRED for the mirror (docs/16, "The PostgreSQL settings"). The plugin
+      # cannot write these, so it reports them in .status.pluginStatus when they
+      # are missing or wrong. wal_level is left at CloudNativePG's default, logical.
+      # Failover slots resume the mirror after a failover instead of rebuilding it.
+      sync_replication_slots: "on"
+      hot_standby_feedback: "on"
+      # Two per standby (each mirroring replica is a logical and a physical
+      # walsender) plus headroom: 2 x instances + 4. This is 10 for three instances.
+      max_wal_senders: "10"
+      # One slot per mirroring replica plus headroom: instances + 4. The default
+      # of 32 covers that up to 28 instances.
+      max_replication_slots: "32"
+
       shared_buffers: 512MB
 
       # THIS ONE IS NOT OPTIONAL, and it protects the database from the mirror.

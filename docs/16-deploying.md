@@ -13,11 +13,7 @@ handshake over real mutual TLS, and against instance Pods built by
 CloudNativePG's own `specs.NewInstance`. What remains unverified is listed at
 the bottom, and it is now a short list.
 
-> **CloudNativePG 1.27.0 or newer is required.** Below 1.27 the plugin's
-> PostgreSQL parameters are never applied at all: failover slot synchronisation
-> (`sync_replication_slots`), `hot_standby_feedback`, the walsender and slot
-> counts, and the routing directory. What 1.26 silently lacked
-> is in "The floor, and what 1.26 lacked" below. Below 1.26 the failure is silent
+> **CloudNativePG 1.26 or newer is required.** Below 1.26 the failure is silent
 > rather than loud. 1.25 computes an instance Pod's expected spec without
 > consulting plugins, so the sidecar is missing from both sides of the
 > comparison that decides whether to roll a Pod — and `mode`, `freshnessSLO`,
@@ -518,79 +514,80 @@ verified list, the plan is expensive enough and the mirror has caught up, and
 from the heap otherwise ([docs/40](40-the-router-moves-inside.md)). The
 sidecar does its half by itself when it finds the extension installed.
 
-**The PostgreSQL settings, and which of them the plugin writes.** The plugin's
-`EnrichConfiguration` is the only hook through which it can write a
-`postgresql.conf` parameter, and the operator takes that map as the final
-configuration (CloudNativePG 1.30, `pkg/postgres/plugin/config.go`). The operator
-does not filter the plugin's output against its fixed-parameter list. The hook is
-called by the instance manager in each Pod, when it renders `postgresql.conf`
-(`pkg/management/postgres/configuration.go:454` in 1.27.0, `:412` in 1.30.2). It
-**first exists in 1.27.0**; the last 1.26 patch, 1.26.3, has no call to it.
+**The PostgreSQL settings are the Cluster's, not the plugin's.** The mirror needs
+some `postgresql.conf` settings. The plugin does not write them, and never did:
 
-With `ducklake: "true"` and `extension` not `off` (`auto` is the default; the
-parameter is `extension`, with those two values), the plugin writes
-`duckdb.allowed_directories = '<mirrorPath>/'`, the directory that holds the lake's
-catalog, unless the user set one. A user's value is never replaced. One that does
-not include the mirror is a warning in `configWarnings`: routing reads come from
-the heap, and the mirror is unaffected. It is deliberately not an error, because
-a routing setting must not take the mirror away from new Pods.
+- It used to implement CNPG-I `EnrichConfiguration`, the hook that writes
+  parameters into `postgresql.conf`. The instance manager calls that hook only for
+  plugins it can dial inside the instance Pod. It selects plugins by
+  `Cluster.GetInstanceEnabledPluginNames()`, which keeps only the plugins that
+  advertise `TYPE_INSTANCE_SIDECAR_INJECTION` (`api/v1/cluster_funcs.go:91`, the
+  same in 1.27.0 and 1.30.2), and dials them over the unix sockets in the Pod's
+  plugin directory (`internal/cmd/manager/instance/run/cmd.go:228`). This plugin is
+  a Deployment that the operator reaches over mTLS. It never advertised the
+  capability, so the instance manager never dialled it, and no enrichment ran on
+  any version. The kind run on 1.27.0 found it: `sync_replication_slots=off` on
+  the replicas, although the plugin's code said `on`.
+- Advertising the capability would not be the fix on its own. On 1.27.0 the
+  instance manager dials every plugin in that list, and a missing socket fails the
+  whole instance reconcile (`internal/management/controller/instance_controller.go`,
+  `WithPlugins` with the list as is). That reconcile includes promotion
+  (`instance_controller.go:1096` and `:1157`). A sidecar that is not yet listening
+  would block a failover. 1.30.2 intersects the list with the sockets present
+  (`instance_controller.go:154`), which is safe, but the floor is 1.26, so the plugin
+  does not rely on that.
 
-**The floor, and what 1.26 silently lacked.** The operator-side parameters the
-plugin writes are not applied on 1.26, and the kind run on 1.26 passed anyway,
-because none of its assertions looked at them:
+So the settings are **required in `spec.postgresql.parameters`**, and the plugin
+REPORTS in `.status.pluginStatus` (`configWarnings`) the ones that are missing or
+wrong. A `max_replication_slots` or `max_wal_senders` set below what the mirror needs
+is a configuration error instead, because the mirror cannot create its slots.
 
-| Setting (plugin, `postgres.go`) | Stock CloudNativePG 1.26 | What is lost without it |
-|---|---|---|
-| `sync_replication_slots = on` | PostgreSQL default, `off` | Failover slots are not synchronised to standbys. After a failover the promoted standby has no mirror slot, so every mirror is rebuilt from a full snapshot, not resumed (docs/14, docs/15). The e2e's switchover section checks that the mirrors match afterwards, and a re-snapshot also makes them match, so it could not tell. |
-| `hot_standby_feedback = on` | PostgreSQL default, `off` | A standby does not tell the primary what it still reads, so a vacuum on the primary can cancel a query running on a replica. That matters for `-ro` reads answered from the heap. Not asserted anywhere before this change. |
-| `max_replication_slots` | 32 (CloudNativePG default) | Nothing for up to 28 instances. The plugin's raise matters only beyond that. |
-| `max_wal_senders` | not set; PostgreSQL default 10 | Each mirroring standby is a logical walsender and each standby is also a physical one, so two per standby. Ten covers six instances exactly; from seven the old `instances + 4` was short. The plugin now writes `2 × instances + 4`. |
-| `wal_level = logical` | 1.26 default `logical` (`pkg/postgres/configuration.go:489`) | Nothing: this one was in force. |
-| `duckdb.allowed_directories` | not written | Routing cannot attach the lake on any node; routed reads never happen. |
+| Setting | Value | Why | If missing |
+|---|---|---|---|
+| `sync_replication_slots` | `"on"` | a failover resumes the mirror's slots instead of re-snapshotting every table (docs/14, docs/15) | warning |
+| `hot_standby_feedback` | `"on"` | a vacuum on the primary does not cancel a query on a replica (docs/30 for the standby side) | warning |
+| `max_replication_slots` | at least instances + 4 | one slot per mirroring replica, plus headroom | warning if the default 32 is too small; **error** if set lower |
+| `max_wal_senders` | at least 2 × instances + 4 | each mirroring standby is a logical walsender, and each standby is a physical one | warning; PostgreSQL's default is 10, which covers six instances |
+| `wal_level` | `logical` | logical decoding | CloudNativePG's default is `logical` (1.26 and 1.30); a different value is an error |
+| `duckdb.allowed_directories` | `<mirrorPath>/` (with ducklake) | routing can attach the lake (docs/40) | warning; routing reads come from the heap, the mirror is unaffected |
+| `duckdb.extension_directory` | the operand image's directory (with ducklake) | pg_duckdb does not fetch extensions into PGDATA | warning |
+| `shared_preload_libraries` | `pg_duckdb`, then `pg_quicksilver` (with ducklake) | the extension calls pg_duckdb when it loads | warning |
 
-What 1.27 turns on, which the floor now brings into force, is slot synchronisation
-on the standby. docs/30 documents that a standby can be stopped by a `DROP
-DATABASE` while its synchronised copy of the slot is in use, and that the project
-requires slot synchronisation; read its mitigation before relying on 1.27.
+The mirror itself is never blocked by any of these. Only the one that is set below
+what the mirror needs stops it, and only for the Pods created after the change.
 
-The e2e asserts these on every replica from section 4 on (`enriched_settings_in_force`
-in `bench/scripts/cluster_e2e.sh`), and asserts the directory and the ordinary-role
-verdict in section 6.
+`duckdb.postgres_role`, `quicksilver.attach_lakes_for_all` and the image's extension
+directory stay the user's for the reasons in `go/internal/plugin/routing.go`: the
+first is a security decision, the second a statement about the build, the third a
+fact about the image.
+
+The e2e checks that the server runs what the spec says, on every replica, from
+section 4 on (`enriched_settings_in_force` in `bench/scripts/cluster_e2e.sh`), and
+that the status names none of them. Section 6 checks the routing directory and the
+ordinary-role verdict.
+
+**What 1.26 silently lacked, before this was found.** The kind run on 1.26 passed
+with the plugin's enrichment absent, because no assertion read the settings:
+
+- `sync_replication_slots` was `off`. After a failover, every mirror was rebuilt
+  from a full snapshot. The switchover section checks that the mirrors match
+  afterwards, and a re-snapshot makes them match too, so it could not tell.
+- `hot_standby_feedback` was `off`, so a replica query could be cancelled by a
+  vacuum on the primary. Nothing asserted it.
+- `max_wal_senders` was PostgreSQL's 10. That covers six instances, and the plugin's
+  old `instances + 4` was short from seven.
+- `duckdb.allowed_directories` was not set, so routing never attached the lake on any
+  node. Section 6 then saw the heap answer and asserted the stock behaviour.
+
+**Floor.** CloudNativePG 1.26.0. The reason for it is the roll behaviour in docs/37:
+on 1.25 a change to a plugin parameter never reaches a running Pod. Nothing in the
+plugin needs a newer operator, because the plugin no longer depends on one.
 
 **The CI matrix.** `.github/workflows/cluster-e2e.yml` runs the whole cluster test on
-two CloudNativePG versions, each on its own kind cluster: the floor 1.27.0 and the
-newest 1.30 patch release, 1.30.2 (`go list -m -versions` through the proxy, with
-no 1.31 published at the time of writing). Each entry's release manifest exists at
-`release-<minor>/releases/cnpg-<version>.yaml`.
-
-**Detection below the floor, and why there is none.** The plugin cannot read the
-operator's version, and the signal it could use does not separate "old operator"
-from "quiet cluster": the instance manager calls `EnrichConfiguration` once per
-Pod start and on configuration changes, which is in-process state in the plugin
-(lost on restart; not shared between plugin replicas), and `SetStatusInCluster`
-runs on every reconcile. A stable 1.27 cluster after a plugin restart looks exactly
-like a 1.26 cluster for as long as nothing changes. So the status does not claim
-it. The floor is the documentation, the chart's NOTES, and the CI.
-
-Four lines stay in the Cluster, and the reason for each:
-
-- `duckdb.postgres_role`: naming the role whose members may run DuckDB is a
-  security decision (docs/40, "Ordinary roles", warns that a member reads every
-  mirrored table through DuckDB), and it needs a `GRANT` the operator makes.
-- `duckdb.extension_directory`: where the **operand image** keeps DuckDB's
-  extensions. The plugin does not know the image's contents, and a directory that
-  does not exist would make pg_duckdb fetch them into PGDATA. Reported in
-  `configWarnings` when missing.
-- `shared_preload_libraries`: the operator writes it from
-  `spec.postgresql.shared_preload_libraries`, and it is a fixed parameter. The
-  plugin checks the order (`pg_duckdb` first) and reports it.
-- `quicksilver.attach_lakes_for_all`: a statement that the DuckDB build is the
-  confined one. Only the image can make it.
-
-**What the CI run asserts about routing.** The CI operand image is built with the
-stock pg_duckdb, on which an ordinary role is never routed (docs/40): section 6
-asserts that it is answered from the heap, and says which build it found. On the
-confined build the same assertion is that it is routed.
+two CloudNativePG versions, each on its own kind cluster: the floor 1.26.0 and the
+newest 1.30 patch release, 1.30.2 (the newest version `go list -m -versions` lists
+through the proxy; there is no 1.31 at the time of writing). Both release manifests
+exist at `release-<minor>/releases/cnpg-<version>.yaml`.
 
 **The image.** The image the Cluster's `imageName` points at must contain
 
@@ -1418,7 +1415,7 @@ other direction.
   be created for the first time, so it now compares uid **per instance name** —
   `app-2 replaced: … -> …` is a named Pod that was replaced, which a new Pod
   appearing cannot fake ([docs/37](37-the-operator-that-could-not-roll.md)). And
-  none of it works below **CloudNativePG 1.27** (the floor; 1.26 for the rollout), which the harness now asserts
+  none of it works below **CloudNativePG 1.26**, which the harness now asserts
   against the running operator rather than the requested one.
 - **The images — built, published, run locally, and pulled from ghcr by a Pod
   in [`cluster-e2e`](../.github/workflows/cluster-e2e.yml) run 32.** CI builds

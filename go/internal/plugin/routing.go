@@ -1,35 +1,32 @@
 package plugin
 
-// The PostgreSQL settings that routing needs, and that the plugin can derive
-// from its own configuration.
+// The PostgreSQL settings routing needs in the Cluster's spec.postgresql.parameters.
 //
 // Routing (docs/40) answers a read from the mirror inside PostgreSQL, through
-// pg_duckdb. Four things have to agree, and the one that is a function of the
-// Cluster's plugin parameters is the directory DuckDB may read: the lake's
-// catalog lives under mirrorPath, so duckdb.allowed_directories must name
-// mirrorPath with a trailing slash, or the lake is not attached on that node
-// and the statement is answered from the heap. Without the lake (ducklake
-// off) there is nothing to attach, so nothing is derived.
+// pg_duckdb. The one that depends on this plugin's configuration is the
+// directory DuckDB may read: the lake's catalog lives under mirrorPath, so
+// duckdb.allowed_directories must name mirrorPath with a trailing slash, or the
+// lake is not attached on that node and the statement is answered from the
+// heap. With ducklake off there is no lake, so nothing is required.
 //
-// What the plugin does NOT derive, and why:
+// The plugin does not write this setting. It cannot: the operator does not ask
+// a Deployment plugin for PostgreSQL parameters (postgres.go). So the Cluster
+// names it, and the plugin reports it missing or pointing elsewhere
+// (routingWarnings). The routing mistake is a warning: the mirror does not
+// depend on routing, and must keep being built either way.
+//
+// What is never the plugin's to write, and why:
 //
 //   - duckdb.postgres_role names the role whose members may run DuckDB
 //     directly. Naming one is a security decision (docs/40 warns that a member
 //     reads every mirrored table through DuckDB), and it needs a grant the
-//     operator makes. It stays a hand-written line.
+//     operator makes.
 //   - duckdb.extension_directory is where the OPERAND IMAGE keeps DuckDB's
-//     extensions. The plugin does not know the image's contents, and a
-//     directory that does not exist would make pg_duckdb fetch the extensions
-//     instead. It stays a hand-written line, reported when missing.
+//     extensions; the plugin does not know the image's contents.
 //   - shared_preload_libraries is managed by the operator from
-//     spec.postgresql.shared_preload_libraries and is a fixed parameter. The
-//     plugin checks its order and reports, and does not write it.
+//     spec.postgresql.shared_preload_libraries. The plugin checks its order.
 //   - quicksilver.attach_lakes_for_all is a statement that the DuckDB build is
 //     the confined one. Only the image can make that statement.
-//
-// The derivation runs in EnrichConfiguration (postgres.go), which exists from
-// CloudNativePG 1.27. On 1.26 the operator never calls it, and nothing here is
-// applied; docs/16 says so.
 
 import (
 	"regexp"
@@ -53,7 +50,7 @@ func routingEnabled(cfg Config) bool {
 	return cfg.DuckLake && cfg.Extension != ExtensionOff && cfg.Mode != ModeOff
 }
 
-// lakeDirectory is the value duckdb.allowed_directories takes for a mirror
+// lakeDirectory is the value duckdb.allowed_directories must take for a mirror
 // path: the directory itself, with a trailing slash.
 func lakeDirectory(mirrorPath string) string {
 	return strings.TrimRight(mirrorPath, "/") + "/"
@@ -79,15 +76,6 @@ func allowedDirectoriesCover(value, dir string) bool {
 		}
 	}
 	return false
-}
-
-// addRoutingSettings sets the derivable settings in a configuration map that
-// already holds the operator's values and the user's. A value the user set is
-// left alone: Validate reports the ones that conflict with the mirror.
-func addRoutingSettings(configs map[string]string, cfg Config) {
-	if strings.TrimSpace(configs[gucDuckDBAllowedDirectories]) == "" {
-		configs[gucDuckDBAllowedDirectories] = lakeDirectory(cfg.MirrorPath)
-	}
 }
 
 // userAllowedDirectoriesConflict returns the user's duckdb.allowed_directories
@@ -122,6 +110,13 @@ func routingWarnings(cluster *apiv1.Cluster, cfg Config) []ConfigError {
 			Parameter: "spec.postgresql.shared_preload_libraries",
 			Value:     strings.Join(libs, ","),
 			Message:   "pg_duckdb must come before pg_quicksilver: pg_quicksilver calls into pg_duckdb when it loads",
+		})
+	}
+	if strings.TrimSpace(cluster.Spec.PostgresConfiguration.Parameters[gucDuckDBAllowedDirectories]) == "" {
+		out = append(out, ConfigError{
+			Parameter: gucDuckDBAllowedDirectories,
+			Message: "not set in spec.postgresql.parameters: routing cannot attach the lake without it. " +
+				"Set it to " + lakeDirectory(cfg.MirrorPath) + " (the plugin does not write it; docs/16)",
 		})
 	}
 	if raw, conflict := userAllowedDirectoriesConflict(cluster, cfg); conflict {
@@ -193,5 +188,6 @@ func sidecarImageWarnings(cfg Config) []ConfigError {
 // the configuration invalid.
 func configWarnings(cluster *apiv1.Cluster, cfg Config) []ConfigError {
 	out := sidecarImageWarnings(cfg)
+	out = append(out, requiredSettings(cluster, cfg)...)
 	return append(out, routingWarnings(cluster, cfg)...)
 }

@@ -1,110 +1,105 @@
 package plugin
 
-import (
-	"context"
-	"strconv"
+// The PostgreSQL settings the mirror needs. The plugin CHECKS them and reports;
+// it does not write them.
+//
+// This file used to implement CNPG-I's EnrichConfiguration, which would have
+// written them into postgresql.conf. That never happened on any operator this
+// project ships to. The instance manager calls EnrichConfiguration only for
+// plugins it can reach from inside the instance Pod, that is plugins that
+// declare TYPE_INSTANCE_SIDECAR_INJECTION and serve a socket in the Pod's plugin
+// directory, and this plugin is a Deployment reached by the operator. Checked
+// against CloudNativePG 1.27.0 and 1.30.2 in go/fidelity (docs/16, "The
+// PostgreSQL settings"). So the settings are REQUIRED in the Cluster's
+// spec.postgresql.parameters, and this file says which are missing or wrong,
+// from the same spec the operator gives the plugin.
 
-	"github.com/cloudnative-pg/cnpg-i-machinery/pkg/pluginhelper/decoder"
-	"github.com/cloudnative-pg/cnpg-i/pkg/postgres"
+import (
+	"strconv"
+	"strings"
+
+	apiv1 "github.com/cloudnative-pg/api/pkg/api/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
 )
-
-// PostgresImpl turns on the server settings the mirror needs, so that enabling
-// Quicksilver is one plugin block rather than a plugin block plus a list of
-// GUCs the operator has to remember.
-type PostgresImpl struct {
-	postgres.UnimplementedPostgresServer
-}
-
-func (PostgresImpl) GetCapabilities(
-	context.Context, *postgres.PostgresCapabilitiesRequest,
-) (*postgres.PostgresCapabilitiesResult, error) {
-	return &postgres.PostgresCapabilitiesResult{
-		Capabilities: []*postgres.PostgresCapability{
-			{
-				Type: &postgres.PostgresCapability_Rpc{
-					Rpc: &postgres.PostgresCapability_RPC{
-						Type: postgres.PostgresCapability_RPC_TYPE_ENRICH_CONFIGURATION,
-					},
-				},
-			},
-		},
-	}, nil
-}
 
 // Slots the mirror needs beyond whatever the cluster already uses: one logical
 // slot per mirroring replica, plus headroom for the slot being recreated while
 // the old one is still being dropped.
 const slotHeadroom = 4
 
-func (PostgresImpl) EnrichConfiguration(
-	_ context.Context, req *postgres.EnrichConfigurationRequest,
-) (*postgres.EnrichConfigurationResult, error) {
-	cluster, err := decoder.DecodeClusterLenient(req.GetClusterDefinition())
-	if err != nil {
-		return nil, err
-	}
+// Defaults PostgreSQL and CloudNativePG apply when a setting is absent from the
+// Cluster. CloudNativePG 1.26.0 and 1.30 default max_replication_slots to 32
+// (pkg/postgres/configuration.go); PostgreSQL's own default for
+// max_wal_senders is 10, and CloudNativePG does not set it.
+const (
+	pgDefaultMaxReplicationSlots = 32
+	pgDefaultMaxWalSenders       = 10
+)
 
-	configs := map[string]string{}
-	for k, v := range req.GetConfigs() {
-		configs[k] = v
-	}
-
-	cfg := ParseConfig(cluster.Name, PluginParameters(cluster))
+// requiredSettings are the spec.postgresql.parameters a Cluster needs for the
+// mirror to behave as documented. A missing or wrong one is reported in the
+// status; see settingWarnings.
+func requiredSettings(cluster *apiv1.Cluster, cfg Config) []ConfigError {
 	if !Enabled(cluster) || cfg.Mode == ModeOff || cfg.Ingest != IngestLogical {
-		return &postgres.EnrichConfigurationResult{Configs: configs}, nil
+		return nil
 	}
+	params := cluster.Spec.PostgresConfiguration.Parameters
+	instances := int(cluster.Spec.Instances)
+	var out []ConfigError
 
-	// wal_level=logical costs +70% WAL volume against the same workload
-	// (measured, docs/11). That is the price of admission for ingest: logical
-	// and it is charged on the primary, so it belongs in the docs and in the
-	// capacity plan — not hidden behind a default nobody reads.
-	configs["wal_level"] = "logical"
-
-	// Routing's directory (docs/40), when the lake is on. Only what the user
-	// did not set: a value of their own is reported by Validate, not replaced.
-	if routingEnabled(cfg) {
-		addRoutingSettings(configs, cfg)
-	}
-
-	need := int(cluster.Spec.Instances) + slotHeadroom
-	raise(configs, "max_replication_slots", need)
-	// Each mirroring standby is a logical walsender on the primary, and each
-	// standby is also a physical one: two per standby, not one. CloudNativePG 1.26
-	// does not set max_wal_senders, so PostgreSQL's default of 10 applies, which
-	// covers six instances exactly. The old value, instances+4, was short from
-	// seven.
-	raise(configs, "max_wal_senders", 2*int(cluster.Spec.Instances)+slotHeadroom)
-
-	// PostgreSQL 17 slot synchronisation. `failover` is set per slot by the
-	// sidecar when it creates one; these two are cluster-wide.
-	//
-	// sync_replication_slots is safe to leave on everywhere: it does nothing on
-	// a primary and starts the sync worker on a standby, which is exactly the
-	// behaviour we want as instances change role.
+	// Failover slot synchronisation. Without it a failover rebuilds every mirror
+	// from a full snapshot instead of resuming (docs/14, docs/15).
 	if major, known := MajorVersion(cluster); !known || major >= MinimumMajorVersion {
-		configs["sync_replication_slots"] = "on"
-		configs["hot_standby_feedback"] = "on"
+		for _, name := range []string{"sync_replication_slots", "hot_standby_feedback"} {
+			if v := strings.TrimSpace(params[name]); v != "on" {
+				out = append(out, ConfigError{
+					Parameter: name,
+					Value:     v,
+					Message: "must be \"on\" in spec.postgresql.parameters: PostgreSQL's default is off, " +
+						"and the plugin cannot set it for you (docs/16, \"The PostgreSQL settings\")",
+				})
+			}
+		}
 	}
 
-	// synchronized_standby_slots is deliberately NOT set here. It names the
-	// physical slot of a specific standby, it is written into
-	// postgresql.auto.conf and copied to that standby by pg_basebackup, and
-	// after a promotion it names a slot that does not exist on the new primary.
-	// Logical decoding then waits forever, with a warning in the log and no
-	// error to the client (docs/15). It has to be maintained against the live
-	// topology and cleared on promotion, which is the sidecar's job, not a
-	// static config's.
+	need := instances + slotHeadroom
+	if _, ok := intParam(params, "max_replication_slots"); !ok {
+		if need > pgDefaultMaxReplicationSlots {
+			out = append(out, ConfigError{Parameter: "max_replication_slots",
+				Message: "not set, and PostgreSQL's default of 32 is below the " + strconv.Itoa(need) +
+					" the mirror needs (instances + 4): set it in spec.postgresql.parameters"})
+		}
+	}
+	// A value below need is an error, not a warning: see Validate.
 
-	return &postgres.EnrichConfigurationResult{Configs: configs}, nil
+	// Each mirroring standby is a logical walsender on the primary, and each
+	// standby is also a physical one: two per standby, not one.
+	wantSenders := 2*instances + slotHeadroom
+	if v, ok := intParam(params, "max_wal_senders"); !ok {
+		if wantSenders > pgDefaultMaxWalSenders {
+			out = append(out, ConfigError{Parameter: "max_wal_senders",
+				Message: "not set, and PostgreSQL's default of 10 is below the " + strconv.Itoa(wantSenders) +
+					" the cluster needs (two per standby, plus headroom): set it in spec.postgresql.parameters"})
+		}
+	} else if v < wantSenders {
+		out = append(out, ConfigError{Parameter: "max_wal_senders", Value: strconv.Itoa(v),
+			Message: "is below " + strconv.Itoa(wantSenders) + " (two per standby, plus headroom): " +
+				"connections beyond it are refused, and a mirror can then stop"})
+	}
+	return out
 }
 
-// raise sets key to at least want, leaving a larger operator-chosen value alone.
-func raise(configs map[string]string, key string, want int) {
-	if cur, err := strconv.Atoi(configs[key]); err == nil && cur >= want {
-		return
+// intParam reads an integer setting from the spec.
+func intParam(params map[string]string, name string) (int, bool) {
+	raw, ok := params[name]
+	if !ok || strings.TrimSpace(raw) == "" {
+		return 0, false
 	}
-	configs[key] = strconv.Itoa(want)
+	v, err := strconv.Atoi(strings.TrimSpace(raw))
+	if err != nil {
+		return 0, false
+	}
+	return v, true
 }
 
 func intOrString(port int32) intstr.IntOrString {

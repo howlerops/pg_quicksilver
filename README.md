@@ -6,7 +6,7 @@ the same `SELECT`, to the same endpoint, over the same Postgres wire protocol, c
 faster for scans and aggregates.
 
 **Requires PostgreSQL ≥ 17** (before 17 a logical slot does not survive failover) and
-**CloudNativePG ≥ 1.27** ([why](docs/37-the-operator-that-could-not-roll.md)).
+**CloudNativePG ≥ 1.26** ([why](docs/37-the-operator-that-could-not-roll.md)).
 
 ---
 
