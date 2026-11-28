@@ -17,7 +17,6 @@ import (
 	"github.com/cloudnative-pg/cnpg-i-machinery/pkg/pluginhelper/http"
 	"github.com/cloudnative-pg/cnpg-i/pkg/lifecycle"
 	"github.com/cloudnative-pg/cnpg-i/pkg/operator"
-	"github.com/cloudnative-pg/cnpg-i/pkg/postgres"
 	"google.golang.org/grpc"
 
 	qsplugin "github.com/howlerops/pg_quicksilver/go/internal/plugin"
@@ -27,7 +26,6 @@ func main() {
 	cmd := http.CreateMainCmd(qsplugin.IdentityImpl{}, func(server *grpc.Server) error {
 		operator.RegisterOperatorServer(server, qsplugin.OperatorImpl{})
 		lifecycle.RegisterOperatorLifecycleServer(server, qsplugin.LifecycleImpl{})
-		postgres.RegisterPostgresServer(server, qsplugin.PostgresImpl{})
 		return nil
 	})
 	cmd.Use = "quicksilver-plugin"

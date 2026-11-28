@@ -170,6 +170,11 @@ type Table struct {
 	joins         map[string]joinBinding
 	joinDicts     []*joinDict
 	joinFileCache map[string]fileColSet
+	// backfillSig/backfillDue cache BackfillDue for one manifest file list
+	// (joinbackfill.go); backfillValid says the cache holds an answer.
+	backfillSig   string
+	backfillDue   bool
+	backfillValid bool
 
 	// sawLarge is whether any row of this table has ever carried a column big
 	// enough to be worth not rewriting. Until one does, elide.go costs nothing
@@ -195,6 +200,11 @@ type Table struct {
 	// aborting counts rewrites that were abandoned and have not yet finished
 	// and removed their output. See AbortCompaction and Close.
 	aborting sync.WaitGroup
+	// abortPending counts abandoned rewrites whose output is not yet removed.
+	// Their names come from State.Seq, which Reload can move back, so until
+	// the cleanup has run no new rewrite may take a name it will remove
+	// (BeginCompaction refuses, and Compact waits). See AbortCompaction.
+	abortPending atomic.Int32
 
 	// detached marks the private copy a background rewrite works from
 	// (rewriteSnapshot). It shares a directory with the real table and nothing
@@ -1657,6 +1667,8 @@ func (t *Table) discardOne(path string) {
 // and rebuilds the key->position index. Query cost is a function of how far
 // behind this runs, so compaction backlog is a first-class metric.
 func (t *Table) Compact() (int, error) {
+	t.aborting.Wait() // see abortPending
+
 	if len(t.State.BaseFiles) == 0 && len(t.State.DeltaFiles) == 0 {
 		return 0, nil
 	}
@@ -2053,6 +2065,13 @@ func (t *Table) compactReason() string {
 	// written before it was; only a rewrite converts them (numeric_optin.go).
 	if t.numericRewriteDue() {
 		return "numeric-opt-in"
+	}
+	// A join domain added after the files were written: one base rewrite
+	// gives every file its companion (joinbackfill.go). Before churn, because
+	// the rewrite it asks for is the same one and the domain stays slow until
+	// it has run.
+	if t.BackfillDue() {
+		return JoinBackfillReason
 	}
 	if len(t.State.DeltaFiles) > 0 {
 		threshold := t.State.BaseRows / compactChurnRatio

@@ -56,6 +56,11 @@ type Snapshot struct {
 	ReplayLSN        string `json:"replay_lsn,omitempty"`
 	NeedLSN          string `json:"need_lsn,omitempty"`
 	HeldTransactions int    `json:"held_transactions,omitempty"`
+
+	// StoodDown says this node is the primary and the sidecar has stood down:
+	// nothing feeds the mirror, so AppliedLSN is empty and the lag fields are
+	// zero. It is NOT a freshness claim; the reason in /readyz says so.
+	StoodDown bool `json:"stood_down,omitempty"`
 }
 
 type Health struct {
@@ -99,6 +104,47 @@ type Health struct {
 	replayLSN  string
 	needLSN    string
 	heldTxns   int
+	// slotFault is why this Pod's replication slot cannot be read, when that is
+	// the case: a stream that fails the same way on every attempt is not fresh,
+	// whatever its lag says, and the reason is the first thing an operator needs
+	// (slotrecover.go). Empty when there is no such fault.
+	slotFault      string
+	slotRecoveries int64
+	// standingDown is set on a node that is the primary (the sidecar stands
+	// down there, main.go). The mirror is not fed, so the applied position,
+	// the head and the lag are not reported as if they were current.
+	standingDown bool
+}
+
+// SetStoodDown records whether this sidecar has stood down because its node is
+// the primary (false again when the node is a standby). Set on promotion, so
+// that /readyz stops reporting the last applied LSN and its lag as current.
+func (h *Health) SetStoodDown(on bool) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.standingDown = on
+}
+
+// StoodDown reports whether SetStoodDown(true) is in effect.
+func (h *Health) StoodDown() bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.standingDown
+}
+
+// SetSlotFault says why the replication slot cannot be read ("" clears it). While
+// it is set the Pod is not ready, and the reason is what readiness reports.
+func (h *Health) SetSlotFault(reason string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.slotFault = reason
+}
+
+// RecordSlotRecovery counts a slot this Pod dropped and re-created to recover.
+func (h *Health) RecordSlotRecovery() {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.slotRecoveries++
 }
 
 func New(slo time.Duration) *Health {
@@ -258,6 +304,15 @@ func (h *Health) Snapshot() Snapshot {
 		ReplayHeld:        h.replayHeld, ReplayLSN: h.replayLSN, NeedLSN: h.needLSN,
 		HeldTransactions: h.heldTxns,
 	}
+	if h.standingDown {
+		// The last applied LSN is the standby's, and nothing has fed it since
+		// the promotion: it is not reported as the mirror's position, and the
+		// lag since the last catch-up is not a lag of anything.
+		s.StoodDown = true
+		s.AppliedLSN, s.HeadLSN = "", ""
+		s.LagBytes, s.LagSeconds = 0, 0
+		s.ReplayHeld, s.ReplayLSN, s.NeedLSN, s.HeldTransactions = false, "", "", 0
+	}
 	if len(h.halted) > 0 {
 		s.HaltedTables = make(map[string]string, len(h.halted))
 		for t, r := range h.halted {
@@ -274,7 +329,22 @@ func (h *Health) Ready() (bool, string) {
 	s := h.Snapshot()
 	h.mu.Lock()
 	serve, tables := h.serveWithHalted, h.tables
+	slotFault := h.slotFault
 	h.mu.Unlock()
+	if s.StoodDown {
+		// This is the primary. /readyz is the readiness probe of the whole
+		// instance Pod in takeover mode (go/internal/plugin/lifecycle.go), so
+		// a 503 here would take the PRIMARY out of its Services. The mirror is
+		// not fed, which is the extension's to refuse (it answers from the heap
+		// on a node that is not a standby), so nothing here is "not ready".
+		return true, "stood down: this node is the primary; its mirror is not fed and is not read here " +
+			"(the router answers from the heap on a node that is not a standby)"
+	}
+	if slotFault != "" {
+		// Nothing else is worth saying while the stream cannot be read: the
+		// lag and the halts would be stale for the same reason.
+		return false, slotFault
+	}
 	halted := HaltedReason(s.HaltedTables)
 	// First, because it is the one condition here that does not pass by
 	// itself: bootstrapping ends and lag recovers, a halt waits for an
@@ -361,6 +431,19 @@ func (h *Health) Metrics() string {
 	hb.WriteString("# HELP quicksilver_halted_tables Tables this Pod has stopped mirroring until an operator rebuilds them.\n" +
 		"# TYPE quicksilver_halted_tables gauge\n")
 	fmt.Fprintf(&hb, "quicksilver_halted_tables %d\n", len(s.HaltedTables))
+	stood := 0
+	if s.StoodDown {
+		stood = 1
+	}
+	hb.WriteString("# HELP quicksilver_stood_down 1 while this node is the primary and the sidecar has stood down (the mirror is not fed).\n" +
+		"# TYPE quicksilver_stood_down gauge\n")
+	fmt.Fprintf(&hb, "quicksilver_stood_down %d\n", stood)
+	h.mu.Lock()
+	recoveries := h.slotRecoveries
+	h.mu.Unlock()
+	hb.WriteString("# HELP quicksilver_slot_recoveries_total Times this Pod dropped its replication slot because the slot could not be decoded (slotrecover.go).\n" +
+		"# TYPE quicksilver_slot_recoveries_total counter\n")
+	fmt.Fprintf(&hb, "quicksilver_slot_recoveries_total %d\n", recoveries)
 	hb.WriteString("# HELP quicksilver_table_halted 1 for each halted table, with the recorded reason.\n" +
 		"# TYPE quicksilver_table_halted gauge\n")
 	names := make([]string, 0, len(s.HaltedTables))

@@ -1,0 +1,349 @@
+diff --git a/src/pgduckdb_ruleutils.cpp b/src/pgduckdb_ruleutils.cpp
+--- a/src/pgduckdb_ruleutils.cpp
++++ b/src/pgduckdb_ruleutils.cpp
+@@ -47,6 +47,161 @@
+ extern "C" {
+ bool outermost_query = true;
+ 
++/*
++ * Names DuckDB reads as keywords in the SQL pg_duckdb writes (measured against
++ * DuckDB 2.0.1 as a bare name in a select list with an alias, a cast with an
++ * alias, and a qualified reference), and COLUMNS, EXCLUDE and REPLACE, which
++ * DuckDB reads as star modifiers. PostgreSQL's quote_identifier leaves most of
++ * them bare. Sorted, for bsearch; compared without regard to case. The
++ * extension keeps the same list (ext/pg_quicksilver, qs_duck_keywords).
++ */
++static const char *const pgduckdb_duckdb_keywords[] = {
++	"all",
++	"analyse",
++	"analyze",
++	"and",
++	"anti",
++	"any",
++	"array",
++	"as",
++	"asc",
++	"asof",
++	"asymmetric",
++	"at",
++	"authorization",
++	"binary",
++	"both",
++	"by",
++	"case",
++	"cast",
++	"check",
++	"collate",
++	"collation",
++	"column",
++	"columns",
++	"concurrently",
++	"constraint",
++	"create",
++	"cross",
++	"default",
++	"deferrable",
++	"desc",
++	"describe",
++	"distinct",
++	"do",
++	"else",
++	"end",
++	"except",
++	"exclude",
++	"false",
++	"fetch",
++	"for",
++	"foreign",
++	"freeze",
++	"from",
++	"full",
++	"glob",
++	"group",
++	"having",
++	"ilike",
++	"in",
++	"initially",
++	"inner",
++	"intersect",
++	"into",
++	"is",
++	"isnull",
++	"join",
++	"lambda",
++	"lateral",
++	"leading",
++	"left",
++	"like",
++	"limit",
++	"natural",
++	"not",
++	"notnull",
++	"null",
++	"offset",
++	"on",
++	"only",
++	"or",
++	"order",
++	"outer",
++	"overlaps",
++	"pivot",
++	"pivot_longer",
++	"pivot_wider",
++	"placing",
++	"positional",
++	"primary",
++	"qualify",
++	"references",
++	"replace",
++	"returning",
++	"right",
++	"select",
++	"semi",
++	"show",
++	"similar",
++	"some",
++	"summarize",
++	"symmetric",
++	"table",
++	"tablesample",
++	"then",
++	"to",
++	"trailing",
++	"true",
++	"union",
++	"unique",
++	"unpack",
++	"unpivot",
++	"using",
++	"variadic",
++	"verbose",
++	"when",
++	"where",
++	"window",
++	"with",
++};
++
++static int
++pgduckdb_duckdb_keyword_cmp(const void *a, const void *b) {
++	return pg_strcasecmp(*(const char *const *)a, *(const char *const *)b);
++}
++
++bool
++pgduckdb_is_duckdb_keyword(const char *ident) {
++	const char *key = ident;
++
++	return bsearch(&key, pgduckdb_duckdb_keywords, lengthof(pgduckdb_duckdb_keywords), sizeof(char *),
++	               pgduckdb_duckdb_keyword_cmp) != NULL;
++}
++
++/*
++ * quote_identifier for the SQL pg_duckdb writes for DuckDB: PostgreSQL's, plus
++ * the names in pgduckdb_duckdb_keywords. The vendored deparser (pg_ruleutils)
++ * applies the same rule in its own quote_identifier.
++ */
++const char *
++pgduckdb_quote_identifier(const char *ident) {
++	if (!pgduckdb_is_duckdb_keyword(ident)) {
++		return quote_identifier(ident);
++	}
++	StringInfoData buf;
++	initStringInfo(&buf);
++	appendStringInfoChar(&buf, '"');
++	for (const char *p = ident; *p; p++) {
++		if (*p == '"') {
++			appendStringInfoChar(&buf, '"');
++		}
++		appendStringInfoChar(&buf, *p);
++	}
++	appendStringInfoChar(&buf, '"');
++	return buf.data;
++}
++
+ char *
+ pgduckdb_function_name(Oid function_oid, bool *use_variadic_p) {
+ 	if (!pgduckdb::IsDuckdbOnlyFunction(function_oid)) {
+@@ -62,7 +217,7 @@
+ 	}
+ 
+ 	auto func_name = get_func_name(function_oid);
+-	return psprintf("system.main.%s", quote_identifier(func_name));
++	return psprintf("system.main.%s", pgduckdb_quote_identifier(func_name));
+ }
+ 
+ bool
+@@ -352,7 +507,7 @@
+ 		if (i > 0) {
+ 			appendStringInfoString(buf, ".");
+ 		}
+-		appendStringInfoString(buf, quote_identifier(TextDatumGetCString(const_val->constvalue)));
++		appendStringInfoString(buf, pgduckdb_quote_identifier(TextDatumGetCString(const_val->constvalue)));
+ 
+ 		i++;
+ 	}
+@@ -424,7 +579,7 @@
+ 
+ 	char *extval = OidOutputFunctionCall(typoutput, constval->constvalue);
+ 
+-	appendStringInfo(buf, ".%s", quote_identifier(extval));
++	appendStringInfo(buf, ".%s", pgduckdb_quote_identifier(extval));
+ 
+ 	/*
+ 	 * If there are any additional subscript expressions we should output them.
+@@ -450,7 +605,7 @@
+  */
+ char *
+ pgduckdb_write_row_refname(StringInfo buf, char *refname, bool is_top_level) {
+-	appendStringInfoString(buf, quote_identifier(refname));
++	appendStringInfoString(buf, pgduckdb_quote_identifier(refname));
+ 
+ 	if (is_top_level) {
+ 		/*
+@@ -559,7 +714,7 @@
+ 	List *db_and_schema = pgduckdb_db_and_schema(postgres_schema_name, duckdb_table_am_name);
+ 	const char *db_name = (const char *)linitial(db_and_schema);
+ 	const char *schema_name = (const char *)lsecond(db_and_schema);
+-	return psprintf("%s.%s", quote_identifier(db_name), quote_identifier(schema_name));
++	return psprintf("%s.%s", pgduckdb_quote_identifier(db_name), pgduckdb_quote_identifier(schema_name));
+ }
+ 
+ /*
+@@ -579,7 +734,7 @@
+ 
+ 	const char *db_and_schema = pgduckdb_db_and_schema_string(postgres_schema_name, duckdb_table_am_name);
+ 
+-	char *result = psprintf("%s.%s", db_and_schema, quote_identifier(relname));
++	char *result = psprintf("%s.%s", db_and_schema, pgduckdb_quote_identifier(relname));
+ 
+ 	ReleaseSysCache(tp);
+ 
+diff --git a/src/pgduckdb_guc.cpp b/src/pgduckdb_guc.cpp
+--- a/src/pgduckdb_guc.cpp
++++ b/src/pgduckdb_guc.cpp
+@@ -138,6 +138,7 @@
+ bool duckdb_force_motherduck_views = false;
+ /* Confinement marker (bench/patches): always true in a build with the confined local file system. */
+ bool duckdb_confined_file_access = true;
++bool duckdb_quotes_duckdb_keywords = true;
+ 
+ int duckdb_threads = -1;
+ int duckdb_maximum_memory = 4096; /* 4GB in MB */
+@@ -187,6 +188,10 @@
+ 	                     "True when DuckDB local file access is confined to duckdb.allowed_directories (patched build only)",
+ 	                     &duckdb_confined_file_access, PGC_INTERNAL, GUC_NOT_IN_SAMPLE | GUC_DISALLOW_IN_FILE);
+ 
++	DefineCustomVariable("duckdb.quotes_duckdb_keywords",
++	                     "True when the DuckDB SQL pg_duckdb writes quotes every name DuckDB reads as a keyword (patched build only)",
++	                     &duckdb_quotes_duckdb_keywords, PGC_INTERNAL, GUC_NOT_IN_SAMPLE | GUC_DISALLOW_IN_FILE);
++
+ 	DefineCustomVariable("duckdb.postgres_role",
+ 	                     "Which postgres role should be allowed to use DuckDB execution, use the secrets and create "
+ 	                     "MotherDuck tables. Defaults to superusers only",
+diff --git a/include/pgduckdb/pgduckdb_ruleutils.h b/include/pgduckdb/pgduckdb_ruleutils.h
+--- a/include/pgduckdb/pgduckdb_ruleutils.h
++++ b/include/pgduckdb/pgduckdb_ruleutils.h
+@@ -8,6 +8,7 @@
+ 	bool added_current_star;
+ } StarReconstructionContext;
+ 
++const char *pgduckdb_quote_identifier(const char *ident);
+ char *pgduckdb_relation_name(Oid relid);
+ char *pgduckdb_function_name(Oid function_oid, bool *use_variadic_p);
+ char *pgduckdb_get_querydef(Query *);
+diff --git a/include/pgduckdb/vendor/pg_ruleutils.h b/include/pgduckdb/vendor/pg_ruleutils.h
+--- a/include/pgduckdb/vendor/pg_ruleutils.h
++++ b/include/pgduckdb/vendor/pg_ruleutils.h
+@@ -34,6 +34,9 @@
+ #endif
+ extern char *pgduckdb_pg_get_querydef_internal(Query *query, bool pretty);
+ 
++/* pgduckdb_ruleutils.cpp: true for a name DuckDB reads as a keyword (quoted in DuckDB SQL) */
++extern bool pgduckdb_is_duckdb_keyword(const char *ident);
++
+ extern char *pgduckdb_pg_get_partkeydef_columns(Oid relid, bool pretty);
+ extern char *pgduckdb_pg_get_partconstrdef_string(Oid partitionId, char *aliasname);
+ 
+diff --git a/src/vendor/pg_ruleutils_14.c b/src/vendor/pg_ruleutils_14.c
+--- a/src/vendor/pg_ruleutils_14.c
++++ b/src/vendor/pg_ruleutils_14.c
+@@ -11695,6 +11695,10 @@
+ 
+ 		if (kwnum >= 0 && ScanKeywordCategories[kwnum] != UNRESERVED_KEYWORD)
+ 			safe = false;
++	
++		/* pg_duckdb: names DuckDB reads as keywords are quoted too */
++		if (pgduckdb_is_duckdb_keyword(ident))
++			safe = false;
+ 	}
+ 
+ 	if (safe)
+diff --git a/src/vendor/pg_ruleutils_15.c b/src/vendor/pg_ruleutils_15.c
+--- a/src/vendor/pg_ruleutils_15.c
++++ b/src/vendor/pg_ruleutils_15.c
+@@ -11897,6 +11897,10 @@
+ 
+ 		if (kwnum >= 0 && ScanKeywordCategories[kwnum] != UNRESERVED_KEYWORD)
+ 			safe = false;
++	
++		/* pg_duckdb: names DuckDB reads as keywords are quoted too */
++		if (pgduckdb_is_duckdb_keyword(ident))
++			safe = false;
+ 	}
+ 
+ 	if (safe)
+diff --git a/src/vendor/pg_ruleutils_16.c b/src/vendor/pg_ruleutils_16.c
+--- a/src/vendor/pg_ruleutils_16.c
++++ b/src/vendor/pg_ruleutils_16.c
+@@ -12106,6 +12106,10 @@
+ 
+ 		if (kwnum >= 0 && ScanKeywordCategories[kwnum] != UNRESERVED_KEYWORD)
+ 			safe = false;
++	
++		/* pg_duckdb: names DuckDB reads as keywords are quoted too */
++		if (pgduckdb_is_duckdb_keyword(ident))
++			safe = false;
+ 	}
+ 
+ 	if (safe)
+diff --git a/src/vendor/pg_ruleutils_17.c b/src/vendor/pg_ruleutils_17.c
+--- a/src/vendor/pg_ruleutils_17.c
++++ b/src/vendor/pg_ruleutils_17.c
+@@ -12764,6 +12764,10 @@
+ 
+ 		if (kwnum >= 0 && ScanKeywordCategories[kwnum] != UNRESERVED_KEYWORD)
+ 			safe = false;
++	
++		/* pg_duckdb: names DuckDB reads as keywords are quoted too */
++		if (pgduckdb_is_duckdb_keyword(ident))
++			safe = false;
+ 	}
+ 
+ 	if (safe)
+diff --git a/src/vendor/pg_ruleutils_18.c b/src/vendor/pg_ruleutils_18.c
+--- a/src/vendor/pg_ruleutils_18.c
++++ b/src/vendor/pg_ruleutils_18.c
+@@ -13157,6 +13157,10 @@
+ 
+ 		if (kwnum >= 0 && ScanKeywordCategories[kwnum] != UNRESERVED_KEYWORD)
+ 			safe = false;
++	
++		/* pg_duckdb: names DuckDB reads as keywords are quoted too */
++		if (pgduckdb_is_duckdb_keyword(ident))
++			safe = false;
+ 	}
+ 
+ 	if (safe)
+diff --git a/src/vendor/pg_ruleutils_19.c b/src/vendor/pg_ruleutils_19.c
+--- a/src/vendor/pg_ruleutils_19.c
++++ b/src/vendor/pg_ruleutils_19.c
+@@ -13303,6 +13303,10 @@
+ 
+ 		if (kwnum >= 0 && ScanKeywordCategories[kwnum] != UNRESERVED_KEYWORD)
+ 			safe = false;
++	
++		/* pg_duckdb: names DuckDB reads as keywords are quoted too */
++		if (pgduckdb_is_duckdb_keyword(ident))
++			safe = false;
+ 	}
+ 
+ 	if (safe)

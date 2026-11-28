@@ -159,7 +159,12 @@ type Status struct {
 	// The operator does not check plugins at admission, so this is the only
 	// place a user sees a misspelled parameter or a missing acknowledgement.
 	ConfigErrors []ConfigError `json:"configErrors,omitempty"`
-	Message      string        `json:"message,omitempty"`
+	// ConfigWarnings is what does not make the configuration invalid but will
+	// not do what the user likely wants: a mutable sidecar image tag, or
+	// routing settings that are missing (routing.go). Reported whether or not
+	// the configuration is valid, and never a reason to stop a mirror.
+	ConfigWarnings []ConfigError `json:"configWarnings,omitempty"`
+	Message        string        `json:"message,omitempty"`
 }
 
 // ConfigError is one problem Validate found, in a form a user can act on.
@@ -209,6 +214,7 @@ func (OperatorImpl) SetStatusInCluster(
 		Publication:  cfg.Publication,
 		MajorVersion: major,
 	}
+	st.ConfigWarnings = configWarnings(cluster, cfg)
 	faults := Validate(cluster, PluginParameters(cluster))
 	switch {
 	case len(faults) > 0:

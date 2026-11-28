@@ -54,6 +54,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/howlerops/pg_quicksilver/go/internal/changestream"
 	"github.com/howlerops/pg_quicksilver/go/internal/ducklake"
@@ -103,6 +104,18 @@ type extLink struct {
 	mu      sync.Mutex
 	blocked map[string]bool // tables the pump says must not be read: halted
 	known   map[string]bool // tables in QS_TABLES
+	// vouched is the set of configured tables this PROCESS has positively found
+	// healthy and handed to the lake (vouch, after lakeReconcile). Until a table
+	// is in it, its report is 0/0. A report left in this node's shared memory by
+	// an earlier process, or an earlier attempt of this one, is not a statement
+	// about the mirror that is running now (blank.go).
+	vouched map[string]bool
+	// claim is this sidecar's claim on the registry (claims.go).
+	claim *claimer
+	// blankNeeded is set until the reporter has cleared, on this node, the
+	// reports of every registered table (blank.go). It is cleared by the first
+	// successful report connection, and by blankLocal at start.
+	blankNeeded bool
 
 	// primary half
 	dirty     bool
@@ -158,6 +171,8 @@ func newExtLink(log *slog.Logger, o options) *extLink {
 	e := &extLink{log: log, o: o, dirty: true,
 		schema:  env("QS_EXTENSION_SCHEMA", "quicksilver_mirror"),
 		blocked: map[string]bool{}, known: map[string]bool{}, reported: map[string]string{},
+		vouched: map[string]bool{}, blankNeeded: true,
+		claim: &claimer{log: log, node: o.slot, tables: o.tables},
 		jdCfg: map[string][]string{}, jdPub: map[string]map[string]bool{},
 		jdPend: map[string]map[string]bool{}, jdSent: map[joinKey]bool{},
 		nudge: make(chan struct{}, 1)}
@@ -237,6 +252,33 @@ func (e *extLink) say(why, msg string, args ...any) {
 }
 
 // ---- which tables must not be read here ---------------------------------------
+
+// unvouch starts an attempt with nothing vouched for. The caller clears the node's
+// reports in the same step (blankAttempt), so no report of the earlier attempt
+// can be read once this returns.
+func (e *extLink) unvouch() {
+	if e == nil {
+		return
+	}
+	e.mu.Lock()
+	e.vouched = map[string]bool{}
+	e.mu.Unlock()
+}
+
+// vouch records that the tables that are not halted are healthy in this process
+// and have been handed to the lake. Their reports may now be the lake's LSNs.
+func (e *extLink) vouch(tables map[string]*mirror.Table) {
+	if e == nil {
+		return
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	for q, t := range tables {
+		if t.Halted() == "" {
+			e.vouched[q] = true
+		}
+	}
+}
 
 // observe records which tables are halted on THIS node. Called by the pump every
 // tick and wherever a table halts, so the next report (at most one extTick
@@ -471,16 +513,21 @@ func (e *extLink) lsns() map[string]string {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	for q := range e.known {
+		if !e.vouched[q] {
+			// Not yet found healthy in this process: nothing is vouched for, and
+			// a report left by an earlier process or attempt must not stand.
+			out[q] = "0/0"
+			continue
+		}
 		st, ok := stats[q]
 		if ok && st.PublishedLSN == "" && st.Refused == "" && st.PublishedAt.IsZero() {
 			ok = false // submitted, and the publisher has not got to it yet
 		}
 		if !ok && !e.blocked[q] {
-			// Nothing is known yet: this process has just started and has
-			// not submitted the table. Whatever the last process reported
-			// stands (the lake is as it left it, and it reported 0/0 itself
-			// if the table was not to be read), rather than every restart
-			// of the sidecar taking every table off the mirror for a moment.
+			// Vouched, but the lake has not yet published anything for it in
+			// this process. The report stays where it is: 0/0 since the
+			// attempt began (unvouch), so nothing is read from the lake until
+			// the publisher says what it has published.
 			continue
 		}
 		if e.blocked[q] || st.Refused != "" || st.PublishedLSN == "" {
@@ -585,6 +632,27 @@ func (e *extLink) run(ctx context.Context) {
 				continue
 			}
 			conn, absentAt, last = c, time.Time{}, nil
+			if e.blankNeeded {
+				// The registered tables' reports, from before this process (blank.go).
+				// Until this succeeds the reporter does not send, so a failure is
+				// retried on the next connection and nothing is reported in between.
+				err := blankOn(ctx, conn, e.o.tables)
+				var pgErr *pgconn.PgError
+				switch {
+				case err == nil:
+					e.blankNeeded = false
+				case errors.As(err, &pgErr):
+					// The server refused (no shared memory: nothing to clear). Retrying
+					// would refuse again on every tick.
+					e.log.Warn("the local server refused to clear this node's reports", "err", err)
+					e.blankNeeded = false
+				default:
+					e.log.Warn("could not clear this node's reports of the registry; will retry", "err", err)
+					_ = conn.Close(context.WithoutCancel(ctx))
+					conn = nil
+					continue
+				}
+			}
 		}
 		schemas, names, lsns := make([]string, 0, len(now)), make([]string, 0, len(now)), make([]string, 0, len(now))
 		for q, lsn := range now {
@@ -983,6 +1051,9 @@ func (e *extLink) reconcile(ctx context.Context, conn *pgx.Conn, tables map[stri
 	if e == nil || e.off {
 		return
 	}
+	// This sidecar's claim on the tables it is configured for (claims.go), before
+	// any registration it might make: the janitor must see it first.
+	e.claim.heartbeat(ctx, conn)
 	e.observe(tables)
 	switch {
 	case e.dirty && time.Since(e.checkedAt) >= extRetry:

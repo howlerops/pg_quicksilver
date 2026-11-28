@@ -13,8 +13,8 @@ handshake over real mutual TLS, and against instance Pods built by
 CloudNativePG's own `specs.NewInstance`. What remains unverified is listed at
 the bottom, and it is now a short list.
 
-> **CloudNativePG 1.26 or newer is required**, and below it the failure is
-> silent rather than loud. 1.25 computes an instance Pod's expected spec without
+> **CloudNativePG 1.26 or newer is required.** Below 1.26 the failure is silent
+> rather than loud. 1.25 computes an instance Pod's expected spec without
 > consulting plugins, so the sidecar is missing from both sides of the
 > comparison that decides whether to roll a Pod — and `mode`, `freshnessSLO`,
 > `sidecarImage` and `tables` therefore never reach a running instance. A Pod
@@ -31,7 +31,7 @@ the bottom, and it is now a short list.
 - The pinned pg_duckdb is 1.2.2, which embeds DuckDB 2.0.1. `deploy/Dockerfile` and the `extension` job in `ci.yml` fetch that package. `deploy/duckdb-extensions.sh` takes its DuckDB version from the installed `libduckdb.so`, not from a pin.
 - There are two ways to get that pg_duckdb into the `postgres` image, chosen by the build argument `PG_DUCKDB_BUILD` in `deploy/Dockerfile`:
   - `package` (the default): the stock pg_duckdb 1.2.2 Debian package, nothing compiled. The mirror is readable by superusers only. A role that is not a superuser can read local files only if it holds both `pg_read_server_files` and `pg_write_server_files`, and holding both lets it read and write any file the server can.
-  - `source`: pg_duckdb v1.2.2 built in the image at `PG_DUCKDB_COMMIT`, with `bench/patches/pg_duckdb-1.2.2-allowed-directories.patch`. The mirror is readable by ordinary roles. A role that is a member of `duckdb.postgres_role` and of neither server-file role can read local files only under `duckdb.allowed_directories`. It cannot write anything, and it cannot read anything else, including through `..`, a symlink, HTTP or `ATTACH`. The settings it needs, in `postgresql.conf`:
+  - `source`: pg_duckdb v1.2.2 built in the image at `PG_DUCKDB_COMMIT`, with `bench/patches/pg_duckdb-1.2.2-allowed-directories.patch` and `bench/patches/pg_duckdb-1.2.2-duckdb-keywords.patch`. The mirror is readable by ordinary roles. A role that is a member of `duckdb.postgres_role` and of neither server-file role can read local files only under `duckdb.allowed_directories`. It cannot write anything, and it cannot read anything else, including through `..`, a symlink, HTTP or `ATTACH`. The settings it needs, in `postgresql.conf`:
     - `shared_preload_libraries = 'pg_duckdb'`
     - `duckdb.postgres_role = '<role>'`: a restart is needed to change it.
     - `duckdb.allowed_directories = '<dir>/'`: superuser only, comma-separated for several directories, trailing slash on each.
@@ -165,7 +165,7 @@ spec:
 | `credentialsSecret` | `<cluster>-superuser` | needs REPLICATION, SELECT, CREATE |
 | `slotName`, `publication` | `quicksilver_<cluster>` | `slotName` is a prefix: each Pod's slot is `<slotName>_<pod>` |
 | `mirrorPath` | `/var/lib/postgresql/data/quicksilver` | beside PGDATA, same PVC |
-| `sidecarImage` | `…-mirror:latest` | |
+| `sidecarImage` | `…-mirror:latest` | a mutable tag (`latest`, `dev`, no tag) is accepted and reported in `configWarnings`; pin a version tag or a digest. The chart pins one. |
 | `acknowledgeOLTPRegression` | `false` | required for `mode: takeover` |
 
 Defaults are written back into the Cluster by `MutateCluster`, so
@@ -217,6 +217,28 @@ happens then is what the operator does ask the plugin about:
   it. A running instance that is deleted is rebuilt without the mirror.
 - **Pod patches and updates** (role labels on failover and switchover) are never
   blocked by a configuration error, and never add the mirror.
+
+**Warnings** are a second list, `configWarnings` in the same status, and they do
+not make the configuration invalid: nothing that is only a warning stops a mirror.
+They are reported whether or not the configuration is valid:
+
+- `sidecarImage` with a mutable tag (`latest`, `dev`, no tag). Pods of one Cluster
+  can run different builds while it moves, and a restart can change the mirror
+  under you. Pin a version tag or a digest. The default is `:latest`, so a Cluster
+  that names no image is warned, not refused: refusing it would stop it getting a
+  mirror at all.
+- Routing settings that are missing while `ducklake` is on: `shared_preload_libraries`
+  without `pg_duckdb` before `pg_quicksilver`, and no `duckdb.extension_directory`.
+
+**Kubernetes Events for invalid configuration: not implemented, on purpose.** The
+plugin has no Kubernetes client, and an Event needs one. Creating Events in any
+namespace the Cluster is in needs a ClusterRole, because the plugin serves every
+namespace, and a `create` on `events` cluster-wide is a permission the plugin does
+not otherwise hold. client-go is a large addition to a binary whose job is to be
+small and to sit next to every database. The status is what the operator reads and
+what `kubectl get cluster` shows, and it is written on every reconcile, so an Event
+would only repeat it. Status is the supported surface; this stays that way until a
+user needs Events for alerting, and then it is a ClusterRole the chart documents.
 
 ---
 
@@ -492,6 +514,81 @@ verified list, the plan is expensive enough and the mirror has caught up, and
 from the heap otherwise ([docs/40](40-the-router-moves-inside.md)). The
 sidecar does its half by itself when it finds the extension installed.
 
+**The PostgreSQL settings are the Cluster's, not the plugin's.** The mirror needs
+some `postgresql.conf` settings. The plugin does not write them, and never did:
+
+- It used to implement CNPG-I `EnrichConfiguration`, the hook that writes
+  parameters into `postgresql.conf`. The instance manager calls that hook only for
+  plugins it can dial inside the instance Pod. It selects plugins by
+  `Cluster.GetInstanceEnabledPluginNames()`, which keeps only the plugins that
+  advertise `TYPE_INSTANCE_SIDECAR_INJECTION` (`api/v1/cluster_funcs.go:91`, the
+  same in 1.27.0 and 1.30.2), and dials them over the unix sockets in the Pod's
+  plugin directory (`internal/cmd/manager/instance/run/cmd.go:228`). This plugin is
+  a Deployment that the operator reaches over mTLS. It never advertised the
+  capability, so the instance manager never dialled it, and no enrichment ran on
+  any version. The kind run on 1.27.0 found it: `sync_replication_slots=off` on
+  the replicas, although the plugin's code said `on`.
+- Advertising the capability would not be the fix on its own. On 1.27.0 the
+  instance manager dials every plugin in that list, and a missing socket fails the
+  whole instance reconcile (`internal/management/controller/instance_controller.go`,
+  `WithPlugins` with the list as is). That reconcile includes promotion
+  (`instance_controller.go:1096` and `:1157`). A sidecar that is not yet listening
+  would block a failover. 1.30.2 intersects the list with the sockets present
+  (`instance_controller.go:154`), which is safe, but the floor is 1.26, so the plugin
+  does not rely on that.
+
+So the settings are **required in `spec.postgresql.parameters`**, and the plugin
+REPORTS in `.status.pluginStatus` (`configWarnings`) the ones that are missing or
+wrong. A `max_replication_slots` or `max_wal_senders` set below what the mirror needs
+is a configuration error instead, because the mirror cannot create its slots.
+
+| Setting | Value | Why | If missing |
+|---|---|---|---|
+| `sync_replication_slots` | `"on"` | a failover resumes the mirror's slots instead of re-snapshotting every table (docs/14, docs/15) | warning |
+| `hot_standby_feedback` | `"on"` | a vacuum on the primary does not cancel a query on a replica (docs/30 for the standby side) | warning |
+| `max_replication_slots` | at least instances + 4 | one slot per mirroring replica, plus headroom | warning if the default 32 is too small; **error** if set lower |
+| `max_wal_senders` | at least 2 × instances + 4 | each mirroring standby is a logical walsender, and each standby is a physical one | warning; PostgreSQL's default is 10, which covers six instances |
+| `wal_level` | `logical` | logical decoding | CloudNativePG's default is `logical` (1.26 and 1.30); a different value is an error |
+| `duckdb.allowed_directories` | `<mirrorPath>/` (with ducklake) | routing can attach the lake (docs/40) | warning; routing reads come from the heap, the mirror is unaffected |
+| `duckdb.extension_directory` | the operand image's directory (with ducklake) | pg_duckdb does not fetch extensions into PGDATA | warning |
+| `shared_preload_libraries` | `pg_duckdb`, then `pg_quicksilver` (with ducklake) | the extension calls pg_duckdb when it loads | warning |
+
+The mirror itself is never blocked by any of these. Only the one that is set below
+what the mirror needs stops it, and only for the Pods created after the change.
+
+`duckdb.postgres_role`, `quicksilver.attach_lakes_for_all` and the image's extension
+directory stay the user's for the reasons in `go/internal/plugin/routing.go`: the
+first is a security decision, the second a statement about the build, the third a
+fact about the image.
+
+The e2e checks that the server runs what the spec says, on every replica, from
+section 4 on (`enriched_settings_in_force` in `bench/scripts/cluster_e2e.sh`), and
+that the status names none of them. Section 6 checks the routing directory and the
+ordinary-role verdict.
+
+**What 1.26 silently lacked, before this was found.** The kind run on 1.26 passed
+with the plugin's enrichment absent, because no assertion read the settings:
+
+- `sync_replication_slots` was `off`. After a failover, every mirror was rebuilt
+  from a full snapshot. The switchover section checks that the mirrors match
+  afterwards, and a re-snapshot makes them match too, so it could not tell.
+- `hot_standby_feedback` was `off`, so a replica query could be cancelled by a
+  vacuum on the primary. Nothing asserted it.
+- `max_wal_senders` was PostgreSQL's 10. That covers six instances, and the plugin's
+  old `instances + 4` was short from seven.
+- `duckdb.allowed_directories` was not set, so routing never attached the lake on any
+  node. Section 6 then saw the heap answer and asserted the stock behaviour.
+
+**Floor.** CloudNativePG 1.26.0. The reason for it is the roll behaviour in docs/37:
+on 1.25 a change to a plugin parameter never reaches a running Pod. Nothing in the
+plugin needs a newer operator, because the plugin no longer depends on one.
+
+**The CI matrix.** `.github/workflows/cluster-e2e.yml` runs the whole cluster test on
+two CloudNativePG versions, each on its own kind cluster: the floor 1.26.0 and the
+newest 1.30 patch release, 1.30.2 (the newest version `go list -m -versions` lists
+through the proxy; there is no 1.31 at the time of writing). Both release manifests
+exist at `release-<minor>/releases/cnpg-<version>.yaml`.
+
 **The image.** The image the Cluster's `imageName` points at must contain
 
 | | |
@@ -748,6 +845,45 @@ overhead on top of it was not measured separately. The measurements here do not
 cover more than four tables, rows wider than 5 KB, or tables above about 180,000
 rows each. Run your
 own shape before you lower the limit.
+
+### Memory in each routed backend
+
+A backend that routes a statement to the mirror gets a DuckDB instance of its own,
+and that instance is what grows. Measured on pg_duckdb 1.2.2 (PostgreSQL 17.12),
+one backend per series: a 10,000-row DuckLake table (customers) and the 1,000,000-row
+orders mirror. Figures are RssAnon, in MB.
+
+- Before any routed statement a backend has about 4 MB. Once DuckDB has attached the
+  lake it has about 16 MB, and a routed statement brings it to about 30 MB.
+- The DuckDB instance grows with the statements it runs over an attached DuckLake,
+  routed or not. Unrouted DuckLake reads of one repeated text went from 16.6 to 52.0 MB
+  in 20,000 statements, and were still rising between 10,000 and 20,000. Routed GROUP BY
+  statements with varying literals went from 31.0 to 46.5 MB, flat over the last 10,000.
+  Routed point counts on orders stayed at 35 to 43 MB. DuckDB reading plain Parquet files
+  (no DuckLake) stayed at 17 to 19 MB.
+- The growth is live glibc heap, and it is there without the extension: a pg_duckdb-only
+  cluster, with the same lake attached and no pg_quicksilver loaded, grows the same way
+  under a malloc tracer. Most of it is DuckDB buffer-manager block registrations
+  (`BlockHandle`) and eviction-queue entries on DuckLake's read path. Its tracked size
+  grew 3.7 MB over 1,800 unrouted statements, which matches the RssAnon slope. It is not
+  bounded by `duckdb.memory_limit`.
+- `CALL duckdb.recycle_ddb();` returns most of it. One call took a backend from 36.3 to
+  22.7 MB in 17 ms. The next statement then pays the lake re-attach, about 0.25 s. With a
+  recycle every 4,000 statements, the routed GROUP BY workload stayed between 16.5 and
+  38.0 MB over 20,000 statements, where without it the same run reached 47.2 MB.
+- The extension cannot do this itself. pg_duckdb refuses `recycle_ddb()` inside a function
+  or a planner call ("cannot be executed from a function") and accepts it only as a
+  top-level `CALL`. So a backend's DuckDB instance is recycled only by the application,
+  or by a pooler that resets the connection, between statements and outside a
+  transaction block.
+
+Size each routed backend that has run a lake statement for about 40 MB of anonymous
+memory at its peak, on top of its ordinary per-connection memory, and do not count the
+backends' DuckDB memory as shared with each other. A pool that keeps many backends
+warm multiplies that figure by the number of backends. If the application can issue the
+`CALL` every few thousand routed statements, outside transactions, the peak stays near
+38 MB in the measured workload. These figures come from one pg_duckdb build and have
+not been measured on a newer pg_duckdb or DuckDB.
 
 ## Verifying the mirror
 
@@ -1088,6 +1224,74 @@ snapshot.
 
 ---
 
+## Slots, reports and the registry: what recovers without an operator
+
+Three things the sidecar does on its own, and the bounds on each. The code is in
+`go/cmd/qs-mirror`: `slotrecover.go`, `blank.go` and `claims.go`.
+
+**A slot that cannot be decoded.** The publication was dropped and created again
+after the slot's restart point, so the walsender fails with
+`publication "X" does not exist` (SQLSTATE 42704) on every attempt, and nothing
+confirms past it. Before this, the sidecar retried for good. Now, after three
+identical failures with `confirmed_flush_lsn` unchanged, it drops **this Pod's**
+slot (`QS_SLOT`, never another Pod's) and re-snapshots the tables, the same path it
+takes for a slot it has to create. The same applies to a slot PostgreSQL
+invalidated (`wal_status = lost`) and to one marked `conflicting`. The time of the
+last recovery is kept in `<QS_MIRROR_PATH>/.slot-recovery`. The same fault again
+within an hour of a recovery is **not** repeated: the Pod stays not ready with
+the reason in `/readyz`, and an operator must look at it. `quicksilver_slot_recoveries_total`
+counts the drops. The Pod is not ready while the fault is being recovered from,
+and for `30s` after the new stream starts (a decode failure on old WAL arrives
+after the first reads, so readiness is not cleared earlier).
+
+**A node's reports at start, and after promotion.** A node serves a registered
+table only on a real LSN from its report, and reports live in the local server's
+shared memory, which outlives a sidecar process. So the sidecar clears them first:
+at start, at the start of every attempt, and when its node is promoted. It reports
+`0/0` for every registered table, configured or not, and for a configured table
+until this process has handed it to the lake healthy. A table that halts while the
+sidecar starts is therefore never reported fresh. A sidecar that is killed
+(`kill -9`) leaves its last report in place: the node keeps serving that table
+from the lake only while the lag is within `quicksilver.max_lag` (strict freshness
+refuses it as the WAL moves). That is the documented meaning of `max_lag`, and it
+is why the cleanup below exists.
+
+**A promoted node does not depend on that cleanup.** The extension stamps each
+report with the role and timeline it was made under, and a report vouches for a
+mirror only for that role and timeline (docs/40, "Promotion"). So a standby's last
+report stops serving reads on the promoted node at the first read after the
+promotion, whatever `quicksilver.max_lag` says, even if the sidecar never managed
+to clear it. The sidecar's clearing still runs, so that `mirror_status()` shows the
+table unreadable.
+
+**`/readyz` after a stand-down.** A sidecar that stands down because its node is
+the primary reports `"ready": true` and the reason `stood down: this node is the
+primary; its mirror is not fed and is not read here`, with `"stood_down": true`
+and no `applied_lsn`, `head_lsn` or lag: the last applied position of a standby
+is not the mirror's position once nothing feeds it. It stays HTTP 200 on purpose.
+In `mode: takeover` the readiness probe is the readiness of the whole instance
+Pod, PostgreSQL included (`go/internal/plugin/lifecycle.go`), so a 503 here
+would take the primary out of its Services. The gauge `quicksilver_stood_down`
+shows the state to a dashboard, and it clears when the node is a standby again.
+
+**Registry rows of tables nobody mirrors.** Each sidecar keeps a claim row in
+`quicksilver.sidecar_claims` (one per pod, refreshed every 30s, under the registry
+lock): the tables it is configured for and when it last said so. The janitor on
+the primary (the sidecar that runs on the primary pod) removes a table's registry
+row, its join rows and its mirror view only when
+
+- no claim seen within `QS_CLAIM_GRACE` (default `1h`) names the table, and
+- it has stayed that way for `QS_CLAIM_GRACE` by the janitor's own clock.
+
+A table dropped from one sidecar's `QS_TABLES` stays registered while another
+sidecar claims it. A sidecar down for longer than the grace loses its claim, and
+its rows go; it registers them again when it returns. Removing a row is always
+safe for correctness: a node without a row reads from its heap. The sidecar needs
+the extension's `sidecar_claims` table (the current script creates it); against an
+older extension nothing is claimed and nothing is removed, and the sidecar says so
+once. On a node that is not the primary the janitor does not run, so a cluster
+needs a sidecar on its primary pod for this cleanup to happen.
+
 ## Join domains (EXPERIMENTAL, off by default)
 
 > EXPERIMENTAL. Off unless `QS_JOIN_DOMAINS` is set. With it unset the sidecar
@@ -1172,7 +1376,10 @@ Whether a join is compared on companions is decided by each node's report
 (`quicksilver.report_join_complete`), and a column that stops being complete on
 a node has its joins compared on the uuid columns on that node only.
 The registry is shared by every sidecar of one primary, so a sidecar never
-removes a row. A sidecar that does not mirror a join domain's table (its
+removes a row of another sidecar's table, and a table that every sidecar has
+stopped naming is removed by the janitor once it has been unclaimed for
+`QS_CLAIM_GRACE` (default 1h; see *Registry rows of tables nobody mirrors* below).
+A sidecar that does not mirror a join domain's table (its
 `QS_TABLES` leaves it out, or the table is gone on this node) leaves the row
 another sidecar relies on in place; the row is harmless configuration, because
 completeness is each node's own report. The view this sidecar makes is its own
@@ -1180,7 +1387,9 @@ and follows its own configuration.
 
 A domain removed from every sidecar leaves its rows behind until an operator
 removes them, once, on the primary, after the last sidecar has stopped naming the
-domain in `QS_JOIN_DOMAINS`:
+domain in `QS_JOIN_DOMAINS` (the janitor removes the join rows of a table it
+removes from the registry, so this is only needed for a domain whose tables are
+still registered):
 
 ```sql
 -- the rows of one domain

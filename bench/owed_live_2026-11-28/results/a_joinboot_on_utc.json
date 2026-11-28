@@ -1,0 +1,156 @@
+{
+ "label": "join_on_bootstrap",
+ "tz": "UTC",
+ "queries": {
+  "headline_revenue_by_month_join": {
+   "sql": "SELECT date_trunc('month', o.created_at) AS month, sum(o.amount) AS revenue, count(*) AS orders FROM public.orders o JOIN public.customers c ON c.id = o.customer_id GROUP BY 1",
+   "rows": 25,
+   "heap_md5": "c0328ed1816b11a833ec5fe7bb991bf6",
+   "routed_md5": "c0328ed1816b11a833ec5fe7bb991bf6",
+   "identical": true,
+   "routed_decision": "('mirror', 'routed', '1500018 rows from mirrored tables, over 50000', '[]', '6498226934245927946', '177072.06340625', '1500018')",
+   "heap": {
+    "ms": [
+     1002.05,
+     916.58,
+     901.57,
+     1112.03,
+     850.07
+    ],
+    "best": 850.07,
+    "median": 916.58
+   },
+   "auto": {
+    "ms": [
+     213.95,
+     162.42,
+     173.67,
+     154.4,
+     157.21
+    ],
+    "best": 154.4,
+    "median": 162.42
+   }
+  },
+  "count_by_status": {
+   "sql": "SELECT status, count(*) FROM public.orders GROUP BY status",
+   "rows": 6,
+   "heap_md5": "386b4a369e8e23cd34fbbe3e8d64c65a",
+   "routed_md5": "386b4a369e8e23cd34fbbe3e8d64c65a",
+   "identical": true,
+   "routed_decision": "('mirror', 'routed', '416674 rows from mirrored tables, over 50000', '[]', '6791387927531505026', '41887.79308772923', '416674')",
+   "heap": {
+    "ms": [
+     133.48,
+     112.3,
+     146.79,
+     149.59,
+     93.66
+    ],
+    "best": 93.66,
+    "median": 133.48
+   },
+   "auto": {
+    "ms": [
+     20.78,
+     25.92,
+     21.29,
+     43.26,
+     22.66
+    ],
+    "best": 20.78,
+    "median": 22.66
+   }
+  },
+  "sum_amount": {
+   "sql": "SELECT sum(amount) FROM public.orders",
+   "rows": 1,
+   "heap_md5": "40456ad067abdc8113c8ca9ed2a3c666",
+   "routed_md5": "40456ad067abdc8113c8ca9ed2a3c666",
+   "identical": true,
+   "routed_decision": "('mirror', 'routed', '416674 rows from mirrored tables, over 50000', '[]', '6302324451295974217', '40844.661666666674', '416674')",
+   "heap": {
+    "ms": [
+     166.47,
+     94.01,
+     105.96,
+     105.82,
+     101.36
+    ],
+    "best": 94.01,
+    "median": 105.82
+   },
+   "auto": {
+    "ms": [
+     18.09,
+     28.6,
+     20.78,
+     15.8,
+     11.76
+    ],
+    "best": 11.76,
+    "median": 18.09
+   }
+  },
+  "count_star": {
+   "sql": "SELECT count(*) FROM public.orders",
+   "rows": 1,
+   "heap_md5": "8155bc545f84d9652f1012ef2bdfb6eb",
+   "routed_md5": "8155bc545f84d9652f1012ef2bdfb6eb",
+   "identical": true,
+   "routed_decision": "('mirror', 'routed', '416674 rows from mirrored tables, over 50000', '[]', '-192764744902842871', '22189.166666666664', '416674')",
+   "heap": {
+    "ms": [
+     66.87,
+     71.23,
+     68.35,
+     66.3,
+     67.61
+    ],
+    "best": 66.3,
+    "median": 67.61
+   },
+   "auto": {
+    "ms": [
+     16.5,
+     10.71,
+     11.02,
+     9.34,
+     10.22
+    ],
+    "best": 9.34,
+    "median": 10.71
+   }
+  },
+  "one_month_filter": {
+   "sql": "SELECT count(*), sum(amount) FROM public.orders WHERE created_at >= timestamptz '2025-06-01 00:00:00+00' AND created_at < timestamptz '2025-07-01 00:00:00+00'",
+   "rows": 1,
+   "heap_md5": "2d7a61796a6d0f112d9a6a4e1a37eb0b",
+   "routed_md5": "2d7a61796a6d0f112d9a6a4e1a37eb0b",
+   "identical": true,
+   "routed_decision": "('heap', 'cheap on the heap', 'cost 2737 under 10000, 38656 rows from mirrored tables under 50000', '[]', '8221597574098128266', '2736.8375000000005', '38656')",
+   "heap": {
+    "ms": [
+     12.33,
+     20.89,
+     20.2,
+     11.53,
+     11.32
+    ],
+    "best": 11.32,
+    "median": 12.33
+   },
+   "auto": {
+    "ms": [
+     10.85,
+     10.93,
+     10.62,
+     10.65,
+     10.8
+    ],
+    "best": 10.62,
+    "median": 10.8
+   }
+  }
+ }
+}

@@ -138,6 +138,230 @@ and read before replay reaches S, live (the rule is unit-tested only); `recovery
 promoted node's refusal reason, live; the two-sidecar join case; the 10,000,000-order headline; the
 `fv_bench` suite.
 
+### 0.2 The owed live validations, 2026-11-28 (A: headline, B: kill -9 in a hold, C: promotion)
+
+Branch `claude/busy-wozniak-0k5d5n` at `4a99c0f`. pg_quicksilver built from that tree against the patched
+PostgreSQL 17.12 build (pg_duckdb 1.2.2), in a private prefix under `/var/lib/postgresql/w2e`; the installed
+`.so` predates `quicksilver.sidecar_claims`, so it was not used. **Machine caveat:** one shared host, 4 cores,
+15 GB; other agents' clusters ran throughout (1-minute load 2 to 15), and the disk had 0.8 to 4 GB free. Every
+number is a single run, or best and median of five warm runs where the table says so. Scripts and raw results:
+`bench/owed_live_2026-11-28/`.
+
+**A. The headline at 1,000,000 orders, not 10,000,000.** The 10M run did not fit the disk: 1M orders are
+352 MB (271 MB heap) with the bench layout, a standby doubles that, and the disk had under 4 GB free. The
+data is the bench layout (`load.sql`: uuid keys, jsonb payload, 730 days, 500,000 customers). Heap is
+`quicksilver.route = heap` on the standby, routed is `auto`; one warm-up, then five timed runs; every timed
+answer's full result set is an md5 of the sorted rows, compared with the heap's on the same state.
+
+| query | TZ | join domains | heap best / median (ms) | routed best / median (ms) | median ratio | answers |
+|---|---|---|---:|---:|---:|---|
+| revenue by month, join to customers (25 rows) | UTC | bootstrapped with them | 850.1 / 916.6 | 154.4 / 162.4 | 5.6x | identical |
+| revenue by month, join to customers | UTC | off | 696.8 / 719.8 | 178.7 / 213.1 | 3.4x | identical |
+| revenue by month, join to customers | America/New_York | bootstrapped with them | 626.9 / 891.2 | 196.3 / 231.8 | 3.9x | identical |
+| revenue by month, join to customers | America/New_York | off | 707.0 / 879.7 | 156.0 / 168.3 | 5.2x | identical |
+| `count by status` (6 groups) | UTC | bootstrapped with them | 93.7 / 133.5 | 20.8 / 22.7 | 5.9x | identical |
+| `sum(amount)` | UTC | bootstrapped with them | 94.0 / 105.8 | 11.8 / 18.1 | 5.9x | identical |
+| `count(*)` | UTC | bootstrapped with them | 66.3 / 67.6 | 9.3 / 10.7 | 6.3x | identical |
+| one month, `count(*)`, `sum(amount)` (June 2025) | UTC | bootstrapped with them | 11.3 / 12.3 | 10.6 / 10.8 | 1.1x | identical; the router chose the heap (cost 2,737 under 10,000) |
+| `count by status` (6 groups) | America/New_York | off | 71.6 / 78.6 | 10.1 / 10.4 | 7.6x | identical |
+| `sum(amount)` | America/New_York | off | 64.6 / 79.1 | 9.8 / 10.6 | 7.5x | identical |
+| `count(*)` | America/New_York | off | 41.4 / 54.1 | 4.9 / 6.2 | 8.7x | identical |
+
+The `count by status`, `sum` and `count(*)` routed through the mirror (`mirror, routed`) in every run; the
+headline did too (`Join keys: 1 rewritten to companions` on the join-domain cluster). The one-month filter
+is cheap on the heap, so the router keeps it there: in New York the routed statement took 10.2 ms against the
+heap's 5.4 ms, which is the router's own overhead on a statement it did not route. Heap times here are higher
+than §0.1's (455 ms then, 620 to 920 ms now) on the same query, because the host was loaded; compare ratios.
+
+Sidecar: bootstrap by snapshot took 7.8 s for the 1M orders and 2.2 s for the 500k customers (join domains on;
+4.8 s and 1.5 s with them off). Peak RSS (`VmHWM`) of the join-domain sidecar after its bootstrap and the lag
+runs: 303 MB. The mirror on disk: 141 MB for 1M orders and 500k customers.
+
+Commit to routed-visible (METRICS §0.1 method: one insert per commit every 50 ms for 60 s, routed count
+polled every 5 ms, replay gate on):
+
+| run | commits | median | p95 | max |
+|---|---:|---:|---:|---:|
+| join domains, bootstrapped with them | 1,105 | 25.9 ms | 58.3 ms | 118.8 ms |
+| join domains, added on restart (run 1) | 1,109 | 30.9 ms | 73.8 ms | 112.3 ms |
+| join domains, added on restart (run 2) | 1,117 | 32.4 ms | 80.4 ms | 125.5 ms |
+
+Some commits were seen up to 263 ms before the client's commit returned: the row was on the standby before
+the client woke. That is the client's scheduling on a loaded host, not an early read (both sides read the
+same monotonic clock); the medians are unaffected by it.
+
+Two findings from A. (1) **Join domains added to an existing mirror are not used.** On the cluster that had
+been bootstrapped without them, adding `QS_JOIN_DOMAINS` and restarting the sidecar gave no `Join keys` line
+in `EXPLAIN` and no change in the routed time; the mirror was not rewritten to companions. On a cluster
+bootstrapped with the registry from the start the rewrite is used. The join-domain columns are reported
+complete only once a complete manifest is published (`go/cmd/qs-mirror/extension.go`, the completeness
+comment), and an existing mirror's files have no companion column, so it is not complete. Not established
+whether it converges later; enable join domains at bootstrap.
+**Update (2026-11-28, measured live):** it now converges on its own. When a
+domain is attached to a table whose files lack the companion, `compactReason`
+returns `join-domain` (`mirror.JoinBackfillReason`, `go/internal/mirror/joinbackfill.go`)
+and the ordinary base rewrite runs in the background, one at a time, writing every
+live row with companions; the sidecar logs `join domain configured but incomplete`
+at start and `join domain backfill started ... "X of Y files"`. Completeness is
+still derived from the files, so an interrupted backfill is due again after a
+restart. Tests: `TestBackfillDueUntilEveryFileHasItsCompanion`,
+`TestBackfillNeverDueWithoutDomains`, `TestAbortedRewriteNameIsNotReusedBeforeItsCleanup`.
+
+**Live, 1,000,000 orders and 500,000 customers, a mirror built WITHOUT domains, then restarted with
+`QS_JOIN_DOMAINS`** (one shared 4-core host under other agents' load; single runs per phase;
+`scratchpad` runs `b_results.json` and `b_kill_results.json`):
+
+| | run 1 | run 2 (with kill -9 mid-backfill) |
+|---|---|---|
+| mirror without domains: sidecar ready / both tables MATCH | 7.3 s / +7.8 s | 7.8 s / +10.8 s |
+| peak RSS (VmHWM) without domains | 248 MB | 249 MB |
+| restart with domains: `join domain configured but incomplete` | yes, `0 of 1 files` per table | yes |
+| orders base rewrite (`why=join-domain`): 1,000,000 rows | 5.4 s | 6.6 s (killed at 3 s, resumed, completed) |
+| customers base rewrite: 500,000 rows | 1.6 s | 1.8 s |
+| `EXPLAIN` shows `Join keys: 1 rewritten to companions` | 7.1 s after start | 14.3 s after the restart |
+| peak RSS during the backfill | 305 MB | 330 MB |
+| both tables MATCH after the backfill | +7.9 s | +9.2 s |
+| headline, best / median, heap then routed, before -> after | 603.6/846.9 ms heap, 133.6/148.5 ms routed -> 616.0/711.8 ms heap, 118.5/159.2 ms routed | 645.3/678.4 ms heap, 180.5/217.5 ms routed -> 602.8/615.7 ms heap, 87.1/105.3 ms routed |
+| answer | identical (md5 `c0328ed1`) before and after | identical |
+
+The kill -9 landed in the orders rewrite (the log has `join domain backfill started` at 03.66 and no
+`compacted` line before the kill at 07); the restarted sidecar started the rewrite again from the old
+manifest and completed it. At 1M the routed headline speed-up from the join domains is not separable from
+the run-to-run spread (the two runs disagree in direction).
+
+**Live, 10,000,000 orders and 1,000,000 customers** (`c10m`: 10M orders over 24 months, 1M customers, the
+`setup_a` layout scaled up; the standby is a physical replica, so disk holds the cluster twice). Each mirror
+is bootstrapped with its own setting. Sidecar ready after 46.8 s without domains (mirror 1,042 MB, peak RSS
+312 MB, both tables MATCH 59 s after ready) and 50.9 s with domains (mirror 1,083 MB, peak RSS 441 MB, both
+MATCH 58 s after ready; `Join keys: 1 rewritten to companions`). Five warm runs, best and median, bench_a.py,
+every answer's md5 equal between heap and routed, and equal between the two mirrors:
+
+| query | TZ | join domains | heap best / median (ms) | routed best / median (ms) | heap ÷ routed (median) | answer |
+|---|---|---|---:|---:|---:|---|
+| revenue by month, join to customers | UTC | no | 4928.6 / 5477.2 | 1185.1 / 1271.1 | 4.3× | identical |
+| revenue by month, join to customers | UTC | yes | 5172.6 / 5828.8 | 438.7 / 457.4 | 12.7× | identical |
+| revenue by month, join to customers | America/New_York | no | 5622.4 / 5905.6 | 892.6 / 974.0 | 6.1× | identical |
+| revenue by month, join to customers | America/New_York | yes | 5227.5 / 5641.3 | 1256.2 / 1666.2 | 3.4× | identical |
+| GROUP BY status | UTC | no | 651.8 / 733.8 | 35.8 / 37.0 | 19.8× | identical |
+| GROUP BY status | UTC | yes | 584.0 / 610.5 | 37.0 / 39.6 | 15.4× | identical |
+| GROUP BY status | America/New_York | no | 592.2 / 641.5 | 38.7 / 39.8 | 16.1× | identical |
+| GROUP BY status | America/New_York | yes | 828.0 / 977.4 | 74.0 / 79.7 | 12.3× | identical |
+| sum(amount) | UTC | no | 419.6 / 455.7 | 23.7 / 24.6 | 18.5× | identical |
+| sum(amount) | UTC | yes | 523.3 / 526.6 | 26.5 / 30.7 | 17.2× | identical |
+| sum(amount) | America/New_York | no | 473.1 / 508.6 | 22.0 / 23.0 | 22.1× | identical |
+| sum(amount) | America/New_York | yes | 657.7 / 831.9 | 41.2 / 44.0 | 18.9× | identical |
+| count(*) | UTC | no | 239.7 / 260.2 | 8.0 / 9.3 | 28.1× | identical |
+| count(*) | UTC | yes | 222.1 / 238.2 | 5.2 / 5.4 | 43.9× | identical |
+| count(*) | America/New_York | no | 223.9 / 233.2 | 5.7 / 5.9 | 39.5× | identical |
+| count(*) | America/New_York | yes | 314.4 / 347.5 | 5.4 / 5.5 | 63.1× | identical |
+| one month (June 2025), count and sum | UTC | no | 61.0 / 67.7 | 15.8 / 16.5 | 4.1× | identical |
+| one month (June 2025), count and sum | UTC | yes | 60.2 / 64.9 | 14.8 / 16.5 | 3.9× | identical |
+| one month (June 2025), count and sum | America/New_York | no | 54.9 / 60.3 | 14.4 / 16.0 | 3.8× | identical |
+| one month (June 2025), count and sum | America/New_York | yes | 110.9 / 125.3 | 23.6 / 28.6 | 4.4× | identical |
+
+Read with care: single runs of five on a shared host. The UTC headline's routed median went from 1,271 ms to
+457 ms with the domains; under America/New_York the routed headline was slower with the domains (974 ms
+to 1,666 ms), and the heap numbers of that phase moved by up to 40% in the same direction, which points at
+machine load rather than the join. Whether the domains help the headline under New York is not established.
+The routed counts and sums do not use the domains and move with the load in the same way.
+
+**Killed in a replay hold (scenario A, 20 moments, 200k orders):** a replay hold with 10,000 small transactions
+(two tables) before the first kill, +600 per iteration, and one 150,000-row transaction in iteration 5,
+streamed by the walsender (`logical_decoding_work_mem` 64kB). Each iteration: a random 0.5 to 6 s into the
+hold, `kill -9` of the sidecar, restart still paused, resume, and verification of both tables after the
+mirror has applied what the primary had (`qs-verify` MATCH and the count, distinct and md5 of the ids on the
+primary and the standby heap). **0 mismatches in 20 iterations** (`a_results.json`). In iteration 5 the first
+`qs-verify` ran while the mirror was still applying the 150,000-row transaction and reported DIVERGED with
+the rows only in the source; the next run, five seconds later, was MATCH. The mirror was behind, and the final
+state matched. The loop's count checks cannot say whether a routed read in that window came from the
+mirror or the heap, so that window is not separately verified. A
+first run of the loop verified too early (it took a routed count as "caught up") and is kept as
+`a_results_run1_premature_verify.json`; its mismatch is that measurement's, not the sidecar's.
+(2) In the first attempt the second sidecar (2) In the first attempt the second sidecar
+of §C wrote its lake path into the registry of the shared cluster; the first standby's lake fell outside its
+`duckdb.allowed_directories` and it never routed. Two sidecars on one cluster must see the same mirror path
+(per-node mount namespaces, as `joinpods_setup.sh` does).
+
+**B. `kill -9` during a replay hold.** Standby replay paused with `pg_wal_replay_pause()`; the primary
+took commits to `orders` and `customers`, including one 100,000-row transaction (run 1 and 2) or a 160,000-row
+transaction streamed while the standby was paused (run 3, above the 50,000-change spool threshold). Routed
+and heap counts were sampled 8 times at each state; the verify is `qs-verify` on both tables and the md5
+of the primary's and the standby's rows.
+
+| run | kill | at the kill | after the restart (still paused) | after resume | verify |
+|---|---|---|---|---|---|
+| 1, hold | during the hold | `waiting for local replay: 243 change(s) held back`; routed = heap 8 of 8 | restart: `waiting ... 60 change(s)`; routed = heap 8 of 8 | caught up in 1.55 s | orders 1,201,465, customers 500,240: primary = standby = routed; `qs-verify` MATCH both |
+| 2, drain | after resume, at routed 1,201,525 of 1,301,585 | slot `confirmed_flush` 0/2EE69388, mirror applied 0/2ED552C8 (121 held) | `ready`, no hold | caught up in 0.27 s | orders 1,301,585; `qs-verify` MATCH both |
+| 3, spool | with a 160,000-row transaction open (4 chunks of 40,000) | 40 small commits held behind it | restart paused: routed = heap 8 of 8; the big transaction committed while paused: still waiting, routed = heap 8 of 8 | caught up in 0.87 s | orders 1,461,625; `qs-verify` MATCH both |
+
+Each run: no lost row, no duplicate (`count(*) = count(DISTINCT id)` on the primary, the standby heap and the
+routed read), no divergence. The first attempt (run 0) was killed by a harness bug after its kill and was
+restarted; the workload then reused customer names, so 120 orders were written twice in run 1. Both are
+harness faults; the comparison is against the primary, so they do not touch the result.
+
+Open point, not a verdict: in runs 2 and 3 the slot's `confirmed_flush` was past the mirror's applied LSN by more
+than the usual one byte while transactions were held (run 2: 1.9 MB past, with 121 held; run 3: 1.7 KB past,
+with 40 held). Run 1 had the usual one-byte offset. `changestream/spool.go` says a slot is not confirmed
+past a transaction still in a spool, and the spool is not durable. Zero loss was seen, so either the held
+changes were durable somewhere else (not checked here) or `applied_lsn` in `mirror_status` is not the position
+the slot follows. The owner of the sidecar should say which.
+
+**C. Promotion.** Three-node cluster, namespaced (each standby and its sidecar in its own mount namespace, with
+its mirror bind-mounted over the same path): primary P (6620), standby A (6621, sidecar health 6623), standby B
+(6622, sidecar health 6624); 300,000 orders, 50,000 customers, join domains on. A write every 20 ms throughout.
+Pollers on A from before the stop, every 5 ms: routed count, heap count and the routed statement's decision,
+once with `quicksilver.max_lag = 0` (default) and once with `1GB`. Timeline (seconds since the start of the
+run, run 2):
+
+| t (s) | event |
+|---:|---|
+| 16.46 | headline plan on A before the stop: heap (default freshness, writes in flight); P's fast stop begins |
+| 21.16 | P stopped (the fast stop took 4.7 s) |
+| 21.42 | `pg_ctl promote` on A done; A not in recovery at 21.44 |
+| 21.46 | strict poller's first answer on A after the promotion: heap, reason `this node is not a standby: its mirror is no longer fed` (QR_NOT_STANDBY) |
+| 22.17 | A's sidecar: `this node is the primary — standing down`; it dropped its slot `qs_a_qsint_a` 70 ms later |
+| 24.26 | physical slot `qsint_b2` created on A; B's sidecar was retrying P (connection refused) until stopped at 28.30 |
+| 29.18 | B's standby restarted in its namespace, streaming from A (`qsint_b2`) |
+| 29.68 | B's sidecar ready, 0.5 s after it started; log: `resuming from the existing slot slot=qs_b_qsint_b` (the failover slot A received via `sync_replication_slots`; no re-snapshot) |
+| 150.9 | writes stopped (5,316 writes in the run) |
+| 151.9 | B caught up (0.9 s) |
+| 152.8 | final: A heap = B heap = B routed = 305,316 rows, md5 `35aab906…`; `qs-verify` B MATCH |
+
+Freshness, with the 5 ms pollers. With the default `max_lag = 0`: the last mirror-routed answer on A came at
+20.37 s, before the stop; after the stop there were 1,082 polls and none was mirror-routed. The reason
+changed to QR_NOT_STANDBY 0.04 s after the promotion completed, 0.30 s after P stopped. So, under default
+freshness, no window in which A answered from a mirror that was no longer fed was seen at 5 ms resolution.
+B under writes: with `max_lag = 0` its 48 one-second samples were all heap (its mirror is never fresh while
+writes continue, so it routes only when writes pause); with `max_lag = 1GB` all 48 were mirror-routed. The
+sampling does not separate the mirror's lag from the time between the two reads, so no lag figure is given for B.
+B's answers therefore were not checked equal to A's heap during the two minutes; they were checked after the
+writes stopped (the final line above).
+
+What A's sidecar left behind: `/readyz` after the stand-down still said `ready: true`, `lag 2.6s`, with the
+last applied LSN (not `0/0`); `mirror_status()` reported `applied_lsn` NULL on the same node.
+
+**Bug (for the C owner): a promoted node serves stale routed answers when `quicksilver.max_lag` is above 0.**
+With `max_lag = 1GB`, A kept answering from its mirror after the promotion: 1,237 of the 1,246 polls after the
+stop were mirror-routed (decision `routed`), and the routed count froze at 300,610 while the heap grew to
+305,316 (4,706 rows behind at 150 s, still growing). The first namespaced run (100 ms polls) showed the same
+freeze: routed 300,602 against heap 305,327 at 147 s. Reproduce: `bench/owed_live_2026-11-28/c2_setup.sh`, then
+`POLL_S=0.005 python3 c_promote2.py out.json`; the `lag1gb` poller is the one that shows it, and
+`analyze_c2.py` prints the freeze.
+
+Cause: `qs_fresh` (`ext/pg_quicksilver/pg_quicksilver.c:3932-3985`) checks only the upper bound (`applied > now`)
+and the lag bound (`now - applied > max_lag bytes`). After the promotion the applied LSN is still the last one
+the sidecar reported, and under 1 GB of WAL the bound is not exceeded, so the mirror passes as fresh. The
+"no longer fed" reason is computed by `qs_stale_reason` (`:3920-3930`) only when `qs_fresh` fails, so with a
+byte budget it is never reached. At `max_lag = 0` the same check fails at once, which is why only the byte
+budget case shows. Suggested fix, for the C owner: a node that is not in recovery is not fresh whatever the
+bound (checked on the read path, not only in the registry), and/or the stood-down sidecar clears its report so
+that `qs_fresh` takes the "no applied LSN" branch. The disagreement between `mirror_status()` (applied NULL) and
+the read path (applied set) should be checked at the same time.
+
+Not done: the 10,000,000-order runs (disk, above); the join-domain completeness change on A (the headline did
+not route on A before the stop under default freshness with writes in flight, so there was no routed plan to
+change); the per-table `kill -9` with a third table (the sidecar mirrors `orders` and `customers` here).
+
 ### Part 1: functional scenarios
 
 Twelve tables on the standby's sidecar: `public.orders` (200k rows, then 10M in Part 3),

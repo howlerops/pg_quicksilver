@@ -104,7 +104,7 @@ log says why.
 
 ## Requirements
 
-- **CloudNativePG 1.26 or newer.** This is a hard floor, and below it the
+- **CloudNativePG 1.26 or newer.** This is the floor, and below it the
   failure is silent: 1.25 builds an instance Pod's expected spec without
   consulting plugins, so the injected sidecar is absent from both sides of the
   comparison that decides whether to replace a Pod. Changing `mode`,
@@ -212,6 +212,14 @@ is the whole Cluster with the reason for each line.
 - **The tag starts with `17`.** CloudNativePG reads the PostgreSQL version from
   the front of the image tag. If you retag the image for your own registry,
   keep that: `:0.0.4` would be read as PostgreSQL 0, and `:latest` is refused.
+- **The PostgreSQL settings are yours to set.** The plugin does not write
+  `postgresql.conf` parameters: the operator never asks it to. Set
+  `sync_replication_slots` and `hot_standby_feedback` to `"on"`, `max_wal_senders`
+  to at least 2 × instances + 4, and with `ducklake` also `duckdb.allowed_directories`
+  to the mirror directory with a trailing slash. `examples/cluster-shadow.yaml` and
+  `examples/cluster-routed.yaml` have them. `kubectl get cluster` shows
+  `configWarnings` for any that are missing or wrong (docs/16, "The PostgreSQL
+  settings").
 - **One volume.** The mirror is beside PGDATA at
   `/var/lib/postgresql/data/quicksilver` and the lake under it at
   `_ducklake`. The lake is hard links to the mirror's files, so it cannot be

@@ -438,6 +438,14 @@ script had `min`/`max` level at 128 ms on both sides: the thresholds are where
 the mirror starts to win on this host at 1M rows, and they are settings, not
 constants.
 
+### Memory per routed backend
+
+Each routed backend keeps a DuckDB instance, and that instance grows with the lake
+statements it runs (pg_duckdb 1.2.2, DuckLake reads; the router does not cause the
+growth, and an unrouted read grows the same way). The extension cannot recycle it, since
+pg_duckdb accepts `CALL duckdb.recycle_ddb()` only at top level. The numbers, the frames
+and the sizing advice are in docs/16, "Memory in each routed backend".
+
 ## Clients
 
 | | |
@@ -860,11 +868,23 @@ can serve. So:
 - **Two sidecars whose table lists differ** share the registry and never fight
   over it: each writes its own tables, and removes nothing it does not own.
 
-The one removal that is an operator's: a table that **leaves every sidecar's
-`QS_TABLES`** keeps its row, because the sidecars cannot tell it from a table
-another one still needs. Until its row goes, a node that still has a report for
-it may answer from that report, which is why the cleanup is not optional with a
-relaxed `max_lag`. Once no sidecar mirrors the table, on the primary:
+A table that **leaves every sidecar's `QS_TABLES`** is the one removal that is not
+the sidecar's own. Each sidecar keeps a claim row on the primary,
+`quicksilver.sidecar_claims` (one per pod: the tables it is configured for, and
+when it last heartbeated, every 30s, under the registry's advisory lock). The
+janitor on the primary removes a registry row, its join rows and its mirror view
+only when no claim seen within `QS_CLAIM_GRACE` (default 1h) names the table, and
+only once the table has stayed unclaimed for the grace by the janitor's own clock.
+So a table dropped from one sidecar's list stays while another sidecar claims it,
+and a sidecar that is down longer than the grace loses its claim and re-registers
+its tables when it returns. Until the row goes, a node that still has a report for
+the table may answer from it under a relaxed `max_lag`; once the row is gone the
+node reads the heap. The code is `go/cmd/qs-mirror/claims.go`; the decision
+is `registryOrphans` and `janitor.settle`.
+
+The sidecar runs the registry statements of its own for a table whose heap
+relation is gone (above). The statements an operator would run by hand, for a
+database whose sidecars predate the claims table, are:
 
 ```sql
 DELETE FROM quicksilver.mirrors WHERE mirror = 'quicksilver_mirror."public.orders"'::regclass;
@@ -872,9 +892,11 @@ DROP VIEW quicksilver_mirror."public.orders";
 DELETE FROM quicksilver.join_domains WHERE heap = 'public.orders'::regclass;  -- if it had join domain columns
 ```
 
-The sidecar runs the first two itself, and only when a configured table's heap
-relation is gone; the join rows of such a table stay, for the same reason as the
-others, and are removed by the third statement.
+Each sidecar also reports `0/0` on its own node for every registered table it is
+not configured for, at start, at the start of every attempt, and when its node is
+promoted (`go/cmd/qs-mirror/blank.go`). So a table dropped from a sidecar's list
+is not served by that node from the moment the sidecar restarts, whatever row
+remains.
 
 (under the default strict freshness a table whose lake stops advancing is refused
 as the WAL moves on, so the statement is needed for a relaxed `max_lag` only.)
@@ -941,7 +963,10 @@ transaction has already fixed its lake snapshot (qs_pin). The execution-time
 check on a kept plan does not wait, as before: a kept plan that is behind goes to
 the heap. If the wait gives up, the statement runs on the heap, as it always did.
 Bounded staleness is something a session asks for: `max_lag > 0` means "a
-routed read may be this much WAL behind the heap on this node". Separately, a
+routed read may be this much WAL behind the heap on this node". The bounds apply
+only to a report made in this node's current role and timeline: a report from
+another role (a standby's report on the promoted node, a primary's on a standby)
+is not vouched for whatever the bound is (see [Promotion](#promotion)). Separately, a
 transaction that has an xid is never routed, whatever
 `quicksilver.route_in_transaction` says: the mirror cannot show a transaction
 its own uncommitted writes.
@@ -1624,14 +1649,42 @@ unrelated DDL (`validate/real/hardening/churn_reads.py`), on the same build.
 A promoted standby is not fed. Its sidecar stands down and drops its replication
 slot, so the mirror stops at the position it had reached, and the node's own
 position moves on with every write. Routing on that node must stop for
-freshness, and it does: the freshness check comes before anything else. A
-mirror that was fed and is no longer fresh on a node that is not a standby is
-answered by the heap with the reason "this node is not a standby: its mirror is
-no longer fed", followed by the detail of the freshness failure (it was "mirror
-is not fresh enough" before, which told an operator nothing about the cause). A
-mirror nothing ever reported on keeps the
-generic reason. The reason is set by the code; the promoted-node refusal was not
-re-measured on a promoted node for this change.
+freshness, and it does, whatever `quicksilver.max_lag` says. A report
+**vouches for a mirror only for the role and timeline the node had when it was
+made**: each report is stamped (`QsLsnEntry.in_recovery`, `.tli`,
+`qs_report_vouches`) and every read compares the stamp with the node now. A
+promotion changes both (it also starts a new timeline), so the standby's last
+report is void on the promoted node at the first read after `RecoveryInProgress()`
+turns false, in every backend, including sessions opened before the promotion and
+transactions that pinned their mirrors before it (`qs_pin_recovery`,
+`qs_pin_tli`). The same holds the other way: a primary's report (the regression
+harness, `validate/real/primary_report.sh`) is not honoured on a standby that a
+rewind has made of the old primary; it is not vouched for until the sidecar
+reports again. Before this, the check compared the last applied LSN with "now"
+only against the byte bound, so a 1GB bound kept a promoted node answering from
+its mirror until 1GB of WAL had passed (a measured 130 s, 1,237 of 1,246 polls;
+`bench/owed_live_2026-11-28`, `c_promote2.py`). A mirror that was fed and is no
+longer vouched for on a node that is not a standby is answered by the heap with
+the reason "this node is not a standby: its mirror is no longer fed", followed by
+the detail (it was "mirror is not fresh enough" before). A mirror nothing ever
+reported on keeps the generic reason.
+
+The sidecar's stand-down (`blank.go`, which reports 0/0) is no longer what stops
+the routing: the extension does not depend on it. It is still done, so that
+`quicksilver.mirror_status()` shows the mirror as unreadable, and `/readyz`
+says "stood down" (see [docs/16](16-deploying.md)).
+
+**One accessor.** `quicksilver.mirror_status()` used to read the applied LSN twice,
+once for its `applied_lsn` column and once inside the freshness check, each under
+its own lock, and a report that landed between the two could show NULL and fresh
+(or a value and not fresh). It now calls `qs_applied_at` once, and the freshness
+check (`qs_fresh_at`) takes that LSN and state. The read path, the planner's wait,
+the execution-time check and the status function all use `qs_applied_at`, so an
+applied LSN is shown exactly when the mirror may be read. A transaction that has
+pinned its mirrors reads the pins, as before. The NULL the earlier note recorded
+on A was not reproduced in the two recorded runs (`c2_run1.json`, `c2_run2.json`
+show a value with `fresh` false); the cause is the one above, and the one
+accessor removes the second read.
 
 What could go wrong instead is the lake. The node's `duckdb.allowed_directories`
 is copied from the node it came from, and the lake's catalog is the one the
@@ -1654,26 +1707,57 @@ thing that keeps an ordinary role out of other mirrors.
 
 ## Keyword names
 
-pg_duckdb writes the mirror subquery in DuckDB's SQL, and the names in it come
-out as PostgreSQL's `quote_identifier` leaves them. PostgreSQL does not reserve
-AT, PIVOT, QUALIFY, ASOF, ANTI, SEMI, POSITIONAL, LAMBDA, DESCRIBE, SUMMARIZE,
-SHOW and about a hundred other words that DuckDB does, so `SELECT at, pivot FROM
-(...)` reaches DuckDB, which fails on it. The complete fix is in pg_duckdb's
-deparser (quote every identifier it writes). That change is not in this tree.
+pg_duckdb writes a mirror subquery's names in DuckDB's SQL, and it quotes them with
+PostgreSQL's `quote_identifier`. That leaves bare the words PostgreSQL does not reserve
+and DuckDB does: AT, PIVOT, QUALIFY, ASOF, ANTI, SEMI, POSITIONAL, LAMBDA, DESCRIBE,
+SUMMARIZE, SHOW and about a hundred more, so `SELECT at, pivot FROM (...)` reaches DuckDB,
+which fails on it or reads it as something else. The list is measured, not guessed: each
+of DuckDB 2.0.1's keywords (502 words in all categories) was tried as a bare name in the
+three shapes pg_duckdb writes (a select list with an alias, a cast with an alias, a
+qualified reference). 105 fail in one of them. COLUMNS, EXCLUDE and REPLACE are added,
+because DuckDB reads them as star modifiers. The same 108 words are in the extension
+(`qs_duck_keywords`) and in the patch (`pgduckdb_duckdb_keywords`).
 
-Here the extension does not mirror a table with such a name: a table named so,
-or one with a column named so, is answered by the heap, and its reason names the
-word. The list is measured, not guessed: each of DuckDB 2.0.1's keywords (502
-words in all categories) was tried as a bare name in the three shapes pg_duckdb
-writes (a select list with an alias, a cast with an alias, a qualified
-reference). 105 fail in one of them. COLUMNS, EXCLUDE and REPLACE are added,
-because DuckDB reads them as star modifiers. The whole table is the unit,
-because the mirror relation is a view of the table, and its definition is what
-pg_duckdb writes; one such column makes the view unplannable.
+There are two builds, and they differ here.
 
-`sql/keywords.sql` routes a table of ordinary names with mixed case and an
-embedded quote, and checks each keyword on its own, a keyword-named table, and
-`SELECT *`.
+**Stock pg_duckdb 1.2.2.** The extension does not mirror a table with such a name: a
+table named so, or one with a column named so, is answered by the heap, and its reason
+names the word. The mirror relation is a view of the whole table, and its definition is
+what pg_duckdb writes; one such column makes the view unplannable.
+
+**The patched build** (`bench/patches/pg_duckdb-1.2.2-duckdb-keywords.patch`, applied after
+the allowed-directories patch). Every name pg_duckdb writes for DuckDB is quoted when it is
+one of the 108 words: the vendored deparser's `quote_identifier` (select-list and alias
+names, CTE and table aliases, column references, the `r.name` form of a `duckdb.row`
+subscript) and `pgduckdb_quote_identifier` (the names the DDL and FROM paths write:
+function names, schema and relation names, `duckdb.row` reference names). The build
+defines the read-only GUC `duckdb.quotes_duckdb_keywords` (`on`), and the extension reads
+it with `GetConfigOption()`: with the marker present a table with such a name is mirrored
+and routed like any other; without it the refusal above stands. The extension's keyword
+list is the same 108 words, so the two cannot drift apart without a test failing:
+`sql/keywords.sql` runs with the 108-column table on both builds, against
+`expected/keywords.out` (stock) and `expected/keywords_1.out` (patched).
+
+Where names reach DuckDB unquoted in the stock build, for the record:
+
+- `src/vendor/pg_ruleutils_17.c` (`quote_identifier`, and through it `get_rule_expr`,
+  `get_target_list`, `generate_relation_name`): every identifier of a query's SQL.
+- `src/pgduckdb_ruleutils.cpp` `pgduckdb_strip_first_subscript` (`extval`, the `r.name` of a
+  `duckdb.row` subscript) and `pgduckdb_write_row_refname` (the `duckdb.row` reference):
+  PostgreSQL's `quote_identifier`, which does not know DuckDB's words.
+- `pgduckdb_relation_name`, `pgduckdb_db_and_schema_string`, `pgduckdb_function_name`
+  (the same file): schema, relation and function names.
+- The sidecar's view (`go/cmd/qs-mirror/extension.go`, `extViewSQL`) already quotes every
+  name it writes (`extQuote`), so the mirror view is created on both builds; what the
+  stock build cannot do is plan a statement over it.
+- The test fixtures' own `duckdb.query` text is the test's: its names must be quoted too.
+
+A limit that is not the keyword refusal: `quicksilver.allowlist` (the table described under the registry above) still
+decides which constructs route. An operator outside the list, a CTE, and `date_trunc` on
+`timestamp` are answered by the heap whatever the names are.
+
+`sql/keywords.sql` routes a table of ordinary names with mixed case and an embedded
+quote, and checks each keyword on its own, a keyword-named table, and `SELECT *`.
 
 ## Join aliases
 
@@ -1740,3 +1824,53 @@ qs_registry_lockable, qs_decide):
   validation of this is in the section on the registry digest below.
 
 A heap-only reader takes no lock on the view and makes no cycle.
+
+### Cached routed plans
+
+A statement with no parameters is routed from a generic plan: the plan cache
+keeps it and a later transaction reuses it without locking the mirror view. A
+statement with parameters is never routed from a generic plan (the heap's plan
+is kept there, `prepared.sql`), so the cached routed plans are the parameterless
+ones. What protects them, and the evidence (`sql/cachedplan.sql` on the
+primary; `validate/real/hardening/cached_plan.py` and `cached_plan_lake.py`):
+
+- **The view's change invalidates the plan.** The view's OID is in the plan's
+  `relationOids`. `CREATE OR REPLACE VIEW` with the same columns: the next EXECUTE
+  is planned again and returns the new view's rows. A column of another type, or
+  `DROP VIEW`: the next EXECUTE is planned again and answers from the heap, with
+  "reads a relation with no usable mirror". A view that is created again answers
+  from the heap until it is registered again (a view of the same name is a
+  different relation to the registry).
+- **A change during a running EXECUTE does not reach it.** The plan's DuckDB text
+  is fixed when it is made and does not name the view, so a running statement
+  finishes with the answer it started with. A `CREATE OR REPLACE`, a `DROP VIEW`,
+  or a retyping of the view that lands while a 3M-row routed scan is running
+  returned the old mirror's rows, whole, in every run (50 each on the primary and
+  on the standby). No view lock is taken for the reuse, and none is needed for that.
+- **The same DDL on a standby** arrives by replay; the next EXECUTE there gives the
+  same answers as on the primary (`cached_plan.py`, the sequential part).
+- **The session is checked at the plan's start.** `qs_begin_scan` checks the route
+  mode (`quicksilver.route = heap` answers from the heap), the role (a role without
+  privilege on the heap table gets "permission denied", as the heap would), and the
+  freshness of the mirror (`qs_gate`): with `quicksilver.min_applied_lsn` above the
+  mirror's position the cached plan answers from the heap, and it answers from the
+  mirror again when the setting is reset. A registry change plans the statement
+  again, and so does not test this path; `min_applied_lsn` does.
+- **A change in the data under the view, with the view unchanged.** A mirror whose
+  source no longer has a column it reads falls back to the heap ("mirror failed at
+  execution"), with the heap's rows. On the sidecar's lake: inserts and deletes
+  applied by the sidecar, and an `ADD COLUMN` and a `DROP COLUMN`, were answered
+  by the cached plan with the heap's rows (`cached_plan_lake.py`), and an EXECUTE
+  started during the `ADD COLUMN` did not fail.
+- **A plan made while the mirror is behind is the heap's.** The planner gates the
+  freshness of a statement it is making (`qs_decide`), and a plan made in a stale
+  moment is the heap's plan, which stays cached until something invalidates it.
+  This answers correctly, but it does not return to the mirror by itself. It was
+  observed after a registry change made the statement be planned again while the
+  mirror was behind; it was not changed.
+- **TimeZone** for date_trunc: `sql/datetrunc.sql` prepares the statement and runs
+  it across TimeZone changes; it passes in the suite.
+
+Not covered: a promotion of the standby while a cached routed plan is held (the
+freshness gate above is what the promotion section relies on; it was not run
+through a promotion here), and a DuckLake rebuild (REBUILD) under a cached plan.

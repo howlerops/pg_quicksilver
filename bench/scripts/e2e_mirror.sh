@@ -12,8 +12,11 @@
 # A section that cannot run exits 2 as INCOMPLETE. It must never report success.
 set -uo pipefail
 
-PG=/usr/lib/postgresql/17/bin
-BASE=/var/lib/postgresql/qs17
+PG=${QS_E2E_PG:-/usr/lib/postgresql/17/bin}
+# QS_E2E_BASE, QS_E2E_PPORT, QS_E2E_SPORT, QS_E2E_HPORT and QS_E2E_BIN let a run
+# use its own directory, ports and binaries (the defaults are the CI values).
+PP=${QS_E2E_PPORT:-5443}; SP=${QS_E2E_SPORT:-5444}; BIN=${QS_E2E_BIN:-/tmp}
+BASE=${QS_E2E_BASE:-/var/lib/postgresql/qs17}
 PRIMARY=$BASE/primary
 STANDBY=$BASE/standby
 MIRROR=$BASE/e2e-mirror
@@ -26,7 +29,7 @@ GO=$(cd "$(dirname "$0")/../../go" && pwd)
 source "$(dirname "$0")/lib_dropdb.sh"
 source "$(dirname "$0")/lib_lsn.sh"
 source "$(dirname "$0")/lib_syncslots.sh"
-HEALTH=127.0.0.1:9199
+HEALTH=127.0.0.1:${QS_E2E_HPORT:-9199}
 DB=app
 source "$(dirname "$0")/lib_slotname.sh"
 SLOT=$(qs_pod_slot qs_e2e e2e-2)   # what the sidecar derives from QS_SLOT and QS_POD_NAME
@@ -43,8 +46,8 @@ cleanup() {
   # outlives the process. Leaving it set pointed every later run at a slot only
   # this script creates, which stalls a failover slot silently — see
   # lib_syncslots.sh. Both servers, because e2e promotes the standby.
-  qs_clear_sync_slots 5443
-  qs_clear_sync_slots 5444
+  qs_clear_sync_slots $PP
+  qs_clear_sync_slots $SP
   return 0
 }
 trap cleanup EXIT
@@ -56,10 +59,10 @@ start_sidecar() {
   su postgres -c "QS_CLUSTER=e2e QS_MODE=shadow QS_INGEST=logical \
     QS_TABLES=$2 QS_SLOT=qs_e2e QS_PUBLICATION=qs_e2e \
     QS_MIRROR_PATH=$MIRROR QS_FRESHNESS_SLO=15s \
-    QS_PRIMARY_HOST=localhost QS_PRIMARY_PORT=5443 \
-    QS_LOCAL_SOCKET_DIR=/tmp QS_LOCAL_PORT=5444 \
+    QS_PRIMARY_HOST=localhost QS_PRIMARY_PORT=$PP \
+    QS_LOCAL_SOCKET_DIR=/tmp QS_LOCAL_PORT=$SP \
     QS_DATABASE=$DB QS_PGUSER=postgres QS_POD_NAME=e2e-2 \
-    QS_HEALTH_ADDR=$HEALTH /tmp/qs-mirror" >> "$1" 2>&1 &
+    QS_HEALTH_ADDR=$HEALTH $BIN/qs-mirror" >> "$1" 2>&1 &
   MIRROR_PID=$!
 }
 
@@ -104,10 +107,10 @@ wait_applied() {
   # and not others — and an UPDATE matching no row writes no WAL, which is a
   # marker that can never be crossed.
   local touch="UPDATE events SET amount = amount WHERE id = (SELECT max(id) FROM events)"
-  psq 5443 "$touch" >/dev/null 2>&1
+  psq $PP "$touch" >/dev/null 2>&1
   local mark
-  mark=$(psq 5443 "SELECT pg_current_wal_lsn()::text" postgres)
-  psq 5443 "$touch" >/dev/null 2>&1
+  mark=$(psq $PP "SELECT pg_current_wal_lsn()::text" postgres)
+  psq $PP "$touch" >/dev/null 2>&1
   [ -n "$mark" ] || { sleep 8; return 0; }   # no marker, no better than before
 
   local deadline=$(( ${1:-60} * 10 )) at behind
@@ -125,7 +128,7 @@ import json;print(json.load(open('$st')).get('applied_lsn',''))" 2>/dev/null)
   return 1
 }
 
-say "0. primary on 5443, listening on localhost"
+say "0. primary on $PP, listening on localhost"
 su postgres -c "$PG/pg_ctl -D $STANDBY stop -m immediate" >/dev/null 2>&1
 su postgres -c "$PG/pg_ctl -D $PRIMARY stop -m immediate"  >/dev/null 2>&1
 grep -q "^listen_addresses = 'localhost'" $PRIMARY/postgresql.conf \
@@ -134,18 +137,18 @@ grep -q "^listen_addresses = 'localhost'" $PRIMARY/postgresql.conf \
 rm -f $PRIMARY/postgresql.auto.conf; touch $PRIMARY/postgresql.auto.conf
 chown postgres:postgres $PRIMARY/postgresql.auto.conf
 su postgres -c "$PG/pg_ctl -D $PRIMARY -l $BASE/primary.log -w start" >/dev/null || skip "primary would not start"
-psq 5443 "SELECT 1" postgres >/dev/null || skip "primary not reachable"
+psq $PP "SELECT 1" postgres >/dev/null || skip "primary not reachable"
 
-qs_drop_database 5443 "$DB"
-psq 5443 "CREATE DATABASE $DB" postgres >/dev/null
-psq 5443 "CREATE TABLE events(id bigint primary key, sku text, amount numeric(12,2), ts timestamptz)" >/dev/null
-psq 5443 "INSERT INTO events SELECT g,'SKU-'||g,(g%997)/7.0,now() FROM generate_series(1,20000) g" >/dev/null
-echo "  seeded $(psq 5443 'SELECT count(*) FROM events') rows BEFORE the mirror exists"
+qs_drop_database $PP "$DB"
+psq $PP "CREATE DATABASE $DB" postgres >/dev/null
+psq $PP "CREATE TABLE events(id bigint primary key, sku text, amount numeric(12,2), ts timestamptz)" >/dev/null
+psq $PP "INSERT INTO events SELECT g,'SKU-'||g,(g%997)/7.0,now() FROM generate_series(1,20000) g" >/dev/null
+echo "  seeded $(psq $PP 'SELECT count(*) FROM events') rows BEFORE the mirror exists"
 
 say "1. standby with sync_replication_slots"
-psq 5443 "SELECT pg_create_physical_replication_slot('e2e_standby', true)" postgres >/dev/null
-psq 5443 "ALTER SYSTEM SET synchronized_standby_slots = 'e2e_standby'" postgres >/dev/null
-psq 5443 "SELECT pg_reload_conf()" postgres >/dev/null
+psq $PP "SELECT pg_create_physical_replication_slot('e2e_standby', true)" postgres >/dev/null
+psq $PP "ALTER SYSTEM SET synchronized_standby_slots = 'e2e_standby'" postgres >/dev/null
+psq $PP "SELECT pg_reload_conf()" postgres >/dev/null
 rm -rf $STANDBY
 # `-c fast`, which every other script in this directory already passes and this
 # one did not. Without it pg_basebackup waits for a SPREAD checkpoint — throttled
@@ -158,19 +161,19 @@ rm -rf $STANDBY
 # line turned a four-minute section into a four-minute WAIT, which reads as a
 # hung test and was twice mistaken for one.
 su postgres -c "$PG/pg_basebackup -D $STANDBY -R -X stream -S e2e_standby -c fast \
-  -d 'host=/tmp port=5443 user=postgres dbname=postgres'" || skip "pg_basebackup failed"
-{ echo "port = 5444"; echo "sync_replication_slots = on"; echo "hot_standby_feedback = on"; } \
+  -d 'host=/tmp port=$PP user=postgres dbname=postgres'" || skip "pg_basebackup failed"
+{ echo "port = $SP"; echo "sync_replication_slots = on"; echo "hot_standby_feedback = on"; } \
   >> $STANDBY/postgresql.auto.conf
 su postgres -c "$PG/pg_ctl -D $STANDBY -l $BASE/standby.log -w start" >/dev/null || skip "standby would not start"
 sleep 2
-[ "$(psq 5444 'SELECT pg_is_in_recovery()' postgres)" = "t" ] || skip "standby is not in recovery"
+[ "$(psq $SP 'SELECT pg_is_in_recovery()' postgres)" = "t" ] || skip "standby is not in recovery"
 echo "  standby up and in recovery"
 
 say "2. the sidecar, configured only by the plugin's environment"
 rm -rf $MIRROR; install -d -o postgres -g postgres $MIRROR
-cd $GO && go build -o /tmp/qs-mirror ./cmd/qs-mirror || skip "build failed"
-go build -o /tmp/qs-verify ./cmd/qs-verify || skip "build failed"
-chmod 755 /tmp/qs-mirror /tmp/qs-verify
+cd $GO && go build -o $BIN/qs-mirror ./cmd/qs-mirror || skip "build failed"
+go build -o $BIN/qs-verify ./cmd/qs-verify || skip "build failed"
+chmod 755 $BIN/qs-mirror $BIN/qs-verify
 
 start_sidecar $BASE/mirror.log public.events
 
@@ -193,23 +196,23 @@ grep -q "snapshot complete" $BASE/mirror.log \
   || bad "no snapshot was taken, yet 20000 rows predate the slot"
 
 say "4. live changes reach the mirror"
-psq 5443 "INSERT INTO events SELECT g,'NEW-'||g,(g%31)/3.0,now() FROM generate_series(100001,102000) g" >/dev/null
-psq 5443 "UPDATE events SET amount = amount + 1 WHERE id % 1000 = 0" >/dev/null
-psq 5443 "DELETE FROM events WHERE id BETWEEN 1 AND 500" >/dev/null
+psq $PP "INSERT INTO events SELECT g,'NEW-'||g,(g%31)/3.0,now() FROM generate_series(100001,102000) g" >/dev/null
+psq $PP "UPDATE events SET amount = amount + 1 WHERE id % 1000 = 0" >/dev/null
+psq $PP "DELETE FROM events WHERE id BETWEEN 1 AND 500" >/dev/null
 wait_applied 60 || bad "the mirror never caught up with the live DML"
-/tmp/qs-verify -dsn "postgres://postgres@localhost:5443/$DB" -mirror $MIRROR -table public.events \
+$BIN/qs-verify -dsn "postgres://postgres@localhost:$PP/$DB" -mirror $MIRROR -table public.events \
   || bad "mirror diverged from the source after live DML"
 
 say "5. DDL crosses as a barrier, not as corruption"
-psq 5443 "ALTER TABLE events ADD COLUMN channel text DEFAULT 'web'" >/dev/null
-psq 5443 "INSERT INTO events VALUES (200001,'POST-DDL',1.00,now(),'mobile')" >/dev/null
+psq $PP "ALTER TABLE events ADD COLUMN channel text DEFAULT 'web'" >/dev/null
+psq $PP "INSERT INTO events VALUES (200001,'POST-DDL',1.00,now(),'mobile')" >/dev/null
 wait_applied 60 || bad "the mirror never caught up with the post-DDL insert"
 if grep -q "schema evolved at a DDL barrier" $BASE/mirror.log; then
   echo "  barrier observed: $(grep -m1 'schema evolved' $BASE/mirror.log | sed 's/.*change=//')"
 else
   bad "no DDL barrier was observed; post-DDL rows would carry the pre-DDL column list"
 fi
-/tmp/qs-verify -dsn "postgres://postgres@localhost:5443/$DB" -mirror $MIRROR -table public.events \
+$BIN/qs-verify -dsn "postgres://postgres@localhost:$PP/$DB" -mirror $MIRROR -table public.events \
   || bad "mirror diverged after ADD COLUMN"
 
 say "5b. a backfill the stream cannot carry HALTS the mirror, durably"
@@ -218,8 +221,8 @@ say "5b. a backfill the stream cannot carry HALTS the mirror, durably"
 # silent corruption, so the mirror must stop — and must still be stopped after a
 # restart, since a restart re-reads the catalog and would otherwise accept the
 # new column as if it had always been there.
-psq 5443 "ALTER TABLE events ADD COLUMN nonce double precision DEFAULT random()" >/dev/null
-psq 5443 "INSERT INTO events VALUES (200002,'AFTER-REWRITE',1.00,now(),'web',0.5)" >/dev/null
+psq $PP "ALTER TABLE events ADD COLUMN nonce double precision DEFAULT random()" >/dev/null
+psq $PP "INSERT INTO events VALUES (200002,'AFTER-REWRITE',1.00,now(),'web',0.5)" >/dev/null
 sleep 10
 if grep -q "backfilled by a table rewrite" $BASE/mirror.log; then
   echo "  halted: $(grep -m1 'backfilled by a table rewrite' $BASE/mirror.log | sed 's/.*err=//' | cut -c1-110)"
@@ -238,18 +241,18 @@ curl -sf "http://$HEALTH/readyz" >/dev/null \
 say "5c. recovery: clearing the halt rebuilds from a fresh snapshot"
 kill $MIRROR_PID 2>/dev/null; wait $MIRROR_PID 2>/dev/null
 rm -rf $MIRROR; install -d -o postgres -g postgres $MIRROR
-psq 5443 "SELECT pg_drop_replication_slot('$SLOT') FROM pg_replication_slots WHERE slot_name='$SLOT'" >/dev/null
+psq $PP "SELECT pg_drop_replication_slot('$SLOT') FROM pg_replication_slots WHERE slot_name='$SLOT'" >/dev/null
 su postgres -c "QS_CLUSTER=e2e QS_MODE=shadow QS_INGEST=logical \
   QS_TABLES=public.events QS_SLOT=qs_e2e QS_PUBLICATION=qs_e2e \
   QS_MIRROR_PATH=$MIRROR QS_FRESHNESS_SLO=15s \
-  QS_PRIMARY_HOST=localhost QS_PRIMARY_PORT=5443 \
-  QS_LOCAL_SOCKET_DIR=/tmp QS_LOCAL_PORT=5444 \
+  QS_PRIMARY_HOST=localhost QS_PRIMARY_PORT=$PP \
+  QS_LOCAL_SOCKET_DIR=/tmp QS_LOCAL_PORT=$SP \
   QS_DATABASE=$DB QS_PGUSER=postgres QS_POD_NAME=e2e-2 \
-  QS_HEALTH_ADDR=$HEALTH /tmp/qs-mirror" >> $BASE/mirror.log 2>&1 &
+  QS_HEALTH_ADDR=$HEALTH $BIN/qs-mirror" >> $BASE/mirror.log 2>&1 &
 MIRROR_PID=$!
 for _ in $(seq 90); do curl -sf "http://$HEALTH/readyz" >/dev/null 2>&1 && break; sleep 1; done
 curl -sf "http://$HEALTH/readyz" >/dev/null || { tail -20 $BASE/mirror.log; bad "rebuilt mirror never became ready"; }
-/tmp/qs-verify -dsn "postgres://postgres@localhost:5443/$DB" -mirror $MIRROR -table public.events \
+$BIN/qs-verify -dsn "postgres://postgres@localhost:$PP/$DB" -mirror $MIRROR -table public.events \
   || bad "the rebuilt mirror does not match the source"
 
 say "6. readiness reflects freshness, and idle is not stale"
@@ -263,7 +266,7 @@ say "6b. the sidecar is killed and restarts: it RESUMES, it does not re-snapshot
 # The failure this guards against is expensive rather than wrong: a sidecar that
 # re-snapshots on every restart turns a pod reschedule into a full table read,
 # and on a large table that is minutes of unreadiness per restart.
-psq 5443 "INSERT INTO events(id,sku,amount,ts,channel) SELECT g,'PRE-KILL-'||g,1.0,now(),'web' FROM generate_series(300001,300500) g" >/dev/null
+psq $PP "INSERT INTO events(id,sku,amount,ts,channel) SELECT g,'PRE-KILL-'||g,1.0,now(),'web' FROM generate_series(300001,300500) g" >/dev/null
 sleep 6
 before_snapshots=$(grep -c "snapshot complete" $BASE/mirror.log)
 applied_before=$(python3 -c "
@@ -272,7 +275,7 @@ import json;print(json.load(open('$MIRROR/public.events/state.json'))['applied_l
 pkill -x qs-mirror; sleep 2
 # Changes committed while NOTHING is running have to be picked up on restart.
 # The slot holds them; the mirror has to ask.
-psq 5443 "INSERT INTO events(id,sku,amount,ts,channel) SELECT g,'WHILE-DOWN-'||g,2.0,now(),'web' FROM generate_series(300501,301000) g" >/dev/null
+psq $PP "INSERT INTO events(id,sku,amount,ts,channel) SELECT g,'WHILE-DOWN-'||g,2.0,now(),'web' FROM generate_series(300501,301000) g" >/dev/null
 
 start_sidecar $BASE/mirror.log public.events
 wait_ready 90 || { tail -20 $BASE/mirror.log; bad "the sidecar did not come back ready"; }
@@ -283,7 +286,7 @@ else
   echo "  resumed from applied_lsn $applied_before without a new snapshot"
 fi
 wait_applied 60 || bad "the mirror never caught up after the restart"
-/tmp/qs-verify -dsn "postgres://postgres@localhost:5443/$DB" -mirror $MIRROR -table public.events \
+$BIN/qs-verify -dsn "postgres://postgres@localhost:$PP/$DB" -mirror $MIRROR -table public.events \
   || bad "rows committed while the sidecar was down are missing from the mirror"
 
 say "6c. the key index is rebuilt from the base file, not from a cache"
@@ -298,9 +301,9 @@ idx_before=$(ls $MIRROR/public.events/index/*.idx.json 2>/dev/null | wc -l)
 rm -f $MIRROR/public.events/index/*.idx.json
 start_sidecar $BASE/mirror.log public.events
 wait_ready 90 || { tail -20 $BASE/mirror.log; bad "no readiness after the index was removed"; }
-psq 5443 "UPDATE events SET amount = amount + 100 WHERE id BETWEEN 300001 AND 300400" >/dev/null
+psq $PP "UPDATE events SET amount = amount + 100 WHERE id BETWEEN 300001 AND 300400" >/dev/null
 wait_applied 90 || bad "the mirror never caught up after the index was removed"
-if /tmp/qs-verify -dsn "postgres://postgres@localhost:5443/$DB" -mirror $MIRROR -table public.events; then
+if $BIN/qs-verify -dsn "postgres://postgres@localhost:$PP/$DB" -mirror $MIRROR -table public.events; then
   # Say what was actually true. The first run of this printed "0 index file(s)
   # deleted" and called it a pass, which reads as though a cache had been
   # cleared when there was none to clear — the snapshot no longer writes one.
@@ -327,20 +330,20 @@ say "6d. the PUBLISHED VIEW answers what the source answers"
 # qs-query publishes through an engine that knows nothing about the layout, and
 # compares against PostgreSQL — the deletion vectors, the partial deltas and the
 # manifest all have to be right for the two to agree.
-cd $GO && go build -o /tmp/qs-query ./cmd/qs-query && chmod 755 /tmp/qs-query
+cd $GO && go build -o $BIN/qs-query ./cmd/qs-query && chmod 755 $BIN/qs-query
 if python3 -c "import duckdb" 2>/dev/null; then
   python3 - "$MIRROR" "$DB" <<'PYVIEW'
-import subprocess, sys
+import os, subprocess, sys
 import duckdb, psycopg
 mirror, db = sys.argv[1], sys.argv[2]
-out = subprocess.run(["/tmp/qs-query", "-mirror", mirror, "-table", "public.events"],
+out = subprocess.run([__import__("os").environ.get("QS_E2E_BIN", "/tmp") + "/qs-query", "-mirror", mirror, "-table", "public.events"],
                      capture_output=True, text=True)
 if out.returncode != 0:
     print("  FAIL: qs-query:", out.stderr.strip()); sys.exit(1)
 header, view = out.stdout.split("\n", 1)
 print(" ", header.strip())
 con = duckdb.connect(); con.execute(f"CREATE VIEW qs AS {view}")
-pg = psycopg.connect(f"postgres://postgres@localhost:5443/{db}")
+pg = psycopg.connect(f"postgres://postgres@localhost:{os.environ.get('QS_E2E_PPORT', '5443')}/{db}")
 bad = 0
 for label, q in [
         ("count(*)",      "SELECT count(*) FROM {t}"),
@@ -368,8 +371,8 @@ say "6e. two tables in one sidecar"
 # QS_TABLES is a list and has only ever been exercised with one entry. A second
 # table must get its own mirror directory, its own snapshot and its own state,
 # and the publication has to carry both.
-psq 5443 "CREATE TABLE IF NOT EXISTS orders(id bigint primary key, total numeric(12,2), placed timestamptz)" >/dev/null
-psq 5443 "INSERT INTO orders SELECT g,(g%97)/7.0,now() FROM generate_series(1,5000) g ON CONFLICT DO NOTHING" >/dev/null
+psq $PP "CREATE TABLE IF NOT EXISTS orders(id bigint primary key, total numeric(12,2), placed timestamptz)" >/dev/null
+psq $PP "INSERT INTO orders SELECT g,(g%97)/7.0,now() FROM generate_series(1,5000) g ON CONFLICT DO NOTHING" >/dev/null
 pkill -x qs-mirror; sleep 2
 # Nothing is dropped here. The sidecar's ensurePublication runs ALTER
 # PUBLICATION ... SET TABLE on every start, which adds orders to the publication
@@ -379,11 +382,11 @@ pkill -x qs-mirror; sleep 2
 # mirror never receives a change to orders.
 start_sidecar $BASE/mirror.log "public.events,public.orders"
 wait_ready 120 || { tail -20 $BASE/mirror.log; bad "no readiness with two tables"; }
-psq 5443 "INSERT INTO orders SELECT g,(g%97)/7.0,now() FROM generate_series(5001,6000) g" >/dev/null
-psq 5443 "UPDATE orders SET total = total + 1 WHERE id % 500 = 0" >/dev/null
+psq $PP "INSERT INTO orders SELECT g,(g%97)/7.0,now() FROM generate_series(5001,6000) g" >/dev/null
+psq $PP "UPDATE orders SET total = total + 1 WHERE id % 500 = 0" >/dev/null
 wait_applied 90 || bad "the mirror never caught up with two tables in one sidecar"
 for tbl in public.events public.orders; do
-  if /tmp/qs-verify -dsn "postgres://postgres@localhost:5443/$DB" -mirror $MIRROR -table $tbl; then
+  if $BIN/qs-verify -dsn "postgres://postgres@localhost:$PP/$DB" -mirror $MIRROR -table $tbl; then
     echo "  $tbl matches"
   else
     bad "$tbl diverged with two tables in one sidecar"
@@ -403,7 +406,7 @@ if grep -q "synchronized_standby_slots entry that does not exist" $BASE/mirror.l
 else
   bad "the inherited synchronized_standby_slots entry was not cleared; logical decoding on this new primary would hang silently"
 fi
-left=$(psq 5444 "SHOW synchronized_standby_slots" postgres)
+left=$(psq $SP "SHOW synchronized_standby_slots" postgres)
 [ -z "$left" ] && echo "  synchronized_standby_slots is now empty on the new primary" \
               || bad "synchronized_standby_slots still set to '$left'"
 

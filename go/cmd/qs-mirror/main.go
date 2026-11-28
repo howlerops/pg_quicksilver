@@ -128,6 +128,9 @@ func main() {
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+	// Before anything else that takes time: whatever this node's reports say from a
+	// previous sidecar process is not an answer about this one (blank.go).
+	blankAtStart(ctx, log, o)
 
 	// Optional pprof, off unless asked for. Profiling the apply path in place
 	// is how the O(table)-per-batch costs in docs/18 were found; guessing at
@@ -224,6 +227,10 @@ func supervise(ctx context.Context, log *slog.Logger, o options, h *health.Healt
 	// minutes on the first real cluster run, and buried the one line that
 	// mattered. Say it once, then again only when the answer changes.
 	var lastRoleErr string
+	// Counts failed attempts that cannot be decoded, and the last slot recovery
+	// (slotrecover.go). The record of that recovery survives a restart.
+	rec := &slotRecovery{}
+	rec.restore(o.mirrorPath)
 
 	for ctx.Err() == nil {
 		primary, err := isPrimary(ctx, o)
@@ -251,8 +258,17 @@ func supervise(ctx context.Context, log *slog.Logger, o options, h *health.Healt
 					log.Warn("could not reconcile synchronized_standby_slots", "err", err)
 				}
 				releaseOwnSlot(ctx, o, log, "this node was promoted and no longer consumes it")
+				// Its reports are from its standby days: the mirror they describe
+				// is no longer kept up, and nothing on this node may read it (blank.go).
+				if err := blankLocal(ctx, o, o.tables); err != nil {
+					log.Warn("could not clear this node's reports after promotion; a stale mirror "+
+						"may still answer reads on this node until it ages past max_lag", "err", err)
+				}
 				wasPrimary = true
 			}
+			// /readyz says so, instead of the last applied LSN and its lag (the
+			// health package keeps the probe at 200 for a primary).
+			h.SetStoodDown(true)
 			h.RecordCaughtUp() // a node that builds no mirror is never stale
 			// The primary is where every Quicksilver slot of this cluster
 			// lives, and this instance is the only one with a superuser
@@ -263,6 +279,7 @@ func supervise(ctx context.Context, log *slog.Logger, o options, h *health.Healt
 		}
 
 		wasPrimary = false
+		h.SetStoodDown(false)
 		err = runMirror(ctx, log, o, h)
 		if ctx.Err() != nil {
 			return
@@ -286,6 +303,13 @@ func supervise(ctx context.Context, log *slog.Logger, o options, h *health.Healt
 		// is also how a rebuild request is noticed without a restart here.
 		if errors.Is(err, ErrHalted) {
 			dropSlot(ctx, o, log)
+		}
+		// A slot that cannot be decoded stays that way: its restart point only
+		// moves when it is confirmed. After a few identical failures with no
+		// progress this drops THIS Pod's slot, and the next attempt snapshots
+		// (slotrecover.go). Anything else is the ordinary retry below.
+		if err != nil && ctx.Err() == nil && rec.afterFailedAttempt(ctx, log, o, h, err) {
+			backoff = time.Second
 		}
 		log.Error("mirror stopped", "err", err, "retry_in", backoff)
 		sleep(ctx, backoff)
@@ -482,6 +506,12 @@ func warnStaleSyncSlots(ctx context.Context, conn *pgx.Conn, slot string, log *s
 // runMirror owns one connected lifetime: bootstrap or resume, then stream until
 // something breaks. Returning an error is how it asks the supervisor to retry.
 func runMirror(ctx context.Context, log *slog.Logger, o options, h *health.Health) error {
+	// Nothing this node reports survives the start of an attempt: the reports of
+	// the one that failed are cleared before anything is read (blank.go).
+	ext.unvouch()
+	if err := blankAttempt(ctx, log, o); err != nil {
+		return fmt.Errorf("clear this node's reports: %w", err)
+	}
 	conn, err := pgx.Connect(ctx, o.primaryDSN())
 	if err != nil {
 		return fmt.Errorf("connect to primary: %w", err)
@@ -535,6 +565,16 @@ func runMirror(ctx context.Context, log *slog.Logger, o options, h *health.Healt
 		}
 		if err := t.AttachJoinDomains(jd); err != nil {
 			return fmt.Errorf("%s: %w", qualified, err)
+		}
+		if t.BackfillDue() {
+			// Configured but not complete: the files were written before the
+			// domain was attached. Say so, and say what will happen, so it is
+			// not mistaken for a domain that does nothing.
+			done, total, _ := t.BackfillProgress()
+			log.Warn("join domain configured but incomplete: this table's files predate it; "+
+				"a background base rewrite (one at a time) adds the companions, then joins use the domain",
+				"table", qualified, "join_backfill", fmt.Sprintf("%d of %d files", done, total),
+				"why", mirror.JoinBackfillReason)
 		}
 		lakeAttach(t)
 		tables[qualified] = t
@@ -769,6 +809,9 @@ func runMirror(ctx context.Context, log *slog.Logger, o options, h *health.Healt
 	}
 
 	lakeReconcile(tables)
+	// Healthy in this process and handed to the lake: from here the node's
+	// reports may be the lake's LSNs (extension.go, lsns).
+	ext.vouch(tables)
 	ext.markDirty()
 	ext.reconcile(ctx, conn, tables)
 	h.RecordBootstrapped()
@@ -835,6 +878,11 @@ func pump(
 	// because the standby had not replayed their commits yet.
 	var replayLSN uint64
 	held := false
+	// A slot fault recorded by an earlier attempt (slotrecover.go) is over once
+	// the stream has gone slotFaultDwell without an error. Not sooner: a decode
+	// failure on old WAL arrives after the first reads, so an early "clear" would
+	// flicker readiness back on for a slot that is still broken.
+	faultClearAt := time.Now().Add(slotFaultDwell)
 
 	for {
 		// A backlog (what a DDL or size barrier cut off) is applied at once;
@@ -933,6 +981,10 @@ func pump(
 				return err
 			}
 			pending = append(pending, fresh...)
+			if !faultClearAt.IsZero() && time.Now().After(faultClearAt) {
+				h.SetSlotFault("")
+				faultClearAt = time.Time{}
+			}
 		}
 		tt.done("read_stream")
 
@@ -1182,6 +1234,26 @@ func pump(
 			return errAllHalted(tables)
 		}
 		tt.done("apply")
+		// CONFIRM INVARIANT. The server is told a position P is consumed only
+		// when every transaction committing below P is durable in every table
+		// that is not halted:
+		//   - head is applied to every non-halted table before this line; each
+		//     Apply writes and fsyncs its manifest (or, for a table the batch
+		//     did not touch, records it in watermark.json at the next step);
+		//   - Confirm runs changestream.BeforeConfirm first, which makes the
+		//     root watermark durable (mirror.SyncWatermarks), then records P;
+		//   - what is NOT confirmed: transactions held by the replay gate
+		//     (pending, in memory; the slot keeps them and a restart resends
+		//     them), transactions still being received or spooled (spool files
+		//     are never confirmed past and are deleted at start), and any
+		//     transaction after head.
+		//   - the idle advance confirms only when pending is empty, and only
+		//     to idleTarget, which is at most replay+1 under the gate.
+		// Checked by mirror.TestConfirmNeverPassesWhatIsNotDurable, which kills
+		// the model at every step and reads the durable state from disk.
+		// Note for mirror_status readers: its applied_lsn is the publisher's
+		// last PUBLISHED position (extension.go lsns), which trails durable
+		// applies, so it may sit below the slot without anything being lost.
 		last := head[len(head)-1]
 		if err := st.Confirm(ctx, last.NextLSN); err != nil {
 			return fmt.Errorf("confirm: %w", err)
@@ -1325,6 +1397,11 @@ func maintain(log *slog.Logger, tables map[string]*mirror.Table, tt *tickTimer) 
 			if c := t.BeginCompaction(); c != nil {
 				log.Info("compaction started", "table", q, "why", reason,
 					"base_rows", t.State.BaseRows, "delta_rows", t.State.DeltaRows)
+				if reason == mirror.JoinBackfillReason {
+					done, total, _ := t.BackfillProgress()
+					log.Info("join domain backfill started", "table", q,
+						"join_backfill", fmt.Sprintf("%d of %d files", done, total))
+				}
 			}
 			tt.done("begin_compaction")
 

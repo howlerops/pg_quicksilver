@@ -17,6 +17,48 @@ sidecar publishing a DuckLake that the routing extension reads from inside Postg
 10,000,000 orders and 500,000 customers, best of five warm runs, every answer checked equal
 to the heap's. Full table, earlier runs and caveats: **[METRICS.md §0](METRICS.md)**.
 
+### Re-measured 2026-11-28, at 1,000,000 orders
+
+The 10M run was not done at this point (a later 10M run is below): on the shared disk the cluster would not have fit (1M orders are 352 MB, and a
+standby doubles that). Same bench layout (500,000 customers, 24 months), join domains bootstrapped on, UTC,
+on a shared 4-core host under load 2 to 15: median of five warm runs, every answer checked equal to the heap's.
+
+| query | heap (standby) | routed through the extension | heap ÷ routed |
+|---|---:|---:|---:|
+| revenue by month, join to customers | 916.6 ms | 162.4 ms | **5.6×** |
+| `GROUP BY status` | 133.5 ms | 22.7 ms | **5.9×** |
+| `sum(amount)` | 105.8 ms | 18.1 ms | **5.9×** |
+| `count(*)` | 67.6 ms | 10.7 ms | **6.3×** |
+| one month, count and sum | 12.3 ms | 10.8 ms | 1.1× (the router keeps it on the heap) |
+
+Full table, New York, the runs without join domains and the caveats: **[METRICS.md §0.2](METRICS.md)**.
+Also measured there: a `kill -9` of the sidecar in a replay hold (three runs, no loss, no duplicate), and a
+promotion with a second standby repointed at the new primary.
+
+**Known issue:** with `quicksilver.max_lag` above 0, a promoted node keeps answering from its frozen mirror
+until the lag exceeds that many bytes. Under the default `max_lag = 0` it stops routing at once. Reproduction
+and the suggested fix are in METRICS §0.2, part C.
+
+### Measured 2026-11-28, at 10,000,000 orders, join domains off and on
+
+Shared 4-core host under other agents' load; each mirror bootstrapped with its own setting; warm; best and
+median of five runs; every answer's md5 equal between heap and routed. Single runs per configuration. Full
+table, the 1M runs with a kill -9 mid-backfill, and what is not established: **[METRICS.md §0.2](METRICS.md)**.
+
+| query | TZ | join domains | heap median (ms) | routed median (ms) | heap ÷ routed |
+|---|---|---|---:|---:|---:|
+| revenue by month, join to customers | UTC | off | 5,477 | 1,271 | 4.3× |
+| revenue by month, join to customers | UTC | on | 5,829 | 457 | **12.7×** |
+| revenue by month, join to customers | New York | off | 5,906 | 974 | 6.1× |
+| revenue by month, join to customers | New York | on | 5,641 | 1,666 | 3.4× (load-affected, see METRICS) |
+| `GROUP BY status` | UTC | off | 734 | 37 | 19.8× |
+| `sum(amount)` | UTC | off | 456 | 25 | 18.5× |
+| `count(*)` | UTC | off | 260 | 9.3 | 28.1× |
+| one month, count and sum | UTC | off | 68 | 16.5 | 4.1× |
+
+The join domains are bootstrapped in, and the sidecar backfills them into an existing 1M-order mirror in
+about 7 seconds (orders 5.4 s, customers 1.6 s); that run is in METRICS §0.2.
+
 ### Fresh after the load, 10M orders
 
 | query | heap (standby) | routed through the extension | DuckDB reading the lake directly | heap ÷ routed |

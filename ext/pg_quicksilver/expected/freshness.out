@@ -73,9 +73,9 @@ SELECT b, count(*) FROM qt.h GROUP BY b;
 (1 row)
 
 :last
- side |                         reason                          |                                                detail                                                
-------+---------------------------------------------------------+------------------------------------------------------------------------------------------------------
- heap | this node is not a standby: its mirror is no longer fed | this node is not a standby: its mirror is no longer fed (qt.h: mirror is N WAL bytes behind, over N)
+ side |           reason           |                   detail                   
+------+----------------------------+--------------------------------------------
+ heap | mirror is not fresh enough | qt.h: mirror is N WAL bytes behind, over N
 (1 row)
 
 SELECT fresh FROM quicksilver.mirror_status() WHERE heap = 'qt.h'::regclass;
@@ -141,9 +141,9 @@ SELECT b, count(*) FROM qt.h GROUP BY b;
 (1 row)
 
 :last
- side |                         reason                          |                                                         detail                                                         
-------+---------------------------------------------------------+------------------------------------------------------------------------------------------------------------------------
- heap | this node is not a standby: its mirror is no longer fed | this node is not a standby: its mirror is no longer fed (qt.h: mirror is at N, quicksilver.min_applied_lsn asks for N)
+ side |           reason           |                            detail                            
+------+----------------------------+--------------------------------------------------------------
+ heap | mirror is not fresh enough | qt.h: mirror is at N, quicksilver.min_applied_lsn asks for N
 (1 row)
 
 SELECT quicksilver.report_applied_lsn('qt.h', :'mine');
@@ -191,9 +191,9 @@ SELECT h.b, g.b FROM qt.h h JOIN qt.g g ON g.id = h.id ORDER BY h.id;
 (1 row)
 
 :last
- side |                         reason                          |                                                                                         detail                                                                                          
-------+---------------------------------------------------------+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
- heap | this node is not a standby: its mirror is no longer fed | this node is not a standby: its mirror is no longer fed (qt.g: mirror is at N, this node is at N (N WAL bytes behind; quicksilver.max_lag = N routes only a mirror that has caught up))
+ side |           reason           |                                                            detail                                                             
+------+----------------------------+-------------------------------------------------------------------------------------------------------------------------------
+ heap | mirror is not fresh enough | qt.g: mirror is at N, this node is at N (N WAL bytes behind; quicksilver.max_lag = N routes only a mirror that has caught up)
 (1 row)
 
 SELECT quicksilver.report_applied_lsn('qt.g', pg_current_wal_insert_lsn() + 100000000);
@@ -231,9 +231,9 @@ SELECT b, count(*) FROM qt.h GROUP BY b;
 (1 row)
 
 :last
- side |                         reason                          |                                                                                         detail                                                                                          
-------+---------------------------------------------------------+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
- heap | this node is not a standby: its mirror is no longer fed | this node is not a standby: its mirror is no longer fed (qt.h: mirror is at N, this node is at N (N WAL bytes behind; quicksilver.max_lag = N routes only a mirror that has caught up))
+ side |           reason           |                                                            detail                                                             
+------+----------------------------+-------------------------------------------------------------------------------------------------------------------------------
+ heap | mirror is not fresh enough | qt.h: mirror is at N, this node is at N (N WAL bytes behind; quicksilver.max_lag = N routes only a mirror that has caught up)
 (1 row)
 
 -- a mirror that is ahead of the node is not behind it
@@ -265,9 +265,9 @@ SELECT b, count(*) FROM qt.h GROUP BY b;
 (1 row)
 
 :last
- side |                         reason                          |                                                                                         detail                                                                                          
-------+---------------------------------------------------------+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
- heap | this node is not a standby: its mirror is no longer fed | this node is not a standby: its mirror is no longer fed (qt.h: mirror is at N, this node is at N (N WAL bytes behind; quicksilver.max_lag = N routes only a mirror that has caught up))
+ side |           reason           |                                                            detail                                                             
+------+----------------------------+-------------------------------------------------------------------------------------------------------------------------------
+ heap | mirror is not fresh enough | qt.h: mirror is at N, this node is at N (N WAL bytes behind; quicksilver.max_lag = N routes only a mirror that has caught up)
 (1 row)
 
 SET quicksilver.freshness_wait = 0;
@@ -338,6 +338,67 @@ SELECT b, count(*) FROM qt.h GROUP BY b ORDER BY b;   -- the mirror cannot show 
 
 ROLLBACK;
 RESET quicksilver.route_in_transaction;
+-- ---------------------------------------------------------------- one accessor
+-- mirror_status() and the read path take the applied LSN from the same place, so
+-- an LSN is shown exactly when the mirror is fresh enough to be read, and a 0/0
+-- report is "no applied LSN" for both.
+SELECT quicksilver.report_applied_lsn('qt.h', pg_current_wal_insert_lsn() + 100000000);
+ report_applied_lsn 
+--------------------
+ 
+(1 row)
+
+SELECT applied_lsn IS NOT NULL AS has_lsn, fresh FROM quicksilver.mirror_status() WHERE heap = 'qt.h'::regclass;
+ has_lsn | fresh 
+---------+-------
+ t       | t
+(1 row)
+
+SELECT quicksilver.report_applied_lsn('qt.h', '0/0');
+ report_applied_lsn 
+--------------------
+ 
+(1 row)
+
+SELECT applied_lsn IS NULL AS no_lsn, fresh, regexp_replace(stale_because, 'qt\.h: ', '') AS stale_because
+  FROM quicksilver.mirror_status() WHERE heap = 'qt.h'::regclass;
+ no_lsn | fresh |                                    stale_because                                     
+--------+-------+--------------------------------------------------------------------------------------
+ t      | f     | its mirror on this node is reported unreadable (halted, rebuilding or not published)
+(1 row)
+
+SELECT b, count(*) FROM qt.h GROUP BY b;
+  b   | count 
+------+-------
+ heap |     4
+(1 row)
+
+:last
+ side |           reason           |                                           detail                                           
+------+----------------------------+--------------------------------------------------------------------------------------------
+ heap | mirror is not fresh enough | qt.h: its mirror on this node is reported unreadable (halted, rebuilding or not published)
+(1 row)
+
+-- a report made on this primary vouches for it here (the regression harness's
+-- report, primary_report.sh): the same LSN, fresh, and routed again
+SELECT quicksilver.report_applied_lsn('qt.h', pg_current_wal_insert_lsn() + 100000000);
+ report_applied_lsn 
+--------------------
+ 
+(1 row)
+
+SELECT b, count(*) FROM qt.h GROUP BY b;
+   b    | count 
+--------+-------
+ mirror |     1
+(1 row)
+
+:last
+  side  | reason |           detail           
+--------+--------+----------------------------
+ mirror | routed | quicksilver.route = mirror
+(1 row)
+
 DROP SCHEMA qt, qtm CASCADE;
 SELECT quicksilver.prune();
  prune 

@@ -29,7 +29,6 @@ import (
 	"github.com/cloudnative-pg/cnpg-i/pkg/identity"
 	"github.com/cloudnative-pg/cnpg-i/pkg/lifecycle"
 	"github.com/cloudnative-pg/cnpg-i/pkg/operator"
-	postgresi "github.com/cloudnative-pg/cnpg-i/pkg/postgres"
 	"github.com/cloudnative-pg/cnpg-i/pkg/reconciler"
 	"github.com/cloudnative-pg/cnpg-i/pkg/wal"
 	"google.golang.org/grpc"
@@ -57,7 +56,6 @@ func startPlugin(t *testing.T, certs *certSet) string {
 		Enrichers: []http.ServerEnricher{func(s *grpc.Server) error {
 			operator.RegisterOperatorServer(s, qsplugin.OperatorImpl{})
 			lifecycle.RegisterOperatorLifecycleServer(s, qsplugin.LifecycleImpl{})
-			postgresi.RegisterPostgresServer(s, qsplugin.PostgresImpl{})
 			return nil
 		}},
 		ServerCertPath: certs.serverCert,
@@ -204,15 +202,11 @@ func TestHandshake(t *testing.T) {
 		t.Fatal("Lifecycle service not declared; the sidecar would never be injected")
 	}
 
+	// The postgres service is deliberately not declared: CNPG never calls it
+	// for a Deployment plugin (postgres.go). Declaring it would promise a write
+	// that never happens.
 	if slices.Contains(declared, identity.PluginCapability_Service_TYPE_POSTGRES) {
-		res, err := postgresi.NewPostgresClient(conn).GetCapabilities(ctx,
-			&postgresi.PostgresCapabilitiesRequest{})
-		if err != nil {
-			t.Fatalf("Postgres service declared but GetCapabilities failed: %v", err)
-		}
-		t.Logf("postgres RPCs: %d", len(res.GetCapabilities()))
-	} else {
-		t.Fatal("Postgres service not declared; wal_level would never be set to logical")
+		t.Fatal("Postgres service declared, and it is never applied; see postgres.go")
 	}
 
 	// --- and the services we do NOT declare -------------------------------

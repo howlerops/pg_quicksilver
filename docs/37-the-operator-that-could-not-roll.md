@@ -100,8 +100,12 @@ sufficient, because an operator has to call it.
 ## What changed
 
 - **The floor is CloudNativePG 1.26.** Below it, plugin parameters never reach
-  running instances.
-- `cluster_e2e.sh` installs 1.26.0 by default and, before anything else, reads
+  running instances (this document). The plugin writes no PostgreSQL parameters
+  on any version: it cannot, because the instance manager dials only plugins that
+  advertise instance sidecar injection, and it never does for a Deployment plugin
+  (docs/16, "The PostgreSQL settings"). The settings the mirror needs are
+  required in the Cluster spec.
+- `cluster_e2e.sh` installs 1.26.0 by default, CI runs 1.26.0 and 1.30.2, and, before anything else, reads
   the *running* operator's image tag and refuses to continue below the floor —
   checked against what is deployed rather than what was requested, because a
   standing cluster may already have an older operator and the install step is

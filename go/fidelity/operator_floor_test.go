@@ -26,7 +26,7 @@ import (
 // This test is the tie: both versions must be at or above the floor, so the
 // property the unit tests demonstrate is a property of something that gets
 // installed.
-const operatorFloorMinor = 26 // CloudNativePG 1.26
+const operatorFloorMinor = 26 // CloudNativePG 1.26: the roll floor (docs/37)
 
 func TestTheDeployedOperatorMeetsTheRolloutFloor(t *testing.T) {
 	t.Run("cluster_e2e.sh installs 1.26 or newer", func(t *testing.T) {
@@ -69,8 +69,33 @@ func TestTheDeployedOperatorMeetsTheRolloutFloor(t *testing.T) {
 
 	// The floor is only meaningful while it is written down where an operator
 	// of this software will read it, not just where its tests will.
+	t.Run("the cluster CI matrix runs the floor", func(t *testing.T) {
+		src, err := os.ReadFile("../../.github/workflows/cluster-e2e.yml")
+		if err != nil {
+			t.Fatalf("cannot read the cluster workflow: %v", err)
+		}
+		versions := regexp.MustCompile(`cnpg: "([0-9]+)\.([0-9]+)\.([0-9]+)"`).FindAllSubmatch(src, -1)
+		if len(versions) < 2 {
+			t.Fatalf("the cluster workflow names %d CloudNativePG versions; want the floor and the newest", len(versions))
+		}
+		floorSeen := false
+		for _, v := range versions {
+			major, minor := atoi(t, string(v[1])), atoi(t, string(v[2]))
+			if major != 1 || minor < operatorFloorMinor {
+				t.Errorf("the cluster workflow runs CloudNativePG %s.%s.%s, below the 1.%d floor",
+					v[1], v[2], v[3], operatorFloorMinor)
+			}
+			if minor == operatorFloorMinor {
+				floorSeen = true
+			}
+		}
+		if !floorSeen {
+			t.Errorf("the cluster workflow does not run the floor, 1.%d", operatorFloorMinor)
+		}
+	})
+
 	t.Run("the requirement is documented", func(t *testing.T) {
-		for _, f := range []string{"../../docs/16-deploying.md", "../../charts/quicksilver/README.md"} {
+		for _, f := range []string{"../../docs/16-deploying.md", "../../charts/quicksilver/README.md", "../../README.md"} {
 			src, err := os.ReadFile(f)
 			if err != nil {
 				t.Errorf("cannot read %s: %v", f, err)

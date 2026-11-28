@@ -380,8 +380,45 @@ collect() {
 # that are only SQL against a PostgreSQL it can actually start. A cluster is
 # the only place they mean anything; a typo in one of them should not cost a
 # forty-minute run to find.
+# The settings the Cluster must carry for the mirror (docs/16, "The PostgreSQL
+# settings"), read back from the server. The plugin does not write them: it
+# reports them, and this checks that the spec the script wrote is what the server
+# runs. A value the operator dropped shows up in production only later: a slot
+# that is not synchronised after a failover (docs/15) is a full re-snapshot, and
+# a replica read cancelled by a vacuum is hot_standby_feedback (docs/30).
+# max_replication_slots and max_wal_senders must be at least what the mirror
+# needs: instances + 4, and two per standby plus headroom.
+enriched_settings_in_force() {
+  local p r v need st
+  # The selftest runs these sections against a PostgreSQL nobody enriched.
+  [ "${E2E_ENRICHED_CHECK:-1}" = 1 ] || return 0
+  p=$(primary)
+  need=$(( $(kc get cluster "$CLUSTER" -o jsonpath='{.spec.instances}' 2>/dev/null) + 4 ))
+  # The plugin names what the spec lacks. It must name none of these now.
+  st=$(kc get cluster "$CLUSTER" -o jsonpath='{.status.pluginStatus[?(@.name=="quicksilver.howlerops.io")].status}' 2>/dev/null)
+  for v in sync_replication_slots hot_standby_feedback max_wal_senders duckdb.allowed_directories; do
+    case "$st" in *"\"parameter\":\"$v\""*) bad "the plugin reports $v missing or wrong in the spec: $st" ;; esac
+  done
+  v=$(sql "$p" "SHOW wal_level")
+  if [ "$v" = logical ]; then ok "primary: wal_level=logical"; else bad "primary: wal_level=$v, want logical"; fi
+  for r in $(replicas); do
+    v=$(sql "$r" "SHOW sync_replication_slots")
+    if [ "$v" = on ]; then ok "$r: sync_replication_slots=on"
+    else bad "$r: sync_replication_slots=$v, want on: failover slots are not synchronised, so a failover re-snapshots every mirror"; fi
+    v=$(sql "$r" "SHOW hot_standby_feedback")
+    if [ "$v" = on ]; then ok "$r: hot_standby_feedback=on"; else bad "$r: hot_standby_feedback=$v, want on"; fi
+    v=$(sql "$r" "SHOW max_replication_slots")
+    if [ "$v" -ge "$need" ] 2>/dev/null; then ok "$r: max_replication_slots=$v, at least $need"
+    else bad "$r: max_replication_slots=$v, want at least $need (instances + 4)"; fi
+    v=$(sql "$r" "SHOW max_wal_senders")
+    if [ "$v" -ge $(( 2 * (need - 4) + 4 )) ] 2>/dev/null; then ok "$r: max_wal_senders=$v"
+    else bad "$r: max_wal_senders=$v, want at least 2 per standby plus headroom"; fi
+  done
+}
+
 section_slots() {
   say "4. each replica has a slot of its OWN"
+  enriched_settings_in_force
   # A slot is one cursor. Two sidecars sharing one meant the second silently
   # missed every row written while the first held it, with nothing in either
   # log; this is the first place two sidecars have ever run against one primary.
@@ -506,7 +543,73 @@ section_routing() {
     ok "the primary answers from its heap — $(printf '%s\n' "$out" | grep 'Quicksilver:' | sed 's/^ *//')"
   fi
 
+  routing_settings
+
   [ "${E2E_SKIP_CARRIED:-0}" = 1 ] || extensions_carried
+}
+
+# version_at_least <version> <major.minor>: 0 when <version> is that or newer.
+version_at_least() {
+  local v=${1#v}
+  [ "$(printf '%s\n%s\n' "$2" "$v" | sort -V | head -1)" = "$2" ]
+}
+
+# The settings routing needs that the PLUGIN derives (routing.go), and what an
+# ORDINARY role is given with routing asked for.
+#
+# duckdb.allowed_directories is in the Cluster's spec (the e2e writes it, and the
+# plugin reports it when it is missing). Nothing here depends on the operator
+# version: the plugin writes no PostgreSQL parameters on any version.
+#
+# The CI operand image is built with the STOCK pg_duckdb (PG_DUCKDB_BUILD
+# defaults to package in deploy/Dockerfile). A stock build never routes an
+# ordinary role (docs/40, "Ordinary roles", 1), so on it the assertion is that
+# the role is answered from the heap; on the confined build it is that the role
+# is routed. Which build this is, the run says.
+routing_settings() {
+  local p r val mirror="${PARAMS[mirrorPath]:-/var/lib/postgresql/data/quicksilver}" confined out
+  p=$(primary)
+
+  # Not in the selftest, which has no operator (E2E_ENRICHED_CHECK=0).
+  if [ "${E2E_ENRICHED_CHECK:-1}" = 1 ]; then
+    for r in $(replicas); do
+      val=$(sql "$r" "SHOW duckdb.allowed_directories")
+      case ",$val," in
+        *",$mirror/,"*) ok "$r: duckdb.allowed_directories=$val names the mirror $mirror (set by the plugin)" ;;
+        *) bad "$r: duckdb.allowed_directories=$val does not name the mirror $mirror: the lake is not attached here" ;;
+      esac
+    done
+  fi
+
+  confined=$(sql "$p" "SHOW duckdb.confined_file_access" 2>/dev/null || true)
+  if [ "$confined" = on ]; then
+    echo "  the DuckDB build is the CONFINED one (duckdb.confined_file_access=on): an ordinary role is expected to be routed"
+  else
+    echo "  the DuckDB build is STOCK (no duckdb.confined_file_access): an ordinary role is expected to stay on the heap"
+  fi
+
+  sql "$p" "CREATE ROLE qs_e2e_ordinary LOGIN; GRANT SELECT ON public.events, public.accounts TO qs_e2e_ordinary" >/dev/null \
+    || { bad "could not create the ordinary role qs_e2e_ordinary"; return; }
+  # The superuser connection switches to the ordinary role for the one statement.
+  out=$(netsql "$CLUSTER-ro" "" "SET ROLE qs_e2e_ordinary" "EXPLAIN (COSTS OFF) $AGG")
+  if ! printf '%s\n' "$out" | grep -q 'Quicksilver:'; then
+    printf '%s\n' "$out" | head -8 | sed 's/^/    /'
+    bad "an ordinary role's EXPLAIN carries no routing verdict at all"
+  elif [ "$confined" = on ]; then
+    if printf '%s\n' "$out" | grep -q 'Quicksilver: mirror'; then
+      ok "an ordinary role is ROUTED on the confined build — $(printf '%s\n' "$out" | grep 'Quicksilver:' | sed 's/^ *//')"
+    else
+      bad "an ordinary role was not routed on the confined build — $(printf '%s\n' "$out" | grep 'Quicksilver:' | sed 's/^ *//')"
+    fi
+  else
+    if printf '%s\n' "$out" | grep -q 'Quicksilver: mirror'; then
+      bad "an ordinary role was ROUTED on a STOCK pg_duckdb build, which docs/40 says cannot happen"
+    else
+      ok "stock build: an ordinary role stays on the heap — $(printf '%s\n' "$out" | grep 'Quicksilver:' | sed 's/^ *//')"
+    fi
+  fi
+  sql "$p" "REVOKE SELECT ON public.events, public.accounts FROM qs_e2e_ordinary; DROP ROLE qs_e2e_ordinary" >/dev/null \
+    || bad "could not drop the ordinary role qs_e2e_ordinary"
 }
 
 # Nothing was fetched. The operand image carries DuckDB's extensions and the
@@ -526,6 +629,142 @@ extensions_carried() {
       bad "$r: duckdb.extension_directory=$dir and $out extension file(s) under PGDATA: they were fetched, not carried"
     fi
   done
+}
+
+# ----------------------------------------------------- an invalid edit, running
+# docs/16 and invalidConfigResponse (go/internal/plugin/lifecycle.go): a
+# RUNNING instance whose plugin parameters are edited to something invalid
+# keeps its Pods. The operator evaluates the Pod, the plugin refuses to
+# evaluate a listed instance, the operator logs the error and skips the rollout
+# check for that Pod, so nothing is rolled. Restoring the valid parameters
+# rolls nothing either: the spec is the one the Pods were built from.
+#
+# The snapshot is the instance Pods' name, UID and deletion timestamp. A roll
+# replaces the UID; a Pod being rebuilt goes through a deletion timestamp first.
+pod_snapshot() {
+  kc get pods -l "$INSTANCES_SEL" \
+    -o jsonpath='{range .items[*]}{.metadata.name}{" "}{.metadata.uid}{" "}{.metadata.creationTimestamp}{" "}{.metadata.deletionTimestamp}{"\n"}{end}' \
+    2>/dev/null | sort
+}
+
+# What a roll would have left, against <snapshot>: one line per finding. Empty
+# when every Pod still exists with its UID, none is being deleted, no Pod is
+# new, and each still has the mirror container.
+#
+# The mirror is read into a VARIABLE, not piped into grep -q. Under pipefail a
+# grep that exits at its first match makes kubectl fail with SIGPIPE, and that
+# was reported as "no quicksilver-mirror container" on a Pod that had one
+# (job 141028702762: app-1 has the mirror as a native sidecar, and was not
+# rolled). A Pod that cannot be read is said to be unreadable, not mirrorless.
+pod_mirror_state() { # <pod> -> has | missing | unreadable
+  local out
+  out=$(kc get pod "$1" \
+    -o jsonpath='{range .spec.initContainers[*]}{.name}{"\n"}{end}{range .spec.containers[*]}{.name}{"\n"}{end}' \
+    2>/dev/null) || { echo unreadable; return; }
+  if grep -qx quicksilver-mirror <<<"$out"; then echo has; else echo missing; fi
+}
+
+pod_findings() { # <snapshot before>
+  local before=$1 now="" name uid _ts del state
+  now=$(pod_snapshot)
+  while read -r name uid _ts del; do
+    [ -n "$name" ] || continue
+    grep -q "^$name $uid " <<<"$before" || echo "$name: not the Pod that was there before (new UID $uid)"
+    [ -z "$del" ] || echo "$name: is being deleted (since $del)"
+    state=$(pod_mirror_state "$name")
+    case "$state" in
+      missing) echo "$name: no quicksilver-mirror container" ;;
+      unreadable) echo "$name: could not be read to check its containers" ;;
+    esac
+  done <<<"$now"
+  while read -r name _; do
+    [ -n "$name" ] || continue
+    grep -q "^$name " <<<"$now" || echo "$name: gone"
+  done <<<"$before"
+}
+
+# Watches the Pods for <seconds>, and prints every finding seen, with the time
+# it was seen, so a transient is distinguishable from a persistent change.
+pods_observed() { # <snapshot before> <seconds>
+  local before=$1 deadline=$(( $(now) + $2 )) seen="" f
+  while [ "$(now)" -lt "$deadline" ]; do
+    f=$(pod_findings "$before")
+    [ -n "$f" ] && seen+="$(date -u +%H:%M:%S) $f"$'\n'
+    sleep 10
+  done
+  printf '%s' "$seen"
+}
+
+# The spec.plugins of the Cluster, canonical JSON: the same plugin parameters
+# print the same bytes, whatever order the server stored them in.
+plugins_spec() {
+  kc get cluster "$CLUSTER" -o json 2>/dev/null \
+    | python3 -c 'import json,sys; print(json.dumps(json.load(sys.stdin)["spec"]["plugins"], sort_keys=True, indent=1))'
+}
+
+# The operator's account of what it did with the instance Pods since <time>: its
+# rollout decisions and the reasons it gave. Printed on failure, so the next
+# failure says why a Pod was touched.
+operator_rollout_lines() { # <since, RFC3339>
+  local out
+  out=$(kc -n "$CNPG_NS" logs deploy/cnpg-controller-manager --since-time="$1" 2>/dev/null || true)
+  grep -iE "rollout|upgrad|outdated|$CLUSTER" <<<"$out" | tail -40 || true
+}
+
+section_invalid_edit() {
+  say "6b. an INVALID edit of a RUNNING cluster reports it and rolls nothing; restoring the valid spec rolls nothing"
+  local before p0 phase0 ready0 seen plugins0 plugins1 since
+  since=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+  p0=$(primary)
+  phase0=$(kc get cluster "$CLUSTER" -o jsonpath='{.status.phase}' 2>/dev/null)
+  ready0=$(kc get cluster "$CLUSTER" -o jsonpath='{.status.readyInstances}' 2>/dev/null)
+  before=$(pod_snapshot)
+  plugins0=$(plugins_spec)
+  if [ "$(wc -l <<<"$before")" -lt "$WANT_INSTANCES" ]; then
+    bad "$CLUSTER: $WANT_INSTANCES instance Pods were not listed before the edit"; return
+  fi
+
+  # A misspelled key. The plugins list is replaced as a whole, so the removal
+  # below is the same mechanism as every other parameter change in this script.
+  patch_params "tabels=public.events" >/dev/null || { bad "the invalid edit was not applied"; return; }
+  if ! await_plugin_status "$CLUSTER" "unknown Quicksilver parameter" 300; then
+    bad "$CLUSTER: the plugin never reported the misspelled parameter"
+    patch_params "tabels=" >/dev/null
+    return
+  fi
+  ok "$CLUSTER: .status.pluginStatus reports the misspelled parameter"
+
+  seen=$(pods_observed "$before" 120)
+  if [ -z "$seen" ]; then ok "no instance Pod was rolled, replaced or deleted in the 120 seconds after the invalid edit"
+  else printf '%s' "$seen" | sed 's/^/    /'; bad "the invalid edit changed the instance Pods"; fi
+  [ "$(primary)" = "$p0" ] && ok "the primary did not change ($p0)" || bad "the primary changed from $p0 to $(primary)"
+  if [ "$(kc get cluster "$CLUSTER" -o jsonpath='{.status.phase}' 2>/dev/null)" = "$phase0" ] \
+     && [ "$(kc get cluster "$CLUSTER" -o jsonpath='{.status.readyInstances}' 2>/dev/null)" = "$ready0" ]; then
+    ok "the Cluster stayed healthy: phase \"$phase0\", $ready0 ready"
+  else
+    bad "the Cluster's phase or ready count changed under an invalid edit"
+  fi
+
+  # Back to the valid parameters: the status says so, the spec is what it was,
+  # and still nothing rolls.
+  patch_params "tabels=" >/dev/null || bad "the valid parameters were not restored"
+  if await_plugin_status "$CLUSTER" '"state":"valid"' 300; then ok "$CLUSTER: restored, the status says state: valid"
+  else bad "$CLUSTER: the status did not return to valid after the parameters were restored"; fi
+  plugins1=$(plugins_spec)
+  if [ "$plugins0" = "$plugins1" ]; then ok "spec.plugins is byte-identical to the one before the invalid edit"
+  else diff <(printf '%s\n' "$plugins0") <(printf '%s\n' "$plugins1") | sed 's/^/    /'
+    bad "spec.plugins after the restore differs from the one before the invalid edit (diff above)"; fi
+
+  seen=$(pods_observed "$before" 90)
+  if [ -z "$seen" ]; then ok "restoring the valid parameters rolled nothing"
+  else
+    printf '%s' "$seen" | sed 's/^/    /'
+    echo "    Pod snapshot before the edit (left) and now (right), name uid created deleted:"
+    diff <(printf '%s\n' "$before") <(pod_snapshot) | sed 's/^/    /' || true
+    echo "    the operator's rollout lines since $since:"
+    operator_rollout_lines "$since" | sed 's/^/    /'
+    bad "restoring the valid parameters changed the instance Pods"
+  fi
 }
 
 section_halt() {
@@ -621,6 +860,7 @@ print(max(1, int(n * {"ms": 0.001, "s": 1, "m": 60, "h": 3600}[u])))' "$JANITOR_
 
 section_switchover() {
   say "8. a switchover: both mirrors match afterwards and no slot is orphaned"
+  enriched_settings_in_force
   local old target; old=$(primary); target=$(replicas | head -1)
   [ -n "$target" ] || { bad "no replica to promote"; return; }
   echo "  $old -> $target"
@@ -659,6 +899,10 @@ section_switchover() {
     bad "after the switchover the Quicksilver slots are not exactly one active slot per replica (above): an orphan pins WAL on the new primary"
   fi
   janitor_check "a switchover"
+  # After the switchover the OLD primary is a replica again, and every replica
+  # must still have the enriched settings: the promoted one is the one whose
+  # slot synchronisation the failover guarantee depends on.
+  enriched_settings_in_force
   # Not asserted, because nobody has claimed it: whether the router still
   # routes on -ro straight after a switchover. Printed, so that the first time
   # it does not, the log already has it.
@@ -667,6 +911,7 @@ section_switchover() {
 
 section_scale_down() {
   say "9. scaling 3 -> 2 leaves no inactive slot retaining WAL"
+  enriched_settings_in_force
   local before after gone orphan
   before=$(instances)
   kc patch cluster "$CLUSTER" --type merge -p '{"spec":{"instances":2}}' >/dev/null || { bad "could not scale the Cluster"; return; }
@@ -728,8 +973,12 @@ kubectl -n cert-manager rollout status deploy/cert-manager-webhook --timeout=300
   || skip "cert-manager webhook never became ready"
 ok "cert-manager ready"
 
-# CloudNativePG 1.26 is a FLOOR, not a preference, and this is where it was
-# found. On 1.25.1 the roll section could never pass, for a structural reason:
+# CloudNativePG 1.26 is the FLOOR. The plugin does not write PostgreSQL
+# parameters: the operator asks it for none (the instance manager dials only
+# plugins that advertise instance sidecar injection, and this one does not;
+# docs/16). The settings the mirror needs are in the Cluster's spec, and this
+# script checks they are in force. The 1.26 floor is the roll behaviour below.
+# On 1.25.1 the roll section could never pass, for a structural reason:
 #
 #   1.25  specs.PodWithExistingStorage() builds the target Pod with no plugin
 #         client at all, and writes that UN-PATCHED spec into the
@@ -760,10 +1009,9 @@ kubectl -n "$CNPG_NS" rollout status deploy/cnpg-controller-manager --timeout=30
 opimg=$(kubectl -n "$CNPG_NS" get deploy cnpg-controller-manager \
   -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null)
 opver=${opimg##*:}
-case "${opver#v}" in
-  1.25.*|1.24.*|1.23.*|1.22.*|1.21.*|1.2[0-5])
-    skip "CloudNativePG $opver is below the 1.26 floor: it builds the target Pod without the plugin, so a plugin parameter change can never roll an instance and the roll and takeover sections cannot pass. See docs/37." ;;
-esac
+if ! version_at_least "${opver#v}" 1.26; then
+  skip "CloudNativePG $opver is below the 1.26 floor: a plugin parameter change cannot roll an instance there. See docs/37."
+fi
 ok "CloudNativePG ready in $CNPG_NS (operator $opver, floor is 1.26)"
 
 kubectl create namespace "$NS" >/dev/null 2>&1
@@ -969,6 +1217,13 @@ if [ "$SCOPE" = full ]; then
       - pg_quicksilver
     parameters:
       max_slot_wal_keep_size: "1GB"
+      # Required, and the plugin reports them missing (docs/16, "The PostgreSQL
+      # settings"): it cannot write these, CloudNativePG never asks it to.
+      sync_replication_slots: "on"
+      hot_standby_feedback: "on"
+      max_wal_senders: "10"
+      # Required for routing: the mirror directory (routing.go).
+      duckdb.allowed_directories: "/var/lib/postgresql/data/quicksilver/"
       # Where the operand image keeps DuckDB's ducklake and sqlite extensions.
       # Without it pg_duckdb looks under PGDATA, finds nothing, and fetches.
       duckdb.extension_directory: "$DUCKDB_EXT_DIR"
@@ -987,6 +1242,11 @@ else
   postgresql:
     parameters:
       max_slot_wal_keep_size: "1GB"
+      # Required, and the plugin reports them missing (docs/16, "The PostgreSQL
+      # settings"): it cannot write these, CloudNativePG never asks it to.
+      sync_replication_slots: "on"
+      hot_standby_feedback: "on"
+      max_wal_senders: "10"
 YAML
 )
   EXT_SQL=""
@@ -1109,7 +1369,7 @@ fi
 
 # ---------------------------------------------------------------- full scope
 if [ "$SCOPE" = full ]; then
-  for s in section_slots section_data section_routing section_halt section_switchover section_scale_down; do
+  for s in section_slots section_data section_routing section_invalid_edit section_halt section_switchover section_scale_down; do
     # Each of these needs what the ones before it left behind. After a failure
     # the rest would report their own timeouts about a cluster that is already
     # known to be wrong, which is twenty minutes of noise on top of the answer.
