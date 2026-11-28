@@ -860,11 +860,23 @@ can serve. So:
 - **Two sidecars whose table lists differ** share the registry and never fight
   over it: each writes its own tables, and removes nothing it does not own.
 
-The one removal that is an operator's: a table that **leaves every sidecar's
-`QS_TABLES`** keeps its row, because the sidecars cannot tell it from a table
-another one still needs. Until its row goes, a node that still has a report for
-it may answer from that report, which is why the cleanup is not optional with a
-relaxed `max_lag`. Once no sidecar mirrors the table, on the primary:
+A table that **leaves every sidecar's `QS_TABLES`** is the one removal that is not
+the sidecar's own. Each sidecar keeps a claim row on the primary,
+`quicksilver.sidecar_claims` (one per pod: the tables it is configured for, and
+when it last heartbeated, every 30s, under the registry's advisory lock). The
+janitor on the primary removes a registry row, its join rows and its mirror view
+only when no claim seen within `QS_CLAIM_GRACE` (default 1h) names the table, and
+only once the table has stayed unclaimed for the grace by the janitor's own clock.
+So a table dropped from one sidecar's list stays while another sidecar claims it,
+and a sidecar that is down longer than the grace loses its claim and re-registers
+its tables when it returns. Until the row goes, a node that still has a report for
+the table may answer from it under a relaxed `max_lag`; once the row is gone the
+node reads the heap. The code is `go/cmd/qs-mirror/claims.go`; the decision
+is `registryOrphans` and `janitor.settle`.
+
+The sidecar runs the registry statements of its own for a table whose heap
+relation is gone (above). The statements an operator would run by hand, for a
+database whose sidecars predate the claims table, are:
 
 ```sql
 DELETE FROM quicksilver.mirrors WHERE mirror = 'quicksilver_mirror."public.orders"'::regclass;
@@ -872,9 +884,11 @@ DROP VIEW quicksilver_mirror."public.orders";
 DELETE FROM quicksilver.join_domains WHERE heap = 'public.orders'::regclass;  -- if it had join domain columns
 ```
 
-The sidecar runs the first two itself, and only when a configured table's heap
-relation is gone; the join rows of such a table stay, for the same reason as the
-others, and are removed by the third statement.
+Each sidecar also reports `0/0` on its own node for every registered table it is
+not configured for, at start, at the start of every attempt, and when its node is
+promoted (`go/cmd/qs-mirror/blank.go`). So a table dropped from a sidecar's list
+is not served by that node from the moment the sidecar restarts, whatever row
+remains.
 
 (under the default strict freshness a table whose lake stops advancing is refused
 as the WAL moves on, so the statement is needed for a relaxed `max_lag` only.)
