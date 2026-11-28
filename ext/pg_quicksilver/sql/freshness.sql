@@ -114,5 +114,22 @@ SELECT b, count(*) FROM qt.h GROUP BY b ORDER BY b;   -- the mirror cannot show 
 ROLLBACK;
 RESET quicksilver.route_in_transaction;
 
+-- ---------------------------------------------------------------- one accessor
+-- mirror_status() and the read path take the applied LSN from the same place, so
+-- an LSN is shown exactly when the mirror is fresh enough to be read, and a 0/0
+-- report is "no applied LSN" for both.
+SELECT quicksilver.report_applied_lsn('qt.h', pg_current_wal_insert_lsn() + 100000000);
+SELECT applied_lsn IS NOT NULL AS has_lsn, fresh FROM quicksilver.mirror_status() WHERE heap = 'qt.h'::regclass;
+SELECT quicksilver.report_applied_lsn('qt.h', '0/0');
+SELECT applied_lsn IS NULL AS no_lsn, fresh, regexp_replace(stale_because, 'qt\.h: ', '') AS stale_because
+  FROM quicksilver.mirror_status() WHERE heap = 'qt.h'::regclass;
+SELECT b, count(*) FROM qt.h GROUP BY b;
+:last
+-- a report made on this primary vouches for it here (the regression harness's
+-- report, primary_report.sh): the same LSN, fresh, and routed again
+SELECT quicksilver.report_applied_lsn('qt.h', pg_current_wal_insert_lsn() + 100000000);
+SELECT b, count(*) FROM qt.h GROUP BY b;
+:last
+
 DROP SCHEMA qt, qtm CASCADE;
 SELECT quicksilver.prune();

@@ -955,7 +955,10 @@ transaction has already fixed its lake snapshot (qs_pin). The execution-time
 check on a kept plan does not wait, as before: a kept plan that is behind goes to
 the heap. If the wait gives up, the statement runs on the heap, as it always did.
 Bounded staleness is something a session asks for: `max_lag > 0` means "a
-routed read may be this much WAL behind the heap on this node". Separately, a
+routed read may be this much WAL behind the heap on this node". The bounds apply
+only to a report made in this node's current role and timeline: a report from
+another role (a standby's report on the promoted node, a primary's on a standby)
+is not vouched for whatever the bound is (see [Promotion](#promotion)). Separately, a
 transaction that has an xid is never routed, whatever
 `quicksilver.route_in_transaction` says: the mirror cannot show a transaction
 its own uncommitted writes.
@@ -1638,14 +1641,42 @@ unrelated DDL (`validate/real/hardening/churn_reads.py`), on the same build.
 A promoted standby is not fed. Its sidecar stands down and drops its replication
 slot, so the mirror stops at the position it had reached, and the node's own
 position moves on with every write. Routing on that node must stop for
-freshness, and it does: the freshness check comes before anything else. A
-mirror that was fed and is no longer fresh on a node that is not a standby is
-answered by the heap with the reason "this node is not a standby: its mirror is
-no longer fed", followed by the detail of the freshness failure (it was "mirror
-is not fresh enough" before, which told an operator nothing about the cause). A
-mirror nothing ever reported on keeps the
-generic reason. The reason is set by the code; the promoted-node refusal was not
-re-measured on a promoted node for this change.
+freshness, and it does, whatever `quicksilver.max_lag` says. A report
+**vouches for a mirror only for the role and timeline the node had when it was
+made**: each report is stamped (`QsLsnEntry.in_recovery`, `.tli`,
+`qs_report_vouches`) and every read compares the stamp with the node now. A
+promotion changes both (it also starts a new timeline), so the standby's last
+report is void on the promoted node at the first read after `RecoveryInProgress()`
+turns false, in every backend, including sessions opened before the promotion and
+transactions that pinned their mirrors before it (`qs_pin_recovery`,
+`qs_pin_tli`). The same holds the other way: a primary's report (the regression
+harness, `validate/real/primary_report.sh`) is not honoured on a standby that a
+rewind has made of the old primary; it is not vouched for until the sidecar
+reports again. Before this, the check compared the last applied LSN with "now"
+only against the byte bound, so a 1GB bound kept a promoted node answering from
+its mirror until 1GB of WAL had passed (a measured 130 s, 1,237 of 1,246 polls;
+`bench/owed_live_2026-11-28`, `c_promote2.py`). A mirror that was fed and is no
+longer vouched for on a node that is not a standby is answered by the heap with
+the reason "this node is not a standby: its mirror is no longer fed", followed by
+the detail (it was "mirror is not fresh enough" before). A mirror nothing ever
+reported on keeps the generic reason.
+
+The sidecar's stand-down (`blank.go`, which reports 0/0) is no longer what stops
+the routing: the extension does not depend on it. It is still done, so that
+`quicksilver.mirror_status()` shows the mirror as unreadable, and `/readyz`
+says "stood down" (see [docs/16](16-deploying.md)).
+
+**One accessor.** `quicksilver.mirror_status()` used to read the applied LSN twice,
+once for its `applied_lsn` column and once inside the freshness check, each under
+its own lock, and a report that landed between the two could show NULL and fresh
+(or a value and not fresh). It now calls `qs_applied_at` once, and the freshness
+check (`qs_fresh_at`) takes that LSN and state. The read path, the planner's wait,
+the execution-time check and the status function all use `qs_applied_at`, so an
+applied LSN is shown exactly when the mirror may be read. A transaction that has
+pinned its mirrors reads the pins, as before. The NULL the earlier note recorded
+on A was not reproduced in the two recorded runs (`c2_run1.json`, `c2_run2.json`
+show a value with `fresh` false); the cause is the one above, and the one
+accessor removes the second read.
 
 What could go wrong instead is the lake. The node's `duckdb.allowed_directories`
 is copied from the node it came from, and the lake's catalog is the one the

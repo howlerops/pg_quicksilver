@@ -4,17 +4,20 @@
 # namespace, with their own mirror directory bind-mounted over $BASE/mirror (the same path on
 # both, as two Pods see it). ROWS orders, NC customers (bench layout, join domains on).
 set -uo pipefail
-PG=/var/lib/postgresql/w2e/pg/usr/lib/postgresql/17/bin
-BASE=/var/lib/postgresql/w2e
+# Overridable: BASE (data dir), PG (bin dir of the server), PP/PA/PB/HA/HB (ports), WT (checkout
+# with bench/engine_compare). The defaults are the original run's; see promote_live.md.
 SD=$(cd "$(dirname "$0")" && pwd)
-WT=/home/user/pg_quicksilver/.claude/worktrees/agent-a63c879ecb16e1405
+PG=${PG:-/var/lib/postgresql/w2e/pg/usr/lib/postgresql/17/bin}
+BASE=${BASE:-/var/lib/postgresql/w2e}
+export BASE
+WT=${WT:-$(cd "$SD/../.." && pwd)}
 C=$BASE/c
 MIR=$BASE/mirror
-PP=6620; PA=6621; PB=6622; HA=6623; HB=6624
+PP=${PP:-6620}; PA=${PA:-6621}; PB=${PB:-6622}; HA=${HA:-6623}; HB=${HB:-6624}
 ROWS=${ROWS:-300000}; NC=${NC:-50000}
 die() { echo "FAIL: $*" >&2; exit 1; }
 q() { su postgres -c "$PG/psql -X -h /tmp -p $1 -U postgres -d ${3:-app} -v ON_ERROR_STOP=1 -Atc \"$2\""; }
-rm -rf "$C"; mkdir -p "$C" "$MIR" "$C/mirrorA" "$C/mirrorB"; chown -R postgres:postgres "$C"
+rm -rf "$C"; mkdir -p "$C" "$MIR" "$C/mirrorA" "$C/mirrorB"; chown -R postgres:postgres "$C" "$MIR"
 su postgres -c "$PG/initdb -D $C/primary -U postgres -A trust -E UTF8 --locale=C.UTF-8 --locale-provider=icu --icu-locale=en-US" >/dev/null 2>&1 || die initdb
 mkdir -p "$C/primary/pg_duckdb" && cp -a /var/lib/postgresql/qs-acc173/int/primary/pg_duckdb/extensions "$C/primary/pg_duckdb/" && chown -R postgres:postgres "$C/primary/pg_duckdb"
 cat >> "$C/primary/postgresql.conf" <<CONF

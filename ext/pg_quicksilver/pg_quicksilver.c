@@ -259,7 +259,44 @@ typedef struct QsLsnEntry
 	QsLsnKey	key;
 	XLogRecPtr	lsn;
 	TimestampTz at;
+	/*
+	 * The role and timeline the node had when this LSN was reported. A report
+	 * vouches for a mirror only for that role and timeline (qs_report_vouches):
+	 * a standby's report says nothing once the node is promoted, whatever
+	 * quicksilver.max_lag says, and a primary's report says nothing once the
+	 * node is a standby again.
+	 */
+	bool		in_recovery;
+	TimeLineID	tli;
 } QsLsnEntry;
+
+/*
+ * The timeline this node is on now: the replay timeline while it is a standby
+ * (shared state, so a session that was opened before a promotion sees the same
+ * answer as a new one), the insertion timeline otherwise.
+ */
+static TimeLineID
+qs_node_tli(void)
+{
+	TimeLineID	tli = 0;
+
+	if (RecoveryInProgress())
+		(void) GetXLogReplayRecPtr(&tli);
+	else
+		tli = GetWALInsertionTimeLineIfSet();
+	return tli;
+}
+
+/*
+ * Whether a report still vouches for a mirror on this node: only if the node is
+ * in the role, and on the timeline, it had when the report was made. A promotion
+ * changes both, so a standby's report is void on the promoted node at once.
+ */
+static bool
+qs_report_vouches(const QsLsnEntry *e)
+{
+	return e->in_recovery == RecoveryInProgress() && e->tli == qs_node_tli();
+}
 
 /*
  * A join domain column this node reports complete (quicksilver.report_join_complete).
@@ -558,7 +595,7 @@ static bool qs_decide_again = false;	/* this is the last of QS_DECIDE_ATTEMPTS a
  * approved (found by validate/real/freshness.py; docs/40).
  *
  * qs_pin() records every mirror's reported LSN at that moment; for the rest
- * of the transaction qs_applied_lsn() answers from the record. Waiting for a
+ * of the transaction qs_applied_at() answers from the record. Waiting for a
  * mirror to catch up is therefore only possible before the pin.
  */
 typedef struct QsPin
@@ -570,6 +607,23 @@ static bool qs_xact_pinned = false;
 static int	qs_npins = 0;
 static int	qs_pins_cap = 0;
 static QsPin *qs_pins = NULL;
+/*
+ * The role and timeline the pins were taken under. A promotion inside a
+ * transaction block changes both, and the pins then vouch for nothing: the
+ * read path answers "not vouched" for them, as it does for a live report.
+ */
+static bool qs_pin_recovery = false;
+static TimeLineID qs_pin_tli = 0;
+
+/* Why a mirror has no applied LSN on this node (qs_applied_at); OK when it has one. */
+typedef enum QsApplied
+{
+	QS_APPLIED_OK,				/* the LSN is set */
+	QS_APPLIED_NONE,			/* nothing reported for it on this node */
+	QS_APPLIED_BLOCKED,			/* reported 0/0: not to be read here */
+	QS_APPLIED_UNVOUCHED,		/* reported in another role or on another timeline */
+	QS_APPLIED_UNPINNED			/* registered after this transaction's snapshot was fixed */
+} QsApplied;
 
 /* the plan whose freshness was decided when it was made, in this transaction; used once */
 static void *qs_gated_plan = NULL;
@@ -3844,13 +3898,14 @@ qs_join_recheck(List *seen, uint64 *seen_gen)
 /* ---------------------------------------------------------------- freshness */
 
 static XLogRecPtr
-qs_reported_lsn(Oid relid, bool *blocked)
+qs_reported_lsn(Oid relid, bool *blocked, bool *unvouched)
 {
 	QsLsnKey	key;
 	QsLsnEntry *e;
 	XLogRecPtr	lsn = InvalidXLogRecPtr;
 
 	*blocked = false;
+	*unvouched = false;
 	if (!qs_shared)
 		return lsn;
 	memset(&key, 0, sizeof(key));
@@ -3863,6 +3918,8 @@ qs_reported_lsn(Oid relid, bool *blocked)
 		lsn = e->lsn;
 		/* 0/0 was reported: whoever writes the mirror on this node says not to read it */
 		*blocked = (lsn == InvalidXLogRecPtr);
+		/* made in another role or on another timeline: it vouches for nothing here */
+		*unvouched = !qs_report_vouches(e);
 	}
 	LWLockRelease(qs_shared->lock);
 	return lsn;
@@ -3880,44 +3937,85 @@ qs_current_lsn(void)
 	return RecoveryInProgress() ? GetXLogReplayRecPtr(NULL) : GetXLogInsertRecPtr();
 }
 
+/*
+ * What a mirror's applied LSN is on this node for the statement, and why there is
+ * none. This is the ONE accessor: the read path, the gate, the execution check and
+ * quicksilver.mirror_status() all take their LSN here, so they cannot disagree
+ * about one mirror (mirror_status used to read it twice, once for the column and
+ * once inside the freshness check).
+ */
 static XLogRecPtr
-qs_applied_lsn(QsMirror *m)
+qs_applied_at(QsMirror *m, QsApplied *st)
 {
 	bool		blocked;
+	bool		unvouched;
 	XLogRecPtr	r;
 
 	if (qs_xact_pinned)
 	{
 		int			i;
 
+		/* a promotion inside this transaction voids what was pinned under the old role */
+		if (qs_pin_recovery != RecoveryInProgress() || qs_pin_tli != qs_node_tli())
+		{
+			*st = QS_APPLIED_UNVOUCHED;
+			return InvalidXLogRecPtr;
+		}
 		for (i = 0; i < qs_npins; i++)
 			if (qs_pins[i].heap == m->heap)
+			{
+				*st = qs_pins[i].lsn == InvalidXLogRecPtr ? QS_APPLIED_UNPINNED : QS_APPLIED_OK;
 				return qs_pins[i].lsn;
-		return InvalidXLogRecPtr;	/* registered after this transaction's snapshot was fixed */
+			}
+		*st = QS_APPLIED_UNPINNED;	/* registered after this transaction's snapshot was fixed */
+		return InvalidXLogRecPtr;
 	}
-	r = qs_reported_lsn(m->heap, &blocked);
+	r = qs_reported_lsn(m->heap, &blocked, &unvouched);
 
+	/*
+	 * A report made in another role or timeline is not this node's answer, and
+	 * neither is the registry's column below: the report is the only thing that
+	 * vouches for a mirror on a node.
+	 */
+	if (unvouched)
+	{
+		*st = QS_APPLIED_UNVOUCHED;
+		return InvalidXLogRecPtr;
+	}
 	/*
 	 * The registry's column is the same on every node and each node has its
 	 * own mirror: a report of 0/0 here (halted, being rebuilt, not published)
-	 * is this node's answer and the column does not overrule it.
+	 * is this node's answer and the column does not overrule it. The column is
+	 * not stamped with a role, so it vouches only on a standby, the node a
+	 * sidecar feeds; on a primary the mirror is the node's own report
+	 * (validate/real/primary_report.sh).
 	 */
 	if (blocked)
+	{
+		*st = QS_APPLIED_BLOCKED;
 		return InvalidXLogRecPtr;
-	return Max(r, m->table_lsn);
+	}
+	if (!RecoveryInProgress())
+	{
+		*st = r == InvalidXLogRecPtr ? QS_APPLIED_NONE : QS_APPLIED_OK;
+		return r;
+	}
+	r = Max(r, m->table_lsn);
+	*st = r == InvalidXLogRecPtr ? QS_APPLIED_NONE : QS_APPLIED_OK;
+	return r;
 }
 
 /*
- * The reason a mirror that failed qs_fresh is given. A node that is not a
- * standby has no sidecar feeding its mirror, so a mirror that was fed and is
- * no longer fresh is the promoted node's case (Item F): the reason says that,
- * and keeps the detail of why. A mirror nothing ever reported on keeps the
- * generic reason, which is the answer on a node that never had a feed.
+ * The reason a mirror that failed the freshness check is given. A node that is not
+ * a standby has no sidecar feeding its mirror, so a report made in recovery that
+ * is no longer vouched for is the promoted node's case (Item F): the reason says
+ * that, and keeps the detail of why. Anything else keeps the generic reason, which
+ * is the answer on a node that never had a feed.
  */
 static QsReason
-qs_stale_reason(QsMirror *m, char *why, size_t whylen)
+qs_stale_reason(char *why, size_t whylen, QsApplied st)
 {
-	if (!RecoveryInProgress() && qs_applied_lsn(m) != InvalidXLogRecPtr)
+	if (!RecoveryInProgress() && st == QS_APPLIED_UNVOUCHED)
 	{
 		char		was[512];
 
@@ -3928,22 +4026,36 @@ qs_stale_reason(QsMirror *m, char *why, size_t whylen)
 	return QR_STALE;
 }
 
+/*
+ * The freshness check, given the LSN and state qs_applied_at returned for it.
+ * The role check is in qs_applied_at (a report from another role is unvouched
+ * whatever the bound says), so the bound below only ever sees a vouched LSN.
+ */
 static bool
-qs_fresh(QsMirror *m, XLogRecPtr now, char *why, size_t whylen)
+qs_fresh_at(QsMirror *m, XLogRecPtr applied, QsApplied st, XLogRecPtr now, char *why, size_t whylen)
 {
-	XLogRecPtr	applied = qs_applied_lsn(m);
 	int64		bound = m->max_lag >= 0 ? m->max_lag : (int64) qs_max_lag_kb * 1024;
 
 	if (applied == InvalidXLogRecPtr)
 	{
-		bool		blocked;
-
-		(void) qs_reported_lsn(m->heap, &blocked);
-		if (qs_xact_pinned && !blocked && qs_reported_lsn(m->heap, &blocked) != InvalidXLogRecPtr)
-			snprintf(why, whylen, "%s: nothing was reported for it when this transaction's lake snapshot was fixed", m->heapname);
-		else
-			snprintf(why, whylen, blocked ? "%s: its mirror on this node is reported unreadable (halted, rebuilding or not published)"
-				 : "%s: no applied LSN has been reported", m->heapname);
+		switch (st)
+		{
+			case QS_APPLIED_UNVOUCHED:
+				snprintf(why, whylen, "%s: its report on this node was made in another role or on another timeline; it is not vouched for until the sidecar reports again",
+						 m->heapname);
+				break;
+			case QS_APPLIED_BLOCKED:
+				snprintf(why, whylen, "%s: its mirror on this node is reported unreadable (halted, rebuilding or not published)",
+						 m->heapname);
+				break;
+			case QS_APPLIED_UNPINNED:
+				snprintf(why, whylen, "%s: nothing was reported for it when this transaction's lake snapshot was fixed",
+						 m->heapname);
+				break;
+			default:
+				snprintf(why, whylen, "%s: no applied LSN has been reported", m->heapname);
+				break;
+		}
 		return false;
 	}
 
@@ -4008,16 +4120,20 @@ qs_pin(void)
 	hash_seq_init(&seq, qs_mirror_hash);
 	while ((m = hash_seq_search(&seq)) != NULL)
 	{
+		QsApplied	st;
+
 		if (n >= qs_pins_cap)
 		{
 			hash_seq_term(&seq);
 			break;
 		}
 		qs_pins[n].heap = m->heap;
-		qs_pins[n].lsn = qs_applied_lsn(m);	/* live: not pinned yet */
+		qs_pins[n].lsn = qs_applied_at(m, &st);	/* live: not pinned yet */
 		n++;
 	}
 	qs_npins = n;
+	qs_pin_recovery = RecoveryInProgress();
+	qs_pin_tli = qs_node_tli();
 	qs_xact_pinned = true;
 }
 
@@ -4186,19 +4302,24 @@ qs_gate(List *heaps, XLogRecPtr now, bool reload, bool may_wait, double cost, ch
 				strlcpy(why, "the mirror is no longer registered", whylen);
 				can_wait = false;
 			}
-			else if (!qs_fresh(m, now, why, whylen))
+			else
 			{
-				state = qs_stale_reason(m, why, whylen);
-				/*
-				 * Nobody is going to report an LSN for it in the next few
-				 * milliseconds, or it is past this statement's position: a
-				 * report that is ahead of it does not come back down, so
-				 * waiting cannot help (the heap answers). Nor does a node
-				 * that is not a standby catch up: nothing feeds it.
-				 */
-				if (qs_applied_lsn(m) == InvalidXLogRecPtr || qs_applied_lsn(m) > now ||
-					!RecoveryInProgress())
-					can_wait = false;
+				QsApplied	st;
+				XLogRecPtr	applied = qs_applied_at(m, &st);
+
+				if (!qs_fresh_at(m, applied, st, now, why, whylen))
+				{
+					state = qs_stale_reason(why, whylen, st);
+					/*
+					 * Nobody is going to report an LSN for it in the next few
+					 * milliseconds, or it is past this statement's position: a
+					 * report that is ahead of it does not come back down, so
+					 * waiting cannot help (the heap answers). Nor does a node
+					 * that is not a standby catch up: nothing feeds it.
+					 */
+					if (applied == InvalidXLogRecPtr || applied > now || !RecoveryInProgress())
+						can_wait = false;
+				}
 			}
 			if (state >= 0)
 				break;
@@ -5985,8 +6106,14 @@ qs_decide(Query *orig, PlannedStmt *heap, const char *query_string, int cursorOp
 	{
 		now = qs_current_lsn();
 		foreach(lc, w.mirrors)
-			if (!qs_fresh((QsMirror *) lfirst(lc), now, detail, sizeof(detail)))
-				QS_HEAP(qs_stale_reason((QsMirror *) lfirst(lc), detail, sizeof(detail)), detail, NIL);
+		{
+			QsMirror   *wm = (QsMirror *) lfirst(lc);
+			QsApplied	st;
+			XLogRecPtr	applied = qs_applied_at(wm, &st);
+
+			if (!qs_fresh_at(wm, applied, st, now, detail, sizeof(detail)))
+				QS_HEAP(qs_stale_reason(detail, sizeof(detail), st), detail, NIL);
+		}
 	}
 
 	/* the executor will say so properly; do not even ask the mirror */
@@ -6667,6 +6794,8 @@ qs_report_applied_lsn_impl(PG_FUNCTION_ARGS)
 	{
 		e->lsn = lsn;			/* the reporter knows; it may go backwards after a rebuild */
 		e->at = GetCurrentTimestamp();
+		e->in_recovery = RecoveryInProgress();
+		e->tli = qs_node_tli();
 	}
 	LWLockRelease(qs_shared->lock);
 	qs_lsn_swept = qs_load_count;
@@ -6680,6 +6809,8 @@ qs_report_applied_lsn_impl(PG_FUNCTION_ARGS)
 		{
 			e->lsn = lsn;
 			e->at = GetCurrentTimestamp();
+			e->in_recovery = RecoveryInProgress();
+			e->tli = qs_node_tli();
 		}
 		LWLockRelease(qs_shared->lock);
 	}
@@ -6775,9 +6906,10 @@ qs_mirror_status_impl(PG_FUNCTION_ARGS)
 	{
 		Datum		values[9];
 		bool		nulls[9] = {0};
-		XLogRecPtr	applied = qs_applied_lsn(m);
+		QsApplied	st;
+		XLogRecPtr	applied = qs_applied_at(m, &st);	/* the one read: applied and fresh agree */
 		char		why[QS_DETAIL_LEN] = "";
-		bool		fresh = qs_fresh(m, now, why, sizeof(why));
+		bool		fresh = qs_fresh_at(m, applied, st, now, why, sizeof(why));
 		StringInfoData cols;
 		int			i;
 

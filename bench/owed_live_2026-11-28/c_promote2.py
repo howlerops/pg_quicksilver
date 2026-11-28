@@ -15,15 +15,22 @@ import psycopg
 
 OUT = sys.argv[1]
 POLL_S = float(os.environ.get("POLL_S", "0.1"))
-BASE = "/var/lib/postgresql/w2e"
+BASE = os.environ.get("BASE", "/var/lib/postgresql/w2e")
 C = f"{BASE}/c"
-PG = f"{BASE}/pg/usr/lib/postgresql/17/bin"
+PG = os.environ.get("PG", f"{BASE}/pg/usr/lib/postgresql/17/bin")
 MIR = f"{BASE}/mirror"
 SD = os.path.dirname(os.path.abspath(__file__))
-PP, PA, PB, HA, HB = 6620, 6621, 6622, 6623, 6624
+PP, PA, PB, HA, HB = (int(os.environ.get(k, d)) for k, d in
+                      (("PP", 6620), ("PA", 6621), ("PB", 6622), ("HA", 6623), ("HB", 6624)))
 T0 = time.time()
 EV = []
-POLL = {"strict": [], "lag1gb": []}
+# POLL_HEAP=0 drops the heap count from each poll (the routed count and the decision remain);
+# NPOLL_1GB sessions poll with max_lag = 1GB, from before the stop, in parallel.
+POLL_HEAP = os.environ.get("POLL_HEAP", "1") != "0"
+NPOLL_1GB = int(os.environ.get("NPOLL_1GB", "1"))
+POLL = {"strict": []}
+for _i in range(NPOLL_1GB):
+    POLL["lag1gb" if _i == 0 else f"lag1gb_{_i}"] = []
 WRITES = []
 stop_all = threading.Event()
 writer_port = [PP]
@@ -106,9 +113,11 @@ def poller(name, max_lag):
                     c.execute(f"SET quicksilver.max_lag = '{max_lag}'")
             routed = c.execute("SELECT count(*) FROM public.orders").fetchone()[0]
             dec = c.execute("SELECT quicksilver.last_decision()").fetchone()[0]
-            c.execute("SET quicksilver.route = 'heap'")
-            heap = c.execute("SELECT count(*) FROM public.orders").fetchone()[0]
-            c.execute("SET quicksilver.route = 'auto'")
+            heap = None
+            if POLL_HEAP:
+                c.execute("SET quicksilver.route = 'heap'")
+                heap = c.execute("SELECT count(*) FROM public.orders").fetchone()[0]
+                c.execute("SET quicksilver.route = 'auto'")
             POLL[name].append({"t": t, "routed": routed, "heap": heap, "decision": dec[0], "reason": dec[1],
                                "detail": str(dec[2])[:160]})
         except Exception as e:
@@ -122,11 +131,28 @@ def poller(name, max_lag):
         time.sleep(POLL_S)
 
 
+FLIP = {"observed": None}
+
+
+def flip_monitor():
+    """The first moment pg_is_in_recovery() reads false on A, from a session of its own."""
+    c = conn(PA)
+    while not stop_all.is_set():
+        try:
+            if not c.execute("SELECT pg_is_in_recovery()").fetchone()[0]:
+                FLIP["observed"] = ts()
+                return
+        except Exception:
+            time.sleep(0.05)
+        time.sleep(0.005)
+
+
 # ---- 1. pollers and writer -----------------------------------------------------------------
 ev("start: writer on P, pollers on A (max_lag default, and 1GB)")
 ths = [threading.Thread(target=writer, daemon=True),
        threading.Thread(target=poller, args=("strict", None), daemon=True),
-       threading.Thread(target=poller, args=("lag1gb", "1GB"), daemon=True)]
+       threading.Thread(target=flip_monitor, daemon=True)]
+ths += [threading.Thread(target=poller, args=(n, "1GB"), daemon=True) for n in POLL if n.startswith("lag1gb")]
 for th in ths:
     th.start()
 time.sleep(15)
@@ -261,7 +287,20 @@ ev("final comparison", **final)
 verify = sh(f"{BASE}/qs-verify -dsn 'host=/tmp port={PB} dbname=app user=postgres' -mirror {C}/mirrorB -table public.orders")
 ev("qs-verify B mirror against B heap", out=verify.splitlines()[-1])
 
+# The flip: the first poll that STARTED after the monitor saw pg_is_in_recovery() false on A.
+# Every such poll must be heap-answered (the acceptance of the promotion fix).
+flip = FLIP["observed"]
+after = {}
+for name in POLL:
+    rows = [r for r in POLL[name] if "decision" in r and flip is not None and r["t"] >= flip]
+    span = (rows[-1]["t"] - rows[0]["t"]) if len(rows) > 1 else 0
+    after[name] = {"polls": len(rows),
+                   "mirror": sum(1 for r in rows if r["decision"] == "mirror"),
+                   "heap": sum(1 for r in rows if r["decision"] == "heap"),
+                   "hz": round(len(rows) / span, 1) if span > 0 else None}
+ev("after the flip (pg_is_in_recovery false on A)", flip_observed_at=flip, polls_after_flip=after)
 res = {"t_stop": t_stop, "t_promote": t_promote, "t_b_start": t_b_start, "t_b_ready": t_b_ready,
+       "flip_observed_at": flip, "after_flip": after,
        "events": EV, "polls": POLL, "samples": samples, "writes": sum(WRITES), "final": final}
 json.dump(res, open(OUT, "w"), indent=1, default=str)
 print("wrote", OUT)

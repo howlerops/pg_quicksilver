@@ -266,6 +266,9 @@ func supervise(ctx context.Context, log *slog.Logger, o options, h *health.Healt
 				}
 				wasPrimary = true
 			}
+			// /readyz says so, instead of the last applied LSN and its lag (the
+			// health package keeps the probe at 200 for a primary).
+			h.SetStoodDown(true)
 			h.RecordCaughtUp() // a node that builds no mirror is never stale
 			// The primary is where every Quicksilver slot of this cluster
 			// lives, and this instance is the only one with a superuser
@@ -276,6 +279,7 @@ func supervise(ctx context.Context, log *slog.Logger, o options, h *health.Healt
 		}
 
 		wasPrimary = false
+		h.SetStoodDown(false)
 		err = runMirror(ctx, log, o, h)
 		if ctx.Err() != nil {
 			return

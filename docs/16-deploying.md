@@ -1217,6 +1217,24 @@ from the lake only while the lag is within `quicksilver.max_lag` (strict freshne
 refuses it as the WAL moves). That is the documented meaning of `max_lag`, and it
 is why the cleanup below exists.
 
+**A promoted node does not depend on that cleanup.** The extension stamps each
+report with the role and timeline it was made under, and a report vouches for a
+mirror only for that role and timeline (docs/40, "Promotion"). So a standby's last
+report stops serving reads on the promoted node at the first read after the
+promotion, whatever `quicksilver.max_lag` says, even if the sidecar never managed
+to clear it. The sidecar's clearing still runs, so that `mirror_status()` shows the
+table unreadable.
+
+**`/readyz` after a stand-down.** A sidecar that stands down because its node is
+the primary reports `"ready": true` and the reason `stood down: this node is the
+primary; its mirror is not fed and is not read here`, with `"stood_down": true`
+and no `applied_lsn`, `head_lsn` or lag: the last applied position of a standby
+is not the mirror's position once nothing feeds it. It stays HTTP 200 on purpose.
+In `mode: takeover` the readiness probe is the readiness of the whole instance
+Pod, PostgreSQL included (`go/internal/plugin/lifecycle.go`), so a 503 here
+would take the primary out of its Services. The gauge `quicksilver_stood_down`
+shows the state to a dashboard, and it clears when the node is a standby again.
+
 **Registry rows of tables nobody mirrors.** Each sidecar keeps a claim row in
 `quicksilver.sidecar_claims` (one per pod, refreshed every 30s, under the registry
 lock): the tables it is configured for and when it last said so. The janitor on
