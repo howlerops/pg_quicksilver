@@ -1,0 +1,265 @@
+{
+ "mode": "drain",
+ "events": [
+  {
+   "t": 1795879987.854,
+   "event": "replay paused"
+  },
+  {
+   "t": 1795879987.929,
+   "event": "primary orders before",
+   "n": 1201465
+  },
+  {
+   "t": 1795879992.858,
+   "event": "readiness during hold",
+   "seen": true,
+   "body": "{\"ready\":true,\"reason\":\"lag 5.1s within SLO 30.0s; waiting for local replay: 121 change(s) held back until the standby replays through 0/2EE6AB41 (replay is at 0/2EE693C0)\",\"applied_lsn\":\"0/2ED552C8\",\"head_lsn\":\"0/2ED554B8\",\"lag_bytes\":496,\"lag_seconds\":5.082063217,\"compaction_backlog\":17,\"diverged\":false,\"bootstrapped\":true,\"verified_seconds_ago\":0,\"slot_retained_bytes\":47423008,\"replay_held\":tru"
+  },
+  {
+   "t": 1795879992.86,
+   "event": "slot and applied",
+   "slot_confirmed_flush": "0/2EE69388",
+   "min_applied": "0/2ED552C8",
+   "per_table": {
+    "orders": "0/2ED554B7",
+    "customers": "0/2ED552C8"
+   },
+   "slot_le_applied_plus_1": false
+  },
+  {
+   "t": 1795879992.86,
+   "event": "slot vs applied",
+   "confirmed_flush": "0/2EE69388",
+   "applied_lsn": "0/2ED552C8"
+  },
+  {
+   "t": 1795879994.695,
+   "event": "routed vs heap during hold",
+   "pairs": [
+    [
+     1201465,
+     1201465
+    ],
+    [
+     1201465,
+     1201465
+    ],
+    [
+     1201465,
+     1201465
+    ],
+    [
+     1201465,
+     1201465
+    ],
+    [
+     1201465,
+     1201465
+    ],
+    [
+     1201465,
+     1201465
+    ],
+    [
+     1201465,
+     1201465
+    ],
+    [
+     1201465,
+     1201465
+    ]
+   ]
+  },
+  {
+   "t": 1795879994.695,
+   "event": "replay resumed"
+  },
+  {
+   "t": 1795879994.981,
+   "event": "draining observed",
+   "routed": 1201525,
+   "heap": 1201525,
+   "want": 1301585
+  },
+  {
+   "t": 1795879996.894,
+   "event": "kill -9",
+   "pid": 14343,
+   "dead": true
+  },
+  {
+   "t": 1795879996.895,
+   "event": "slot and applied",
+   "slot_confirmed_flush": "0/2EF26A81",
+   "min_applied": "0/2EF26A80",
+   "per_table": {
+    "orders": "0/2EF26A80",
+    "customers": "0/2EF26A80"
+   },
+   "slot_le_applied_plus_1": true
+  },
+  {
+   "t": 1795879996.895,
+   "event": "slot vs applied after kill",
+   "confirmed_flush": "0/2EF26A81",
+   "applied_lsn": "0/2EF26A80"
+  },
+  {
+   "t": 1795879997.51,
+   "event": "sidecar start",
+   "rc": 0,
+   "pid": 15403,
+   "err": ""
+  },
+  {
+   "t": 1795879997.511,
+   "event": "readiness after restart (resumed)",
+   "body": "{\"ready\":true,\"reason\":\"lag 0.1s within SLO 30.0s\",\"applied_lsn\":\"\",\"head_lsn\":\"\",\"lag_bytes\":0,\"lag_seconds\":0.087850916,\"compaction_backlog\":0,\"diverged\":false,\"bootstrapped\":true,\"verified_seconds_ago\":0,\"slot_retained_bytes\":0}\n"
+  },
+  {
+   "t": 1795879997.786,
+   "event": "caught up after restart (s)",
+   "s": 0.27
+  },
+  {
+   "t": 1795880013.105,
+   "event": "verify",
+   "verify": {
+    "public.orders": {
+     "primary": [
+      1301585,
+      1301585,
+      "702732761f019c16caa3750b79337613"
+     ],
+     "standby_heap": [
+      1301585,
+      1301585,
+      "702732761f019c16caa3750b79337613"
+     ],
+     "standby_routed": [
+      1301585,
+      1301585,
+      "702732761f019c16caa3750b79337613"
+     ],
+     "equal": true
+    },
+    "public.customers": {
+     "primary": [
+      500360,
+      500360,
+      "ce17ba101d533a93a4f8f06a5bb9f33a"
+     ],
+     "standby_heap": [
+      500360,
+      500360,
+      "ce17ba101d533a93a4f8f06a5bb9f33a"
+     ],
+     "standby_routed": [
+      500360,
+      500360,
+      "ce17ba101d533a93a4f8f06a5bb9f33a"
+     ],
+     "equal": true
+    },
+    "qs_verify": {
+     "public.orders": {
+      "rc": 0,
+      "out": "applied_lsn=0/30FE0597\nmirror 1301585 rows (checksum 9c2747f5ecb1c)\nsource 1301585 rows (checksum 9c2747f5ecb1c)\nMATCH\n"
+     },
+     "public.customers": {
+      "rc": 0,
+      "out": "applied_lsn=0/30FE0597\nmirror 500360 rows (checksum a61d5d9c195f392a)\nsource 500360 rows (checksum a61d5d9c195f392a)\nMATCH\n"
+     }
+    }
+   }
+  }
+ ],
+ "samples": [
+  {
+   "when": "hold",
+   "pairs": [
+    [
+     1201465,
+     1201465
+    ],
+    [
+     1201465,
+     1201465
+    ],
+    [
+     1201465,
+     1201465
+    ],
+    [
+     1201465,
+     1201465
+    ],
+    [
+     1201465,
+     1201465
+    ],
+    [
+     1201465,
+     1201465
+    ],
+    [
+     1201465,
+     1201465
+    ],
+    [
+     1201465,
+     1201465
+    ]
+   ]
+  }
+ ],
+ "verify": {
+  "public.orders": {
+   "primary": [
+    1301585,
+    1301585,
+    "702732761f019c16caa3750b79337613"
+   ],
+   "standby_heap": [
+    1301585,
+    1301585,
+    "702732761f019c16caa3750b79337613"
+   ],
+   "standby_routed": [
+    1301585,
+    1301585,
+    "702732761f019c16caa3750b79337613"
+   ],
+   "equal": true
+  },
+  "public.customers": {
+   "primary": [
+    500360,
+    500360,
+    "ce17ba101d533a93a4f8f06a5bb9f33a"
+   ],
+   "standby_heap": [
+    500360,
+    500360,
+    "ce17ba101d533a93a4f8f06a5bb9f33a"
+   ],
+   "standby_routed": [
+    500360,
+    500360,
+    "ce17ba101d533a93a4f8f06a5bb9f33a"
+   ],
+   "equal": true
+  },
+  "qs_verify": {
+   "public.orders": {
+    "rc": 0,
+    "out": "applied_lsn=0/30FE0597\nmirror 1301585 rows (checksum 9c2747f5ecb1c)\nsource 1301585 rows (checksum 9c2747f5ecb1c)\nMATCH\n"
+   },
+   "public.customers": {
+    "rc": 0,
+    "out": "applied_lsn=0/30FE0597\nmirror 500360 rows (checksum a61d5d9c195f392a)\nsource 500360 rows (checksum a61d5d9c195f392a)\nMATCH\n"
+   }
+  }
+ }
+}

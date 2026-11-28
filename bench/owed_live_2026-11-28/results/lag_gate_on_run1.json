@@ -1,0 +1,9 @@
+{
+ "label": "gate_on_run1",
+ "commits": 1109,
+ "seen": 1109,
+ "median_ms": 30.9,
+ "p95_ms": 73.8,
+ "max_ms": 112.3,
+ "min_ms": -3.2
+}
