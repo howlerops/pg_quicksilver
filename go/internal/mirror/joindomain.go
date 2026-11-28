@@ -213,11 +213,13 @@ func (t *Table) AttachJoinDomains(jd *JoinDomains) error {
 	}
 	if len(bind) == 0 {
 		t.joins, t.joinDicts = nil, nil
+		t.backfillValid = false
 		return nil
 	}
 	t.joins = bind
 	t.joinDicts = dicts
 	t.joinFileCache = nil
+	t.backfillValid = false
 	return nil
 }
 

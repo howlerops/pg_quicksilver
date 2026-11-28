@@ -562,6 +562,16 @@ func runMirror(ctx context.Context, log *slog.Logger, o options, h *health.Healt
 		if err := t.AttachJoinDomains(jd); err != nil {
 			return fmt.Errorf("%s: %w", qualified, err)
 		}
+		if t.BackfillDue() {
+			// Configured but not complete: the files were written before the
+			// domain was attached. Say so, and say what will happen, so it is
+			// not mistaken for a domain that does nothing.
+			done, total, _ := t.BackfillProgress()
+			log.Warn("join domain configured but incomplete: this table's files predate it; "+
+				"a background base rewrite (one at a time) adds the companions, then joins use the domain",
+				"table", qualified, "join_backfill", fmt.Sprintf("%d of %d files", done, total),
+				"why", mirror.JoinBackfillReason)
+		}
 		lakeAttach(t)
 		tables[qualified] = t
 	}
@@ -1220,6 +1230,26 @@ func pump(
 			return errAllHalted(tables)
 		}
 		tt.done("apply")
+		// CONFIRM INVARIANT. The server is told a position P is consumed only
+		// when every transaction committing below P is durable in every table
+		// that is not halted:
+		//   - head is applied to every non-halted table before this line; each
+		//     Apply writes and fsyncs its manifest (or, for a table the batch
+		//     did not touch, records it in watermark.json at the next step);
+		//   - Confirm runs changestream.BeforeConfirm first, which makes the
+		//     root watermark durable (mirror.SyncWatermarks), then records P;
+		//   - what is NOT confirmed: transactions held by the replay gate
+		//     (pending, in memory; the slot keeps them and a restart resends
+		//     them), transactions still being received or spooled (spool files
+		//     are never confirmed past and are deleted at start), and any
+		//     transaction after head.
+		//   - the idle advance confirms only when pending is empty, and only
+		//     to idleTarget, which is at most replay+1 under the gate.
+		// Checked by mirror.TestConfirmNeverPassesWhatIsNotDurable, which kills
+		// the model at every step and reads the durable state from disk.
+		// Note for mirror_status readers: its applied_lsn is the publisher's
+		// last PUBLISHED position (extension.go lsns), which trails durable
+		// applies, so it may sit below the slot without anything being lost.
 		last := head[len(head)-1]
 		if err := st.Confirm(ctx, last.NextLSN); err != nil {
 			return fmt.Errorf("confirm: %w", err)
@@ -1363,6 +1393,11 @@ func maintain(log *slog.Logger, tables map[string]*mirror.Table, tt *tickTimer) 
 			if c := t.BeginCompaction(); c != nil {
 				log.Info("compaction started", "table", q, "why", reason,
 					"base_rows", t.State.BaseRows, "delta_rows", t.State.DeltaRows)
+				if reason == mirror.JoinBackfillReason {
+					done, total, _ := t.BackfillProgress()
+					log.Info("join domain backfill started", "table", q,
+						"join_backfill", fmt.Sprintf("%d of %d files", done, total))
+				}
 			}
 			tt.done("begin_compaction")
 

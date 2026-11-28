@@ -196,7 +196,17 @@ in `EXPLAIN` and no change in the routed time; the mirror was not rewritten to c
 bootstrapped with the registry from the start the rewrite is used. The join-domain columns are reported
 complete only once a complete manifest is published (`go/cmd/qs-mirror/extension.go`, the completeness
 comment), and an existing mirror's files have no companion column, so it is not complete. Not established
-whether it converges later; enable join domains at bootstrap. (2) In the first attempt the second sidecar
+whether it converges later; enable join domains at bootstrap.
+**Update (code, not yet measured live):** it now converges on its own. When a
+domain is attached to a table whose files lack the companion, `compactReason`
+returns `join-domain` (`mirror.JoinBackfillReason`, `go/internal/mirror/joinbackfill.go`)
+and the ordinary base rewrite runs in the background, one at a time, writing every
+live row with companions; the sidecar logs `join domain configured but incomplete`
+at start and `join domain backfill started ... "X of Y files"`. Completeness is
+still derived from the files, so an interrupted backfill is due again after a
+restart. Tests: `TestBackfillDueUntilEveryFileHasItsCompanion`,
+`TestBackfillNeverDueWithoutDomains`. The 1M-row restart timing and join
+comparison are not run (see the report in the commit message). (2) In the first attempt the second sidecar
 of §C wrote its lake path into the registry of the shared cluster; the first standby's lake fell outside its
 `duckdb.allowed_directories` and it never routed. Two sidecars on one cluster must see the same mirror path
 (per-node mount namespaces, as `joinpods_setup.sh` does).
