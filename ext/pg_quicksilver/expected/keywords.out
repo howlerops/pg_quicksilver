@@ -48,8 +48,8 @@ CREATE VIEW kwm.h AS
   FROM duckdb.query($$ SELECT * FROM (VALUES
       (1, 10, 20, 'm1', 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 100, 'm', 10),
       (2, 20, 40, 'm2', 20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 200, 'm', 20))
-    t(id, "at", "pivot", "qualify", asof, anti, semi, positional, lambda, describe, summarize, show, columns,
-      exclude, replace, "Pivot", "MixedCase", "we""ird", "a""b at") $$) r;
+    t(id, "at", "pivot", "qualify", "asof", "anti", "semi", "positional", "lambda", "describe", "summarize", "show", "columns",
+      "exclude", "replace", "Pivot", "MixedCase", "we""ird", "a""b at") $$) r;
 SELECT quicksilver.register_mirror('kw.h', 'kwm.h', 1000000000000);
  register_mirror 
 -----------------
@@ -272,6 +272,361 @@ SELECT v FROM kw."at" ORDER BY id;
  heap | reads a relation with no usable mirror | kw.at: heap relation is named like a DuckDB keyword: the mirror cannot write it in DuckDB's SQL
 (1 row)
 
+-- 108 columns named after DuckDB keywords, a keyword-named schema and table, and a keyword join column.
+-- Stock pg_duckdb refuses the table (its names cannot be written in DuckDB SQL); the patched build
+-- quotes them, so it is mirrored and routed. Every answer must equal the heap's.
+CREATE TABLE kw.all108 (id int PRIMARY KEY, "all" int, "analyse" int, "analyze" int, "and" int, "anti" int, "any" int, "array" int, "as" int, "asc" int, "asof" int, "asymmetric" int, "at" int, "authorization" int, "binary" int, "both" int, "by" int, "case" int, "cast" int, "check" int, "collate" int, "collation" int, "column" int, "columns" int, "concurrently" int, "constraint" int, "create" int, "cross" int, "default" int, "deferrable" int, "desc" int, "describe" int, "distinct" int, "do" int, "else" int, "end" int, "except" int, "exclude" int, "false" int, "fetch" int, "for" int, "foreign" int, "freeze" int, "from" int, "full" int, "glob" int, "group" int, "having" int, "ilike" int, "in" int, "initially" int, "inner" int, "intersect" int, "into" int, "is" int, "isnull" int, "join" int, "lambda" int, "lateral" int, "leading" int, "left" int, "like" int, "limit" int, "natural" int, "not" int, "notnull" int, "null" int, "offset" int, "on" int, "only" int, "or" int, "order" int, "outer" int, "overlaps" int, "pivot" int, "pivot_longer" int, "pivot_wider" int, "placing" int, "positional" int, "primary" int, "qualify" int, "references" int, "replace" int, "returning" int, "right" int, "select" int, "semi" int, "show" int, "similar" int, "some" int, "summarize" int, "symmetric" int, "table" int, "tablesample" int, "then" int, "to" int, "trailing" int, "true" int, "union" int, "unique" int, "unpack" int, "unpivot" int, "using" int, "variadic" int, "verbose" int, "when" int, "where" int, "window" int, "with" int, "MixedAt" int, "we""ird2" text, ts timestamptz);
+INSERT INTO kw.all108 VALUES (1, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 3, 't1', TIMESTAMPTZ '2024-01-01 10:30:00+00'), (2, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 6, 't2', TIMESTAMPTZ '2024-01-02 10:30:00+00'), (3, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 9, 't3', TIMESTAMPTZ '2024-01-03 10:30:00+00'), (4, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 12, 't4', TIMESTAMPTZ '2024-01-04 10:30:00+00');
+CREATE VIEW kwm.all108 AS SELECT r['id']::int AS id,
+       r['all']::int AS "all",
+       r['analyse']::int AS "analyse",
+       r['analyze']::int AS "analyze",
+       r['and']::int AS "and",
+       r['anti']::int AS "anti",
+       r['any']::int AS "any",
+       r['array']::int AS "array",
+       r['as']::int AS "as",
+       r['asc']::int AS "asc",
+       r['asof']::int AS "asof",
+       r['asymmetric']::int AS "asymmetric",
+       r['at']::int AS "at",
+       r['authorization']::int AS "authorization",
+       r['binary']::int AS "binary",
+       r['both']::int AS "both",
+       r['by']::int AS "by",
+       r['case']::int AS "case",
+       r['cast']::int AS "cast",
+       r['check']::int AS "check",
+       r['collate']::int AS "collate",
+       r['collation']::int AS "collation",
+       r['column']::int AS "column",
+       r['columns']::int AS "columns",
+       r['concurrently']::int AS "concurrently",
+       r['constraint']::int AS "constraint",
+       r['create']::int AS "create",
+       r['cross']::int AS "cross",
+       r['default']::int AS "default",
+       r['deferrable']::int AS "deferrable",
+       r['desc']::int AS "desc",
+       r['describe']::int AS "describe",
+       r['distinct']::int AS "distinct",
+       r['do']::int AS "do",
+       r['else']::int AS "else",
+       r['end']::int AS "end",
+       r['except']::int AS "except",
+       r['exclude']::int AS "exclude",
+       r['false']::int AS "false",
+       r['fetch']::int AS "fetch",
+       r['for']::int AS "for",
+       r['foreign']::int AS "foreign",
+       r['freeze']::int AS "freeze",
+       r['from']::int AS "from",
+       r['full']::int AS "full",
+       r['glob']::int AS "glob",
+       r['group']::int AS "group",
+       r['having']::int AS "having",
+       r['ilike']::int AS "ilike",
+       r['in']::int AS "in",
+       r['initially']::int AS "initially",
+       r['inner']::int AS "inner",
+       r['intersect']::int AS "intersect",
+       r['into']::int AS "into",
+       r['is']::int AS "is",
+       r['isnull']::int AS "isnull",
+       r['join']::int AS "join",
+       r['lambda']::int AS "lambda",
+       r['lateral']::int AS "lateral",
+       r['leading']::int AS "leading",
+       r['left']::int AS "left",
+       r['like']::int AS "like",
+       r['limit']::int AS "limit",
+       r['natural']::int AS "natural",
+       r['not']::int AS "not",
+       r['notnull']::int AS "notnull",
+       r['null']::int AS "null",
+       r['offset']::int AS "offset",
+       r['on']::int AS "on",
+       r['only']::int AS "only",
+       r['or']::int AS "or",
+       r['order']::int AS "order",
+       r['outer']::int AS "outer",
+       r['overlaps']::int AS "overlaps",
+       r['pivot']::int AS "pivot",
+       r['pivot_longer']::int AS "pivot_longer",
+       r['pivot_wider']::int AS "pivot_wider",
+       r['placing']::int AS "placing",
+       r['positional']::int AS "positional",
+       r['primary']::int AS "primary",
+       r['qualify']::int AS "qualify",
+       r['references']::int AS "references",
+       r['replace']::int AS "replace",
+       r['returning']::int AS "returning",
+       r['right']::int AS "right",
+       r['select']::int AS "select",
+       r['semi']::int AS "semi",
+       r['show']::int AS "show",
+       r['similar']::int AS "similar",
+       r['some']::int AS "some",
+       r['summarize']::int AS "summarize",
+       r['symmetric']::int AS "symmetric",
+       r['table']::int AS "table",
+       r['tablesample']::int AS "tablesample",
+       r['then']::int AS "then",
+       r['to']::int AS "to",
+       r['trailing']::int AS "trailing",
+       r['true']::int AS "true",
+       r['union']::int AS "union",
+       r['unique']::int AS "unique",
+       r['unpack']::int AS "unpack",
+       r['unpivot']::int AS "unpivot",
+       r['using']::int AS "using",
+       r['variadic']::int AS "variadic",
+       r['verbose']::int AS "verbose",
+       r['when']::int AS "when",
+       r['where']::int AS "where",
+       r['window']::int AS "window",
+       r['with']::int AS "with",
+       r['MixedAt']::int AS "MixedAt",
+       r['we"ird2']::text AS "we""ird2",
+       r['ts']::timestamptz AS ts
+  FROM duckdb.query($q$ SELECT * FROM (VALUES (1, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 3, 't1', TIMESTAMPTZ '2024-01-01 10:30:00+00'), (2, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 6, 't2', TIMESTAMPTZ '2024-01-02 10:30:00+00'), (3, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 9, 't3', TIMESTAMPTZ '2024-01-03 10:30:00+00'), (4, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 12, 't4', TIMESTAMPTZ '2024-01-04 10:30:00+00')) t(id, "all", "analyse", "analyze", "and", "anti", "any", "array", "as", "asc", "asof", "asymmetric", "at", "authorization", "binary", "both", "by", "case", "cast", "check", "collate", "collation", "column", "columns", "concurrently", "constraint", "create", "cross", "default", "deferrable", "desc", "describe", "distinct", "do", "else", "end", "except", "exclude", "false", "fetch", "for", "foreign", "freeze", "from", "full", "glob", "group", "having", "ilike", "in", "initially", "inner", "intersect", "into", "is", "isnull", "join", "lambda", "lateral", "leading", "left", "like", "limit", "natural", "not", "notnull", "null", "offset", "on", "only", "or", "order", "outer", "overlaps", "pivot", "pivot_longer", "pivot_wider", "placing", "positional", "primary", "qualify", "references", "replace", "returning", "right", "select", "semi", "show", "similar", "some", "summarize", "symmetric", "table", "tablesample", "then", "to", "trailing", "true", "union", "unique", "unpack", "unpivot", "using", "variadic", "verbose", "when", "where", "window", "with", "MixedAt", "we""ird2", "ts") $q$) r;
+SELECT quicksilver.register_mirror('kw.all108', 'kwm.all108', 1000000000000);
+ register_mirror 
+-----------------
+ 
+(1 row)
+
+SELECT quicksilver.report_applied_lsn('kw.all108', pg_current_wal_insert_lsn() + 1000000000);
+ report_applied_lsn 
+--------------------
+ 
+(1 row)
+
+CREATE SCHEMA "pivot";
+CREATE TABLE "pivot"."at" (id int PRIMARY KEY, v int);
+INSERT INTO "pivot"."at" SELECT g, g * 5 FROM generate_series(1, 4) g;
+CREATE VIEW kwm."pivot_at" AS SELECT r['id']::int AS id, r['v']::int AS v FROM duckdb.query($q$ SELECT * FROM (VALUES (1, 5), (2, 10), (3, 15), (4, 20)) t(id, v) $q$) r;
+SELECT quicksilver.register_mirror('pivot."at"', 'kwm."pivot_at"', 1000000000000);
+ register_mirror 
+-----------------
+ 
+(1 row)
+
+SELECT quicksilver.report_applied_lsn('pivot."at"', pg_current_wal_insert_lsn() + 1000000000);
+ report_applied_lsn 
+--------------------
+ 
+(1 row)
+
+CREATE TABLE kw.j (id int PRIMARY KEY, "at" int, "all" text);
+INSERT INTO kw.j VALUES (1, 18, 'j1'), (2, 25, 'j2'), (3, 32, 'j3'), (4, 39, 'j4');
+CREATE VIEW kwm.j AS SELECT r['id']::int AS id, r['at']::int AS "at", r['all']::text AS "all" FROM duckdb.query($q$ SELECT * FROM (VALUES (1, 18, 'j1'), (2, 25, 'j2'), (3, 32, 'j3'), (4, 39, 'j4')) t(id, "at", "all") $q$) r;
+SELECT quicksilver.register_mirror('kw.j', 'kwm.j', 1000000000000);
+ register_mirror 
+-----------------
+ 
+(1 row)
+
+SELECT quicksilver.report_applied_lsn('kw.j', pg_current_wal_insert_lsn() + 1000000000);
+ report_applied_lsn 
+--------------------
+ 
+(1 row)
+
+-- routed (mirror); on stock each statement is answered by the heap, with the reason
+SELECT "all", "at", "pivot", asof FROM kw.all108 ORDER BY id;
+ all | at | pivot | asof 
+-----+----+-------+------
+   7 | 18 |    30 |   16
+  14 | 25 |    37 |   23
+  21 | 32 |    44 |   30
+  28 | 39 |     1 |   37
+(4 rows)
+
+:last
+ side |                 reason                 |                                           left                                           
+------+----------------------------------------+------------------------------------------------------------------------------------------
+ heap | reads a relation with no usable mirror | kw.all108: column "all" is named like a DuckDB keyword: the mirror's SQL cannot write it
+(1 row)
+
+SELECT id FROM kw.all108 WHERE "qualify" > 0 AND "anti" >= 0 ORDER BY id;
+ id 
+----
+  1
+  2
+  4
+(3 rows)
+
+:last
+ side |                 reason                 |                                           left                                           
+------+----------------------------------------+------------------------------------------------------------------------------------------
+ heap | reads a relation with no usable mirror | kw.all108: column "all" is named like a DuckDB keyword: the mirror's SQL cannot write it
+(1 row)
+
+SELECT "pivot" AS k, count(*) AS n FROM kw.all108 GROUP BY "pivot" HAVING count(*) >= 1 ORDER BY 1;
+ k  | n 
+----+---
+  1 | 1
+ 30 | 1
+ 37 | 1
+ 44 | 1
+(4 rows)
+
+:last
+ side |                 reason                 |                                           left                                           
+------+----------------------------------------+------------------------------------------------------------------------------------------
+ heap | reads a relation with no usable mirror | kw.all108: column "all" is named like a DuckDB keyword: the mirror's SQL cannot write it
+(1 row)
+
+SELECT a.id, b."all" FROM kw.all108 a JOIN kw.j b ON a."at" = b."at" ORDER BY a.id;
+ id | all 
+----+-----
+  1 | j1
+  2 | j2
+  3 | j3
+  4 | j4
+(4 rows)
+
+:last
+ side |                 reason                 |                                           left                                           
+------+----------------------------------------+------------------------------------------------------------------------------------------
+ heap | reads a relation with no usable mirror | kw.all108: column "all" is named like a DuckDB keyword: the mirror's SQL cannot write it
+(1 row)
+
+SELECT "select" FROM (SELECT id, "asof" AS "select" FROM kw.all108) AS "at" ORDER BY 1;
+ select 
+--------
+     16
+     23
+     30
+     37
+(4 rows)
+
+:last
+ side |                 reason                 |                                           left                                           
+------+----------------------------------------+------------------------------------------------------------------------------------------
+ heap | reads a relation with no usable mirror | kw.all108: column "all" is named like a DuckDB keyword: the mirror's SQL cannot write it
+(1 row)
+
+SELECT id, row_number() OVER (ORDER BY "lambda" DESC) AS "over" FROM kw.all108 ORDER BY id;
+ id | over 
+----+------
+  1 |    4
+  2 |    3
+  3 |    2
+  4 |    1
+(4 rows)
+
+:last
+ side |                 reason                 |                                           left                                           
+------+----------------------------------------+------------------------------------------------------------------------------------------
+ heap | reads a relation with no usable mirror | kw.all108: column "all" is named like a DuckDB keyword: the mirror's SQL cannot write it
+(1 row)
+
+SELECT id, date_trunc('day', ts) AS "day", "MixedAt", "we""ird2" FROM kw.all108 ORDER BY id;
+ id |             day              | MixedAt | we"ird2 
+----+------------------------------+---------+---------
+  1 | Mon Jan 01 00:00:00 2024 PST |       3 | t1
+  2 | Tue Jan 02 00:00:00 2024 PST |       6 | t2
+  3 | Wed Jan 03 00:00:00 2024 PST |       9 | t3
+  4 | Thu Jan 04 00:00:00 2024 PST |      12 | t4
+(4 rows)
+
+:last
+ side |                 reason                 |                                           left                                           
+------+----------------------------------------+------------------------------------------------------------------------------------------
+ heap | reads a relation with no usable mirror | kw.all108: column "all" is named like a DuckDB keyword: the mirror's SQL cannot write it
+(1 row)
+
+SELECT v FROM "pivot"."at" ORDER BY id;
+ v  
+----
+  5
+ 10
+ 15
+ 20
+(4 rows)
+
+:last
+ side |                 reason                 |                                                left                                                
+------+----------------------------------------+----------------------------------------------------------------------------------------------------
+ heap | reads a relation with no usable mirror | pivot.at: heap relation is named like a DuckDB keyword: the mirror cannot write it in DuckDB's SQL
+(1 row)
+
+-- the heap of the same statements
+SET quicksilver.route = heap;
+SELECT "all", "at", "pivot", asof FROM kw.all108 ORDER BY id;
+ all | at | pivot | asof 
+-----+----+-------+------
+   7 | 18 |    30 |   16
+  14 | 25 |    37 |   23
+  21 | 32 |    44 |   30
+  28 | 39 |     1 |   37
+(4 rows)
+
+SELECT id FROM kw.all108 WHERE "qualify" > 0 AND "anti" >= 0 ORDER BY id;
+ id 
+----
+  1
+  2
+  4
+(3 rows)
+
+SELECT "pivot" AS k, count(*) AS n FROM kw.all108 GROUP BY "pivot" HAVING count(*) >= 1 ORDER BY 1;
+ k  | n 
+----+---
+  1 | 1
+ 30 | 1
+ 37 | 1
+ 44 | 1
+(4 rows)
+
+SELECT a.id, b."all" FROM kw.all108 a JOIN kw.j b ON a."at" = b."at" ORDER BY a.id;
+ id | all 
+----+-----
+  1 | j1
+  2 | j2
+  3 | j3
+  4 | j4
+(4 rows)
+
+SELECT "select" FROM (SELECT id, "asof" AS "select" FROM kw.all108) AS "at" ORDER BY 1;
+ select 
+--------
+     16
+     23
+     30
+     37
+(4 rows)
+
+SELECT id, row_number() OVER (ORDER BY "lambda" DESC) AS "over" FROM kw.all108 ORDER BY id;
+ id | over 
+----+------
+  1 |    4
+  2 |    3
+  3 |    2
+  4 |    1
+(4 rows)
+
+SELECT id, date_trunc('day', ts) AS "day", "MixedAt", "we""ird2" FROM kw.all108 ORDER BY id;
+ id |             day              | MixedAt | we"ird2 
+----+------------------------------+---------+---------
+  1 | Mon Jan 01 00:00:00 2024 PST |       3 | t1
+  2 | Tue Jan 02 00:00:00 2024 PST |       6 | t2
+  3 | Wed Jan 03 00:00:00 2024 PST |       9 | t3
+  4 | Thu Jan 04 00:00:00 2024 PST |      12 | t4
+(4 rows)
+
+SELECT v FROM "pivot"."at" ORDER BY id;
+ v  
+----
+  5
+ 10
+ 15
+ 20
+(4 rows)
+
+SET quicksilver.route = mirror;
 -- the heap of the same statements, for comparison
 SET quicksilver.route = heap;
 SELECT "MixedCase", "we""ird" FROM kw.m ORDER BY id;
@@ -301,8 +656,8 @@ SELECT v FROM kw."at" ORDER BY id;
 (3 rows)
 
 SET quicksilver.route = off;
-DELETE FROM quicksilver.mirrors WHERE heap IN ('kw.h'::regclass, 'kw.m'::regclass, 'kw.at'::regclass);
-DROP SCHEMA kw, kwm CASCADE;
+DELETE FROM quicksilver.mirrors WHERE heap IN ('kw.h'::regclass, 'kw.m'::regclass, 'kw.at'::regclass, 'kw.all108'::regclass, 'kw.j'::regclass, '"pivot"."at"'::regclass);
+DROP SCHEMA kw, kwm, "pivot" CASCADE;
 SELECT quicksilver.prune();
  prune 
 -------

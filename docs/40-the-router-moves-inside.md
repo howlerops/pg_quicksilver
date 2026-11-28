@@ -1707,26 +1707,57 @@ thing that keeps an ordinary role out of other mirrors.
 
 ## Keyword names
 
-pg_duckdb writes the mirror subquery in DuckDB's SQL, and the names in it come
-out as PostgreSQL's `quote_identifier` leaves them. PostgreSQL does not reserve
-AT, PIVOT, QUALIFY, ASOF, ANTI, SEMI, POSITIONAL, LAMBDA, DESCRIBE, SUMMARIZE,
-SHOW and about a hundred other words that DuckDB does, so `SELECT at, pivot FROM
-(...)` reaches DuckDB, which fails on it. The complete fix is in pg_duckdb's
-deparser (quote every identifier it writes). That change is not in this tree.
+pg_duckdb writes a mirror subquery's names in DuckDB's SQL, and it quotes them with
+PostgreSQL's `quote_identifier`. That leaves bare the words PostgreSQL does not reserve
+and DuckDB does: AT, PIVOT, QUALIFY, ASOF, ANTI, SEMI, POSITIONAL, LAMBDA, DESCRIBE,
+SUMMARIZE, SHOW and about a hundred more, so `SELECT at, pivot FROM (...)` reaches DuckDB,
+which fails on it or reads it as something else. The list is measured, not guessed: each
+of DuckDB 2.0.1's keywords (502 words in all categories) was tried as a bare name in the
+three shapes pg_duckdb writes (a select list with an alias, a cast with an alias, a
+qualified reference). 105 fail in one of them. COLUMNS, EXCLUDE and REPLACE are added,
+because DuckDB reads them as star modifiers. The same 108 words are in the extension
+(`qs_duck_keywords`) and in the patch (`pgduckdb_duckdb_keywords`).
 
-Here the extension does not mirror a table with such a name: a table named so,
-or one with a column named so, is answered by the heap, and its reason names the
-word. The list is measured, not guessed: each of DuckDB 2.0.1's keywords (502
-words in all categories) was tried as a bare name in the three shapes pg_duckdb
-writes (a select list with an alias, a cast with an alias, a qualified
-reference). 105 fail in one of them. COLUMNS, EXCLUDE and REPLACE are added,
-because DuckDB reads them as star modifiers. The whole table is the unit,
-because the mirror relation is a view of the table, and its definition is what
-pg_duckdb writes; one such column makes the view unplannable.
+There are two builds, and they differ here.
 
-`sql/keywords.sql` routes a table of ordinary names with mixed case and an
-embedded quote, and checks each keyword on its own, a keyword-named table, and
-`SELECT *`.
+**Stock pg_duckdb 1.2.2.** The extension does not mirror a table with such a name: a
+table named so, or one with a column named so, is answered by the heap, and its reason
+names the word. The mirror relation is a view of the whole table, and its definition is
+what pg_duckdb writes; one such column makes the view unplannable.
+
+**The patched build** (`bench/patches/pg_duckdb-1.2.2-duckdb-keywords.patch`, applied after
+the allowed-directories patch). Every name pg_duckdb writes for DuckDB is quoted when it is
+one of the 108 words: the vendored deparser's `quote_identifier` (select-list and alias
+names, CTE and table aliases, column references, the `r.name` form of a `duckdb.row`
+subscript) and `pgduckdb_quote_identifier` (the names the DDL and FROM paths write:
+function names, schema and relation names, `duckdb.row` reference names). The build
+defines the read-only GUC `duckdb.quotes_duckdb_keywords` (`on`), and the extension reads
+it with `GetConfigOption()`: with the marker present a table with such a name is mirrored
+and routed like any other; without it the refusal above stands. The extension's keyword
+list is the same 108 words, so the two cannot drift apart without a test failing:
+`sql/keywords.sql` runs with the 108-column table on both builds, against
+`expected/keywords.out` (stock) and `expected/keywords_1.out` (patched).
+
+Where names reach DuckDB unquoted in the stock build, for the record:
+
+- `src/vendor/pg_ruleutils_17.c` (`quote_identifier`, and through it `get_rule_expr`,
+  `get_target_list`, `generate_relation_name`): every identifier of a query's SQL.
+- `src/pgduckdb_ruleutils.cpp` `pgduckdb_strip_first_subscript` (`extval`, the `r.name` of a
+  `duckdb.row` subscript) and `pgduckdb_write_row_refname` (the `duckdb.row` reference):
+  PostgreSQL's `quote_identifier`, which does not know DuckDB's words.
+- `pgduckdb_relation_name`, `pgduckdb_db_and_schema_string`, `pgduckdb_function_name`
+  (the same file): schema, relation and function names.
+- The sidecar's view (`go/cmd/qs-mirror/extension.go`, `extViewSQL`) already quotes every
+  name it writes (`extQuote`), so the mirror view is created on both builds; what the
+  stock build cannot do is plan a statement over it.
+- The test fixtures' own `duckdb.query` text is the test's: its names must be quoted too.
+
+A limit that is not the keyword refusal: `quicksilver.allowlist` (the table described under the registry above) still
+decides which constructs route. An operator outside the list, a CTE, and `date_trunc` on
+`timestamp` are answered by the heap whatever the names are.
+
+`sql/keywords.sql` routes a table of ordinary names with mixed case and an embedded
+quote, and checks each keyword on its own, a keyword-named table, and `SELECT *`.
 
 ## Join aliases
 

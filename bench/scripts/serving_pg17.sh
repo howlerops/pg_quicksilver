@@ -24,7 +24,8 @@
 # avoid. Property 2 without property 1 is a mirror nobody can query.
 #
 # The extension is pg_duckdb v1.2.2 plus
-# bench/patches/pg_duckdb-1.2.2-allowed-directories.patch, built against PostgreSQL 17.
+# bench/patches/pg_duckdb-1.2.2-allowed-directories.patch and
+# bench/patches/pg_duckdb-1.2.2-duckdb-keywords.patch, built against PostgreSQL 17.
 # It is NOT upstream; a run that cannot find it exits 2 as INCOMPLETE rather
 # than reporting success.
 #

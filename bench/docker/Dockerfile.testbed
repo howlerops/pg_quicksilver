@@ -78,12 +78,14 @@ RUN apt-get update -qq && apt-get install -y -qq --no-install-recommends \
  && rm -rf /var/lib/apt/lists/*
 
 COPY bench/patches/pg_duckdb-1.2.2-allowed-directories.patch /tmp/qs.patch
+COPY bench/patches/pg_duckdb-1.2.2-duckdb-keywords.patch /tmp/qs-keywords.patch
 
 RUN git clone --depth 1 --branch v1.2.2 --recurse-submodules --shallow-submodules \
       https://github.com/duckdb/pg_duckdb /tmp/pg_duckdb \
  && cd /tmp/pg_duckdb \
  && test "$(git rev-parse HEAD)" = 4e921ffbe4a16b3caec6cf24ca0151fa9d88032d \
  && git apply --verbose /tmp/qs.patch \
+ && git apply --verbose /tmp/qs-keywords.patch \
  && PG_CONFIG=/usr/lib/postgresql/17/bin/pg_config make -j"$(nproc)" \
  # `install: install-duckdb` puts libduckdb.so in place with a plain install(1),
  # which does not create its directory; under DESTDIR that directory does not

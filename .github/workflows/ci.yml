@@ -673,7 +673,8 @@ jobs:
 
   # ---- 6. answering a SELECT through PostgreSQL 17 --------------------------
   # Its own job because of its own dependency: pg_duckdb v1.2.2 plus
-  # bench/patches/pg_duckdb-1.2.2-allowed-directories.patch, which is not packaged
+  # bench/patches/pg_duckdb-1.2.2-allowed-directories.patch and
+  # bench/patches/pg_duckdb-1.2.2-duckdb-keywords.patch, which are not packaged
   # anywhere and has to be compiled — DuckDB included. That is roughly an hour
   # the first time and nothing at all afterwards, because the built extension is
   # cached on the patch's own hash: change the patch and it rebuilds, touch
@@ -723,7 +724,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: /tmp/pgduck-stage
-          key: pgduck-v1.2.2-pg17-${{ runner.os }}-${{ hashFiles('bench/patches/pg_duckdb-1.2.2-allowed-directories.patch') }}
+          key: pgduck-v1.2.2-pg17-${{ runner.os }}-${{ hashFiles('bench/patches/pg_duckdb-1.2.2-*.patch') }}
 
       - name: build pg_duckdb v1.2.2 with the confinement patch
         if: steps.ext.outputs.cache-hit != 'true'
@@ -754,6 +755,8 @@ jobs:
             || { echo "::error::v1.2.2 is not the commit this patch was made against"; exit 1; }
           git apply --verbose \
             "$GITHUB_WORKSPACE/bench/patches/pg_duckdb-1.2.2-allowed-directories.patch"
+          git apply --verbose \
+            "$GITHUB_WORKSPACE/bench/patches/pg_duckdb-1.2.2-duckdb-keywords.patch"
 
           export PG_CONFIG=/usr/lib/postgresql/17/bin/pg_config
           make -j"$(nproc)"
