@@ -650,16 +650,32 @@ pod_snapshot() {
 # What a roll would have left, against <snapshot>: one line per finding. Empty
 # when every Pod still exists with its UID, none is being deleted, no Pod is
 # new, and each still has the mirror container.
+#
+# The mirror is read into a VARIABLE, not piped into grep -q. Under pipefail a
+# grep that exits at its first match makes kubectl fail with SIGPIPE, and that
+# was reported as "no quicksilver-mirror container" on a Pod that had one
+# (job 141028702762: app-1 has the mirror as a native sidecar, and was not
+# rolled). A Pod that cannot be read is said to be unreadable, not mirrorless.
+pod_mirror_state() { # <pod> -> has | missing | unreadable
+  local out
+  out=$(kc get pod "$1" \
+    -o jsonpath='{range .spec.initContainers[*]}{.name}{"\n"}{end}{range .spec.containers[*]}{.name}{"\n"}{end}' \
+    2>/dev/null) || { echo unreadable; return; }
+  if grep -qx quicksilver-mirror <<<"$out"; then echo has; else echo missing; fi
+}
+
 pod_findings() { # <snapshot before>
-  local before=$1 now="" name uid _ts del
+  local before=$1 now="" name uid _ts del state
   now=$(pod_snapshot)
   while read -r name uid _ts del; do
     [ -n "$name" ] || continue
-    grep -q "^$name $uid " <<<"$before" || echo "$name: not the Pod that was there before (new UID)"
-    [ -z "$del" ] || echo "$name: is being deleted"
-    kc get pod "$name" \
-      -o jsonpath='{range .spec.initContainers[*]}{.name}{"\n"}{end}{range .spec.containers[*]}{.name}{"\n"}{end}' \
-      2>/dev/null | grep -qx quicksilver-mirror || echo "$name: no quicksilver-mirror container"
+    grep -q "^$name $uid " <<<"$before" || echo "$name: not the Pod that was there before (new UID $uid)"
+    [ -z "$del" ] || echo "$name: is being deleted (since $del)"
+    state=$(pod_mirror_state "$name")
+    case "$state" in
+      missing) echo "$name: no quicksilver-mirror container" ;;
+      unreadable) echo "$name: could not be read to check its containers" ;;
+    esac
   done <<<"$now"
   while read -r name _; do
     [ -n "$name" ] || continue
@@ -667,24 +683,43 @@ pod_findings() { # <snapshot before>
   done <<<"$before"
 }
 
-# Watches the Pods for <seconds>, and prints every finding seen.
+# Watches the Pods for <seconds>, and prints every finding seen, with the time
+# it was seen, so a transient is distinguishable from a persistent change.
 pods_observed() { # <snapshot before> <seconds>
   local before=$1 deadline=$(( $(now) + $2 )) seen="" f
   while [ "$(now)" -lt "$deadline" ]; do
     f=$(pod_findings "$before")
-    [ -n "$f" ] && seen+="$f"$'\n'
+    [ -n "$f" ] && seen+="$(date -u +%H:%M:%S) $f"$'\n'
     sleep 10
   done
   printf '%s' "$seen"
 }
 
+# The spec.plugins of the Cluster, canonical JSON: the same plugin parameters
+# print the same bytes, whatever order the server stored them in.
+plugins_spec() {
+  kc get cluster "$CLUSTER" -o json 2>/dev/null \
+    | python3 -c 'import json,sys; print(json.dumps(json.load(sys.stdin)["spec"]["plugins"], sort_keys=True, indent=1))'
+}
+
+# The operator's account of what it did with the instance Pods since <time>: its
+# rollout decisions and the reasons it gave. Printed on failure, so the next
+# failure says why a Pod was touched.
+operator_rollout_lines() { # <since, RFC3339>
+  local out
+  out=$(kc -n "$CNPG_NS" logs deploy/cnpg-controller-manager --since-time="$1" 2>/dev/null || true)
+  grep -iE "rollout|upgrad|outdated|$CLUSTER" <<<"$out" | tail -40 || true
+}
+
 section_invalid_edit() {
   say "6b. an INVALID edit of a RUNNING cluster reports it and rolls nothing; restoring the valid spec rolls nothing"
-  local before p0 phase0 ready0 seen
+  local before p0 phase0 ready0 seen plugins0 plugins1 since
+  since=$(date -u +%Y-%m-%dT%H:%M:%SZ)
   p0=$(primary)
   phase0=$(kc get cluster "$CLUSTER" -o jsonpath='{.status.phase}' 2>/dev/null)
   ready0=$(kc get cluster "$CLUSTER" -o jsonpath='{.status.readyInstances}' 2>/dev/null)
   before=$(pod_snapshot)
+  plugins0=$(plugins_spec)
   if [ "$(wc -l <<<"$before")" -lt "$WANT_INSTANCES" ]; then
     bad "$CLUSTER: $WANT_INSTANCES instance Pods were not listed before the edit"; return
   fi
@@ -710,13 +745,26 @@ section_invalid_edit() {
     bad "the Cluster's phase or ready count changed under an invalid edit"
   fi
 
-  # Back to the valid parameters: the status says so, and still nothing rolls.
+  # Back to the valid parameters: the status says so, the spec is what it was,
+  # and still nothing rolls.
   patch_params "tabels=" >/dev/null || bad "the valid parameters were not restored"
   if await_plugin_status "$CLUSTER" '"state":"valid"' 300; then ok "$CLUSTER: restored, the status says state: valid"
   else bad "$CLUSTER: the status did not return to valid after the parameters were restored"; fi
+  plugins1=$(plugins_spec)
+  if [ "$plugins0" = "$plugins1" ]; then ok "spec.plugins is byte-identical to the one before the invalid edit"
+  else diff <(printf '%s\n' "$plugins0") <(printf '%s\n' "$plugins1") | sed 's/^/    /'
+    bad "spec.plugins after the restore differs from the one before the invalid edit (diff above)"; fi
+
   seen=$(pods_observed "$before" 90)
   if [ -z "$seen" ]; then ok "restoring the valid parameters rolled nothing"
-  else printf '%s' "$seen" | sed 's/^/    /'; bad "restoring the valid parameters changed the instance Pods"; fi
+  else
+    printf '%s' "$seen" | sed 's/^/    /'
+    echo "    Pod snapshot before the edit (left) and now (right), name uid created deleted:"
+    diff <(printf '%s\n' "$before") <(pod_snapshot) | sed 's/^/    /' || true
+    echo "    the operator's rollout lines since $since:"
+    operator_rollout_lines "$since" | sed 's/^/    /'
+    bad "restoring the valid parameters changed the instance Pods"
+  fi
 }
 
 section_halt() {
