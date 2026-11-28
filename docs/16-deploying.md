@@ -165,7 +165,7 @@ spec:
 | `credentialsSecret` | `<cluster>-superuser` | needs REPLICATION, SELECT, CREATE |
 | `slotName`, `publication` | `quicksilver_<cluster>` | `slotName` is a prefix: each Pod's slot is `<slotName>_<pod>` |
 | `mirrorPath` | `/var/lib/postgresql/data/quicksilver` | beside PGDATA, same PVC |
-| `sidecarImage` | `…-mirror:latest` | |
+| `sidecarImage` | `…-mirror:latest` | a mutable tag (`latest`, `dev`, no tag) is accepted and reported in `configWarnings`; pin a version tag or a digest. The chart pins one. |
 | `acknowledgeOLTPRegression` | `false` | required for `mode: takeover` |
 
 Defaults are written back into the Cluster by `MutateCluster`, so
@@ -217,6 +217,28 @@ happens then is what the operator does ask the plugin about:
   it. A running instance that is deleted is rebuilt without the mirror.
 - **Pod patches and updates** (role labels on failover and switchover) are never
   blocked by a configuration error, and never add the mirror.
+
+**Warnings** are a second list, `configWarnings` in the same status, and they do
+not make the configuration invalid: nothing that is only a warning stops a mirror.
+They are reported whether or not the configuration is valid:
+
+- `sidecarImage` with a mutable tag (`latest`, `dev`, no tag). Pods of one Cluster
+  can run different builds while it moves, and a restart can change the mirror
+  under you. Pin a version tag or a digest. The default is `:latest`, so a Cluster
+  that names no image is warned, not refused: refusing it would stop it getting a
+  mirror at all.
+- Routing settings that are missing while `ducklake` is on: `shared_preload_libraries`
+  without `pg_duckdb` before `pg_quicksilver`, and no `duckdb.extension_directory`.
+
+**Kubernetes Events for invalid configuration: not implemented, on purpose.** The
+plugin has no Kubernetes client, and an Event needs one. Creating Events in any
+namespace the Cluster is in needs a ClusterRole, because the plugin serves every
+namespace, and a `create` on `events` cluster-wide is a permission the plugin does
+not otherwise hold. client-go is a large addition to a binary whose job is to be
+small and to sit next to every database. The status is what the operator reads and
+what `kubectl get cluster` shows, and it is written on every reconcile, so an Event
+would only repeat it. Status is the supported surface; this stays that way until a
+user needs Events for alerting, and then it is a ClusterRole the chart documents.
 
 ---
 
@@ -491,6 +513,44 @@ answers a read from the mirror when every construct in the statement is on a
 verified list, the plan is expensive enough and the mirror has caught up, and
 from the heap otherwise ([docs/40](40-the-router-moves-inside.md)). The
 sidecar does its half by itself when it finds the extension installed.
+
+**The PostgreSQL settings, and which of them the plugin writes.** The plugin's
+`EnrichConfiguration` is the only hook through which it can write a
+`postgresql.conf` parameter, and the operator takes that map as the final
+configuration (CloudNativePG 1.30, `pkg/postgres/plugin/config.go`). The operator
+does not filter the plugin's output against its fixed-parameter list. The hook
+**exists from CloudNativePG 1.27**: 1.26 never calls it, so on 1.26 nothing the
+plugin enriches is applied, including `sync_replication_slots` and
+`hot_standby_feedback`. (CloudNativePG 1.26 defaults `wal_level` to `logical`, so
+the CI cluster is not affected by that one.)
+
+With `ducklake: "true"` and `extension` not `off` (`auto` is the default; the
+parameter is `extension`, with those two values), the plugin writes
+`duckdb.allowed_directories = '<mirrorPath>/'`, the directory that holds the lake's
+catalog, unless the user set one. A user's value is never replaced. One that does
+not include the mirror is a configuration error in the status, because the lake
+would then not attach on any node, silently.
+
+Four lines stay in the Cluster, and the reason for each:
+
+- `duckdb.postgres_role`: naming the role whose members may run DuckDB is a
+  security decision (docs/40, "Ordinary roles", warns that a member reads every
+  mirrored table through DuckDB), and it needs a `GRANT` the operator makes.
+- `duckdb.extension_directory`: where the **operand image** keeps DuckDB's
+  extensions. The plugin does not know the image's contents, and a directory that
+  does not exist would make pg_duckdb fetch them into PGDATA. Reported in
+  `configWarnings` when missing.
+- `shared_preload_libraries`: the operator writes it from
+  `spec.postgresql.shared_preload_libraries`, and it is a fixed parameter. The
+  plugin checks the order (`pg_duckdb` first) and reports it.
+- `quicksilver.attach_lakes_for_all`: a statement that the DuckDB build is the
+  confined one. Only the image can make it.
+
+**The CI test cannot show the derived line.** CI pins CloudNativePG 1.26.0, which
+does not call the hook, so `bench/scripts/cluster_e2e.sh` section 6 asserts it
+only on 1.27 and later and reports NOT RUN on 1.26. The CI operand image is built
+with the stock pg_duckdb, on which an ordinary role is never routed: section 6
+asserts that it is answered from the heap, and says which build it found.
 
 **The image.** The image the Cluster's `imageName` points at must contain
 

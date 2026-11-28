@@ -98,6 +98,10 @@ spec:
         # routing: the mirror relation is a view over the lake table, which
         # is the one thing that survives a compaction unchanged.
         ducklake: "true"
+        # With this, the plugin ALSO writes duckdb.allowed_directories, the
+        # mirror's directory (routing.go). Nothing for it below. That is set
+        # from CloudNativePG 1.27; on 1.26 it is not applied at all, and the
+        # plugin's status says what is missing.
         # How long a lake snapshot stays readable after a newer one replaced
         # it; a routed statement that runs longer than this loses its files.
         ducklakeRetention: 5m
@@ -142,8 +146,9 @@ spec:
 # validated. What it would take, none of which this file sets because none of
 # it has been run on a cluster:
 #
-#   - a pg_duckdb that confines a role to the mirror's directory
-#     (duckdb.allowed_directories; bench/patches has the patch for 1.2.2);
+#   - a pg_duckdb that confines a role to the mirror's directory: the plugin
+#     already sets duckdb.allowed_directories to that directory, but the stock
+#     build does not confine a role to it (bench/patches has the patch for 1.2.2);
 #   - duckdb.postgres_role, naming the role whose members may use DuckDB;
 #   - quicksilver.attach_lakes_for_all = on, which tells the extension that
 #     the build above is what it is running on.

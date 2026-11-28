@@ -506,7 +506,74 @@ section_routing() {
     ok "the primary answers from its heap — $(printf '%s\n' "$out" | grep 'Quicksilver:' | sed 's/^ *//')"
   fi
 
+  routing_settings
+
   [ "${E2E_SKIP_CARRIED:-0}" = 1 ] || extensions_carried
+}
+
+# version_at_least <version> <major.minor>: 0 when <version> is that or newer.
+version_at_least() {
+  local v=${1#v}
+  [ "$(printf '%s\n%s\n' "$2" "$v" | sort -V | head -1)" = "$2" ]
+}
+
+# The settings routing needs that the PLUGIN derives (routing.go), and what an
+# ORDINARY role is given with routing asked for.
+#
+# The derived one is duckdb.allowed_directories, written from EnrichConfiguration,
+# which CloudNativePG calls from 1.27: 1.26, the CI pin, never does, so on that
+# operator it is NOT RUN, not a pass. docs/16 says so.
+#
+# The CI operand image is built with the STOCK pg_duckdb (PG_DUCKDB_BUILD
+# defaults to package in deploy/Dockerfile). A stock build never routes an
+# ordinary role (docs/40, "Ordinary roles", 1), so on it the assertion is that
+# the role is answered from the heap; on the confined build it is that the role
+# is routed. Which build this is, the run says.
+routing_settings() {
+  local p r val mirror="${PARAMS[mirrorPath]:-/var/lib/postgresql/data/quicksilver}" confined out
+  p=$(primary)
+
+  if version_at_least "$opver" 1.27; then
+    for r in $(replicas); do
+      val=$(sql "$r" "SHOW duckdb.allowed_directories")
+      case ",$val," in
+        *",$mirror/,"*) ok "$r: duckdb.allowed_directories=$val names the mirror $mirror (set by the plugin)" ;;
+        *) bad "$r: duckdb.allowed_directories=$val does not name the mirror $mirror: the lake is not attached here" ;;
+      esac
+    done
+  else
+    notrun "duckdb.allowed_directories is derived by the plugin's EnrichConfiguration, which CloudNativePG $opver does not call (1.27 is the first that does): not asserted on this operator"
+  fi
+
+  confined=$(sql "$p" "SHOW duckdb.confined_file_access" 2>/dev/null || true)
+  if [ "$confined" = on ]; then
+    echo "  the DuckDB build is the CONFINED one (duckdb.confined_file_access=on): an ordinary role is expected to be routed"
+  else
+    echo "  the DuckDB build is STOCK (no duckdb.confined_file_access): an ordinary role is expected to stay on the heap"
+  fi
+
+  sql "$p" "CREATE ROLE qs_e2e_ordinary LOGIN; GRANT SELECT ON public.events, public.accounts TO qs_e2e_ordinary" >/dev/null \
+    || { bad "could not create the ordinary role qs_e2e_ordinary"; return; }
+  # The superuser connection switches to the ordinary role for the one statement.
+  out=$(netsql "$CLUSTER-ro" "" "SET ROLE qs_e2e_ordinary" "EXPLAIN (COSTS OFF) $AGG")
+  if ! printf '%s\n' "$out" | grep -q 'Quicksilver:'; then
+    printf '%s\n' "$out" | head -8 | sed 's/^/    /'
+    bad "an ordinary role's EXPLAIN carries no routing verdict at all"
+  elif [ "$confined" = on ]; then
+    if printf '%s\n' "$out" | grep -q 'Quicksilver: mirror'; then
+      ok "an ordinary role is ROUTED on the confined build — $(printf '%s\n' "$out" | grep 'Quicksilver:' | sed 's/^ *//')"
+    else
+      bad "an ordinary role was not routed on the confined build — $(printf '%s\n' "$out" | grep 'Quicksilver:' | sed 's/^ *//')"
+    fi
+  else
+    if printf '%s\n' "$out" | grep -q 'Quicksilver: mirror'; then
+      bad "an ordinary role was ROUTED on a STOCK pg_duckdb build, which docs/40 says cannot happen"
+    else
+      ok "stock build: an ordinary role stays on the heap — $(printf '%s\n' "$out" | grep 'Quicksilver:' | sed 's/^ *//')"
+    fi
+  fi
+  sql "$p" "REVOKE SELECT ON public.events, public.accounts FROM qs_e2e_ordinary; DROP ROLE qs_e2e_ordinary" >/dev/null \
+    || bad "could not drop the ordinary role qs_e2e_ordinary"
 }
 
 # Nothing was fetched. The operand image carries DuckDB's extensions and the
@@ -526,6 +593,94 @@ extensions_carried() {
       bad "$r: duckdb.extension_directory=$dir and $out extension file(s) under PGDATA: they were fetched, not carried"
     fi
   done
+}
+
+# ----------------------------------------------------- an invalid edit, running
+# docs/16 and invalidConfigResponse (go/internal/plugin/lifecycle.go): a
+# RUNNING instance whose plugin parameters are edited to something invalid
+# keeps its Pods. The operator evaluates the Pod, the plugin refuses to
+# evaluate a listed instance, the operator logs the error and skips the rollout
+# check for that Pod, so nothing is rolled. Restoring the valid parameters
+# rolls nothing either: the spec is the one the Pods were built from.
+#
+# The snapshot is the instance Pods' name, UID and deletion timestamp. A roll
+# replaces the UID; a Pod being rebuilt goes through a deletion timestamp first.
+pod_snapshot() {
+  kc get pods -l "$INSTANCES_SEL" \
+    -o jsonpath='{range .items[*]}{.metadata.name}{" "}{.metadata.uid}{" "}{.metadata.creationTimestamp}{" "}{.metadata.deletionTimestamp}{"\n"}{end}' \
+    2>/dev/null | sort
+}
+
+# What a roll would have left, against <snapshot>: one line per finding. Empty
+# when every Pod still exists with its UID, none is being deleted, no Pod is
+# new, and each still has the mirror container.
+pod_findings() { # <snapshot before>
+  local before=$1 now="" name uid _ts del
+  now=$(pod_snapshot)
+  while read -r name uid _ts del; do
+    [ -n "$name" ] || continue
+    grep -q "^$name $uid " <<<"$before" || echo "$name: not the Pod that was there before (new UID)"
+    [ -z "$del" ] || echo "$name: is being deleted"
+    kc get pod "$name" \
+      -o jsonpath='{range .spec.initContainers[*]}{.name}{"\n"}{end}{range .spec.containers[*]}{.name}{"\n"}{end}' \
+      2>/dev/null | grep -qx quicksilver-mirror || echo "$name: no quicksilver-mirror container"
+  done <<<"$now"
+  while read -r name _; do
+    [ -n "$name" ] || continue
+    grep -q "^$name " <<<"$now" || echo "$name: gone"
+  done <<<"$before"
+}
+
+# Watches the Pods for <seconds>, and prints every finding seen.
+pods_observed() { # <snapshot before> <seconds>
+  local before=$1 deadline=$(( $(now) + $2 )) seen="" f
+  while [ "$(now)" -lt "$deadline" ]; do
+    f=$(pod_findings "$before")
+    [ -n "$f" ] && seen+="$f"$'\n'
+    sleep 10
+  done
+  printf '%s' "$seen"
+}
+
+section_invalid_edit() {
+  say "6b. an INVALID edit of a RUNNING cluster reports it and rolls nothing; restoring the valid spec rolls nothing"
+  local before p0 phase0 ready0 seen
+  p0=$(primary)
+  phase0=$(kc get cluster "$CLUSTER" -o jsonpath='{.status.phase}' 2>/dev/null)
+  ready0=$(kc get cluster "$CLUSTER" -o jsonpath='{.status.readyInstances}' 2>/dev/null)
+  before=$(pod_snapshot)
+  if [ "$(wc -l <<<"$before")" -lt "$WANT_INSTANCES" ]; then
+    bad "$CLUSTER: $WANT_INSTANCES instance Pods were not listed before the edit"; return
+  fi
+
+  # A misspelled key. The plugins list is replaced as a whole, so the removal
+  # below is the same mechanism as every other parameter change in this script.
+  patch_params "tabels=public.events" >/dev/null || { bad "the invalid edit was not applied"; return; }
+  if ! await_plugin_status "$CLUSTER" "unknown Quicksilver parameter" 300; then
+    bad "$CLUSTER: the plugin never reported the misspelled parameter"
+    patch_params "tabels=" >/dev/null
+    return
+  fi
+  ok "$CLUSTER: .status.pluginStatus reports the misspelled parameter"
+
+  seen=$(pods_observed "$before" 120)
+  if [ -z "$seen" ]; then ok "no instance Pod was rolled, replaced or deleted in the 120 seconds after the invalid edit"
+  else printf '%s' "$seen" | sed 's/^/    /'; bad "the invalid edit changed the instance Pods"; fi
+  [ "$(primary)" = "$p0" ] && ok "the primary did not change ($p0)" || bad "the primary changed from $p0 to $(primary)"
+  if [ "$(kc get cluster "$CLUSTER" -o jsonpath='{.status.phase}' 2>/dev/null)" = "$phase0" ] \
+     && [ "$(kc get cluster "$CLUSTER" -o jsonpath='{.status.readyInstances}' 2>/dev/null)" = "$ready0" ]; then
+    ok "the Cluster stayed healthy: phase \"$phase0\", $ready0 ready"
+  else
+    bad "the Cluster's phase or ready count changed under an invalid edit"
+  fi
+
+  # Back to the valid parameters: the status says so, and still nothing rolls.
+  patch_params "tabels=" >/dev/null || bad "the valid parameters were not restored"
+  if await_plugin_status "$CLUSTER" '"state":"valid"' 300; then ok "$CLUSTER: restored, the status says state: valid"
+  else bad "$CLUSTER: the status did not return to valid after the parameters were restored"; fi
+  seen=$(pods_observed "$before" 90)
+  if [ -z "$seen" ]; then ok "restoring the valid parameters rolled nothing"
+  else printf '%s' "$seen" | sed 's/^/    /'; bad "restoring the valid parameters changed the instance Pods"; fi
 }
 
 section_halt() {
@@ -1109,7 +1264,7 @@ fi
 
 # ---------------------------------------------------------------- full scope
 if [ "$SCOPE" = full ]; then
-  for s in section_slots section_data section_routing section_halt section_switchover section_scale_down; do
+  for s in section_slots section_data section_routing section_invalid_edit section_halt section_switchover section_scale_down; do
     # Each of these needs what the ones before it left behind. After a failure
     # the rest would report their own timeouts about a cluster that is already
     # known to be wrong, which is twenty minutes of noise on top of the answer.

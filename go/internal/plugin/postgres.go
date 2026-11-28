@@ -61,6 +61,12 @@ func (PostgresImpl) EnrichConfiguration(
 	// capacity plan — not hidden behind a default nobody reads.
 	configs["wal_level"] = "logical"
 
+	// Routing's directory (docs/40), when the lake is on. Only what the user
+	// did not set: a value of their own is reported by Validate, not replaced.
+	if routingEnabled(cfg) {
+		addRoutingSettings(configs, cfg)
+	}
+
 	need := int(cluster.Spec.Instances) + slotHeadroom
 	raise(configs, "max_replication_slots", need)
 	raise(configs, "max_wal_senders", need)

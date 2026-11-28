@@ -212,6 +212,11 @@ is the whole Cluster with the reason for each line.
 - **The tag starts with `17`.** CloudNativePG reads the PostgreSQL version from
   the front of the image tag. If you retag the image for your own registry,
   keep that: `:0.0.4` would be read as PostgreSQL 0, and `:latest` is refused.
+- **Derived, not hand-written.** With `ducklake: "true"` the plugin sets
+  `duckdb.allowed_directories` to the mirror's directory itself. That is set by
+  CloudNativePG 1.27 and later; on 1.26 it is not applied. `kubectl get cluster`
+  shows `configWarnings` for what is still missing (`duckdb.extension_directory`,
+  the `pg_duckdb` preload order) and for a mutable `sidecarImage` tag.
 - **One volume.** The mirror is beside PGDATA at
   `/var/lib/postgresql/data/quicksilver` and the lake under it at
   `_ducklake`. The lake is hard links to the mirror's files, so it cannot be
