@@ -62,22 +62,41 @@ func TestMirrorRelationNamesAreUniqueAndFit(t *testing.T) {
 	}
 }
 
-// Before anything is known about a table, nothing is reported for it: a
-// restarted sidecar must not take every table off the mirror until its first
-// publish. A halted table is reported unreadable at once, whatever the lake
-// still serves. (lake is nil here: no publisher state at all.)
-func TestUnknownTablesAreNotReportedAndHaltedOnesAreZero(t *testing.T) {
+// Before this process has vouched for a table, its report is 0/0: a report left
+// by an earlier process or attempt is not an answer about this one (blank.go).
+// A halted table is 0/0 whatever else is true. (lake is nil here.)
+func TestUnvouchedTablesAreZeroAndHaltedOnesToo(t *testing.T) {
 	e := newExtLink(slog.New(slog.NewTextHandler(os.Stderr, nil)), options{tables: []string{"public.a", "public.b"}})
-	if got := e.lsns(); len(got) != 0 {
-		t.Fatalf("reported %v for tables nothing is known about", got)
+	got := e.lsns()
+	if len(got) != 2 || got["public.a"] != "0/0" || got["public.b"] != "0/0" {
+		t.Fatalf("unvouched tables must be reported 0/0; got %v", got)
 	}
 	e.mu.Lock()
 	e.blocked["public.b"] = true
 	e.mu.Unlock()
-	got := e.lsns()
-	if len(got) != 1 || got["public.b"] != "0/0" {
-		t.Fatalf("a halted table must be reported as 0/0 and nothing else reported; got %v", got)
+	got = e.lsns()
+	if got["public.b"] != "0/0" {
+		t.Fatalf("a halted table must be reported as 0/0; got %v", got)
 	}
+}
+
+// A table that was vouched for in an earlier attempt is 0/0 again the moment the
+// next attempt begins, with no lake state needed, so nothing of the old attempt
+// can be read in the window before the new one has looked at the table.
+func TestAttemptStartForgetsVouching(t *testing.T) {
+	e := newExtLink(slog.New(slog.NewTextHandler(os.Stderr, nil)), options{tables: []string{"public.a"}})
+	e.mu.Lock()
+	e.vouched["public.a"] = true
+	e.mu.Unlock()
+	e.unvouch()
+	if got := e.lsns(); got["public.a"] != "0/0" {
+		t.Fatalf("after an attempt begins: %v", got)
+	}
+}
+
+// The position and LSN parsing helpers, which this file also covers.
+func TestPositionAndLSNParsing(t *testing.T) {
+	e := newExtLink(slog.New(slog.NewTextHandler(os.Stderr, nil)), options{tables: []string{"public.a", "public.b"}})
 	if e.position() != 0 {
 		t.Error("a position was vouched for with no stream attached")
 	}

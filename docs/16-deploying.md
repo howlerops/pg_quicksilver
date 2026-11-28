@@ -1188,6 +1188,56 @@ snapshot.
 
 ---
 
+## Slots, reports and the registry: what recovers without an operator
+
+Three things the sidecar does on its own, and the bounds on each. The code is in
+`go/cmd/qs-mirror`: `slotrecover.go`, `blank.go` and `claims.go`.
+
+**A slot that cannot be decoded.** The publication was dropped and created again
+after the slot's restart point, so the walsender fails with
+`publication "X" does not exist` (SQLSTATE 42704) on every attempt, and nothing
+confirms past it. Before this, the sidecar retried for good. Now, after three
+identical failures with `confirmed_flush_lsn` unchanged, it drops **this Pod's**
+slot (`QS_SLOT`, never another Pod's) and re-snapshots the tables, the same path it
+takes for a slot it has to create. The same applies to a slot PostgreSQL
+invalidated (`wal_status = lost`) and to one marked `conflicting`. The time of the
+last recovery is kept in `<QS_MIRROR_PATH>/.slot-recovery`. The same fault again
+within an hour of a recovery is **not** repeated: the Pod stays not ready with
+the reason in `/readyz`, and an operator must look at it. `quicksilver_slot_recoveries_total`
+counts the drops. The Pod is not ready while the fault is being recovered from,
+and for `30s` after the new stream starts (a decode failure on old WAL arrives
+after the first reads, so readiness is not cleared earlier).
+
+**A node's reports at start, and after promotion.** A node serves a registered
+table only on a real LSN from its report, and reports live in the local server's
+shared memory, which outlives a sidecar process. So the sidecar clears them first:
+at start, at the start of every attempt, and when its node is promoted. It reports
+`0/0` for every registered table, configured or not, and for a configured table
+until this process has handed it to the lake healthy. A table that halts while the
+sidecar starts is therefore never reported fresh. A sidecar that is killed
+(`kill -9`) leaves its last report in place: the node keeps serving that table
+from the lake only while the lag is within `quicksilver.max_lag` (strict freshness
+refuses it as the WAL moves). That is the documented meaning of `max_lag`, and it
+is why the cleanup below exists.
+
+**Registry rows of tables nobody mirrors.** Each sidecar keeps a claim row in
+`quicksilver.sidecar_claims` (one per pod, refreshed every 30s, under the registry
+lock): the tables it is configured for and when it last said so. The janitor on
+the primary (the sidecar that runs on the primary pod) removes a table's registry
+row, its join rows and its mirror view only when
+
+- no claim seen within `QS_CLAIM_GRACE` (default `1h`) names the table, and
+- it has stayed that way for `QS_CLAIM_GRACE` by the janitor's own clock.
+
+A table dropped from one sidecar's `QS_TABLES` stays registered while another
+sidecar claims it. A sidecar down for longer than the grace loses its claim, and
+its rows go; it registers them again when it returns. Removing a row is always
+safe for correctness: a node without a row reads from its heap. The sidecar needs
+the extension's `sidecar_claims` table (the current script creates it); against an
+older extension nothing is claimed and nothing is removed, and the sidecar says so
+once. On a node that is not the primary the janitor does not run, so a cluster
+needs a sidecar on its primary pod for this cleanup to happen.
+
 ## Join domains (EXPERIMENTAL, off by default)
 
 > EXPERIMENTAL. Off unless `QS_JOIN_DOMAINS` is set. With it unset the sidecar
@@ -1272,7 +1322,10 @@ Whether a join is compared on companions is decided by each node's report
 (`quicksilver.report_join_complete`), and a column that stops being complete on
 a node has its joins compared on the uuid columns on that node only.
 The registry is shared by every sidecar of one primary, so a sidecar never
-removes a row. A sidecar that does not mirror a join domain's table (its
+removes a row of another sidecar's table, and a table that every sidecar has
+stopped naming is removed by the janitor once it has been unclaimed for
+`QS_CLAIM_GRACE` (default 1h; see *Registry rows of tables nobody mirrors* below).
+A sidecar that does not mirror a join domain's table (its
 `QS_TABLES` leaves it out, or the table is gone on this node) leaves the row
 another sidecar relies on in place; the row is harmless configuration, because
 completeness is each node's own report. The view this sidecar makes is its own
@@ -1280,7 +1333,9 @@ and follows its own configuration.
 
 A domain removed from every sidecar leaves its rows behind until an operator
 removes them, once, on the primary, after the last sidecar has stopped naming the
-domain in `QS_JOIN_DOMAINS`:
+domain in `QS_JOIN_DOMAINS` (the janitor removes the join rows of a table it
+removes from the registry, so this is only needed for a domain whose tables are
+still registered):
 
 ```sql
 -- the rows of one domain

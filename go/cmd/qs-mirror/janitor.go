@@ -251,6 +251,9 @@ type janitor struct {
 	// clock there is before PostgreSQL 17, which has no inactive_since.
 	firstInactive map[string]time.Time
 	noInactiveCol bool
+	// unclaimed is when each registered table was first seen with no live
+	// claim (claims.go, settle).
+	unclaimed map[string]time.Time
 
 	mu      sync.Mutex
 	runs    int64
@@ -403,7 +406,8 @@ func (j *janitor) run(ctx context.Context) error {
 	j.mu.Lock()
 	j.kept = kept
 	j.mu.Unlock()
-	return nil
+	// The registry: rows of tables that no sidecar claims any more (claims.go).
+	return j.sweepRegistry(ctx, conn, time.Now(), env("QS_EXTENSION_SCHEMA", "quicksilver_mirror"))
 }
 
 func (j *janitor) readSlots(ctx context.Context, conn *pgx.Conn) ([]slotInfo, error) {

@@ -58,6 +58,18 @@ CREATE TABLE quicksilver.lakes (
     catalog  text NOT NULL CHECK (catalog LIKE '/%')
 );
 
+-- One row per sidecar (pod): the tables it is configured for, and when it last
+-- said so (go/cmd/qs-mirror/claims.go). The sidecars write it and the janitor on
+-- the primary reads it, both under the registry's advisory lock; a row whose
+-- tables nobody claims any more is what lets the janitor remove a registry row.
+-- No trigger: a claim changes no routing, so it must not invalidate the registry.
+CREATE TABLE quicksilver.sidecar_claims (
+    node    text PRIMARY KEY,
+    tables  text[] NOT NULL,
+    seen    timestamptz NOT NULL
+);
+REVOKE ALL ON quicksilver.sidecar_claims FROM PUBLIC;
+
 
 -- ---------------------------------------------------------------- allowlist
 -- What the mirror is known to answer exactly as PostgreSQL does. This is data:

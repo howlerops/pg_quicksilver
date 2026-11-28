@@ -99,6 +99,27 @@ type Health struct {
 	replayLSN  string
 	needLSN    string
 	heldTxns   int
+	// slotFault is why this Pod's replication slot cannot be read, when that is
+	// the case: a stream that fails the same way on every attempt is not fresh,
+	// whatever its lag says, and the reason is the first thing an operator needs
+	// (slotrecover.go). Empty when there is no such fault.
+	slotFault      string
+	slotRecoveries int64
+}
+
+// SetSlotFault says why the replication slot cannot be read ("" clears it). While
+// it is set the Pod is not ready, and the reason is what readiness reports.
+func (h *Health) SetSlotFault(reason string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.slotFault = reason
+}
+
+// RecordSlotRecovery counts a slot this Pod dropped and re-created to recover.
+func (h *Health) RecordSlotRecovery() {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.slotRecoveries++
 }
 
 func New(slo time.Duration) *Health {
@@ -274,7 +295,13 @@ func (h *Health) Ready() (bool, string) {
 	s := h.Snapshot()
 	h.mu.Lock()
 	serve, tables := h.serveWithHalted, h.tables
+	slotFault := h.slotFault
 	h.mu.Unlock()
+	if slotFault != "" {
+		// Nothing else is worth saying while the stream cannot be read: the
+		// lag and the halts would be stale for the same reason.
+		return false, slotFault
+	}
 	halted := HaltedReason(s.HaltedTables)
 	// First, because it is the one condition here that does not pass by
 	// itself: bootstrapping ends and lag recovers, a halt waits for an
@@ -361,6 +388,12 @@ func (h *Health) Metrics() string {
 	hb.WriteString("# HELP quicksilver_halted_tables Tables this Pod has stopped mirroring until an operator rebuilds them.\n" +
 		"# TYPE quicksilver_halted_tables gauge\n")
 	fmt.Fprintf(&hb, "quicksilver_halted_tables %d\n", len(s.HaltedTables))
+	h.mu.Lock()
+	recoveries := h.slotRecoveries
+	h.mu.Unlock()
+	hb.WriteString("# HELP quicksilver_slot_recoveries_total Times this Pod dropped its replication slot because the slot could not be decoded (slotrecover.go).\n" +
+		"# TYPE quicksilver_slot_recoveries_total counter\n")
+	fmt.Fprintf(&hb, "quicksilver_slot_recoveries_total %d\n", recoveries)
 	hb.WriteString("# HELP quicksilver_table_halted 1 for each halted table, with the recorded reason.\n" +
 		"# TYPE quicksilver_table_halted gauge\n")
 	names := make([]string, 0, len(s.HaltedTables))

@@ -37,11 +37,11 @@ func TestHaltedTableKeepsItsRegistryRow(t *testing.T) {
 		t.Fatal("a halt marked the registry dirty: the registry would be written for node state")
 	}
 
-	// The node's own answer is the report: 0/0 for the halted table, and nothing
-	// said for the healthy one (nothing is known about it yet on this process).
+	// The node's own answer is the report: 0/0 for the halted table, and 0/0 for
+	// the healthy one too until this process has vouched for it (blank.go).
 	got := e.lsns()
-	if len(got) != 1 || got["public.accounts"] != "0/0" {
-		t.Fatalf("this node's reports %v; want only the halted table as 0/0", got)
+	if len(got) != 2 || got["public.accounts"] != "0/0" || got["public.events"] != "0/0" {
+		t.Fatalf("this node's reports %v; want both 0/0 before anything is vouched for", got)
 	}
 }
 
