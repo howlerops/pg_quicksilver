@@ -846,6 +846,45 @@ cover more than four tables, rows wider than 5 KB, or tables above about 180,000
 rows each. Run your
 own shape before you lower the limit.
 
+### Memory in each routed backend
+
+A backend that routes a statement to the mirror gets a DuckDB instance of its own,
+and that instance is what grows. Measured on pg_duckdb 1.2.2 (PostgreSQL 17.12),
+one backend per series: a 10,000-row DuckLake table (customers) and the 1,000,000-row
+orders mirror. Figures are RssAnon, in MB.
+
+- Before any routed statement a backend has about 4 MB. Once DuckDB has attached the
+  lake it has about 16 MB, and a routed statement brings it to about 30 MB.
+- The DuckDB instance grows with the statements it runs over an attached DuckLake,
+  routed or not. Unrouted DuckLake reads of one repeated text went from 16.6 to 52.0 MB
+  in 20,000 statements, and were still rising between 10,000 and 20,000. Routed GROUP BY
+  statements with varying literals went from 31.0 to 46.5 MB, flat over the last 10,000.
+  Routed point counts on orders stayed at 35 to 43 MB. DuckDB reading plain Parquet files
+  (no DuckLake) stayed at 17 to 19 MB.
+- The growth is live glibc heap, and it is there without the extension: a pg_duckdb-only
+  cluster, with the same lake attached and no pg_quicksilver loaded, grows the same way
+  under a malloc tracer. Most of it is DuckDB buffer-manager block registrations
+  (`BlockHandle`) and eviction-queue entries on DuckLake's read path. Its tracked size
+  grew 3.7 MB over 1,800 unrouted statements, which matches the RssAnon slope. It is not
+  bounded by `duckdb.memory_limit`.
+- `CALL duckdb.recycle_ddb();` returns most of it. One call took a backend from 36.3 to
+  22.7 MB in 17 ms. The next statement then pays the lake re-attach, about 0.25 s. With a
+  recycle every 4,000 statements, the routed GROUP BY workload stayed between 16.5 and
+  38.0 MB over 20,000 statements, where without it the same run reached 47.2 MB.
+- The extension cannot do this itself. pg_duckdb refuses `recycle_ddb()` inside a function
+  or a planner call ("cannot be executed from a function") and accepts it only as a
+  top-level `CALL`. So a backend's DuckDB instance is recycled only by the application,
+  or by a pooler that resets the connection, between statements and outside a
+  transaction block.
+
+Size each routed backend that has run a lake statement for about 40 MB of anonymous
+memory at its peak, on top of its ordinary per-connection memory, and do not count the
+backends' DuckDB memory as shared with each other. A pool that keeps many backends
+warm multiplies that figure by the number of backends. If the application can issue the
+`CALL` every few thousand routed statements, outside transactions, the peak stays near
+38 MB in the measured workload. These figures come from one pg_duckdb build and have
+not been measured on a newer pg_duckdb or DuckDB.
+
 ## Verifying the mirror
 
 ```

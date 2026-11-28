@@ -438,6 +438,14 @@ script had `min`/`max` level at 128 ms on both sides: the thresholds are where
 the mirror starts to win on this host at 1M rows, and they are settings, not
 constants.
 
+### Memory per routed backend
+
+Each routed backend keeps a DuckDB instance, and that instance grows with the lake
+statements it runs (pg_duckdb 1.2.2, DuckLake reads; the router does not cause the
+growth, and an unrouted read grows the same way). The extension cannot recycle it, since
+pg_duckdb accepts `CALL duckdb.recycle_ddb()` only at top level. The numbers, the frames
+and the sizing advice are in docs/16, "Memory in each routed backend".
+
 ## Clients
 
 | | |
