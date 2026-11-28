@@ -39,22 +39,39 @@ def writer(pport, deadline, out, interval):
 
 def reporter(sport, deadline, out, interval):
     """Keeps the mirror fresh: the replay position is reported every interval seconds."""
-    conn = psycopg.connect(f"host=/tmp port={sport} user=postgres dbname=app", autocommit=True)
+    def connect():
+        return psycopg.connect(f"host=/tmp port={sport} user=postgres dbname=app", autocommit=True)
+
+    conn = connect()
     while time.time() < deadline:
         try:
             conn.execute("SELECT quicksilver.report_applied_lsn('public.orders'::regclass, pg_last_wal_replay_lsn())")
             out["reports"] += 1
         except psycopg.Error as e:
             out["report_errors"][e.sqlstate or "?"] += 1
+            if conn.closed or conn.broken:    # terminated by a recovery conflict: reconnect (as the readers do)
+                try:
+                    conn.close()
+                except psycopg.Error:
+                    pass
+                try:
+                    conn = connect()
+                except psycopg.Error:
+                    time.sleep(0.2)
+                    continue
         time.sleep(interval)
     conn.close()
 
 
 def reader(sport, route, deadline, out, lock, expected=None, max_lag=None):
-    conn = psycopg.connect(f"host=/tmp port={sport} user=postgres dbname=app", autocommit=True)
-    conn.execute(f"SET quicksilver.route = {route}")
-    if max_lag and route == "auto":
-        conn.execute(f"SET quicksilver.max_lag = '{max_lag}'")
+    def connect():
+        c = psycopg.connect(f"host=/tmp port={sport} user=postgres dbname=app", autocommit=True)
+        c.execute(f"SET quicksilver.route = {route}")
+        if max_lag and route == "auto":
+            c.execute(f"SET quicksilver.max_lag = '{max_lag}'")
+        return c
+
+    conn = connect()
     stats = collections.Counter()
     while time.time() < deadline:
         try:
@@ -67,6 +84,22 @@ def reader(sport, route, deadline, out, lock, expected=None, max_lag=None):
                 stats[f"decision {side}: {reason}"] += 1
         except psycopg.Error as e:
             stats[e.sqlstate or "?"] += 1
+            # A backend the standby terminates (FATAL: terminating connection due to conflict
+            # with recovery) leaves the session dead: reconnect, or every later statement fails
+            # at once and the loop spins without measuring anything.
+            if conn.closed or conn.broken:
+                stats["reconnect"] += 1
+                try:
+                    conn.close()
+                except psycopg.Error:
+                    pass
+                time.sleep(0.05)
+                try:
+                    conn = connect()
+                except psycopg.Error:
+                    stats["connect failed"] += 1
+                    time.sleep(0.2)
+                continue
             try:
                 conn.rollback()
             except psycopg.Error:

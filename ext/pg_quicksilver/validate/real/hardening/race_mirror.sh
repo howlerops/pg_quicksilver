@@ -26,7 +26,10 @@ DROPSH=$OUT/race_drop.sh
 printf '#!/bin/bash\n%s -c %s\n' "$PG/psql -X -h /tmp -p $PPORT -U postgres -d $DB" "'DROP VIEW quicksilver_mirror.\"public.customers\"' > $OUT/race_drop.txt 2>&1" > "$DROPSH"
 chmod 755 "$DROPSH"
 chmod 644 "$HERE/race_mirror.gdb"
-su postgres -c "$P -c 'SELECT pg_sleep(4)' -c 'SELECT count(*) FROM customers'" > "$OUT/race_B.txt" 2>&1 &
+# quicksilver.route must be auto for the backend to build the mirror entry at all (the database
+# default is off in the regression cluster, DB_ROUTE=none), so it is set in the backend's session
+# and the cost gate opened, or count(*) of a 10,000-row table is cheap on the heap and never reaches the mirror
+su postgres -c "$P -c 'SET quicksilver.route = auto' -c 'SET quicksilver.min_cost = 0' -c 'SET quicksilver.min_rows = 0' -c 'SELECT pg_sleep(4)' -c 'SELECT count(*) FROM customers'" > "$OUT/race_B.txt" 2>&1 &
 sleep 1
 su postgres -c "$P -c \"UPDATE quicksilver.mirrors SET max_lag_bytes = max_lag_bytes WHERE heap = 'customers'::regclass\"" >/dev/null 2>&1
 PID=$(su postgres -c "$P -c \"SELECT pid FROM pg_stat_activity WHERE query LIKE 'SELECT pg_sleep%' AND datname = '$DB'\"" | head -1)
