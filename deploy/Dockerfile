@@ -61,7 +61,8 @@ ARG PG_DUCKDB_DEB_SHA256=29d3d9543f7766f87595441f215e8a11390a5bddf7f5950efca47e4
 #                      pg_write_server_files, so routed reads are superuser-only
 #                      mirror reads. Fast: nothing is compiled.
 #   source             pg_duckdb PG_DUCKDB_TAG, at PG_DUCKDB_COMMIT, with
-#                      bench/patches/pg_duckdb-1.2.2-allowed-directories.patch.
+#                      bench/patches/pg_duckdb-1.2.2-allowed-directories.patch, then
+#                      bench/patches/pg_duckdb-1.2.2-duckdb-keywords.patch.
 #                      An unprivileged role reads only duckdb.allowed_directories,
 #                      cannot write, and cannot read anything else. About an hour
 #                      of C++, and it clones from GitHub during the build.
@@ -215,6 +216,7 @@ RUN set -eux; \
     fi; \
     rm -rf /var/lib/apt/lists/*
 COPY bench/patches/pg_duckdb-1.2.2-allowed-directories.patch /src/pg_duckdb.patch
+COPY bench/patches/pg_duckdb-1.2.2-duckdb-keywords.patch /src/pg_duckdb-keywords.patch
 # The tag is cloned and then checked against the commit it names, so a moved tag
 # fails the build instead of changing what is built. The submodule is shallow:
 # the Makefile passes OVERRIDE_GIT_DESCRIBE, so DuckDB does not need the history.
@@ -223,7 +225,8 @@ RUN set -eux; \
     git clone --depth 1 --branch "${PG_DUCKDB_TAG}" --recurse-submodules --shallow-submodules \
       https://github.com/duckdb/pg_duckdb /src/pg_duckdb; \
     test "$(git -C /src/pg_duckdb rev-parse HEAD)" = "${PG_DUCKDB_COMMIT}"; \
-    git -C /src/pg_duckdb apply /src/pg_duckdb.patch
+    git -C /src/pg_duckdb apply /src/pg_duckdb.patch; \
+    git -C /src/pg_duckdb apply /src/pg_duckdb-keywords.patch
 WORKDIR /src/pg_duckdb
 # `install: install-duckdb` puts libduckdb.so in place with a plain install(1),
 # which does not create its directory under DESTDIR, so it is made first.

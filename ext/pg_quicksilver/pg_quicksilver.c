@@ -1046,10 +1046,11 @@ qs_storage_cast_ok(Oid htype, int32 hmod, Oid mtype, int32 mmod, bool *need_cast
  * them, plus COLUMNS, EXCLUDE and REPLACE, which DuckDB reads as star modifiers.
  * PostgreSQL's quote_identifier leaves most of these bare, so pg_duckdb writes
  * them that way, and DuckDB then either fails (AT, PIVOT, QUALIFY, ...) or may
- * read the name as something else. A column or table named so is not mirrored:
- * the statement is answered by the heap, with the name in its reason. (The
- * extension cannot quote them itself: the mirror subquery is deparsed by
- * pg_duckdb, and the mirror's own column names are the sidecar's.)
+ * read the name as something else. On the stock build a column or table named
+ * so is not mirrored: the statement is answered by the heap, with the name in
+ * its reason. The patched pg_duckdb quotes them, and then the refusal is lifted
+ * (qs_duck_keyword_refused). The mirror's own column names are the sidecar's,
+ * quoted by its view generator.
  * Sorted, for bsearch; lower case, compared without regard to case.
  */
 static const char *const qs_duck_keywords[] = {
@@ -1080,6 +1081,22 @@ qs_duck_keyword(const char *name)
 
 	return bsearch(&key, qs_duck_keywords, lengthof(qs_duck_keywords), sizeof(char *),
 				   qs_duck_keyword_cmp) != NULL;
+}
+
+/*
+ * The patched pg_duckdb quotes every name in the list above in the DuckDB SQL it
+ * writes, and defines duckdb.quotes_duckdb_keywords to say so (docs/40, "Keyword
+ * names"). Only then is a name in the list safe to mirror; the stock build writes
+ * it bare, and a table with one stays on the heap.
+ */
+static bool
+qs_duck_keyword_refused(const char *name)
+{
+	const char *quoted = GetConfigOption("duckdb.quotes_duckdb_keywords", true, false);
+
+	if (quoted != NULL && strcmp(quoted, "on") == 0)
+		return false;
+	return qs_duck_keyword(name);
 }
 
 static bool
@@ -1237,7 +1254,7 @@ qs_build_mirror_body(QsMirror *m)
 		m->reason = "heap relation is not a plain table (partitioned, view or foreign)";
 	else if (heap->rd_rel->relpersistence != RELPERSISTENCE_PERMANENT)
 		m->reason = "heap relation is temporary or unlogged";
-	else if (qs_duck_keyword(RelationGetRelationName(heap)))
+	else if (qs_duck_keyword_refused(RelationGetRelationName(heap)))
 		m->reason = "heap relation is named like a DuckDB keyword: the mirror cannot write it in DuckDB's SQL";
 	else if (IsCatalogRelation(heap))
 		m->reason = "heap relation is a system catalog";
@@ -1257,7 +1274,7 @@ qs_build_mirror_body(QsMirror *m)
 		{
 			Form_pg_attribute att = TupleDescAttr(desc, i);
 
-			if (!att->attisdropped && qs_duck_keyword(NameStr(att->attname)))
+			if (!att->attisdropped && qs_duck_keyword_refused(NameStr(att->attname)))
 				m->reason = MemoryContextStrdup(qs_cache_cxt,
 												psprintf("column \"%s\" is named like a DuckDB keyword: the mirror's SQL cannot write it",
 														 NameStr(att->attname)));

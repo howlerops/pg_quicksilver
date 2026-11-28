@@ -126,3 +126,35 @@ file system disabled for any role that lacks both server-file roles, so the mirr
 cannot be read without them. The v1.1.1 patch that stood here before is retired: the
 `serving` job builds the 1.2.2 patch instead, and so does the `postgres` image target
 when it is asked to.
+
+## pg_duckdb 1.2.2: DuckDB keyword names (second patch)
+
+`pg_duckdb-1.2.2-duckdb-keywords.patch` is applied **after** the allowed-directories patch
+(`git apply` in that order; the Dockerfiles, the testbed and CI do it). It makes pg_duckdb
+quote the names DuckDB reads as keywords in the SQL it writes for a query. The 108 words
+are the ones `docs/40-the-router-moves-inside.md` ("Keyword names") measured: a select
+list or alias, a cast with an alias, or a qualified reference of each one fails in DuckDB
+when left bare. PostgreSQL's `quote_identifier` leaves them bare.
+
+What it changes:
+
+- `src/vendor/pg_ruleutils_{14..19}.c`: `quote_identifier` also quotes a name for which
+  `pgduckdb_is_duckdb_keyword()` is true. The six copies are the same edit; only the
+  PostgreSQL 17 copy is compiled into the PG 17 build.
+- `src/pgduckdb_ruleutils.cpp`: the keyword table, `pgduckdb_is_duckdb_keyword()`, and
+  `pgduckdb_quote_identifier()`, which the query paths use where they quoted with
+  PostgreSQL's `quote_identifier` (function names, `duckdb.row` subscripts and reference
+  names, schema and relation names).
+- `src/pgduckdb_guc.cpp`: the read-only GUC `duckdb.quotes_duckdb_keywords` (`PGC_INTERNAL`,
+  always `on`). The extension reads it with `GetConfigOption()` to know this build quotes
+  them; stock 1.2.2 does not define it, so the extension keeps refusing those tables there.
+
+Verification (PostgreSQL 17.12 on Ubuntu, pg_duckdb 1.2.2 with the first patch, DuckDB 2.0):
+
+- Round trip: the sources with the first patch reversed are taken as pristine (the v1.2.2
+  tag was not fetched for this check, so this is not compared with upstream). Applying the
+  first patch and then this one to them reproduces the working tree, with no offset.
+- The extension suite (`ext/pg_quicksilver`, `make installcheck`) on the stock build and on
+  the patched build, and `validate/equality.py` (superuser and an ordinary role) and
+  `validate/real/txfuzz.py --scripts 500 --seed 1` on the patched build (see the report
+  in the commit that added this patch).
